@@ -24,17 +24,20 @@ function run(cmd, args, opts = {}) {
   return r;
 }
 
-// 1. corpus — generate both sources, then merge into corpus.all.json (derived).
+// 1. corpus — generate all sources, then merge into corpus.all.json (derived).
 if (!process.argv.includes("--no-gen")) {
   run("node", [join(__dir, "corpus.gen.mjs")]);
   run("node", [join(__dir, "corpus.blocks.gen.mjs")]);
+  run("node", [join(__dir, "corpus.real.gen.mjs")]); // real files (machine-specific; [] if absent)
 }
-const inline = JSON.parse(readFileSync(join(__dir, "corpus.json"), "utf8"));
-const blocks = JSON.parse(readFileSync(join(__dir, "corpus.blocks.json"), "utf8"));
-const all = [...inline, ...blocks];
+const load = (f) => JSON.parse(readFileSync(join(__dir, f), "utf8"));
+const inline = load("corpus.json");
+const blocks = load("corpus.blocks.json");
+const real = load("corpus.real.json").map((r) => ({ id: r.id, input: r.input })); // drop `file`
+const all = [...inline, ...blocks, ...real];
 const allPath = join(__dir, "corpus.all.json");
 writeFileSync(allPath, JSON.stringify(all, null, 1));
-console.log(`corpus: ${inline.length} inline + ${blocks.length} block = ${all.length} total`);
+console.log(`corpus: ${inline.length} inline + ${blocks.length} block + ${real.length} real = ${all.length} total`);
 
 // 2. oracle
 run("node", [join(__dir, "oracle.mjs"), allPath]);

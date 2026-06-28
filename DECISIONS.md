@@ -78,10 +78,45 @@ identity. Findings from the AST-shape probe (`harness/probe.mjs`, mldoc 1.5.7,
   inside a URL is consumed into the link, never a tag) — NOT by a word-boundary
   rule. Do **not** port `refs.rs`'s word-boundary rule.
 
+## Spans excluded from comparison (granularity decision)
+
+Block/inline **spans are not part of the differential contract** and are excluded
+from the oracle comparison (`compare.mjs` IGNORE_KEYS):
+- mldoc emits **no inline spans** (only block-level `start_pos/end_pos`), so inline
+  spans can't be diffed at all.
+- mldoc's **block spans are quirky/inconsistent**: a `Src` swallows trailing blank
+  lines into its span while a `Property_Drawer` doesn't; a lone blank line between
+  two block constructs becomes its own `paragraph` block. Binding to that exact
+  byte arithmetic is binding to mldoc's internal identity, which SPEC §5 says not to
+  do.
+lsdoc still **tracks spans internally** (needed by Tine for rendering/click
+targets) and verifies them with its own unit tests — just not against this oracle.
+
 ## Intentional deviations from mldoc (allowlist)
 
-_(none yet — to be populated as the differential loop finds mldoc quirks we
-deliberately don't replicate.)_
+Tracked in `harness/allowlist.json` (id + reason); `compare.mjs` excludes these
+from diff counts but still reports them. Current entries:
+
+- **`c047`** — a fenced code block opened *on a bullet line* (`` - ```calc ``):
+  mldoc splits an empty bullet `- ` then a `Src`; lsdoc keeps it as one bullet.
+  Adversarial — Logseq writes code under a bullet as a nested child block, not on
+  the bullet line. Revisit if a real graph needs it.
+- **`b021`** — a nested ordered list via markdown indentation
+  (`1. a\n   1. nested`): mldoc folds the nested item into the parent's sub-items
+  (normalizes to a `raw` node); lsdoc emits two flat items. Logseq nests via
+  outline bullets, not markdown list indentation. Revisit if a real graph needs it.
+
+## M2 block-structure rules (replicated from the oracle)
+
+Single-pass line scanner (`src/parse.rs`, O(n); fences pre-paired to avoid O(n²)):
+heading `#{1,n}` + space/EOL (level always 1, size=n); only `-` → `Bullet`
+(level = 1 + leading-ws), `*`/`+`/`N.` → `List` (`N)` is not a list); `key:: ` (+
+space/EOL, indentation tolerated) → `Property_Drawer`; ` ``` `/`~~~` fences (must
+close, else paragraph) → `Src`; `>` → `Quote`; `#+BEGIN_X…#+END_X` → `Quote`
+(QUOTE) or `Custom`; `---/***/___` → `Hr`; `|…` → `Table`; `[^n]:` →
+`Footnote_Definition`; `<tag…>` (not `<autolink>`) → raw HTML; everything else
+(incl. blank lines) coalesces into one `Paragraph`. M2 gate = `block-struct`
+(kind/level/nesting/props), which ignores inline content + spans.
 
 ## Complexity decisions
 

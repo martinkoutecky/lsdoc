@@ -29,7 +29,7 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>) {
         | Block::Heading { inline, .. }
         | Block::Bullet { inline, .. }
         | Block::FootnoteDef { inline, .. } => walk_inlines(inline, page, block),
-        Block::Quote { children, .. } => {
+        Block::Quote { children, .. } | Block::Custom { children, .. } => {
             for c in children {
                 walk_block(c, page, block);
             }
@@ -56,7 +56,12 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>) {
                 }
             }
         }
-        Block::Src { .. } | Block::Properties { .. } | Block::Hr { .. } => {}
+        Block::Src { .. }
+        | Block::Properties { .. }
+        | Block::Hr { .. }
+        | Block::RawHtml { .. }
+        | Block::DisplayedMath { .. }
+        | Block::Drawer { .. } => {}
     }
 }
 

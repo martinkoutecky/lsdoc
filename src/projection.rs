@@ -71,6 +71,36 @@ pub enum Block {
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },
+    /// Callout block `#+BEGIN_X … #+END_X` (X != QUOTE). mldoc emits `Custom`.
+    #[serde(rename = "custom")]
+    Custom {
+        name: String,
+        children: Vec<Block>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
+    #[serde(rename = "raw_html")]
+    RawHtml {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
+    /// Block-level `$$ … $$` (mldoc `Displayed_Math`). Inline `$$…$$` mixed with
+    /// text is a `Latex` inline instead.
+    #[serde(rename = "displayed_math")]
+    DisplayedMath {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
+    /// Org-style drawer `:NAME: … :END:` (e.g. `:LOGBOOK:`). Content is opaque —
+    /// compared on `name` only (see DECISIONS.md).
+    #[serde(rename = "drawer")]
+    Drawer {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "properties")]
     Properties {
         props: Vec<(String, String)>,
@@ -101,6 +131,7 @@ pub enum Block {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ListItem {
     pub ordered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<u32>,
     pub indent: u32,
     pub content: Vec<Block>,

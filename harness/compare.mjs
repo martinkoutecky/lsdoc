@@ -4,17 +4,35 @@
 //
 // Object-key order is irrelevant (serde vs JS emit different orders), so we
 // compare a key-sorted canonical JSON string. Usage: node compare.mjs
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 const __dir = dirname(fileURLToPath(import.meta.url));
 
-// Stable stringify: recursively sort object keys so comparison is order-insensitive.
+// Intentional-deviation allowlist: ids we knowingly don't match (documented in
+// DECISIONS.md). Excluded from diff counts but still reported. { id, reason }.
+const allowPath = join(__dir, "allowlist.json");
+const allow = existsSync(allowPath)
+  ? Object.fromEntries(JSON.parse(readFileSync(allowPath, "utf8")).map((a) => [a.id, a.reason]))
+  : {};
+
+// Keys excluded from comparison (verified by lsdoc's own tests, not the oracle):
+//   span — mldoc's block spans are quirky/inconsistent (a Src swallows trailing
+//   blank lines, a Property_Drawer doesn't; lone blank lines become paragraphs)
+//   and mldoc emits NO inline spans at all. Per SPEC §5 we don't bind to mldoc's
+//   internal node identity. See DECISIONS.md ("Spans excluded from comparison").
+const IGNORE_KEYS = new Set(["span"]);
+
+// Stable stringify: recursively sort object keys so comparison is order-insensitive,
+// dropping ignored keys.
 function canon(v) {
   if (Array.isArray(v)) return v.map(canon);
   if (v && typeof v === "object") {
     const o = {};
-    for (const k of Object.keys(v).sort()) o[k] = canon(v[k]);
+    for (const k of Object.keys(v).sort()) {
+      if (IGNORE_KEYS.has(k)) continue;
+      o[k] = canon(v[k]);
+    }
     return o;
   }
   return v;
@@ -28,7 +46,7 @@ const s = (v) => JSON.stringify(canon(v));
 function skel(b) {
   if (!b || typeof b !== "object") return b;
   const o = { kind: b.kind };
-  for (const k of ["level", "size", "lang", "code", "props", "span", "name", "htags"]) {
+  for (const k of ["level", "size", "lang", "code", "props", "span", "name", "htags", "text"]) {
     if (k in b) o[k] = b[k];
   }
   if (b.children) o.children = b.children.map(skel);
@@ -50,6 +68,7 @@ const byId = Object.fromEntries(lsdoc.map((x) => [x.id, x]));
 
 let refsOk = 0, structOk = 0, blocksOk = 0, missing = 0;
 const refDiffs = [], structDiffs = [], blockDiffs = [];
+const allowedHit = []; // allowlisted ids that did diverge (expected)
 
 // Optional filter: `node compare.mjs --cat=tag` limits the shown diffs to a corpus
 // category (ids are stable; category lookup via the corpus file would need a join,
@@ -62,14 +81,21 @@ for (const o of oracle) {
   if (o.err || !o.projection) continue; // oracle parse error — skip
   const op = o.projection, lp = l.projection;
 
+  const allowed = o.id in allow;
+
   if (s(op.refs) === s(lp.refs)) refsOk++;
-  else refDiffs.push({ id: o.id, input: o.input, oracle: op.refs, lsdoc: lp.refs });
+  else if (!allowed) refDiffs.push({ id: o.id, input: o.input, oracle: op.refs, lsdoc: lp.refs });
 
-  if (s(skels(op.blocks)) === s(skels(lp.blocks))) structOk++;
-  else structDiffs.push({ id: o.id, input: o.input, oracle: skels(op.blocks), lsdoc: skels(lp.blocks) });
+  const structDiff = s(skels(op.blocks)) !== s(skels(lp.blocks));
+  const blockDiff = s(op.blocks) !== s(lp.blocks);
+  if (!structDiff) structOk++;
+  else if (!allowed) structDiffs.push({ id: o.id, input: o.input, oracle: skels(op.blocks), lsdoc: skels(lp.blocks) });
+  if (!blockDiff) blocksOk++;
+  else if (!allowed) blockDiffs.push({ id: o.id, input: o.input, oracle: op.blocks, lsdoc: lp.blocks });
 
-  if (s(op.blocks) === s(lp.blocks)) blocksOk++;
-  else blockDiffs.push({ id: o.id, input: o.input, oracle: op.blocks, lsdoc: lp.blocks });
+  if (allowed && (structDiff || blockDiff || s(op.refs) !== s(lp.refs))) {
+    allowedHit.push({ id: o.id, reason: allow[o.id] });
+  }
 }
 
 const total = oracle.filter((o) => !o.err && o.projection).length;
@@ -81,6 +107,10 @@ console.log(`  refs       match: ${refsOk}/${total}   (${refDiffs.length} diffs)
 console.log(`  block-struct match: ${structOk}/${total}   (${structDiffs.length} diffs)   [M2 gate]`);
 console.log(`  blocks-full  match: ${blocksOk}/${total}   (${blockDiffs.length} diffs)   [M3/M4 gate]`);
 if (missing) console.log(`  MISSING from lsdoc output: ${missing}`);
+if (allowedHit.length) {
+  console.log(`  allowlisted deviations (excluded): ${allowedHit.length}`);
+  for (const a of allowedHit) console.log(`    ${a.id} — ${a.reason}`);
+}
 
 const show = (label, arr, fmt) => {
   const f = grep ? arr.filter((d) => d.input.includes(grep)) : arr;

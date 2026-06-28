@@ -1,0 +1,10 @@
+[
+ {
+  "id": "c047",
+  "reason": "fence opened on a bullet line (`- ```calc`): mldoc splits an empty bullet `- ` then a Src; lsdoc keeps the line as one bullet. Adversarial; not how Logseq writes code-in-bullet (it nests as a child block). Revisit if a real graph needs it."
+ },
+ {
+  "id": "b021",
+  "reason": "nested ordered list via markdown indentation (`1. a\\n   1. nested`): mldoc folds the nested item into the parent's sub-items (normalizes to a `raw` node); lsdoc emits two flat items. Logseq nests via outline bullets, not markdown indentation. Revisit if a real graph needs it."
+ }
+]

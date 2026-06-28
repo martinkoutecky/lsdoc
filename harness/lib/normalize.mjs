@@ -88,6 +88,10 @@ export function normNode(node) {
     }
     case "Quote":
       return { kind: "quote", children: (node[1] ?? []).map(normNode) };
+    case "Custom":
+      // ["Custom", name, _opts, [children], raw] — callout blocks (#+BEGIN_X);
+      // BEGIN_QUOTE is emitted as Quote instead, so this is NOTE/TIP/WARNING/etc.
+      return { kind: "custom", name: node[1], children: (node[3] ?? []).map(normNode) };
     case "Property_Drawer":
       return { kind: "properties", props: (node[1] ?? []).map((p) => [p[0], p[1]]) };
     case "Horizontal_Rule":
@@ -108,7 +112,9 @@ export function normNode(node) {
     case "Displayed_Math":
       return { kind: "displayed_math", text: node[1] };
     case "Drawer":
-      return { kind: "drawer", name: node[1], lines: node[2] };
+      // Content treated as opaque (logbook/clock metadata — not indexed/rendered);
+      // compare on name only. See DECISIONS.md.
+      return { kind: "drawer", name: node[1] };
     default:
       return { kind: "block:" + t, v: node[1] };
   }
