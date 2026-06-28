@@ -223,6 +223,12 @@ Quirks worth knowing (all matched):
 - Emphasis is single-pass (no recursive trial-and-error / backtracking); matched
   content is re-parsed once on a strictly-smaller substring (bounded by nesting
   depth), never re-scanned on failure.
+- **Committed gate** (`tests/perf.rs`): `perf_smoke` runs in the default `cargo test`
+  (linear-budget + deep-nesting-on-a-1MiB-stack at moderate size). The full-scale
+  versions (100k-char runs, 200k-deep nesting) are `#[ignore]`d — run with
+  `cargo test --release -- --ignored`. Measured: 9× 100k-char pathological inputs in
+  ~0.2 s release; deep nesting to depth 200k completes on a 1 MiB stack (parser is
+  bounded-depth, not O(depth) recursive).
 
 ## Differential fuzzer (M5)
 

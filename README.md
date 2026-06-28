@@ -12,15 +12,19 @@ the design log (mldoc quirks, intentional deviations, complexity decisions).
 
 ## Status
 
-Greenfield. Milestone order (each gated by "0 oracle diffs on its slice + perf
-budgets hold"):
+**Markdown first cut complete.** Differential gate over 422 inputs (adversarial +
+mined mldoc/OG test suites + real graph): **refs 422/422, block-struct & blocks-full
+0 diffs** (11 documented allowlist deviations); real content (kitchen-sink +
+`~/research/tine-test`) is 0-diff; fuzzing is panic-free over 60k+ inputs; the perf
+suite is linear and stack-bounded. Milestone order (each gated by "0 oracle diffs on
+its slice + perf budgets hold"):
 
-1. **Harness / oracle / corpus / normalization + regression loop** ← in progress
-2. Block structure (paragraphs, headings, lists, code fences, properties, quotes, hr, tables)
-3. Inline core (text, emphasis via delimiter stack, code, links/images, autolinks, escapes)
-4. Logseq dialect inline (`[[page]]`, `#tag`, `((uuid))`, `{{macros}}`, math, timestamps)
-5. Hardening (fuzz to convergence, perf adversarial suite, real-graph diff)
-6. Org mode (later; out of scope for the first cut)
+1. ✅ Harness / oracle / corpus / normalization + regression loop
+2. ✅ Block structure (paragraphs, headings, lists, code fences, properties, quotes, hr, tables)
+3. ✅ Inline core (text, emphasis, code, links/images, autolinks, escapes)
+4. ✅ Logseq dialect inline (`[[page]]`, `#tag`, `((uuid))`, `{{macros}}`, math, timestamps)
+5. ✅ Hardening (differential fuzz, perf + stack-overflow gate, real-graph diff)
+6. ⬜ Org mode (next; out of scope for the first cut)
 
 ## The oracle
 
@@ -37,9 +41,11 @@ input string
 
 We do **not** bind to mldoc's exact internal node identity (some of it is
 legacy/quirky). We compare on a normalized projection: block kind/level/nesting/
-properties (+ block spans), the ordered inline tree (kind + payload), and the
-OG-faithful ref set (page/block/tag/embed, UUID-gated as `block.cljs` does it).
-Intentional deviations live on a small, documented allowlist in `DECISIONS.md`.
+properties, the ordered inline tree (kind + payload), and the OG-faithful ref set
+(page/block/tag/embed, UUID-gated as `block.cljs` does it). **Spans are excluded**
+from the comparison (mldoc emits no inline spans and its block spans are quirky);
+lsdoc tracks spans internally and verifies them with its own unit tests. Intentional
+deviations live on a small, documented allowlist in `DECISIONS.md`.
 
 Correctness is necessary but **not sufficient**: a separate adversarial **perf**
 suite and a **fuzz** loop guard against `O(n²)`/`O(2^n)`/stack-overflow behavior
@@ -49,17 +55,20 @@ without a written justification in `DECISIONS.md`.
 ## Running
 
 ```sh
-source scripts/env.sh          # shared Rust toolchain on /aux (cargo 1.96)
-cargo test                     # unit + golden tests
+source scripts/env.sh                  # shared Rust toolchain on /aux (cargo 1.96)
+cargo test                             # unit tests + fast perf/stack smoke
+cargo test --release -- --ignored      # full-scale perf + stack-overflow gate
 
 # Oracle harness (Node 20):
-cd harness && npm install      # installs mldoc@1.5.7 (once)
+cd harness && npm install              # installs mldoc@1.5.7 (once)
 
 # One-command differential regression loop (the dev gate):
-#   corpus.gen → mldoc oracle → lsdoc parse → compare → report
-node run.mjs                   # exits non-zero on any divergence
-node run.mjs --no-gen          # skip corpus regeneration
-#   writes divergences.json (drill-down); node probe.mjs dumps raw mldoc AST.
+#   corpus (inline + block + mined + real) → mldoc oracle → lsdoc → compare → report
+node run.mjs                           # exits non-zero on any divergence
+node run.mjs --no-gen                  # skip corpus regeneration
+node fuzz.mjs [count] [seed]           # differential fuzz (panic + oracle-mismatch)
+node fuzz-triage.mjs [count] [seed]    # bucket fuzz mismatches by structure
+#   run.mjs writes divergences.json (drill-down); probe.mjs dumps raw mldoc AST.
 ```
 
 ## Layout
