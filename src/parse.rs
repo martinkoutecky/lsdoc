@@ -484,17 +484,17 @@ fn split_markers(s: &str) -> (Option<String>, Option<String>, &str) {
     (marker, priority, s)
 }
 
-/// Strip a leading list checkbox `[ ]` / `[x]` / `[X]` (+ spaces). mldoc strips this
-/// only for `*`/`+`/`N.` lists (lists0), NOT for `-` bullets (heading0).
-fn strip_checkbox(s: &str) -> &str {
-    let rest = if let Some(r) = s.strip_prefix("[ ]") {
-        r
+/// Split a leading list checkbox `[ ]` / `[x]` / `[X]` (+ following spaces) off `s`,
+/// returning (state, rest): `[ ]`→`Some(false)`, `[x]`/`[X]`→`Some(true)`, none→`(None, s)`.
+/// mldoc records this only for `*`/`+`/`N.` lists (lists0), NOT for `-` bullets (heading0).
+fn split_checkbox(s: &str) -> (Option<bool>, &str) {
+    if let Some(r) = s.strip_prefix("[ ]") {
+        (Some(false), r.trim_start())
     } else if let Some(r) = s.strip_prefix("[x]").or_else(|| s.strip_prefix("[X]")) {
-        r
+        (Some(true), r.trim_start())
     } else {
-        return s;
-    };
-    rest.trim_start()
+        (None, s)
+    }
 }
 
 /// Bullet parts: drop leading whitespace + `-`, then an ATX `#` run, then extract
@@ -632,16 +632,18 @@ fn list_item(s: &str) -> Option<ListItem> {
     // unordered * or +
     if let Some(after) = rest.strip_prefix('*').or_else(|| rest.strip_prefix('+')) {
         if after.starts_with(' ') || after.starts_with('\t') {
+            let (checkbox, body) = split_checkbox(after.trim_start());
             return Some(ListItem {
                 ordered: false,
                 number: None,
                 indent: ws as u32,
                 content: vec![Block::Paragraph {
-                    inline: stub_inline(strip_atx(strip_checkbox(after.trim_start()))),
+                    inline: stub_inline(strip_atx(body)),
                     span: None,
                 }],
                 items: vec![],
                 name: vec![],
+                checkbox,
             });
         }
     }
@@ -652,16 +654,18 @@ fn list_item(s: &str) -> Option<ListItem> {
         if let Some(after2) = after.strip_prefix('.') {
             if after2.starts_with(' ') || after2.starts_with('\t') {
                 if let Ok(number) = rest[..digits].parse::<u32>() {
+                    let (checkbox, body) = split_checkbox(after2.trim_start());
                     return Some(ListItem {
                         ordered: true,
                         number: Some(number),
                         indent: ws as u32,
                         content: vec![Block::Paragraph {
-                            inline: stub_inline(strip_atx(strip_checkbox(after2.trim_start()))),
+                            inline: stub_inline(strip_atx(body)),
                             span: None,
                         }],
                         items: vec![],
                         name: vec![],
+                        checkbox,
                     });
                 }
             }
@@ -831,6 +835,7 @@ fn build_def_list(lines: &[Line], i: usize) -> (ListItem, usize) {
         content,
         items: vec![],
         name,
+        checkbox: None,
     };
     (item, j)
 }

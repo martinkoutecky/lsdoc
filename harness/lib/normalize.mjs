@@ -40,7 +40,13 @@ export function normInline(seg) {
     }
     case "Link": {
       const o = seg[1] ?? {};
-      return { k: "link", url: normUrl(o.url), label: (o.label ?? []).map(normInline), full: o.full_text };
+      const r = { k: "link", url: normUrl(o.url), label: (o.label ?? []).map(normInline), full: o.full_text };
+      // image-ness: mldoc has no native bit — derive from the leading `!` of full_text
+      // (the markdown image syntax `![…](…)`). lsdoc derives the same; both omit false.
+      if (typeof o.full_text === "string" && o.full_text.startsWith("!")) r.image = true;
+      if (o.metadata) r.metadata = o.metadata;     // mldoc emits "" for none → omit
+      if (o.title != null) r.title = o.title;       // raw inner, only when present
+      return r;
     }
     case "Subscript": return { k: "subscript", children: (seg[1] ?? []).map(normInline) };
     case "Superscript": return { k: "superscript", children: (seg[1] ?? []).map(normInline) };
@@ -70,6 +76,7 @@ export function normInline(seg) {
 export function normItem(it) {
   return {
     ordered: it.ordered, number: it.number, indent: it.indent,
+    checkbox: it.checkbox,                          // false/true; absent (undefined) → no checkbox
     content: (it.content ?? []).map(normNode),
     items: (it.items ?? []).map(normItem),
     name: (it.name ?? []).map(normInline),

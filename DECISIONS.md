@@ -551,3 +551,81 @@ per SPEC §5 — it is documented, not chased and not allowlisted:
 No allowlist entries (the allowlist is empty); the real org graph + hand-written +
 mined corpora stay at 0-diff with 49 new `o###` fuzz regressions added.
 `node fuzz-split.mjs N seed org` is the kept diagnostic (structural vs inline-soup).
+
+## Render-level parity (RENDER-PARITY-AND-INTEGRATION.md §1; Martin, 2026-06-28)
+
+The original 583/583 parity covered **indexing**: refs + block structure + inline
+kind/payload/order/nesting. It did NOT cover several **render-only** fields mldoc
+carries that the projection silently dropped. Method (per the spec): `harness/delta.mjs`
+walks raw mldoc ASTs over the full corpus + a render-focused extra set and auto-diffs
+*every* payload key mldoc emits against what `normalize.mjs` keeps; `harness/probe-render.mjs`
+nails down the uncertain mechanics. Each render-relevant field was added to BOTH the AST
+(`projection.rs`) and `normalize.mjs`, then gated to 0-diff with new corpus cases. The
+gate is now **render-level**: 621 inputs, refs + block-struct + blocks-full all 0-diff.
+
+**Carried + gated (the render fields):**
+- **Image-ness** — `Inline::Link.image: bool`. mldoc carries **no native image flag**;
+  the *only* difference between `![a](x)` and `[a](x)` is `full`'s leading `!`. Both sides
+  derive `image` from that (`normalize.mjs`: `full_text.startsWith("!")`; lsdoc: the `!`
+  image path). Omitted when false. (md only — org `[[…]]` never starts with `!`.)
+- **Link `metadata`** — `Inline::Link.metadata: String`, the raw Logseq media dims
+  `{:width … :height …}` (braces included), mldoc's `metadata`. md links (after `)`) and
+  org_link_1 `[[u][l]]{…}` carry it; org_link_2 `[[u]]{…}` does NOT (mldoc leaves the `{…}`
+  as plain text — matched). Omitted when empty. lsdoc already computed it (folded into
+  `full`); now also exposed.
+- **Link `title`** — `Inline::Link.title: Option<String>`, the raw inner of a trailing
+  `"…"` (no quotes, **not** unescaped — mldoc keeps `a \"b\" c` verbatim). Empty `""` is
+  not a title (the whole between-parens becomes the URL). md only.
+- **List `checkbox`** — `ListItem.checkbox: Option<bool>`: `[ ]`→`Some(false)`,
+  `[x]`/`[X]`→`Some(true)`, none→`None`. mldoc records it on `*`/`+`/`N.` (md) and
+  `-`/`+`/`N.` (org) list items. md `-` bullets are `Heading{unordered}` (a `Bullet`), so
+  `- [ ] x` is literal title text `[ ] x` with NO checkbox (matched). `[-]` is literal, not
+  a checkbox. lsdoc already stripped the checkbox from content; now also records the state.
+- **Org `Target`** — `Inline::Target { text }` for `<<name>>` (mldoc `Target`). Inner taken
+  raw; `<<>>` (empty) and unterminated `<<x` stay plain. (`normalize.mjs` already emitted
+  `{k:"target"}`; lsdoc previously produced soup — fixed.)
+
+**Justified non-carries (render-relevant but deliberately NOT added):**
+- **Table column alignment** — mldoc **1.5.7 discards it**: `col_groups` is just
+  `[column_count]` (`[3]` for both `|:--|:-:|--:|` and `|---|---|`), there is no
+  per-column align anywhere. Logseq (via mldoc) does not render aligned tables, so
+  matching it means dropping alignment too. (The spec's audit assumed mldoc kept it in
+  `col_groups`; it does not.) Nothing to gate against. **If Martin wants aligned tables as
+  a beyond-OG feature, lsdoc would have to parse the separator row itself and carry an
+  un-gateable `align` field — flagged for his call; not done, to preserve zero-allowlist.**
+- **`Inline_Hiccup`** (`@@hiccup:…@@`) — a Logseq-internal HTML-export construct, never
+  user-authored; absent from all real graphs (the gate would already fail if any gated
+  input produced it). mldoc's own handling is a degenerate split (`@@hiccup:` + inner +
+  `@@` as three nodes). lsdoc emits plain text for `@@…@@`. `normalize.mjs` still has a
+  `hiccup` case (harmless; never fires on gated inputs) — a future corpus case would force
+  the decision. Additive if ever needed.
+- **`Heading.meta`** (`{timestamps, properties}`) — always `{timestamps:[], properties:[]}`
+  under OG's config; SCHEDULED/DEADLINE/ranges flow through the **`Timestamp` inline**
+  instead (already kept, with `ts` + the full opaque `date` object — render-complete).
+- **`Heading.anchor`** — TOC slug, not visually rendered by Tine.
+- **`Footnote_Reference.id`** — mldoc's auto-increment int; `name` suffices to link ref↔def.
+- **`Nested_link.children`** — the parsed decomposition of `[[a [[b]] c]]`; `content` (the
+  raw inner string) is kept and suffices to render a nested page-ref. (`children` would also
+  drag in a `Label` inline tag the enum lacks.) Additive if fidelity ever needs it.
+- **`Src.options`** (org header-args `:results …`) — affects babel execution, not display;
+  Tine renders read-only code by language. **`Src.pos_meta`** is a span (spans out of scope).
+
+## Org multi-line list continuation (DISCOVERED gap — pre-existing, out of render-parity scope)
+
+Adding nested-list corpus cases for the checkbox work surfaced a **pre-existing** org gap
+unrelated to render fields: lsdoc's org list segmenter treats each line independently and
+does **not** implement mldoc's multi-line list-item continuation:
+- `- a\n  more` — mldoc folds `more` into the item (`List`, content `a\nmore`); lsdoc emits
+  `List` + a separate `Paragraph`.
+- `- a\n  - nested` (and any indented `-` continuation, e.g. `+ a\n  - x`, `- a\n   - x`) —
+  mldoc **collapses the whole thing to a single `Paragraph`** (an indented `-` is not a
+  bullet; indented `+`/`N.` continuations instead stay a `List`); lsdoc emits `List` +
+  `Paragraph`.
+
+This is **not exercised by real content**: Logseq stores each bullet as its own block/file
+line, so a single parsed string is one bullet — these multi-line-within-one-string shapes
+don't occur in the real md/org graphs (both still 0-diff). Fixing it properly is an org
+list-continuation sub-project (interacts with `nest_items`, def-lists, indentation), so it
+is **deliberately left for a separate pass**, not bundled into render parity. The org
+nested-list corpus cases are intentionally omitted (see the note in `corpus.org.gen.mjs`);
+the md nested-list path is unaffected (md `*`/`+`/`N.` nesting is gated and passes).

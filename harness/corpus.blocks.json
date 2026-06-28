@@ -306,21 +306,66 @@
  },
  {
   "id": "b061",
+  "cat": "checkbox",
+  "input": "* [ ] unchecked"
+ },
+ {
+  "id": "b062",
+  "cat": "checkbox",
+  "input": "* [x] checked"
+ },
+ {
+  "id": "b063",
+  "cat": "checkbox",
+  "input": "* [X] checked caps"
+ },
+ {
+  "id": "b064",
+  "cat": "checkbox",
+  "input": "+ [ ] plus checkbox"
+ },
+ {
+  "id": "b065",
+  "cat": "checkbox",
+  "input": "1. [ ] ordered todo\n2. [x] ordered done"
+ },
+ {
+  "id": "b066",
+  "cat": "checkbox",
+  "input": "* plain no checkbox"
+ },
+ {
+  "id": "b067",
+  "cat": "checkbox",
+  "input": "- [ ] dash is NOT a checkbox"
+ },
+ {
+  "id": "b068",
+  "cat": "checkbox",
+  "input": "* [-] not a checkbox marker"
+ },
+ {
+  "id": "b069",
+  "cat": "checkbox",
+  "input": "* [ ] a\n  * [x] nested done"
+ },
+ {
+  "id": "b070",
   "cat": "edge",
   "input": ""
  },
  {
-  "id": "b062",
+  "id": "b071",
   "cat": "edge",
   "input": "   "
  },
  {
-  "id": "b063",
+  "id": "b072",
   "cat": "edge",
   "input": "\n\n"
  },
  {
-  "id": "b064",
+  "id": "b073",
   "cat": "edge",
   "input": "<div>raw html</div>"
  }

@@ -27,6 +27,11 @@ pub struct Refs {
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 pub struct Span(pub usize, pub usize);
 
+/// `serde` `skip_serializing_if` for `bool` fields that default to `false`.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "kind")]
 pub enum Block {
@@ -179,6 +184,11 @@ pub struct ListItem {
     /// other list items (mldoc emits `name: []`, cleaned away on both sides).
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub name: Vec<Inline>,
+    /// Task checkbox state: `[ ]`→`Some(false)`, `[x]`/`[X]`→`Some(true)`, none→`None`.
+    /// mldoc records it on `*`/`+`/`N.` (md) and `-`/`+`/`N.` (org) list items; md `-`
+    /// bullets are `Block::Bullet`, never list items, so never carry a checkbox.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub checkbox: Option<bool>,
 }
 
 /// Fold a flat, in-order sequence of list items (each carrying its `indent`, `items`
@@ -258,9 +268,25 @@ pub enum Inline {
         #[serde(skip_serializing_if = "Vec::is_empty")]
         label: Vec<Inline>,
         full: String,
+        /// `![…](…)` markdown image. mldoc carries **no** native image flag; both
+        /// sides derive it from the leading `!` of `full`. Omitted when false.
+        #[serde(default, skip_serializing_if = "is_false")]
+        image: bool,
+        /// Logseq media metadata, the raw `{:width … :height …}` text (mldoc's
+        /// `metadata`, braces included). Omitted when empty (the common case).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        metadata: String,
+        /// CommonMark link title `[l](url "title")` — the raw inner text (no quotes,
+        /// not unescaped, matching mldoc). Omitted when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
     #[serde(rename = "nested_link")]
     NestedLink { content: String },
+    /// Org dedicated/radio target `<<name>>` (mldoc `Target`). The destination
+    /// anchor for an internal org link; renders as its text.
+    #[serde(rename = "target")]
+    Target { text: String },
     #[serde(rename = "tag")]
     Tag { children: Vec<Inline> },
     #[serde(rename = "macro")]

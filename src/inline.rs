@@ -741,6 +741,9 @@ impl<'a> Scanner<'a> {
                 url: Url::BlockRef { v: inner },
                 label: vec![],
                 full,
+                image: false,
+                metadata: String::new(),
+                title: None,
             });
             self.i = j + 2;
             return true;
@@ -811,6 +814,9 @@ impl<'a> Scanner<'a> {
                     url: Url::PageRef { v: name },
                     label: vec![],
                     full,
+                    image: false,
+                    metadata: String::new(),
+                    title: None,
                 });
                 self.i = end;
                 return true;
@@ -1149,6 +1155,9 @@ pub(crate) fn parse_tag_name(s: &str, start: usize) -> (usize, Vec<Inline>) {
                     url: Url::PageRef { v: name },
                     label: vec![],
                     full,
+                    image: false,
+                    metadata: String::new(),
+                    title: None,
                 });
                 i = end;
                 continue;
@@ -1344,13 +1353,13 @@ fn parse_md_link(s: &str, at: usize, image: bool) -> Option<MdLink> {
     // mldoc re-parses the raw between-parens text into a destination + optional
     // `"title"` (link_url_part_inner); the title is dropped, the destination value is
     // unescaped (full_text keeps the raw url_text). See DECISIONS.md.
-    let dest = link_destination(&url_text);
+    let (dest, title) = link_destination(&url_text);
     let url = classify_url(&dest);
     let label = parse_label_inline(&label_text);
     let prefix = if image { "!" } else { "" };
     let full = format!("{}[{}]({}){}", prefix, label_text, url_text, metadata);
     Some(MdLink {
-        node: Inline::Link { url, label, full },
+        node: Inline::Link { url, label, full, image, metadata, title },
         end,
     })
 }
@@ -1634,7 +1643,9 @@ fn match_single_brackets(s: &str, at: usize) -> Option<(usize, String)> {
 /// non-space/non-`[` chars, or a lone `[`; they stop at the first space outside
 /// those. After the parts, optional spaces then a `"…"` title-to-end is allowed;
 /// anything else fails and the *whole* raw text becomes the destination.
-fn link_destination(url_text: &str) -> String {
+/// Returns `(destination, title)`: the title is the raw inner of a trailing `"…"`
+/// (no quotes, NOT unescaped — matching mldoc's `Link.title`), or `None`.
+fn link_destination(url_text: &str) -> (String, Option<String>) {
     let b = url_text.as_bytes();
     let n = b.len();
     let mut j = 0usize;
@@ -1703,10 +1714,12 @@ fn link_destination(url_text: &str) -> String {
     let rest = url_text[j..].trim_start();
     let title_ok = rest.is_empty() || is_quoted_title(rest);
     if (had_angle && part_count > 1) || !title_ok {
-        // consume:All failed → the whole raw text is the destination.
-        unescape(url_text.trim())
+        // consume:All failed → the whole raw text is the destination, no title.
+        (unescape(url_text.trim()), None)
     } else {
-        unescape(dest.trim())
+        // `rest` is either empty or exactly a `"…"` title (quotes ASCII → byte-safe).
+        let title = is_quoted_title(rest).then(|| rest[1..rest.len() - 1].to_string());
+        (unescape(dest.trim()), title)
     }
 }
 
@@ -1816,6 +1829,9 @@ pub(crate) fn parse_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
         },
         label: vec![Inline::Plain { text: full.clone() }],
         full,
+        image: false,
+        metadata: String::new(),
+        title: None,
     };
     Some((j + 1, node))
 }
@@ -2007,6 +2023,9 @@ pub(crate) fn parse_bare_url(s: &str, at: usize) -> Option<(usize, Inline)> {
         },
         label: vec![Inline::Plain { text: label_text }],
         full,
+        image: false,
+        metadata: String::new(),
+        title: None,
     };
     Some((end, node))
 }
@@ -2251,6 +2270,7 @@ mod tests {
             Inline::Tag { children } => format!("tag({})", tag_text_dbg(children)),
             Inline::Macro { name, args } => format!("macro({name};{})", args.join("|")),
             Inline::NestedLink { content } => format!("nested({content})"),
+            Inline::Target { text } => format!("target({text})"),
             Inline::Break => "break".into(),
             Inline::HardBreak => "hardbreak".into(),
             Inline::Latex { mode, body } => format!("latex({mode}:{body})"),
@@ -2463,6 +2483,54 @@ mod tests {
     }
 
     #[test]
+    fn link_render_fields_image_title_metadata() {
+        // image: `![…]` sets image=true; the plain link form does not.
+        match &pi("![alt](img.png)")[0] {
+            Inline::Link { image, title, metadata, full, .. } => {
+                assert!(*image);
+                assert_eq!(title, &None);
+                assert_eq!(metadata, "");
+                assert_eq!(full, "![alt](img.png)");
+            }
+            _ => panic!(),
+        }
+        match &pi("[alt](img.png)")[0] {
+            Inline::Link { image, .. } => assert!(!*image),
+            _ => panic!(),
+        }
+        // title: raw inner of the trailing "…" (no quotes, NOT unescaped — mldoc parity).
+        match &pi("[l](u \"a \\\"b\\\" c\")")[0] {
+            Inline::Link { title, .. } => assert_eq!(title.as_deref(), Some("a \\\"b\\\" c")),
+            _ => panic!(),
+        }
+        // empty "" is NOT a title; the whole between-parens becomes the url value.
+        match &pi("[l](u \"\")")[0] {
+            Inline::Link { title, url, .. } => {
+                assert_eq!(title, &None);
+                assert!(matches!(url, Url::Search { v } if v == "u \"\""));
+            }
+            _ => panic!(),
+        }
+        // metadata: Logseq media dims `{:…}` after the link; carried raw, braces incl.
+        match &pi("![a](x.png){:height 40, :width 100}")[0] {
+            Inline::Link { image, metadata, .. } => {
+                assert!(*image);
+                assert_eq!(metadata, "{:height 40, :width 100}");
+            }
+            _ => panic!(),
+        }
+        // image + title + metadata together.
+        match &pi("![a](x.png \"cap\"){:width 10}")[0] {
+            Inline::Link { image, title, metadata, .. } => {
+                assert!(*image);
+                assert_eq!(title.as_deref(), Some("cap"));
+                assert_eq!(metadata, "{:width 10}");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
     fn link_label_brackets_and_unescape() {
         // single [..] balanced inside an image label (M5).
         match &pi("![lab[el]](u)")[0] {
@@ -2473,7 +2541,7 @@ mod tests {
         }
         // escaped ] in a label: value unescaped, full raw.
         match &pi("[label\\](x)](xxx)")[0] {
-            Inline::Link { label, full, url } => {
+            Inline::Link { label, full, url, .. } => {
                 assert_eq!(label, &vec![Inline::Plain { text: "label](x)".into() }]);
                 assert!(matches!(url, Url::Search { v } if v == "xxx"));
                 assert_eq!(full, "[label\\](x)](xxx)");

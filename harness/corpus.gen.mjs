@@ -194,6 +194,21 @@ add("misc", "   ");
 add("misc", "plain text no refs at all");
 add("misc", "[[Foo]] #bar ((" + U1 + ")) {{q}} `c` **b**");
 
+// --- render-level link fields: image-ness, title, metadata (§ render parity) ---
+add("render", "![alt](img.png)");                 // image=true
+add("render", "[alt](img.png)");                  // image=false (same url)
+add("render", "![](x.png)");                      // empty-label image
+add("render", "![a](../assets/x.png)");           // relative asset image
+add("render", "[label](http://x.com \"a title\")"); // title
+add("render", "![alt](img.png \"cap\")");          // image + title
+add("render", "[l](u \"a \\\"b\\\" c\")");          // title with escaped quotes (raw)
+add("render", "[l](u \"\")");                      // empty "" → no title, url keeps it
+add("render", "[t](u 'single')");                 // single-quotes are NOT a title
+add("render", "![a](../assets/x.png){:height 40, :width 100}"); // image + metadata
+add("render", "[a](u){:width 50}");               // metadata on a non-image link
+add("render", "![a](x.png \"cap\"){:width 10}");   // image + title + metadata
+add("render", "text ![i](a.png) and [l](b) end"); // mixed image/link in a line
+
 // emit
 const out = cases.map((c, idx) => ({ id: `c${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));

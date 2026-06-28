@@ -160,6 +160,28 @@ add("head-ws", "*   ");                     // Bullet + Paragraph["   "]
 add("head-ws", "* \nreal content");        // Bullet + Paragraph[" ", Break, "real content"]
 add("head-ws", "*** \n* B");               // Bullet + Paragraph[" ", Break] + Bullet
 
+// (7) render-level fields (§ render parity): org list checkboxes (-, +, N.),
+// dedicated targets `<<…>>`, and org-link media metadata `{:width …}`.
+add("checkbox", "- [ ] unchecked");
+add("checkbox", "- [x] checked");
+add("checkbox", "- [X] checked caps");
+add("checkbox", "+ [ ] plus");
+add("checkbox", "1. [ ] ordered\n2. [x] ordered done");
+add("checkbox", "- plain item");
+add("checkbox", "- [-] partial is literal");      // `[-]` is NOT a checkbox
+// NOTE: org *nested* list cases (`- a\n  - b`) are intentionally NOT here — they hit
+// a separate, pre-existing org multi-line list-continuation gap (see DECISIONS.md
+// "Org multi-line list continuation"), unrelated to checkbox/render parity.
+add("target", "see <<my target>> here");
+add("target", "<<target>>");
+add("target", "<<a>> and <<b>>");
+add("target", "<<>>");                             // empty → not a target (literal)
+add("target", "<< spaced >>");                     // inner spaces kept raw
+add("target", "text <<no close here");             // unterminated → literal
+add("link-meta", "[[../a.png][img]]{:width 100}"); // org_link_1 metadata
+add("link-meta", "[[file:x.png][cap]]{:width 50, :height 20}");
+add("link-meta", "[[../a.png]]{:height 40}");      // org_link_2: metadata NOT consumed
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

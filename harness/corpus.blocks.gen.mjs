@@ -96,6 +96,18 @@ add("mixed", "# Title\n- bullet one\n- bullet two");
 add("mixed", "intro para\n\n## Section\n\n```js\ncode()\n```\n\nclosing");
 add("mixed", "- task\n  key:: value");
 
+// list checkboxes (md: `*`/`+`/`N.` lists carry checkbox; `-` bullets do NOT —
+// `- [ ] x` is a Heading{unordered} with literal title "[ ] x", per mldoc).
+add("checkbox", "* [ ] unchecked");
+add("checkbox", "* [x] checked");
+add("checkbox", "* [X] checked caps");
+add("checkbox", "+ [ ] plus checkbox");
+add("checkbox", "1. [ ] ordered todo\n2. [x] ordered done");
+add("checkbox", "* plain no checkbox");
+add("checkbox", "- [ ] dash is NOT a checkbox");   // → Heading, literal "[ ] …"
+add("checkbox", "* [-] not a checkbox marker");    // `[-]` is literal text
+add("checkbox", "* [ ] a\n  * [x] nested done");   // checkbox survives nesting
+
 // edge / empty
 add("edge", "");
 add("edge", "   ");

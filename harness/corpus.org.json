@@ -658,5 +658,101 @@
   "cat": "head-ws",
   "input": "*** \n* B",
   "format": "org"
+ },
+ {
+  "id": "o110",
+  "cat": "checkbox",
+  "input": "- [ ] unchecked",
+  "format": "org"
+ },
+ {
+  "id": "o111",
+  "cat": "checkbox",
+  "input": "- [x] checked",
+  "format": "org"
+ },
+ {
+  "id": "o112",
+  "cat": "checkbox",
+  "input": "- [X] checked caps",
+  "format": "org"
+ },
+ {
+  "id": "o113",
+  "cat": "checkbox",
+  "input": "+ [ ] plus",
+  "format": "org"
+ },
+ {
+  "id": "o114",
+  "cat": "checkbox",
+  "input": "1. [ ] ordered\n2. [x] ordered done",
+  "format": "org"
+ },
+ {
+  "id": "o115",
+  "cat": "checkbox",
+  "input": "- plain item",
+  "format": "org"
+ },
+ {
+  "id": "o116",
+  "cat": "checkbox",
+  "input": "- [-] partial is literal",
+  "format": "org"
+ },
+ {
+  "id": "o117",
+  "cat": "target",
+  "input": "see <<my target>> here",
+  "format": "org"
+ },
+ {
+  "id": "o118",
+  "cat": "target",
+  "input": "<<target>>",
+  "format": "org"
+ },
+ {
+  "id": "o119",
+  "cat": "target",
+  "input": "<<a>> and <<b>>",
+  "format": "org"
+ },
+ {
+  "id": "o120",
+  "cat": "target",
+  "input": "<<>>",
+  "format": "org"
+ },
+ {
+  "id": "o121",
+  "cat": "target",
+  "input": "<< spaced >>",
+  "format": "org"
+ },
+ {
+  "id": "o122",
+  "cat": "target",
+  "input": "text <<no close here",
+  "format": "org"
+ },
+ {
+  "id": "o123",
+  "cat": "link-meta",
+  "input": "[[../a.png][img]]{:width 100}",
+  "format": "org"
+ },
+ {
+  "id": "o124",
+  "cat": "link-meta",
+  "input": "[[file:x.png][cap]]{:width 50, :height 20}",
+  "format": "org"
+ },
+ {
+  "id": "o125",
+  "cat": "link-meta",
+  "input": "[[../a.png]]{:height 40}",
+  "format": "org"
  }
 ]

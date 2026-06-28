@@ -783,5 +783,70 @@
   "id": "c156",
   "cat": "misc",
   "input": "[[Foo]] #bar ((11111111-1111-1111-1111-111111111111)) {{q}} `c` **b**"
+ },
+ {
+  "id": "c157",
+  "cat": "render",
+  "input": "![alt](img.png)"
+ },
+ {
+  "id": "c158",
+  "cat": "render",
+  "input": "[alt](img.png)"
+ },
+ {
+  "id": "c159",
+  "cat": "render",
+  "input": "![](x.png)"
+ },
+ {
+  "id": "c160",
+  "cat": "render",
+  "input": "![a](../assets/x.png)"
+ },
+ {
+  "id": "c161",
+  "cat": "render",
+  "input": "[label](http://x.com \"a title\")"
+ },
+ {
+  "id": "c162",
+  "cat": "render",
+  "input": "![alt](img.png \"cap\")"
+ },
+ {
+  "id": "c163",
+  "cat": "render",
+  "input": "[l](u \"a \\\"b\\\" c\")"
+ },
+ {
+  "id": "c164",
+  "cat": "render",
+  "input": "[l](u \"\")"
+ },
+ {
+  "id": "c165",
+  "cat": "render",
+  "input": "[t](u 'single')"
+ },
+ {
+  "id": "c166",
+  "cat": "render",
+  "input": "![a](../assets/x.png){:height 40, :width 100}"
+ },
+ {
+  "id": "c167",
+  "cat": "render",
+  "input": "[a](u){:width 50}"
+ },
+ {
+  "id": "c168",
+  "cat": "render",
+  "input": "![a](x.png \"cap\"){:width 10}"
+ },
+ {
+  "id": "c169",
+  "cat": "render",
+  "input": "text ![i](a.png) and [l](b) end"
  }
 ]

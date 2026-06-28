@@ -710,16 +710,20 @@ fn footnote_def(s: &str) -> Option<(String, &str)> {
 fn list_item(s: &str) -> Option<ListItem> {
     let ws = leading_ws(s);
     let rest = &s[ws..];
-    let mk_item = |ordered, number, content: &str| ListItem {
-        ordered,
-        number,
-        indent: ws as u32,
-        content: vec![Block::Paragraph {
-            inline: parse_inline_org_top(strip_checkbox(content)),
-            span: None,
-        }],
-        items: vec![],
-        name: vec![],
+    let mk_item = |ordered, number, content: &str| {
+        let (checkbox, body) = split_checkbox(content);
+        ListItem {
+            ordered,
+            number,
+            indent: ws as u32,
+            content: vec![Block::Paragraph {
+                inline: parse_inline_org_top(body),
+                span: None,
+            }],
+            items: vec![],
+            name: vec![],
+            checkbox,
+        }
     };
     // mldoc requires non-empty content after the marker (and after any checkbox): a
     // bare `- `/`+ `/`1. ` (or `- [ ]`) is a Paragraph, only `- x` is a List.
@@ -729,7 +733,7 @@ fn list_item(s: &str) -> Option<ListItem> {
     if let Some(after) = dash.or_else(|| rest.strip_prefix('+')) {
         if after.starts_with(' ') || after.starts_with('\t') {
             let content = after.trim_start();
-            if strip_checkbox(content).trim().is_empty() {
+            if split_checkbox(content).1.trim().is_empty() {
                 return None;
             }
             return Some(mk_item(false, None, content));
@@ -741,7 +745,7 @@ fn list_item(s: &str) -> Option<ListItem> {
             if after.starts_with(' ') || after.starts_with('\t') {
                 if let Ok(number) = rest[..digits].parse::<u32>() {
                     let content = after.trim_start();
-                    if strip_checkbox(content).trim().is_empty() {
+                    if split_checkbox(content).1.trim().is_empty() {
                         return None;
                     }
                     return Some(mk_item(true, Some(number), content));
@@ -752,15 +756,16 @@ fn list_item(s: &str) -> Option<ListItem> {
     None
 }
 
-fn strip_checkbox(s: &str) -> &str {
-    let rest = if let Some(r) = s.strip_prefix("[ ]") {
-        r
+/// Split a leading list checkbox `[ ]`/`[x]`/`[X]` (+ following spaces) off `s`,
+/// returning (state, rest). See `parse::split_checkbox` (md sibling).
+fn split_checkbox(s: &str) -> (Option<bool>, &str) {
+    if let Some(r) = s.strip_prefix("[ ]") {
+        (Some(false), r.trim_start())
     } else if let Some(r) = s.strip_prefix("[x]").or_else(|| s.strip_prefix("[X]")) {
-        r
+        (Some(true), r.trim_start())
     } else {
-        return s;
-    };
-    rest.trim_start()
+        (None, s)
+    }
 }
 
 /// Org horizontal rule: exactly 5 `-` (optionally surrounded by whitespace).
@@ -1082,7 +1087,7 @@ impl<'a> OrgScanner<'a> {
                 }
             }
             b'<' if self.ctx.angle => {
-                if !self.try_angle() {
+                if !self.try_target() && !self.try_angle() {
                     self.plain_run();
                 }
             }
@@ -1493,7 +1498,7 @@ impl<'a> OrgScanner<'a> {
         if j + 1 < self.n && self.b[j] == b')' && self.b[j + 1] == b')' {
             let inner = self.s[inner_start..j].to_string();
             let full = self.s[self.i..j + 2].to_string();
-            self.push(Inline::Link { url: Url::BlockRef { v: inner }, label: vec![], full });
+            self.push(Inline::Link { url: Url::BlockRef { v: inner }, label: vec![], full, image: false, metadata: String::new(), title: None });
             self.i = j + 2;
             return true;
         }
@@ -1620,7 +1625,9 @@ impl<'a> OrgScanner<'a> {
             _ => String::new(),
         };
         let full = format!("[[{}][{}]]{}", url_text, label_first, metadata);
-        Some((end, Inline::Link { url, label, full }))
+        // org_link_1 carries Logseq media metadata `{:width …}` (mldoc's `metadata`);
+        // org has no `![…]` image syntax (image=false) nor CommonMark titles.
+        Some((end, Inline::Link { url, label, full, image: false, metadata, title: None }))
     }
 
     /// `[[url]]` (mldoc `org_link_2`). Single `]` allowed inside, non-empty, no eol.
@@ -1656,7 +1663,7 @@ impl<'a> OrgScanner<'a> {
             Url::PageRef { .. } => vec![],
             _ => vec![Inline::Plain { text: name.clone() }],
         };
-        Some((j + 2, Inline::Link { url, label, full }))
+        Some((j + 2, Inline::Link { url, label, full, image: false, metadata: String::new(), title: None }))
     }
 
     /// Find the closing `]]` of an org-link label, balancing single `[ ]` pairs.
@@ -1737,6 +1744,30 @@ impl<'a> OrgScanner<'a> {
     }
 
     // ---- angle: autolink / timestamp / inline html / email ----------------
+
+    /// Org dedicated/radio target `<<name>>` (mldoc `Target`): `<<`, non-empty inner
+    /// (no `<`/`>`/eol), then `>>`. Inner taken raw (matching mldoc).
+    fn try_target(&mut self) -> bool {
+        if !self.s[self.i..].starts_with("<<") {
+            return false;
+        }
+        let inner_start = self.i + 2;
+        let mut j = inner_start;
+        while j < self.n {
+            let c = self.b[j];
+            if c == b'<' || c == b'>' || c == b'\n' || c == b'\r' {
+                break;
+            }
+            j += char_len(c);
+        }
+        if j > inner_start && j + 1 < self.n && self.b[j] == b'>' && self.b[j + 1] == b'>' {
+            let text = self.s[inner_start..j].to_string();
+            self.push(Inline::Target { text });
+            self.i = j + 2;
+            return true;
+        }
+        false
+    }
 
     fn try_angle(&mut self) -> bool {
         if let Some((end, node)) = parse_org_autolink(self.s, self.i) {
@@ -1833,6 +1864,9 @@ fn parse_org_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
         url: Url::Complex { protocol: Some(protocol), link: Some(link) },
         label: vec![Inline::Plain { text: full.clone() }],
         full,
+        image: false,
+        metadata: String::new(),
+        title: None,
     };
     Some((j + 1, node))
 }
@@ -1901,6 +1935,7 @@ mod tests {
             Inline::Tag { children } => format!("tag({})", txt(children)),
             Inline::Macro { name, args } => format!("macro({name};{})", args.join("|")),
             Inline::NestedLink { content } => format!("nested({content})"),
+            Inline::Target { text } => format!("target({text})"),
             Inline::Break => "break".into(),
             Inline::HardBreak => "hardbreak".into(),
             Inline::Latex { mode, body } => format!("latex({mode}:{body})"),
@@ -1963,6 +1998,39 @@ mod tests {
     }
 
     // ---- headlines --------------------------------------------------------
+
+    #[test]
+    fn render_target_checkbox_orglink_metadata() {
+        // dedicated/radio target `<<name>>` (raw inner, internal spaces kept).
+        match &pi("see <<my target>> here")[1] {
+            Inline::Target { text } => assert_eq!(text, "my target"),
+            _ => panic!("expected Target"),
+        }
+        assert_eq!(pi("<<>>").len(), 1); // empty `<<>>` is not a target (stays plain)
+        match &pi("<<>>")[0] {
+            Inline::Plain { .. } => {}
+            _ => panic!("empty target should be plain"),
+        }
+        // list checkboxes: `[ ]`→Some(false), `[x]`/`[X]`→Some(true), none→None.
+        let item0 = |s: &str| match &parse(s)[0] {
+            Block::List { items, .. } => items[0].clone(),
+            _ => panic!("expected List"),
+        };
+        assert_eq!(item0("- [ ] todo").checkbox, Some(false));
+        assert_eq!(item0("- [x] done").checkbox, Some(true));
+        assert_eq!(item0("- [X] done").checkbox, Some(true));
+        assert_eq!(item0("- plain").checkbox, None);
+        assert_eq!(item0("1. [x] num").checkbox, Some(true));
+        // org_link_1 carries media metadata `{:…}`; org_link_2 (no label) does not.
+        match &pi("[[../a.png][img]]{:width 100}")[0] {
+            Inline::Link { metadata, image, title, .. } => {
+                assert_eq!(metadata, "{:width 100}");
+                assert!(!*image);
+                assert_eq!(title, &None);
+            }
+            _ => panic!(),
+        }
+    }
 
     #[test]
     fn headline_levels_and_space() {
