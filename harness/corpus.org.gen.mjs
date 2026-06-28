@@ -126,6 +126,41 @@ add("fndef", "[fn:1][x");                  // Paragraph
 add("fndef", "[fn:1]-x");                  // Paragraph
 add("fndef", " [fn:1] body");              // Footnote_Definition (leading ws ok)
 
+// (2b) footnote body absorbs continuation lines (mldoc `footnote_definition = many1 l`)
+//      until a footnote-specific terminator; absorbed lines join with Break_Line,
+//      de-indented; trailing whitespace kept.
+add("fncont", "[fn:1] body\ncont");                 // absorbed (basic continuation)
+add("fncont", "[fn:1] body\ncont\nmore");           // absorbed (multi-line)
+add("fncont", "[fn:1] body\n  indented");           // absorbed (de-indented)
+add("fncont", "[fn:1] body\n\tcont");               // absorbed (tab de-indented)
+add("fncont", "[fn:1] body\ncont  ");               // trailing spaces kept
+add("fncont", "[fn:1] body\n+ x");                  // absorbed (`+` list folds as text)
+add("fncont", "[fn:1] body\n1. x");                 // absorbed (`N.` folds as text)
+add("fncont", "[fn:1] body\n| t |");                // absorbed (table as text)
+add("fncont", "[fn:1] body\n> q");                  // absorbed (quote as text)
+add("fncont", "[fn:1] body\n: ex");                 // absorbed (`:`-line as text)
+add("fncont", "[fn:1] body\n<<target>>");           // absorbed (inline target)
+add("fncont", "[fn:1] body\n:PROPERTIES:\n:k: v\n:END:"); // absorbed (drawer as text)
+add("fncont", "[fn:1] body\n  + x");                // absorbed (indented `+` de-indented)
+add("fncont", "[fn:1] body\ncont\n");               // absorbed, trailing newline swallowed
+add("fncont", "[fn:1] body\n\ncont");               // TERMINATE: blank line → Paragraph
+add("fncont", "[fn:1] body\n* h");                  // TERMINATE: headline
+add("fncont", "[fn:1] body\n- x");                  // TERMINATE: col-0 `-` list
+add("fncont", "[fn:1] body\n#+TITLE: x");           // TERMINATE: directive
+add("fncont", "[fn:1] body\n#+BEGIN_SRC\nx\n#+END_SRC"); // TERMINATE: block opener
+add("fncont", "[fn:1] body\n-----");                // TERMINATE: hr (`-` first char)
+add("fncont", "[fn:1] body\n[fn:2] b");             // TERMINATE: `[` → inline ref Paragraph
+add("fncont", "[fn:1] ab\n[fn:2] cd");              // TERMINATE: second Footnote_Definition
+add("fncont", "[fn:1] body\nx");                    // TERMINATE: 1-byte continuation
+add("fncont", "[fn:1] body\n  * x");                // TERMINATE: indented `*`
+add("fncont", "[fn:1] body\n  - x");                // TERMINATE: indented `-`
+// NOTE: indented `#` and a whitespace-only line also TERMINATE the footnote body, but
+// the leftover line then hits PRE-EXISTING, footnote-unrelated divergences (indented-`#`
+// comment classification; the absorb/whitespace-only-line swallow at the blank-line
+// handler — same for directives), so they are documented in notes, not asserted here.
+add("fncont", "[fn:1] body\ncont\n\n[fn:2] b");     // absorb cont, blank, then inline ref
+add("fncont", "[fn:1] body\n  next\n+ keep\n- stop"); // absorb next/+keep, stop at col-0 `-`
+
 // (3) empty list marker → Paragraph; `- [ ]` (checkbox, no content) → Paragraph.
 add("list-empty", "+ ");                    // Paragraph
 add("list-empty", "- ");                    // Paragraph

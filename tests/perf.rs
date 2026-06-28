@@ -35,6 +35,9 @@ fn org_linear_cases(n: usize) -> Vec<(&'static str, String)> {
         ("o_list_siblings", "- a\n".repeat(n / 4)),
         ("o_list_fold", format!("- a{}", "\n  cont".repeat(n / 4))),
         ("o_list_collapse", format!("{}  - z", "- a\n".repeat(n / 4))),
+        // Org footnote-definition body absorbing a long continuation-line run
+        // (mldoc `footnote_definition = many1 l`): must be single-pass / linear.
+        ("o_fn_fold", format!("[fn:1] body{}", "\ncont".repeat(n / 4))),
     ]
 }
 

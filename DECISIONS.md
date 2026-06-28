@@ -647,17 +647,31 @@ recursive list parser (`collect_list` in `org.rs`):
 Verified: gate 0-diff (56 new `o###` cases), 28 fresh hand-probed cases all match mldoc,
 org fuzz block-mismatch **7.29% → 4.94%** (panic-free), md unchanged, perf/stack pass.
 
-## Org footnote-definition predicate (FIXED) + body-continuation (still residual)
+## Org footnote-definition predicate + multi-line body continuation (both FIXED)
 
-`[fn:LABEL] body` is a `Footnote_Definition` only if the body (after leading spaces) is
-**≥ 2 bytes** AND its first char doesn't begin a block construct (`* # [ -`); else it is an
-inline footnote *ref* in a `Paragraph` (mldoc `satisfy non_eol` + `take_till1`). So
-`[fn:1] a`/`[fn:1]  a` → `Paragraph`, `[fn:1] ab`/`[fn:1]:x`/`[fn:1] é` (2 bytes) → def.
-lsdoc previously over-detected the 1-char-body case as a def. (6B initially mischaracterized
-this as "continuation folding" — corrected after direct probing; verify-the-prover.)
+**Def-vs-paragraph predicate.** `[fn:LABEL] body` is a `Footnote_Definition` only if the body
+(after leading spaces) is **≥ 2 bytes** AND its first char doesn't begin a block construct
+(`* # [ -`); else it is an inline footnote *ref* in a `Paragraph` (mldoc `satisfy non_eol` +
+`take_till1`). So `[fn:1] a`/`[fn:1]  a` → `Paragraph`, `[fn:1] ab`/`[fn:1]:x`/`[fn:1] é`
+(2 bytes) → def. (6B initially mischaracterized this as "continuation folding" — corrected
+after direct probing; verify-the-prover.)
 
-**Still residual:** the footnote-def *body* multi-line continuation — `[fn:1] body\ncont` →
-mldoc absorbs `cont` into the def's inline body (`[footnote_def]`), lsdoc splits
-(`[footnote_def, paragraph]`). Matching mldoc's footnote-body terminator predicate is the
-footnote analog of the list-continuation work; deferred (footnotes are rare; the def-vs-para
-predicate above is the common case). Tracked here, not allowlisted.
+**Body continuation (FIXED — port of `footnote.ml`).** A footnote def absorbs following
+continuation lines into its inline body (joined with `Break_Line`, de-indented). mldoc's body
+is `many1 l`, `l = spaces *> satisfy non_eol >>= line` with a footnote-specific `non_eol`
+(excludes `\r \n - * # [`). A continuation line is **absorbed** iff (after stripping leading
+spaces) it is non-empty, its first byte ∉ `{- * # [}`, it has ≥2 bytes before any eol, and any
+interior `\r` is a real `\r\n`; else it **terminates** (blank/ws-only line, col-0 `* - # [`,
+directive, `#+BEGIN_X`, hr, another `[fn:N]`, a 1-byte line). Notably `+`/`N.`/tables/quotes/
+`:`-lines/`<<target>>` **fold as text**; indented `+` is de-indented while indented `* - #`
+terminate — all probe-confirmed. Linear in body length (100k-line perf case). 713/713 gate.
+
+**Two pre-existing gaps this work EXPOSED (footnote-unrelated, newly tracked):**
+- **Org `# comment` blocks.** `# c` / `  # indented` → mldoc `Comment` block; lsdoc emits a
+  `Paragraph` and `normalize.mjs` has no `Comment` case (→ `block:Comment` fallback). Standard
+  org syntax, so reachable — but fixing it ADDS a `Block::Comment` AST variant, the one
+  change-type that needs Tine-contract coordination (v0.1.0 is handed off). Pending a
+  fix-now-vs-defer decision; not yet in the gated corpus.
+- **Whitespace-only continuation line** (`[fn:1] body\n   \ncont`): the *downstream* paragraph
+  keeps `"   ",Break` in mldoc; lsdoc drops the ws-only line. Footnote body itself is correct;
+  general `absorb`/ws-line issue, value-only.

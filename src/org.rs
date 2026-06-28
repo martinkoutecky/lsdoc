@@ -299,16 +299,33 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
         }
 
         // 11. footnote definition `[fn:name] text` — not a list-item content block
-        // (inside an item it stays an inline footnote ref in a paragraph).
+        // (inside an item it stays an inline footnote ref in a paragraph). mldoc's
+        // `footnote_definition = many1 l` absorbs the following continuation lines into
+        // the def's inline body (joined with Break_Line, de-indented) until a
+        // footnote-body terminator (`footnote_cont`); the first line's body comes from
+        // `footnote_def` (which is exactly mldoc's first `l`).
         if let Some((name, content)) = footnote_def(t).filter(|_| !in_item) {
             flush_para(&mut out, &mut para, input, in_item);
+            // First body line: mldoc `line = take_till1 is_eol` drops a CRLF `\r`.
+            let mut body = strip_cr_eol(content, line_has_nl(input, line)).to_string();
+            let mut j = i + 1;
+            while let Some(next) = lines.get(j) {
+                match footnote_cont(next.text, line_has_nl(input, next)) {
+                    Some(c) => {
+                        body.push('\n');
+                        body.push_str(c);
+                        j += 1;
+                    }
+                    None => break,
+                }
+            }
             out.push(Block::FootnoteDef {
                 name,
-                inline: parse_inline_org_top(content),
-                span: Some(Span(line.start, line.end)),
+                inline: parse_inline_org_top(&body),
+                span: Some(Span(line.start, lines[j - 1].end)),
             });
             absorb = true;
-            i += 1;
+            i = j;
             continue;
         }
 
@@ -750,6 +767,67 @@ fn footnote_def(s: &str) -> Option<(String, &str)> {
         return None;
     }
     Some((name.to_string(), content))
+}
+
+/// Was this `Line` terminated by a `\n` in the source (vs. ending at EOF)? `Line.end`
+/// points just past the trailing `\n` when present, so the last byte of the span is the
+/// newline. Used to tell a CRLF `\r\n` ending (drop the `\r`) from a dangling `\r`.
+fn line_has_nl(input: &str, line: &Line) -> bool {
+    line.end > line.start && input.as_bytes()[line.end - 1] == b'\n'
+}
+
+/// mldoc `line = take_till1 is_eol`: the body stops at the first `\r`/`\n`. The line text
+/// has no `\n` (split on it), so this only drops a trailing CRLF `\r` (present iff the
+/// line ended in `\r\n`, i.e. `followed_by_nl`). A lone trailing `\r` with no `\n` can't
+/// reach here from a matched `footnote_def` first line.
+fn strip_cr_eol(s: &str, followed_by_nl: bool) -> &str {
+    if followed_by_nl {
+        s.strip_suffix('\r').unwrap_or(s)
+    } else {
+        s
+    }
+}
+
+/// A continuation line of an Org footnote-definition body — mldoc's `footnote_definition`
+/// `l = spaces *> satisfy non_eol >>= fun c -> line <* (end_of_input <|> end_of_line)`,
+/// where this `non_eol` is the footnote-SPECIFIC predicate (`\r \n - * # [` all false).
+/// Returns the de-indented body slice (leading `space_chars` stripped, trailing CRLF `\r`
+/// dropped) iff the line is absorbed into the body, else `None` for a terminator:
+///   - blank / whitespace-only line             → `satisfy` hits the eol/EOF
+///   - first non-space byte in `- * # [`         → footnote `non_eol` rejects it
+///   - < 2 bytes before the eol (1-byte body)    → `line = take_till1` needs ≥1 more byte
+///   - an embedded/lone `\r` not ending `\r\n`   → `end_of_input <|> end_of_line` fails
+/// All checks are byte-oriented (angstrom is byte-oriented), matching `footnote_def`.
+/// `followed_by_nl` marks a real `\r\n` ending vs. a dangling `\r`.
+fn footnote_cont(text: &str, followed_by_nl: bool) -> Option<&str> {
+    let b = text.as_bytes();
+    // mldoc `spaces` = skip `space_chars` [' '; '\t'; '\026'; '\012'].
+    let mut s = 0;
+    while s < b.len() && matches!(b[s], b' ' | b'\t' | 0x0C | 0x1A) {
+        s += 1;
+    }
+    let rest = &b[s..];
+    // `satisfy non_eol`: a first byte must exist and not be in the terminator set (which
+    // also excludes `\r`/`\n`, so a blank / whitespace-only line is rejected here).
+    let first = *rest.first()?;
+    if matches!(first, b'-' | b'*' | b'#' | b'[' | b'\r' | b'\n') {
+        return None;
+    }
+    // `line = take_till1 is_eol`: content runs to the first `\r` (no `\n` in line text).
+    let cr = rest.iter().position(|&c| c == b'\r');
+    let core_len = cr.unwrap_or(rest.len());
+    if core_len < 2 {
+        return None; // 1-byte body: `take_till1` fails after the satisfy'd char.
+    }
+    // `<* (end_of_input <|> end_of_line)`: an interior `\r` must be the final byte AND a
+    // real `\r\n` ending; a mid-line or dangling `\r` makes `end_of_line` fail.
+    if let Some(p) = cr {
+        if p != rest.len() - 1 || !followed_by_nl {
+            return None;
+        }
+    }
+    // Byte-safe: `s` and `s + core_len` fall on ASCII boundaries (space_chars / `\r`).
+    Some(&text[s..s + core_len])
 }
 
 /// A parsed Org list marker (mldoc `format_checkbox_parser` + the first content line).
@@ -2779,6 +2857,78 @@ mod tests {
         assert_eq!(bkinds("[fn:1]*x"), ["paragraph"]);
         assert_eq!(bkinds("[fn:1]#x"), ["paragraph"]);
         assert_eq!(bkinds("[fn:1][x"), ["paragraph"]);
+    }
+
+    #[test]
+    fn footnote_body_continuation() {
+        // mldoc `footnote_definition = many1 l`: the body absorbs following continuation
+        // lines (joined with Break_Line, de-indented) until a footnote-specific
+        // terminator. `fnbody` renders the (sole) FootnoteDef body, marking Break_Line
+        // with `⏎` (robust to plain-node merging).
+        let fnbody = |s: &str| -> String {
+            match &parse(s)[0] {
+                Block::FootnoteDef { inline, .. } => inline
+                    .iter()
+                    .map(|i| match i {
+                        Inline::Plain { text } => text.clone(),
+                        Inline::Break => "\u{23ce}".into(),
+                        other => format!("<{}>", ik(other)),
+                    })
+                    .collect(),
+                b => panic!("expected FootnoteDef, got {b:?}"),
+            }
+        };
+        // absorbed: de-indented, joined with Break_Line, trailing spaces kept.
+        assert_eq!(fnbody("[fn:1] body\ncont"), "body\u{23ce}cont");
+        assert_eq!(fnbody("[fn:1] body\ncont\nmore"), "body\u{23ce}cont\u{23ce}more");
+        assert_eq!(fnbody("[fn:1] body\n  indented"), "body\u{23ce}indented");
+        assert_eq!(fnbody("[fn:1] body\n\tcont"), "body\u{23ce}cont");
+        assert_eq!(fnbody("[fn:1] body\ncont  "), "body\u{23ce}cont  ");
+        // `+`/`N.` lists and `:`-lines fold as TEXT (footnote non_eol allows them);
+        // an indented `+` is de-indented like other content.
+        assert_eq!(fnbody("[fn:1] body\n+ x"), "body\u{23ce}+ x");
+        assert_eq!(fnbody("[fn:1] body\n1. x"), "body\u{23ce}1. x");
+        assert_eq!(fnbody("[fn:1] body\n  + x"), "body\u{23ce}+ x");
+        assert_eq!(fnbody("[fn:1] body\n: ex"), "body\u{23ce}: ex");
+        // CRLF: a `\r\n` ending drops the `\r` on first AND continuation lines.
+        assert_eq!(fnbody("[fn:1] body\r\ncont"), "body\u{23ce}cont");
+        // single-line def unchanged; a trailing newline is swallowed.
+        assert_eq!(fnbody("[fn:1] body"), "body");
+        assert_eq!(fnbody("[fn:1] body\ncont\n"), "body\u{23ce}cont");
+
+        // TERMINATORS: the body stops; the next line is its own block, and the body is
+        // exactly the def's own line.
+        assert_eq!(bkinds("[fn:1] body\n\ncont"), ["footnote_def", "paragraph"]); // blank
+        assert_eq!(bkinds("[fn:1] body\n* h"), ["footnote_def", "bullet"]); // headline
+        assert_eq!(bkinds("[fn:1] body\n- x"), ["footnote_def", "list"]); // col-0 `-`
+        assert_eq!(bkinds("[fn:1] body\n#+TITLE: x"), ["footnote_def", "directive"]);
+        assert_eq!(bkinds("[fn:1] body\n#+BEGIN_SRC\nx\n#+END_SRC"), ["footnote_def", "src"]);
+        assert_eq!(bkinds("[fn:1] body\n-----"), ["footnote_def", "hr"]); // `-` hr
+        assert_eq!(bkinds("[fn:1] ab\n[fn:2] cd"), ["footnote_def", "footnote_def"]);
+        assert_eq!(bkinds("[fn:1] body\n[fn:2] b"), ["footnote_def", "paragraph"]); // `[`
+        assert_eq!(bkinds("[fn:1] body\nx"), ["footnote_def", "paragraph"]); // 1-byte cont
+        assert_eq!(bkinds("[fn:1] body\n  * x"), ["footnote_def", "list"]); // indented `*`
+        assert_eq!(fnbody("[fn:1] body\n- x"), "body");
+    }
+
+    #[test]
+    fn footnote_cont_predicate() {
+        // unit-level: the footnote-body continuation predicate (mldoc `l`).
+        assert_eq!(footnote_cont("cont", false), Some("cont")); // EOF line ok
+        assert_eq!(footnote_cont("  cont", true), Some("cont")); // de-indent
+        assert_eq!(footnote_cont("\tcont", true), Some("cont")); // tab de-indent
+        assert_eq!(footnote_cont("cont  ", true), Some("cont  ")); // trailing kept
+        assert_eq!(footnote_cont("+ x", true), Some("+ x")); // `+` folds as text
+        assert_eq!(footnote_cont("cont\r", true), Some("cont")); // CRLF `\r` dropped
+        // terminators → None
+        assert_eq!(footnote_cont("", true), None); // blank
+        assert_eq!(footnote_cont("   ", true), None); // whitespace-only
+        assert_eq!(footnote_cont("x", true), None); // 1-byte body
+        for s in ["- x", "* x", "# x", "[x", "  - x", "  # x"] {
+            assert_eq!(footnote_cont(s, true), None, "{s}"); // forbidden first char
+        }
+        assert_eq!(footnote_cont("cont\r", false), None); // dangling `\r`, no `\n`
+        assert_eq!(footnote_cont("co\rnt", true), None); // mid `\r` breaks end_of_line
     }
 
     #[test]
