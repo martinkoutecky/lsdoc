@@ -181,6 +181,12 @@ pub enum Inline {
     HardBreak,
     #[serde(rename = "emphasis")]
     Emphasis { emph: String, children: Vec<Inline> },
+    /// Org `_x_`/`_{x}` subscript and `^x`/`^{x}` superscript (mldoc Subscript/
+    /// Superscript). Inline content, re-parsed for nested emphasis/links.
+    #[serde(rename = "subscript")]
+    Subscript { children: Vec<Inline> },
+    #[serde(rename = "superscript")]
+    Superscript { children: Vec<Inline> },
     #[serde(rename = "link")]
     Link {
         url: Url,

@@ -42,6 +42,8 @@ export function normInline(seg) {
       const o = seg[1] ?? {};
       return { k: "link", url: normUrl(o.url), label: (o.label ?? []).map(normInline), full: o.full_text };
     }
+    case "Subscript": return { k: "subscript", children: (seg[1] ?? []).map(normInline) };
+    case "Superscript": return { k: "superscript", children: (seg[1] ?? []).map(normInline) };
     case "Nested_link": return { k: "nested_link", content: seg[1]?.content };
     case "Tag": return { k: "tag", children: (seg[1] ?? []).map(normInline) };
     case "Macro": return { k: "macro", name: seg[1]?.name, args: seg[1]?.arguments ?? [] };

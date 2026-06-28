@@ -116,11 +116,11 @@ struct Scanner<'a> {
 // ---- byte classes ---------------------------------------------------------
 
 #[inline]
-fn is_ws(c: u8) -> bool {
+pub(crate) fn is_ws(c: u8) -> bool {
     c == b' ' || c == b'\t' || c == b'\r'
 }
 #[inline]
-fn is_ws_or_nl(c: u8) -> bool {
+pub(crate) fn is_ws_or_nl(c: u8) -> bool {
     is_ws(c) || c == b'\n'
 }
 /// `plain` delimiters in mldoc (`markdown_plain_delims`, minus whitespace which we
@@ -140,7 +140,7 @@ fn is_md_escape_char(c: u8) -> bool {
 /// mldoc `underline_emphasis_delims`: ASCII punctuation + whitespace (NOT letters/
 /// digits, NOT non-ASCII). Used for `_`/`__` open-backward and close-forward gates.
 #[inline]
-fn is_underscore_delim(c: u8) -> bool {
+pub(crate) fn is_underscore_delim(c: u8) -> bool {
     c.is_ascii_punctuation() || is_ws_or_nl(c)
 }
 
@@ -893,7 +893,7 @@ fn parse_inline_ctx(text: &str, ctx: Ctx) -> Vec<Inline> {
 // ---- shared helpers -------------------------------------------------------
 
 #[inline]
-fn char_len(first: u8) -> usize {
+pub(crate) fn char_len(first: u8) -> usize {
     if first < 0x80 {
         1
     } else if first >> 5 == 0b110 {
@@ -908,7 +908,7 @@ fn char_len(first: u8) -> usize {
 }
 
 /// First index of `needle` in `b[from..]`, or None. (No newline restriction.)
-fn find_sub(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+pub(crate) fn find_sub(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || from > b.len() {
         return None;
     }
@@ -923,7 +923,7 @@ fn find_sub(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
 }
 
 /// Like `find_sub` but stops at a newline (returns None if a `\n` precedes needle).
-fn find_sub_line(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+pub(crate) fn find_sub_line(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return None;
     }
@@ -944,7 +944,7 @@ fn find_sub_line(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
 
 /// `[[ name ]]` where name is non-empty, contains no newline, and ends at the first
 /// `]]` (single `]` allowed inside). Returns (end_index, name, full_text).
-fn parse_page_ref(s: &str, at: usize) -> Option<(usize, String, String)> {
+pub(crate) fn parse_page_ref(s: &str, at: usize) -> Option<(usize, String, String)> {
     let b = s.as_bytes();
     let n = b.len();
     if !s[at..].starts_with("[[") {
@@ -983,7 +983,7 @@ fn parse_page_ref(s: &str, at: usize) -> Option<(usize, String, String)> {
 }
 
 /// nested link `[[ ... ]]` whose inner text parses into >1 (label | nested) child.
-fn parse_nested_link(s: &str, at: usize) -> Option<(usize, String)> {
+pub(crate) fn parse_nested_link(s: &str, at: usize) -> Option<(usize, String)> {
     let (end, content) = match_brackets(s, at)?;
     let inner = &content[2..content.len() - 2];
     if nested_children_count(inner) > 1 {
@@ -1084,7 +1084,7 @@ const TAG_STOP: &[u8] = &[b'#', b',', b'!', b'?', b'\'', b'"', b':'];
 
 /// Parse a tag name starting at `start` (just after '#'). Returns (end_index,
 /// children) where children are Plain runs and page-ref Links (mldoc Hash_tag).
-fn parse_tag_name(s: &str, start: usize) -> (usize, Vec<Inline>) {
+pub(crate) fn parse_tag_name(s: &str, start: usize) -> (usize, Vec<Inline>) {
     let b = s.as_bytes();
     let n = b.len();
     let mut i = start;
@@ -1165,7 +1165,7 @@ fn parse_tag_name(s: &str, start: usize) -> (usize, Vec<Inline>) {
 
 /// Parse a macro inner string into (name, args). Returns None if arg splitting
 /// doesn't consume the whole arg string with valid macro_args (mldoc consume:All).
-fn parse_macro(inner: &str) -> Option<(String, Vec<String>)> {
+pub(crate) fn parse_macro(inner: &str) -> Option<(String, Vec<String>)> {
     let b = inner.as_bytes();
     let n = b.len();
     // name = chars until '}' / '(' / ' '
@@ -1762,7 +1762,7 @@ fn classify_url(url_text: &str) -> Url {
 // ---- autolink / email / inline html ---------------------------------------
 
 /// `<scheme:rest>` autolink (rest has no whitespace / '>'). Returns (end, node).
-fn parse_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
+pub(crate) fn parse_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
     let b = s.as_bytes();
     let n = b.len();
     if b.get(at) != Some(&b'<') {
@@ -1805,7 +1805,7 @@ fn parse_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
 }
 
 /// `<a@b.com>` email autolink. Returns (end, node) with the address object.
-fn parse_email_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
+pub(crate) fn parse_email_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
     let b = s.as_bytes();
     let n = b.len();
     if b.get(at) != Some(&b'<') {
@@ -1836,7 +1836,7 @@ fn parse_email_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
 /// Inline raw HTML `<tag ...> ... </tag>` (or self-contained). We capture the same
 /// extent mldoc's Raw_html does for inline: a single tag region. For paired tags we
 /// take up to the matching close; otherwise a single `<...>`.
-fn parse_inline_html(s: &str, at: usize) -> Option<(usize, String)> {
+pub(crate) fn parse_inline_html(s: &str, at: usize) -> Option<(usize, String)> {
     let b = s.as_bytes();
     let n = b.len();
     if b.get(at) != Some(&b'<') {
@@ -1897,7 +1897,7 @@ fn find_ci(s: &str, from: usize, needle: &str) -> Option<usize> {
 /// Bare URL `proto://...` (mldoc link_inline). proto = letters/digits. The path is
 /// read until whitespace / `< > { } ( ) [ ]`-imbalance, with balanced parens/brackets
 /// and `,;.!?` allowed only when not trailing before a delimiter.
-fn parse_bare_url(s: &str, at: usize) -> Option<(usize, Inline)> {
+pub(crate) fn parse_bare_url(s: &str, at: usize) -> Option<(usize, Inline)> {
     let b = s.as_bytes();
     let n = b.len();
     // protocol
@@ -2006,7 +2006,7 @@ fn read_url_balanced(s: &str, at: usize) -> usize {
 /// Remove a backslash that escapes an ASCII-punctuation char (mldoc unescapes such
 /// sequences in extracted string *values* — ref names, tag text, url links — while
 /// leaving `full_text` raw). `\<punct>` → `<punct>`, `\\` → `\`; other `\` kept.
-fn unescape(s: &str) -> String {
+pub(crate) fn unescape(s: &str) -> String {
     if !s.contains('\\') {
         return s.to_string();
     }
@@ -2030,7 +2030,7 @@ fn unescape(s: &str) -> String {
 // ---- timestamps -----------------------------------------------------------
 
 /// `<YYYY-MM-DD WDAY [HH:MM]>` and ranges `<..>--<..>`. active = true (angle).
-fn parse_angle_timestamp(s: &str, at: usize) -> Option<(usize, Inline)> {
+pub(crate) fn parse_angle_timestamp(s: &str, at: usize) -> Option<(usize, Inline)> {
     let (end1, ts1) = parse_bracket_date(s, at, b'<', b'>')?;
     // range?
     if s[end1..].starts_with("--") {
@@ -2051,7 +2051,7 @@ fn parse_angle_timestamp(s: &str, at: usize) -> Option<(usize, Inline)> {
 }
 
 /// `SCHEDULED:`/`DEADLINE:`/`CLOSED:` `<DATE>`.
-fn parse_keyword_timestamp(s: &str, at: usize) -> Option<(usize, Inline)> {
+pub(crate) fn parse_keyword_timestamp(s: &str, at: usize) -> Option<(usize, Inline)> {
     let keywords = [
         ("SCHEDULED:", "Scheduled"),
         ("DEADLINE:", "Deadline"),
@@ -2077,7 +2077,7 @@ fn parse_keyword_timestamp(s: &str, at: usize) -> Option<(usize, Inline)> {
 }
 
 /// Parse `<YYYY-MM-DD WDAY [HH:MM]>` (or with `[`/`]`), returning (end, date_obj).
-fn parse_bracket_date(
+pub(crate) fn parse_bracket_date(
     s: &str,
     at: usize,
     open: u8,
@@ -2129,7 +2129,7 @@ fn parse_repetition(tok: &str) -> Option<serde_json::Value> {
     Some(serde_json::json!([[kind], [dur], n]))
 }
 
-fn parse_date_inner(inner: &str, active: bool) -> Option<serde_json::Value> {
+pub(crate) fn parse_date_inner(inner: &str, active: bool) -> Option<serde_json::Value> {
     // "YYYY-MM-DD WDAY [HH:MM] [repeat...]"
     let mut parts = inner.split_whitespace();
     let date_str = parts.next()?;
@@ -2199,6 +2199,8 @@ mod tests {
             Inline::InlineHtml { text } => format!("html({text})"),
             Inline::Email { .. } => "email".into(),
             Inline::Verbatim { text } => format!("verb({text})"),
+            Inline::Subscript { .. } => "sub".into(),
+            Inline::Superscript { .. } => "sup".into(),
         }
     }
     fn url_kind(u: &Url) -> String {

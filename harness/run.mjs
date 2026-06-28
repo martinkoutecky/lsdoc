@@ -32,6 +32,7 @@ if (!process.argv.includes("--no-gen")) {
   run("node", [join(__dir, "corpus.mined.gen.mjs")]);     // mined mldoc/OG md test inputs
   run("node", [join(__dir, "corpus.real.gen.mjs")]);      // real md files (machine-specific)
   run("node", [join(__dir, "corpus.org.gen.mjs")]);       // hand-written org adversarial
+  run("node", [join(__dir, "corpus.org.mined.gen.mjs")]); // mined mldoc test_org inputs
   run("node", [join(__dir, "corpus.org.real.gen.mjs")]);  // real org graph (machine-specific)
 }
 const load = (f) => JSON.parse(readFileSync(join(__dir, f), "utf8"));
@@ -41,11 +42,12 @@ const blocks = load("corpus.blocks.json");
 const mined = load("corpus.mined.json");
 const real = strip(load("corpus.real.json"));
 const org = load("corpus.org.json");
+const orgMined = load("corpus.org.mined.json");
 const orgReal = strip(load("corpus.org.real.json"));
-const all = [...inline, ...blocks, ...mined, ...real, ...org, ...orgReal];
+const all = [...inline, ...blocks, ...mined, ...real, ...org, ...orgMined, ...orgReal];
 const allPath = join(__dir, "corpus.all.json");
 writeFileSync(allPath, JSON.stringify(all, null, 1));
-console.log(`corpus: ${inline.length} inline + ${blocks.length} block + ${mined.length} mined + ${real.length} real + ${org.length} org + ${orgReal.length} org-real = ${all.length} total`);
+console.log(`corpus: ${inline.length} inline + ${blocks.length} block + ${mined.length} mined + ${real.length} real + ${org.length} org + ${orgMined.length} org-mined + ${orgReal.length} org-real = ${all.length} total`);
 
 // 2. oracle
 run("node", [join(__dir, "oracle.mjs"), allPath]);

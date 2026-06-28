@@ -102,7 +102,9 @@ fn walk_inlines(inlines: &[Inline], page: &mut Vec<String>, block: &mut Vec<Stri
                     }
                 }
             }
-            Inline::Emphasis { children, .. } => walk_inlines(children, page, block),
+            Inline::Emphasis { children, .. }
+            | Inline::Subscript { children }
+            | Inline::Superscript { children } => walk_inlines(children, page, block),
             _ => {}
         }
     }

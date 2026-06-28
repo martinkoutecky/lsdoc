@@ -12,6 +12,26 @@ fn parse(s: &str) {
     std::hint::black_box(lsdoc::parse_to_projection(std::hint::black_box(s)));
 }
 
+fn parse_org(s: &str) {
+    std::hint::black_box(lsdoc::parse_org_to_projection(std::hint::black_box(s)));
+}
+
+/// Org-specific pathological inputs (a fixed O(n²) regression lived here): long
+/// emphasis-marker runs, headline runs, `[[`/`[[a][b]]` runs.
+fn org_linear_cases(n: usize) -> Vec<(&'static str, String)> {
+    vec![
+        ("o_stars", "*".repeat(n)),
+        ("o_slash", "/".repeat(n)),
+        ("o_under", "_".repeat(n)),
+        ("o_plus", "+".repeat(n)),
+        ("o_headlines", "* x\n".repeat(n / 4)),
+        ("o_emph_words", "*a* ".repeat(n / 4)),
+        ("o_page_open", "[[".repeat(n / 2)),
+        ("o_links", "[[a][b]] ".repeat(n / 9)),
+        ("o_deep_emph", format!("{}x{}", "*".repeat(n / 2), "*".repeat(n / 2))),
+    ]
+}
+
 /// Inputs that would explode under super-linear scanning: long single-marker runs,
 /// repeated constructs, and mixed-delimiter soup.
 fn linear_cases(n: usize) -> Vec<(&'static str, String)> {
@@ -71,11 +91,25 @@ fn assert_no_overflow(d: usize) {
         .expect("deep nesting overflowed a 1 MiB stack — parser is not bounded-depth");
 }
 
+fn assert_linear_org(n: usize, budget_ms: u128) {
+    for (name, input) in &org_linear_cases(n) {
+        let t = Instant::now();
+        parse_org(input);
+        let ms = t.elapsed().as_millis();
+        assert!(
+            ms < budget_ms,
+            "org '{name}' ({} bytes) took {ms}ms (> {budget_ms}ms) — possible O(n^2)/backtracking",
+            input.len()
+        );
+    }
+}
+
 #[test]
 fn perf_smoke() {
     // Fast enough for the default loop; a catastrophic regression still blows the
     // budget by orders of magnitude at this size.
     assert_linear(20_000, 1500);
+    assert_linear_org(20_000, 1500);
     assert_no_overflow(40_000);
 }
 
@@ -83,6 +117,7 @@ fn perf_smoke() {
 #[ignore = "full-scale perf gate; run with: cargo test --release -- --ignored"]
 fn pathological_inputs_stay_linear_heavy() {
     assert_linear(100_000, 3000);
+    assert_linear_org(100_000, 3000);
 }
 
 #[test]

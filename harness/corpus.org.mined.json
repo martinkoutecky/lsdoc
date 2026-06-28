@@ -1,0 +1,127 @@
+[
+ {
+  "id": "om000",
+  "input": "*a b c*",
+  "format": "org"
+ },
+ {
+  "id": "om001",
+  "input": "a*b*c",
+  "format": "org"
+ },
+ {
+  "id": "om002",
+  "input": "/a b c/",
+  "format": "org"
+ },
+ {
+  "id": "om003",
+  "input": "_a b c_",
+  "format": "org"
+ },
+ {
+  "id": "om004",
+  "input": "a * b*",
+  "format": "org"
+ },
+ {
+  "id": "om005",
+  "input": "a_b_c",
+  "format": "org"
+ },
+ {
+  "id": "om006",
+  "input": "_a _ a_",
+  "format": "org"
+ },
+ {
+  "id": "om007",
+  "input": "*a * a*",
+  "format": "org"
+ },
+ {
+  "id": "om008",
+  "input": "hello_world_",
+  "format": "org"
+ },
+ {
+  "id": "om009",
+  "input": "hello,_world_",
+  "format": "org"
+ },
+ {
+  "id": "om010",
+  "input": "[[http://example.com][[example] website]]",
+  "format": "org"
+ },
+ {
+  "id": "om011",
+  "input": "[[http://example.com][[[example]] website]]",
+  "format": "org"
+ },
+ {
+  "id": "om012",
+  "input": "[[http://example.com]]",
+  "format": "org"
+ },
+ {
+  "id": "om013",
+  "input": "[[example]]",
+  "format": "org"
+ },
+ {
+  "id": "om014",
+  "input": "[[exam:ple]]",
+  "format": "org"
+ },
+ {
+  "id": "om015",
+  "input": "[[exam:ple][label]]",
+  "format": "org"
+ },
+ {
+  "id": "om016",
+  "input": "[fn:abc] 中文",
+  "format": "org"
+ },
+ {
+  "id": "om017",
+  "input": "#+BEGIN_QUOTE\nfoo\nbar\n#+END_QUOTE",
+  "format": "org"
+ },
+ {
+  "id": "om018",
+  "input": "#+BEGIN_QUOTE\n aaa\nbbb\n#+END_QUOTE",
+  "format": "org"
+ },
+ {
+  "id": "om019",
+  "input": "#+BEGIN_EXAMPLE\nfoo\nbar\n#+END_EXAMPLE",
+  "format": "org"
+ },
+ {
+  "id": "om020",
+  "input": ":PROPERTIES:\n:XXX: 1\n:yyy: 2\n:END:\n#+ZZZ: 3\n#+UUU: 4",
+  "format": "org"
+ },
+ {
+  "id": "om021",
+  "input": "#+BEGIN_QUOTE\na:: b\n#+END_QUOTE",
+  "format": "org"
+ },
+ {
+  "id": "om022",
+  "input": "#+BEGIN_SRC haskell :results silent :exports code :var n=0\nfac 0 = 1\nfac n = n * fac (n-1)\n#+END_SRC",
+  "format": "org"
+ },
+ {
+  "id": "om023",
+  "input": "* aaa     :bb:cc:",
+  "format": "org"
+ },
+ {
+  "id": "om024",
+  "input": "* aaa [[link][label]]     :bb:cc:",
+  "format": "org"
+ }
+]

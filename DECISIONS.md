@@ -307,3 +307,115 @@ dedup against `corpus.json`/`corpus.blocks.json`.
   Remaining diffs are allowlisted (see above): LaTeX entity/environment tables (niche),
   markdown definition lists, and block constructs opened after a bullet prefix (the
   `c047`/`b021` adversarial family). No `refs` or `block-struct` diffs remain.
+
+## M6 Org-mode (replicated from the oracle + mldoc 1.5.7 source)
+
+The Org parser (`src/org.rs`) is a second line-based block segmenter + single-pass
+inline scanner, behavior-equivalent to mldoc's `format:"Org"`. Format-agnostic
+helpers (timestamps, autolink/email/html, nested links, macros, bare urls, page-ref
+& tag scanning, `char_len`/`find_sub`/`unescape`) are reused from `src/inline.rs`
+(made `pub(crate)`); Org-specific grammar lives in `org.rs`. The Markdown parser is
+untouched (md gate stays 0-diff). Two inline nodes were added in lockstep to
+`projection.rs` + `harness/lib/normalize.mjs`: `Subscript`, `Superscript`.
+
+**Doc-level block order** (mldoc `mldoc_parser.ml`, `Org` config): directive →
+drawer → headline → table → fenced/`#+BEGIN`/verbatim/quote/`$$`/raw-html block →
+footnote → list → hr → paragraph. Org `~/research/org-graph` (16 real `.org`) +
+53 hand-written + 25 mined `test_org.ml` inputs all reach **0 diffs** (refs +
+block-struct + blocks-full); **no new allowlist entries** (the 11 allowlisted are
+all pre-existing Markdown cases).
+
+### Block rules
+- **Headline** `*{n}` at column 0 + space/EOL → `Bullet{level:n}` (mldoc
+  `Heading{unordered:true, level:n}`). `*nospace` is a paragraph; an indented `  * x`
+  is a *list* item, not a headline. Title text = after stars, then a leading task
+  **marker** (`TODO`/`DOING`/`WAITING`/`WAIT`/`DONE`/`CANCELED`/`CANCELLED`/`STARTED`/
+  `IN-PROGRESS`/`NOW`/`LATER`, followed by a space OR end-of-line) and **priority**
+  `[#X]`. **`:tag1:tag2:` extraction** (`heading0.ml`): if the last title inline is a
+  `Plain` whose trimmed text ends with `:` (len > 1), `splitr` at the last space; the
+  suffix is parsed as `:`-wrapped tags (empty tokens dropped, a space invalidates),
+  and the title's last Plain is rebuilt as `rtrim(prefix) + " "` (or dropped if the
+  whole plain was tags). A `*` line **inside `#+BEGIN_SRC` is code**, not a headline.
+- **Directive** `#+KEY: value` (KEY has no `:`, not `BEGIN_…`) → `Directive`.
+- **Drawer** `:PROPERTIES: … :END:` → `Property_Drawer`; any other `:NAME: … :END:`
+  → `Drawer` (name lowercased, content opaque). A run of `#+NAME: value` lines
+  **immediately following a `:PROPERTIES:` drawer folds into it** (mldoc `Drawer.parse`
+  `many1 (parse1 <|> parse2)`), e.g. `:PROPERTIES:…:END:\n#+ZZZ: 3` → props incl ZZZ.
+- **Blocks** `#+BEGIN_X … #+END_X`: `SRC`→`Src` (first token after `_SRC` is the
+  language), `EXAMPLE`→`Example`, `QUOTE`→`Quote` (content re-parsed as blocks), else
+  →`Custom` (name lowercased). Content gets **indent-cleared** by the first line's
+  leading whitespace (`block0.ml`), so `#+BEGIN_QUOTE\n aaa\nbbb` → `aaa\nbbb`.
+  Markdown `` ``` ``/`~~~` fences and `$$…$$` and `<html>…</html>` and `>`-blockquotes
+  also work in Org. A run of `:`-prefixed lines (`: foo`) is an Org **verbatim block**
+  → `Example` (drawer `:NAME:` is tried first).
+- **List** at indent 0: `- `/`+ ` (unordered) / `N. ` (ordered) → `List` (mldoc
+  `List`, NOT a bullet — only `*` at col 0 is a headline). Leading `[ ]`/`[x]`
+  checkbox stripped from item content.
+- **HR** = exactly 5 dashes `-----` (`count 5 (char '-')`); `----`/`------` are prose.
+- **Footnote def** `[fn:name] text` → `Footnote_Definition`.
+- **Paragraph** accumulation matches the Markdown segmenter (span incl. trailing
+  newlines → `Break_Line` per `\n`). **Blank-line absorption differs by predecessor**:
+  Directive/Comment/`#+BEGIN`-block/verbatim/List/Footnote (mldoc `<* optional eols`)
+  swallow following blank lines; Heading/Table/Drawer/Property-drawer/HR do not, so a
+  blank there becomes a `Paragraph[Break_Line]` (e.g. `* A\n\n* B`).
+
+### Inline rules (`OrgScanner`, mldoc `inline.ml` Org branch)
+- **Plain-run delimiters** = `\ _ ^ [ * / + $ #` + whitespace (`org_plain_delims`).
+  Notably NOT `~ = ( < { ! @ ] )` — so `~code~`/`=verb=`/`((ref))`/`<url>`/`{{macro}}`
+  fire **only at a run boundary**: `text ~code~`→Code but `a~code~`→literal, `x ((u))`→
+  block-ref but `a((u))`→literal. (Same dual `plain_one`/`plain_run` model as Markdown,
+  different delimiter set.)
+- **Emphasis**: `*`→Bold, `/`→Italic, `_`→Underline, `+`→Strike_through, `^^`→Highlight
+  (single char except `^^`); `~`→Code, `=`→Verbatim (literal, non-empty, no marker/eol
+  inside). Gates (mldoc `org_emphasis` + `md_em_parser`):
+  - `*` and `^^`: **no** boundary gate. ⇒ `2*3*4`→Bold[3], `a*b*c`→Bold[b].
+  - `/`, `+`, `_`: **backward** gate (char before opener ∈ ASCII-punct/whitespace, via
+    mldoc `state.last_plain_char`, default true) AND **forward** gate (char after the
+    closer ∈ punct/whitespace/eoi). ⇒ `a/b/c`/`snake_case_var`/`word+x` stay literal.
+  - The forward gate differs for `_` vs `/`,`+`: `_` **continues** to the next
+    candidate closer if the forward char fails (`_a_b_`→Underline[`a_b`]), whereas
+    `/`,`+` **fail outright** (`/a/b/`→literal). `*`/`^^` close at the first
+    right-flanking run.
+  - The **backward gate is active only at top level** (state); inside an emphasis
+    re-parse mldoc calls `emphasis` without state, so only the forward gate applies.
+    `last_plain_char` is tracked precisely (updated only on plain emission), so
+    `word[[x]]_y_` → Subscript (the `d` before `_` kills Underline), not Underline.
+  - Emphasis content is re-parsed with **emphasis/sub-superscript/links/plain**
+    (`nested_emphasis`); `*a/b/c*`→Bold[`a/b/c`] (the `/` italic fails its forward gate).
+- **Subscript/Superscript**: `_x`/`^x` (a `non_space` run) or `_{x}`/`^{x}`. Content is
+  re-parsed with **emphasis/plain/entity only — NO nested sub/sup, NO links**
+  (`gen_script`): `snake_case_var`→`snake` + Subscript[`case_var`] (not nested).
+- **Links** (`org_link`): `[[url][label]]` (`org_link_1`), nested `[[…[[…]]…]]`, then
+  `[[url]]` (`org_link_2`). Classification: `file:…`→File; `org_link_2` `proto://link`
+  →Complex else Page_ref (`[[id:uuid]]`→Page_ref `id:uuid`, no `://`); `org_link_1`
+  empty-label→Search, `proto:link` (single colon, strip leading `//`)→Complex else
+  Search. Label re-parse uses **emphasis/latex/code/sub-sup/plain — NO links** (so
+  `[[…][[[x]] …]]` keeps `[[x]]` literal, no spurious page ref). `full_text` for
+  `org_link_1` uses only the first label inline's plain text (mldoc quirk).
+- **Tags/macros/block-refs/bare-urls/timestamps/latex/autolink/email/html** reuse the
+  shared `inline.rs` parsers. `<…>` tries autolink → `<date>` timestamp → html → email;
+  `[…]` tries org-link → inactive `[date]` timestamp → `[fn:…]` footnote ref.
+- **Escapes**: Org does **NOT** unescape (`md_unescaped` is Markdown-only), so `a\*b`
+  → Plain `a\*b` (backslash kept), `\\`→`\\`. `\`+eol → `Hard_Break_Line`
+  (`org_hard_breakline`); `\(…\)`/`\[…\]` → latex; `\letters` → bare letters (the ~2k
+  LaTeX **entity table is not ported** — an unknown `\word` renders as its letters; a
+  real entity like `\alpha` would diverge, same niche class as the md `m054` allowlist,
+  but none occur in the Org corpus). NOTE: the reused page-ref/tag/bare-url value
+  scanners *do* call `unescape`, which is a no-op on real Org content (no backslashes
+  in those positions across the whole corpus); a synthetic `[[a\]b]]` would
+  technically under-keep the backslash in the extracted *value* only.
+
+### Mined Org corpus (M6)
+`harness/corpus.org.mined.gen.mjs` → `harness/corpus.org.mined.json` (committed,
+self-contained, `om###` ids). The INPUT (first OCaml string literal after each
+`check_aux`/`check_aux2`) of every `test/test_org.ml` test (logseq/mldoc HEAD
+`bedae99`), full OCaml escape decoding — **25** inputs. `test_org.ml` uses
+`keep_line_break:false`; we reuse only the input strings (re-run through our
+`keep_line_break:true` oracle). Surfaced + replicated: org-link-1 label without links,
+`#+BEGIN` indent-clearing, `:PROPERTIES:`+`#+NAME` folding (the three fixes above).
+
+### Complexity
+Block segmentation O(n) (one line scan; fences pre-paired). Inline O(n) amortised: the
+emphasis no-closer cache and the 2-byte `seq_present`/single-`]` `has_rbracket` absent
+caches keep `*`×n / `[[`×n / `((`×n / `_`×n runs linear (unit-tested,
+`org::tests::adversarial_runs_terminate`, <0.3 s).
