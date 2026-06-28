@@ -10,7 +10,10 @@
 //    `check_aux`/`check_aux2` call (full OCaml escape + line-continuation
 //    decoding); definitions and expected-AST strings are not inputs.
 //      test_markdown.ml: 99, test_outline_markdown.ml: 91,
-//      test_export_markdown.ml: 14, 0 skipped.
+//      test_export_markdown.ml: 14, test_export_opml.ml: 2, 0 skipped.
+//    (The remaining test/ files at bedae99 hold no parser inputs: dune,
+//    gen_md_files.ml [random-AST fuzzer], test_zip.ml [zipper property test].
+//    Adoption of mldoc's parser-input tests is now exhaustive — audit 2026-06-28.)
 //  - og-*    : markdown input strings curated (by reading) from OG graph-parser
 //    cljs tests at /aux/koutecky/logseq/og/deps/graph-parser/test/. Org-format
 //    (`:org` config) and org-syntax (#+TITLE, [[file:…][…]]) inputs are excluded;
@@ -236,6 +239,12 @@ const SOURCES = [
     "- # line1\n  - ##  TODO line2\n  - line3",
     "- {{cloze content1,content2}}",
     "- {{cloze (content1,content2)}}",
+  ]],
+  ["mldoc-opml", [
+    // the 2 parser-relevant inputs from test_export_opml.ml (markdown parsed before
+    // OPML export) — the only mldoc-test inputs not covered by the other groups.
+    "- line1\n  - line2\n    line3\n    - line4",
+    "- ## line1\n  - ## TODO line2\n    line3\n    - ##  LATER [#A] line4",
   ]],
   ["og-mldoc", [
     "google.com",
