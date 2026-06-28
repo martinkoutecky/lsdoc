@@ -19,7 +19,12 @@
 //    (`:org` config) and org-syntax (#+TITLE, [[file:…][…]]) inputs are excluded;
 //    a few runtime (str …)-built block-ref/timestamp cases are reconstructed
 //    from their literal constants. Files mined: mldoc_test, block_test,
-//    extract_test, text_test, property_test.
+//    extract_test, text_test, property_test, graph_parser_test (the integration
+//    test — `og-graph-parser` group; `.org` fixtures go to corpus.org.mined.gen.mjs;
+//    `.edn` whiteboard pr-str fixtures excluded), util/page_ref_test (1 string).
+//    Non-parser graph-parser tests (cli_test, util_test, util/file_name_test) hold
+//    no parse-file inputs. Adoption of OG graph-parser test inputs is now exhaustive
+//    (audit 2026-06-28).
 //
 // Output: corpus.mined.json = [{ id:"m###", cat, input }] — deduped, with empties
 // and inputs already present in corpus.json / corpus.blocks.json dropped. Committed
@@ -334,6 +339,28 @@ const SOURCES = [
     "hello\nfoo:: bar",
     "hello\nfoo:: bar\nnice:: bingo",
     "hello\nfoo:: bar\nnice:: bingo\nnice",
+  ]],
+  // Whole-file fixtures from graph_parser_test.cljs (the integration test), i.e. the
+  // CONTENT string of every `graph-parser/parse-file conn "<f>.md" "<content>" {}`
+  // call, with `let`-bound bodies resolved (test-property-order's generated text,
+  // gp-property/->block-content `k:: v\n…` maps) and cljs escapes decoded. EDN
+  // whiteboard fixtures (`pr-str foo-edn` → `*.edn`) are EXCLUDED (not md/org). The
+  // last entry is page_ref_test.cljs's one page-ref string not already covered.
+  ["og-graph-parser", [
+    "- id:: 628953c1-8d75-49fe-a648-f4c612109098",
+    "p0:: p0-value\np1:: p1-value\np2:: p2-value\np3:: p3-value\n- p0:: p0-value\np1:: p1-value\np2:: p2-value\np3:: p3-value",
+    "p0:: p0-value\np1:: p1-value\np2:: p2-value\np3:: p3-value\np4:: p4-value\np5:: p5-value\np6:: p6-value\np7:: p7-value\np8:: p8-value\np9:: p9-value\n- p0:: p0-value\np1:: p1-value\np2:: p2-value\np3:: p3-value\np4:: p4-value\np5:: p5-value\np6:: p6-value\np7:: p7-value\np8:: p8-value\np9:: p9-value",
+    "- desc:: \"#foo is not a ref\"",
+    "rating:: 8\nrecommend:: true\narchive:: false",
+    "alias:: 233\ntags:: fun, facts\n- alias:: 666\ntags:: block, facts",
+    "single-link:: [[bar]]\nmulti-link:: [[Logseq]] is the fastest #triples #[[text editor]]\ndesc:: This is a multiple sentence description. It has one [[link]]\ncomma-prop:: one, two,three\n- block-single-link:: [[bar]]\nblock-multi-link:: [[Logseq]] is the fastest #triples #[[text editor]]\nblock-desc:: This is a multiple sentence description. It has one [[link]]\nblock-comma-prop:: one, two,three",
+    "foo:: valid\n[[foo]]:: invalid\nsome,prop:: invalid\n#blarg:: invalid\n- foo:: valid\n[[foo]]:: invalid\nsome,prop:: invalid\n#blarg:: invalid",
+    "title:: core.async",
+    "- [title]([[bar]])\n- ![image.png](../assets/image_1630480711363_0.png)\n- [Filename.txt](file:///E:/test/Filename.txt)\n- [mail](mailto:test@test.com?subject=TestSubject)\n- [onenote link](onenote:https://d.docs.live.net/b2127346582e6386a/blablabla/blablabla/blablabla%20blablabla.one#Etat%202019&section-id={133DDF16-9A1F-4815-9A05-44303784442E6F94}&page-id={3AAB677F0B-328F-41D0-AFF5-66408819C085}&end)\n- [lock file](deps/graph-parser/yarn.lock)- [example](https://example.com)",
+    "- foo\nid:: 63f199bc-c737-459f-983d-84acfcda14fe\n- bar\nid:: 63f199bc-c737-459f-983d-84acfcda14fe\n",
+    "- foo\nid:: 63f199bc-c737-459f-983d-84acfcda14fe\nbar\n- test",
+    "- bar\nid:: 63f199bc-c737-459f-983d-84acfcda14fe\nbar\n- test\n",
+    "[[some [[nested]] page]]",
   ]],
 ];
 

@@ -7,6 +7,8 @@
 // HEAD bedae99), full OCaml escape + line-continuation decoding. Org-format only.
 // Expected ASTs are NOT inputs (and test_org.ml uses keep_line_break:false, a
 // different config; we only reuse the input strings, re-run through our oracle).
+// The last 2 entries are the `.org` whole-file fixtures from OG's
+// graph_parser_test.cljs (`parse-file conn "<f>.org" "<content>" {}`).
 //
 // Output: corpus.org.mined.json = [{ id:"om###", input, format:"org" }] — deduped
 // against the other Org corpora. Committed (NOT gitignored).
@@ -40,6 +42,8 @@ const INPUTS = [
   "#+BEGIN_SRC haskell :results silent :exports code :var n=0\nfac 0 = 1\nfac n = n * fac (n-1)\n#+END_SRC",
   "* aaa     :bb:cc:",
   "* aaa [[link][label]]     :bb:cc:",
+  ":PROPERTIES:\n:ID:       72289d9a-eb2f-427b-ad97-b605a4b8c59b\n:END:\n#+tItLe: Well parsed!",
+  "* [[bar][title]]\n* [[https://example.com][example]]\n* [[../assets/conga_parrot.gif][conga]]",
 ];
 
 const __dir = dirname(fileURLToPath(import.meta.url));

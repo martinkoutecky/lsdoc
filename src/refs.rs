@@ -55,7 +55,14 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>) {
             // mldoc stores each property's value as a parsed inline list (the AST's
             // 3rd tuple element), which OG's block.cljs walks for refs. Re-parse each
             // value to recover those page/block refs (e.g. `tags:: [[Foo]], Bar`).
+            // mldoc's `Property.property_references` first bails (empty refs) when the
+            // trimmed value is empty or fully wrapped in double quotes (`desc:: "..."`
+            // is "unparsed"), so we must NOT extract refs from those.
             for (_k, v) in props {
+                let vt = v.trim();
+                if vt.is_empty() || (vt.starts_with('"') && vt.ends_with('"')) {
+                    continue;
+                }
                 let inl = crate::inline::parse_inline(v);
                 walk_inlines(&inl, page, block);
             }

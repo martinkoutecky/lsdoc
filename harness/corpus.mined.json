@@ -1018,5 +1018,75 @@
   "id": "m203",
   "cat": "og-property",
   "input": "hello\nfoo:: bar\nnice:: bingo\nnice"
+ },
+ {
+  "id": "m204",
+  "cat": "og-graph-parser",
+  "input": "- id:: 628953c1-8d75-49fe-a648-f4c612109098"
+ },
+ {
+  "id": "m205",
+  "cat": "og-graph-parser",
+  "input": "p0:: p0-value\np1:: p1-value\np2:: p2-value\np3:: p3-value\n- p0:: p0-value\np1:: p1-value\np2:: p2-value\np3:: p3-value"
+ },
+ {
+  "id": "m206",
+  "cat": "og-graph-parser",
+  "input": "p0:: p0-value\np1:: p1-value\np2:: p2-value\np3:: p3-value\np4:: p4-value\np5:: p5-value\np6:: p6-value\np7:: p7-value\np8:: p8-value\np9:: p9-value\n- p0:: p0-value\np1:: p1-value\np2:: p2-value\np3:: p3-value\np4:: p4-value\np5:: p5-value\np6:: p6-value\np7:: p7-value\np8:: p8-value\np9:: p9-value"
+ },
+ {
+  "id": "m207",
+  "cat": "og-graph-parser",
+  "input": "- desc:: \"#foo is not a ref\""
+ },
+ {
+  "id": "m208",
+  "cat": "og-graph-parser",
+  "input": "rating:: 8\nrecommend:: true\narchive:: false"
+ },
+ {
+  "id": "m209",
+  "cat": "og-graph-parser",
+  "input": "alias:: 233\ntags:: fun, facts\n- alias:: 666\ntags:: block, facts"
+ },
+ {
+  "id": "m210",
+  "cat": "og-graph-parser",
+  "input": "single-link:: [[bar]]\nmulti-link:: [[Logseq]] is the fastest #triples #[[text editor]]\ndesc:: This is a multiple sentence description. It has one [[link]]\ncomma-prop:: one, two,three\n- block-single-link:: [[bar]]\nblock-multi-link:: [[Logseq]] is the fastest #triples #[[text editor]]\nblock-desc:: This is a multiple sentence description. It has one [[link]]\nblock-comma-prop:: one, two,three"
+ },
+ {
+  "id": "m211",
+  "cat": "og-graph-parser",
+  "input": "foo:: valid\n[[foo]]:: invalid\nsome,prop:: invalid\n#blarg:: invalid\n- foo:: valid\n[[foo]]:: invalid\nsome,prop:: invalid\n#blarg:: invalid"
+ },
+ {
+  "id": "m212",
+  "cat": "og-graph-parser",
+  "input": "title:: core.async"
+ },
+ {
+  "id": "m213",
+  "cat": "og-graph-parser",
+  "input": "- [title]([[bar]])\n- ![image.png](../assets/image_1630480711363_0.png)\n- [Filename.txt](file:///E:/test/Filename.txt)\n- [mail](mailto:test@test.com?subject=TestSubject)\n- [onenote link](onenote:https://d.docs.live.net/b2127346582e6386a/blablabla/blablabla/blablabla%20blablabla.one#Etat%202019&section-id={133DDF16-9A1F-4815-9A05-44303784442E6F94}&page-id={3AAB677F0B-328F-41D0-AFF5-66408819C085}&end)\n- [lock file](deps/graph-parser/yarn.lock)- [example](https://example.com)"
+ },
+ {
+  "id": "m214",
+  "cat": "og-graph-parser",
+  "input": "- foo\nid:: 63f199bc-c737-459f-983d-84acfcda14fe\n- bar\nid:: 63f199bc-c737-459f-983d-84acfcda14fe\n"
+ },
+ {
+  "id": "m215",
+  "cat": "og-graph-parser",
+  "input": "- foo\nid:: 63f199bc-c737-459f-983d-84acfcda14fe\nbar\n- test"
+ },
+ {
+  "id": "m216",
+  "cat": "og-graph-parser",
+  "input": "- bar\nid:: 63f199bc-c737-459f-983d-84acfcda14fe\nbar\n- test\n"
+ },
+ {
+  "id": "m217",
+  "cat": "og-graph-parser",
+  "input": "[[some [[nested]] page]]"
  }
 ]

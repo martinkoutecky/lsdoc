@@ -123,5 +123,15 @@
   "id": "om024",
   "input": "* aaa [[link][label]]     :bb:cc:",
   "format": "org"
+ },
+ {
+  "id": "om025",
+  "input": ":PROPERTIES:\n:ID:       72289d9a-eb2f-427b-ad97-b605a4b8c59b\n:END:\n#+tItLe: Well parsed!",
+  "format": "org"
+ },
+ {
+  "id": "om026",
+  "input": "* [[bar][title]]\n* [[https://example.com][example]]\n* [[../assets/conga_parrot.gif][conga]]",
+  "format": "org"
  }
 ]

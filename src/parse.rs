@@ -203,6 +203,39 @@ pub fn parse(input: &str) -> Vec<Block> {
                 });
                 continue;
             }
+            // (c) property line on the bullet line (mldoc heading0.ml: the title is a
+            // lookahead, and `markdown_property` is one of the constructs tried — so
+            // `- key:: value` yields an EMPTY bullet then a Property_Drawer that BEGINS
+            // at the bullet content and folds in subsequent property/directive lines
+            // (exactly like step 8). `content` is post-`#{1,n}`-strip, matching the size
+            // run; the property `key` rejects bullet prefixes via its space check.
+            if let Some(kv) = property(content) {
+                flush_para(&mut out, &mut para, input);
+                out.push(Block::Bullet {
+                    level,
+                    inline: vec![],
+                    marker: None,
+                    priority: None,
+                    htags: vec![],
+                    span: Some(Span(line.start, content_off)),
+                });
+                let mut props = vec![kv];
+                let mut end = line.end;
+                i += 1;
+                while i < lines.len() {
+                    if let Some(kv) = property(lines[i].text) {
+                        props.push(kv);
+                    } else if let Some(kv) = directive_property(lines[i].text) {
+                        props.push(kv);
+                    } else {
+                        break;
+                    }
+                    end = lines[i].end;
+                    i += 1;
+                }
+                out.push(Block::Properties { props, span: Some(Span(content_off, end)) });
+                continue;
+            }
             // normal bullet.
             flush_para(&mut out, &mut para, input);
             let (marker, priority, title) = bullet_parts(t);
