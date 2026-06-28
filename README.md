@@ -12,19 +12,23 @@ the design log (mldoc quirks, intentional deviations, complexity decisions).
 
 ## Status
 
-**Markdown first cut complete.** Differential gate over 422 inputs (adversarial +
-mined mldoc/OG test suites + real graph): **refs 422/422, block-struct & blocks-full
-0 diffs** (11 documented allowlist deviations); real content (kitchen-sink +
-`~/research/tine-test`) is 0-diff; fuzzing is panic-free over 60k+ inputs; the perf
-suite is linear and stack-bounded. Milestone order (each gated by "0 oracle diffs on
-its slice + perf budgets hold"):
+**Markdown AND Org complete.** One differential gate over **516 inputs** (adversarial
++ mined mldoc/OG test suites + real Markdown graph + real Org graph), both formats:
+**refs 516/516, block-struct & blocks-full 0 diffs** (11 documented allowlist
+deviations, all Markdown); real content — `~/research/tine-test` (md) AND
+`~/research/org-graph` (org) — is 0-diff; fuzzing is panic-free over 60k+ inputs; the
+perf suite is linear and stack-bounded for both formats. Milestone order (each gated
+by "0 oracle diffs on its slice + perf budgets hold"):
 
 1. ✅ Harness / oracle / corpus / normalization + regression loop
 2. ✅ Block structure (paragraphs, headings, lists, code fences, properties, quotes, hr, tables)
 3. ✅ Inline core (text, emphasis, code, links/images, autolinks, escapes)
 4. ✅ Logseq dialect inline (`[[page]]`, `#tag`, `((uuid))`, `{{macros}}`, math, timestamps)
 5. ✅ Hardening (differential fuzz, perf + stack-overflow gate, real-graph diff)
-6. ⬜ Org mode (next; out of scope for the first cut)
+6. ✅ Org mode (headlines, markers/priority/tags, org emphasis, `[[t][l]]` links, `#+` directives/blocks, drawers)
+
+Remaining (future, not built): Tine integration — cross the DTO boundary with the
+serde AST, delete `parseInline.ts`, repoint `refs.rs`.
 
 ## The oracle
 
