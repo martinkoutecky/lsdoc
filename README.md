@@ -12,13 +12,13 @@ the design log (mldoc quirks, intentional deviations, complexity decisions).
 
 ## Status
 
-**Markdown AND Org complete.** One differential gate over **516 inputs** (adversarial
-+ mined mldoc/OG test suites + real Markdown graph + real Org graph), both formats:
-**refs 516/516, block-struct & blocks-full 0 diffs** (11 documented allowlist
-deviations, all Markdown); real content — `~/research/tine-test` (md) AND
-`~/research/org-graph` (org) — is 0-diff; fuzzing is panic-free over 60k+ inputs; the
-perf suite is linear and stack-bounded for both formats. Milestone order (each gated
-by "0 oracle diffs on its slice + perf budgets hold"):
+**Markdown AND Org complete — exact mldoc parity, zero allowlist deviations.** One
+differential gate over **583 inputs** (adversarial + mined mldoc/OG test suites + real
+Markdown graph + real Org graph), both formats: **refs, block-struct, AND blocks-full
+all 583/583 (0 diffs, allowlist empty)**; real content — `~/research/tine-test` (md)
+AND `~/research/org-graph` (org) — is 0-diff; fuzzing is panic-free over 60k+ inputs;
+the perf suite is linear and stack-bounded for both formats. Milestone order (each
+gated by "0 oracle diffs on its slice + perf budgets hold"):
 
 1. ✅ Harness / oracle / corpus / normalization + regression loop
 2. ✅ Block structure (paragraphs, headings, lists, code fences, properties, quotes, hr, tables)
