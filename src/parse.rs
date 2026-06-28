@@ -12,9 +12,19 @@
 //!
 //! mldoc quirks replicated (see DECISIONS.md / the block probe):
 //! - only `-` bullets become `Bullet` (mldoc `Heading{unordered}`); `*`/`+` and
-//!   `N.` become `List` nodes; `N)` is NOT a list.
-//! - heading `level` is always 1 with `size` = `#`-count (uncapped); a space must
-//!   follow the hashes.
+//!   `N.` become `List` nodes; `N)` is NOT a list. A `*`/`+`/`N.` marker with an
+//!   empty title (`1. `, `* `, `* [ ]`) is NOT a list — it falls through to a
+//!   Paragraph (mldoc requires non-empty list content).
+//! - heading `size` = `#`-count (uncapped); a space/tab (or end-of-line) must
+//!   follow the hashes. `level` = 1 + leading-whitespace count: mldoc allows
+//!   leading whitespace before the `#`-run and bumps `level` per space/tab
+//!   (uncapped — NOT CommonMark's ≤3 rule). The same leading-ws `level` applies to
+//!   `-` bullets.
+//! - an EMPTY heading/bullet whose line has trailing whitespace after the
+//!   marker/size/task-marker/priority prefix splits into [heading|bullet,
+//!   paragraph(trailing ws)] — mldoc emits the node for the prefix, then the
+//!   leftover whitespace starts a paragraph (`## ` → [heading, paragraph]; a bare
+//!   `##` / `-` with no trailing ws stays a single node).
 //! - consecutive non-block lines (incl. blank lines) coalesce into ONE paragraph.
 //! - unclosed fences and 4-space indents are paragraphs, not code.
 
@@ -101,12 +111,29 @@ pub fn parse(input: &str) -> Vec<Block> {
             continue;
         }
 
-        // 3. heading
-        if let Some(size) = heading_size(t) {
+        // 3. heading. `level` = 1 + leading-ws (mldoc bumps level per leading
+        // space/tab, uncapped); `size` = `#`-count. An empty heading whose line has
+        // trailing whitespace splits into [heading, paragraph(trailing ws)].
+        if let Some((level, size, hend)) = heading_at(t) {
             flush_para(&mut out, &mut para, input);
-            let (marker, priority, title) = split_markers(t[size as usize..].trim_start());
+            let (marker, priority, title) = split_markers(t[hend..].trim_start());
+            let trail = trim_end_ws_len(t);
+            if title.is_empty() && trail < t.len() {
+                out.push(Block::Heading {
+                    level,
+                    size: Some(size),
+                    inline: vec![],
+                    marker,
+                    priority,
+                    htags: vec![],
+                    span: Some(Span(line.start, line.start + trail)),
+                });
+                para = Some((line.start + trail, line.end));
+                i += 1;
+                continue;
+            }
             out.push(Block::Heading {
-                level: 1,
+                level,
                 size: Some(size),
                 inline: stub_inline(title),
                 marker,
@@ -295,9 +322,29 @@ pub fn parse(input: &str) -> Vec<Block> {
                     continue;
                 }
             }
-            // normal bullet.
+            // normal bullet — or, when the title is empty and the line has trailing
+            // whitespace after the marker/size/task-marker/priority prefix, an empty
+            // bullet followed by a paragraph of that trailing whitespace (mldoc emits
+            // the bullet for the prefix, then the leftover ws starts a paragraph:
+            // `- ` / `-   ` / `- ## ` / `- TODO ` → [bullet, paragraph]; a bare `-`
+            // / `- ##` / `- TODO` with no trailing ws stays a single empty bullet).
             flush_para(&mut out, &mut para, input);
             let (marker, priority, title) = split_markers(content);
+            let trail = trim_end_ws_len(t);
+            if title.is_empty() && trail < t.len() {
+                out.push(Block::Bullet {
+                    level,
+                    size,
+                    inline: vec![],
+                    marker,
+                    priority,
+                    htags: vec![],
+                    span: Some(Span(line.start, line.start + trail)),
+                });
+                para = Some((line.start + trail, line.end));
+                i += 1;
+                continue;
+            }
             out.push(Block::Bullet {
                 level,
                 size,
@@ -677,19 +724,37 @@ fn fence_marker(s: &str) -> Option<(u8, usize)> {
     }
 }
 
-/// `#{1,n}` followed by a space ⇒ heading of `size` n (level always 1).
-fn heading_size(s: &str) -> Option<u32> {
-    let hashes = s.bytes().take_while(|&b| b == b'#').count();
+/// Heading detection, allowing leading whitespace. Returns `(level, size, hend)`:
+/// `level` = 1 + leading-ws count (mldoc bumps `level` per leading space/tab,
+/// uncapped — it does NOT apply CommonMark's ≤3-space rule), `size` = the `#`-count
+/// (uncapped), and `hend` = the within-line byte index just past the `#`-run. A
+/// space/tab must follow the hashes — or the line is just (ws +) the hashes. `None`
+/// when the first non-ws char isn't such a `#`-run.
+fn heading_at(s: &str) -> Option<(u32, u32, usize)> {
+    let lw = leading_ws(s);
+    let rest0 = &s[lw..];
+    let hashes = rest0.bytes().take_while(|&b| b == b'#').count();
     if hashes == 0 {
         return None;
     }
-    let rest = &s[hashes..];
-    // a space/tab must follow the hashes — or the line is just the hashes ("#").
+    let rest = &rest0[hashes..];
     if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
-        Some(hashes as u32)
+        Some((1 + lw as u32, hashes as u32, lw + hashes))
     } else {
         None
     }
+}
+
+/// Byte length of `s` with trailing spaces/tabs removed (the index just past the
+/// last char that is not a space/tab). Used to locate the trailing-whitespace run
+/// that mldoc splits into a paragraph after an empty heading/bullet.
+fn trim_end_ws_len(s: &str) -> usize {
+    let b = s.as_bytes();
+    let mut k = b.len();
+    while k > 0 && (b[k - 1] == b' ' || b[k - 1] == b'\t') {
+        k -= 1;
+    }
+    k
 }
 
 fn is_hr(s: &str) -> bool {
@@ -726,6 +791,11 @@ fn list_item(s: &str) -> Option<ListItem> {
     if let Some(after) = rest.strip_prefix('*').or_else(|| rest.strip_prefix('+')) {
         if after.starts_with(' ') || after.starts_with('\t') {
             let (checkbox, body) = split_checkbox(after.trim_start());
+            // mldoc requires non-empty list content: `* ` / `*  ` / `* [ ]` (an
+            // empty marker, optionally just a checkbox) is a Paragraph, not a List.
+            if body.trim().is_empty() {
+                return None;
+            }
             return Some(ListItem {
                 ordered: false,
                 number: None,
@@ -748,6 +818,11 @@ fn list_item(s: &str) -> Option<ListItem> {
             if after2.starts_with(' ') || after2.starts_with('\t') {
                 if let Ok(number) = rest[..digits].parse::<u32>() {
                     let (checkbox, body) = split_checkbox(after2.trim_start());
+                    // mldoc requires non-empty content: `1. ` / `1.  ` / `1. [ ]`
+                    // (an empty ordered marker) is a Paragraph, not a List.
+                    if body.trim().is_empty() {
+                        return None;
+                    }
                     return Some(ListItem {
                         ordered: true,
                         number: Some(number),
@@ -1177,6 +1252,88 @@ mod tests {
         }
         // a lone `-` at end-of-line is an (empty) bullet.
         assert_eq!(kinds("+ x\n  -"), ["list", "bullet"]);
+    }
+
+    #[test]
+    fn empty_marker_and_leading_ws_segmentation() {
+        // Helpers to read heading/bullet level + the first paragraph's plain text.
+        let hlevel = |s: &str| match &parse(s)[0] {
+            Block::Heading { level, .. } | Block::Bullet { level, .. } => *level,
+            b => panic!("expected heading/bullet, got {b:?}"),
+        };
+        let para_text = |b: &Block| match b {
+            Block::Paragraph { inline, .. } => match inline.first() {
+                Some(Inline::Plain { text }) => text.clone(),
+                _ => String::new(),
+            },
+            _ => panic!("expected paragraph"),
+        };
+
+        // (1) empty ordered / `*` / `+` markers are Paragraphs, not Lists.
+        assert_eq!(kinds("1. "), ["paragraph"]);
+        assert_eq!(kinds("3. "), ["paragraph"]);
+        assert_eq!(kinds("1."), ["paragraph"]); // no space at all
+        assert_eq!(kinds("1.  "), ["paragraph"]);
+        assert_eq!(kinds("1. \t"), ["paragraph"]);
+        assert_eq!(kinds("* "), ["paragraph"]);
+        assert_eq!(kinds("+ "), ["paragraph"]);
+        assert_eq!(kinds("* [ ]"), ["paragraph"]); // checkbox but no title
+        assert_eq!(kinds("1. [ ]"), ["paragraph"]);
+        assert_eq!(kinds("1. x"), ["list"]); // non-empty ⇒ still a list
+        assert_eq!(kinds("* x"), ["list"]);
+        assert_eq!(kinds("* [ ] x"), ["list"]);
+        // a trailing empty marker after a real item ends the list (separate paragraph).
+        assert_eq!(kinds("1. x\n2. "), ["list", "paragraph"]);
+
+        // (2) empty ATX heading + trailing ws ⇒ [heading, paragraph(trailing ws)].
+        assert_eq!(kinds("## "), ["heading", "paragraph"]);
+        assert_eq!(kinds("# "), ["heading", "paragraph"]);
+        assert_eq!(kinds("##"), ["heading"]); // bare hashes ⇒ single heading
+        assert_eq!(para_text(&parse("##  ")[1]), "  "); // both spaces in the paragraph
+        assert_eq!(para_text(&parse("# TODO ")[1]), " "); // marker on heading, ws split
+        match &parse("# TODO ")[0] {
+            Block::Heading { marker, inline, .. } => {
+                assert_eq!(marker.as_deref(), Some("TODO"));
+                assert!(inline.is_empty());
+            }
+            _ => panic!(),
+        }
+
+        // (3) empty `-` bullet + trailing ws ⇒ [bullet, paragraph(trailing ws)].
+        assert_eq!(kinds("- "), ["bullet", "paragraph"]);
+        assert_eq!(kinds("-"), ["bullet"]); // bare dash ⇒ single bullet
+        assert_eq!(kinds("- ## "), ["bullet", "paragraph"]); // size kept, ws split
+        assert_eq!(kinds("- ##"), ["bullet"]); // no trailing ws ⇒ single bullet
+        assert_eq!(para_text(&parse("-   ")[1]), "   ");
+        assert_eq!(para_text(&parse("- \t ")[1]), " \t ");
+        match &parse("- TODO ")[0] {
+            Block::Bullet { marker, inline, .. } => {
+                assert_eq!(marker.as_deref(), Some("TODO"));
+                assert!(inline.is_empty());
+            }
+            _ => panic!(),
+        }
+        // trailing ws starts a paragraph that absorbs following lines (lazy).
+        assert_eq!(kinds("- \nfoo"), ["bullet", "paragraph"]);
+        assert_eq!(kinds("## \nfoo"), ["heading", "paragraph"]);
+
+        // (4) leading whitespace before `#` ⇒ heading; level = 1 + ws (uncapped, tab=1).
+        assert_eq!(kinds("  # heading"), ["heading"]);
+        assert_eq!(hlevel("  # heading"), 3); // 1 + 2 spaces
+        assert_eq!(hlevel("   # heading"), 4);
+        assert_eq!(hlevel("    # heading"), 5); // 4 spaces still a heading (no ≤3 rule)
+        assert_eq!(hlevel("\t# heading"), 2); // tab counts 1
+        assert_eq!(hlevel(" \t # heading"), 4); // mixed ws
+        // a heading interrupts a running paragraph.
+        assert_eq!(kinds("foo\n  # bar"), ["paragraph", "heading"]);
+
+        // (5) combinations: leading-ws + empty heading/bullet trailing-ws split.
+        assert_eq!(kinds("  ## "), ["heading", "paragraph"]);
+        assert_eq!(hlevel("  ## "), 3);
+        assert_eq!(kinds("  - "), ["bullet", "paragraph"]);
+        assert_eq!(hlevel("  - "), 3);
+        // HR with leading ws is still an HR (heading check yields to it).
+        assert_eq!(kinds("   ---"), ["hr"]);
     }
 
     #[test]

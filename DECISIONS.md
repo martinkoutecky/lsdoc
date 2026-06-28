@@ -712,3 +712,28 @@ Verified: gate 744→**765/765** 0-diff (`- #`…`- ######` + all openers + size
 perf/stack pass. AST-shape change is a single additive `Bullet.size` ⇒ **v0.1.1** (no renamed
 tags / removed variants). NOTE: distinct from the separate realmut-found md structural bugs
 (`1. ` empty marker, `## `/`- ` trailing-ws, leading-ws heading) — those remain queued.
+
+## Realmut-found Markdown structural fixes (B, real-corpus mutation fuzz)
+
+The real-corpus mutation fuzz (`harness/realmut.mjs`) — mutate real-graph blocks, run the
+differential — found that the parity floor IS reachable from realistic content (the data-
+grounded answer to "can it occur": you ground 'realistic' in real data and try to break it).
+Minimal-realistic probing confirmed 5 Markdown block-segmentation bug classes (distinct from
+the Tine gaps); all fixed in `parse.rs`, byte-exact from the oracle:
+- **Empty `*`/`+`/`N.` marker → Paragraph** (mldoc requires non-empty list content): `1. `,
+  `* `, `* [ ]` → Paragraph; a trailing empty marker ends a running list.
+- **Empty ATX heading / `-` bullet + trailing whitespace → `[node, paragraph(trailing ws)]`**:
+  the trailing-ws paragraph is exactly `line[trim_end_ws_len(line)..]`, started via the
+  accumulator so it lazily merges following lines (`## \nfoo`). Bare `#`/`-`/`- ##` stay single.
+- **Leading whitespace before `#` → Heading**, `level = 1 + ws-count` (no CommonMark ≤3 cap;
+  tab = 1): `  # h` → L3, `    # h` → L5. `heading_size` → leading-ws-aware `heading_at`.
+Verified: gate 765→798/798 0-diff (+33 `realmut-*` regression cases); 66 tests; realmut
+blockMismatch 588→512 (the 5 classes gone; residuals are aggressive-mutation artifacts);
+fuzz md 1.39% / org 4.86% unchanged; perf/stack pass; Tine-gap size/opener cases stay green.
+
+**Latent reachable bugs the audit surfaced (tracked, NOT yet fixed)** — next B targets:
+`-#x` (no space after `-`) bullet handling; `*`/`N.` list **content** keeps mldoc's `#`/task-
+marker prefix while lsdoc over-strips it; blank-line-inside-a-list splitting; and table-grouping
+/ directive nuances. The aggressive-mutation realmut residuals (wrap-in-emphasis, concat) are
+NOT reachable from minimal realistic edits and are not chased; the standing tripwire (next)
+will use a realistic-only mutation set.

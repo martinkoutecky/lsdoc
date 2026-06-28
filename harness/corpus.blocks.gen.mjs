@@ -135,6 +135,47 @@ add("bullet-open", "- # $$ x $$");           // size 1 + displayed_math
 add("bullet-open", "- # | a |");             // size 1 + table
 add("bullet-open", "- # [^1]: b");           // size 1, NO footnote split (inline ref)
 
+// real-corpus mutation-fuzz (realmut) structural fixes: empty markers, empty
+// heading/bullet trailing-whitespace splits, and leading whitespace before `#`.
+// mldoc requires non-empty list content; an empty ordered/`*`/`+` marker is a
+// Paragraph, not a List.
+add("realmut-empty-list", "1. ");           // → paragraph (empty ordered marker)
+add("realmut-empty-list", "3. ");
+add("realmut-empty-list", "1.");            // no space at all → paragraph
+add("realmut-empty-list", "1.  ");          // marker + only ws → paragraph
+add("realmut-empty-list", "* ");            // → paragraph
+add("realmut-empty-list", "+ ");
+add("realmut-empty-list", "* [ ]");         // checkbox but no title → paragraph
+add("realmut-empty-list", "1. [ ]");
+add("realmut-empty-list", "1. x\n2. ");     // trailing empty marker ends the list
+add("realmut-empty-list", "* a\n* ");
+// empty ATX heading with trailing whitespace → [heading, paragraph(trailing ws)].
+add("realmut-empty-head", "## ");
+add("realmut-empty-head", "# ");
+add("realmut-empty-head", "##  ");          // two trailing spaces in the paragraph
+add("realmut-empty-head", "# TODO ");       // marker on heading + ws split
+add("realmut-empty-head", "# [#A] ");       // priority on heading + ws split
+add("realmut-empty-head", "## \nfoo");      // trailing ws absorbs the next line
+// empty `-` bullet with trailing whitespace → [bullet, paragraph(trailing ws)].
+add("realmut-empty-bullet", "- ");
+add("realmut-empty-bullet", "-   ");
+add("realmut-empty-bullet", "- \t ");
+add("realmut-empty-bullet", "- ## ");       // size kept on the bullet, ws split
+add("realmut-empty-bullet", "- # ");
+add("realmut-empty-bullet", "- TODO ");     // marker on bullet + ws split
+add("realmut-empty-bullet", "- \nfoo");     // trailing ws absorbs the next line
+add("realmut-empty-bullet", "foo\n- ");     // paragraph + empty bullet + paragraph
+// leading whitespace before `#` is a heading (level = 1 + ws, uncapped, tab = 1).
+add("realmut-ws-heading", "  # heading");   // 2 spaces → level 3
+add("realmut-ws-heading", "   # heading");  // 3 spaces → level 4
+add("realmut-ws-heading", "    # heading"); // 4 spaces still a heading (no ≤3 rule)
+add("realmut-ws-heading", "\t# heading");   // tab → level 2
+add("realmut-ws-heading", " \t # heading"); // mixed ws → level 4
+add("realmut-ws-heading", "  ## x");        // leading ws + multi-hash
+add("realmut-ws-heading", "  ## ");         // leading ws + empty + trailing ws split
+add("realmut-ws-heading", "  - ");          // leading ws + empty bullet trailing split
+add("realmut-ws-heading", "foo\n  # bar");  // heading interrupts a paragraph
+
 // edge / empty
 add("edge", "");
 add("edge", "   ");

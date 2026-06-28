@@ -456,21 +456,186 @@
  },
  {
   "id": "b091",
+  "cat": "realmut-empty-list",
+  "input": "1. "
+ },
+ {
+  "id": "b092",
+  "cat": "realmut-empty-list",
+  "input": "3. "
+ },
+ {
+  "id": "b093",
+  "cat": "realmut-empty-list",
+  "input": "1."
+ },
+ {
+  "id": "b094",
+  "cat": "realmut-empty-list",
+  "input": "1.  "
+ },
+ {
+  "id": "b095",
+  "cat": "realmut-empty-list",
+  "input": "* "
+ },
+ {
+  "id": "b096",
+  "cat": "realmut-empty-list",
+  "input": "+ "
+ },
+ {
+  "id": "b097",
+  "cat": "realmut-empty-list",
+  "input": "* [ ]"
+ },
+ {
+  "id": "b098",
+  "cat": "realmut-empty-list",
+  "input": "1. [ ]"
+ },
+ {
+  "id": "b099",
+  "cat": "realmut-empty-list",
+  "input": "1. x\n2. "
+ },
+ {
+  "id": "b100",
+  "cat": "realmut-empty-list",
+  "input": "* a\n* "
+ },
+ {
+  "id": "b101",
+  "cat": "realmut-empty-head",
+  "input": "## "
+ },
+ {
+  "id": "b102",
+  "cat": "realmut-empty-head",
+  "input": "# "
+ },
+ {
+  "id": "b103",
+  "cat": "realmut-empty-head",
+  "input": "##  "
+ },
+ {
+  "id": "b104",
+  "cat": "realmut-empty-head",
+  "input": "# TODO "
+ },
+ {
+  "id": "b105",
+  "cat": "realmut-empty-head",
+  "input": "# [#A] "
+ },
+ {
+  "id": "b106",
+  "cat": "realmut-empty-head",
+  "input": "## \nfoo"
+ },
+ {
+  "id": "b107",
+  "cat": "realmut-empty-bullet",
+  "input": "- "
+ },
+ {
+  "id": "b108",
+  "cat": "realmut-empty-bullet",
+  "input": "-   "
+ },
+ {
+  "id": "b109",
+  "cat": "realmut-empty-bullet",
+  "input": "- \t "
+ },
+ {
+  "id": "b110",
+  "cat": "realmut-empty-bullet",
+  "input": "- ## "
+ },
+ {
+  "id": "b111",
+  "cat": "realmut-empty-bullet",
+  "input": "- # "
+ },
+ {
+  "id": "b112",
+  "cat": "realmut-empty-bullet",
+  "input": "- TODO "
+ },
+ {
+  "id": "b113",
+  "cat": "realmut-empty-bullet",
+  "input": "- \nfoo"
+ },
+ {
+  "id": "b114",
+  "cat": "realmut-empty-bullet",
+  "input": "foo\n- "
+ },
+ {
+  "id": "b115",
+  "cat": "realmut-ws-heading",
+  "input": "  # heading"
+ },
+ {
+  "id": "b116",
+  "cat": "realmut-ws-heading",
+  "input": "   # heading"
+ },
+ {
+  "id": "b117",
+  "cat": "realmut-ws-heading",
+  "input": "    # heading"
+ },
+ {
+  "id": "b118",
+  "cat": "realmut-ws-heading",
+  "input": "\t# heading"
+ },
+ {
+  "id": "b119",
+  "cat": "realmut-ws-heading",
+  "input": " \t # heading"
+ },
+ {
+  "id": "b120",
+  "cat": "realmut-ws-heading",
+  "input": "  ## x"
+ },
+ {
+  "id": "b121",
+  "cat": "realmut-ws-heading",
+  "input": "  ## "
+ },
+ {
+  "id": "b122",
+  "cat": "realmut-ws-heading",
+  "input": "  - "
+ },
+ {
+  "id": "b123",
+  "cat": "realmut-ws-heading",
+  "input": "foo\n  # bar"
+ },
+ {
+  "id": "b124",
   "cat": "edge",
   "input": ""
  },
  {
-  "id": "b092",
+  "id": "b125",
   "cat": "edge",
   "input": "   "
  },
  {
-  "id": "b093",
+  "id": "b126",
   "cat": "edge",
   "input": "\n\n"
  },
  {
-  "id": "b094",
+  "id": "b127",
   "cat": "edge",
   "input": "<div>raw html</div>"
  }
