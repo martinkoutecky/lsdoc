@@ -50,15 +50,21 @@ function skel(b) {
     if (k in b) o[k] = b[k];
   }
   if (b.children) o.children = b.children.map(skel);
-  if (b.items) o.items = b.items.map((it) => ({
-    ordered: it.ordered, number: it.number, indent: it.indent,
-    content: (it.content ?? []).map(skel), items: (it.items ?? []).map(skel),
-  }));
+  if (b.items) o.items = b.items.map(skelItem);
   if (b.kind === "table") {
     o.header = b.header ? b.header.length : null;
     o.rows = (b.rows ?? []).map((r) => r.length);
   }
   return o;
+}
+// A list item's structural skeleton: ordered/number/indent + block-shaped `content`
+// + recursively-nested `items` (list-items, recurse via skelItem — NOT skel). The
+// def-list term `name` is kept by the parent skel's key list when present.
+function skelItem(it) {
+  return {
+    ordered: it.ordered, number: it.number, indent: it.indent,
+    content: (it.content ?? []).map(skel), items: (it.items ?? []).map(skelItem),
+  };
 }
 const skels = (blocks) => (blocks ?? []).map(skel);
 

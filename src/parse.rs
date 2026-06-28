@@ -281,7 +281,7 @@ pub fn parse(input: &str) -> Vec<Block> {
                 }
             }
             out.push(Block::List {
-                items,
+                items: crate::projection::nest_items(items),
                 span: Some(Span(lines[start].start, lines[i - 1].end)),
             });
             continue;
@@ -1164,6 +1164,51 @@ mod tests {
             Block::Bullet { inline, .. } => assert_eq!(inline, &vec![Inline::Plain { text: ">".into() }]),
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn nested_md_lists() {
+        // Compact tree shape: "a[b,c]" = a with children b,c. Label = the item's
+        // first plain inline. Verifies mldoc's indent-folding (see `nest_items`).
+        fn label(it: &ListItem) -> String {
+            match &it.content[0] {
+                Block::Paragraph { inline, .. } => match inline.first() {
+                    Some(Inline::Plain { text }) => text.clone(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            }
+        }
+        fn shape(items: &[ListItem]) -> String {
+            items
+                .iter()
+                .map(|it| {
+                    if it.items.is_empty() {
+                        label(it)
+                    } else {
+                        format!("{}[{}]", label(it), shape(&it.items))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+        let items = |input: &str| -> Vec<ListItem> {
+            match &parse(input)[0] {
+                Block::List { items, .. } => items.clone(),
+                b => panic!("not a list: {b:?}"),
+            }
+        };
+        assert_eq!(shape(&items("* a\n  * b")), "a[b]");
+        assert_eq!(shape(&items("* a\n  * b\n    * c")), "a[b[c]]");
+        assert_eq!(shape(&items("* a\n * b")), "a[b]"); // any greater indent nests
+        assert_eq!(shape(&items("* a\n* b")), "a,b"); // equal indent → siblings
+        assert_eq!(shape(&items("+ a\n  + b")), "a[b]");
+        assert_eq!(shape(&items("1. a\n   2. b\n   3. c")), "a[b,c]"); // b,c siblings under a
+        assert_eq!(shape(&items("* a\n  1. b")), "a[b]"); // mixed un/ordered nests
+        assert_eq!(shape(&items("1. a\n   1. nested")), "a[nested]"); // the former b021
+        assert_eq!(shape(&items("* a\n  * b\n  * b2\n    * c")), "a[b,b2[c]]");
+        // mid (indent 2) unwinds past deep's run floor (4) → TOP sibling of a, not a child.
+        assert_eq!(shape(&items("* a\n    * deep\n  * mid")), "a[deep],mid");
     }
 
     #[test]

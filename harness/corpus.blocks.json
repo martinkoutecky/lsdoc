@@ -116,161 +116,211 @@
  },
  {
   "id": "b023",
+  "cat": "nest",
+  "input": "* a\n  * b"
+ },
+ {
+  "id": "b024",
+  "cat": "nest",
+  "input": "* a\n  * b\n    * c"
+ },
+ {
+  "id": "b025",
+  "cat": "nest",
+  "input": "* a\n * b"
+ },
+ {
+  "id": "b026",
+  "cat": "nest",
+  "input": "* a\n* b"
+ },
+ {
+  "id": "b027",
+  "cat": "nest",
+  "input": "+ a\n  + b"
+ },
+ {
+  "id": "b028",
+  "cat": "nest",
+  "input": "1. a\n   2. b\n   3. c"
+ },
+ {
+  "id": "b029",
+  "cat": "nest",
+  "input": "* a\n  1. b"
+ },
+ {
+  "id": "b030",
+  "cat": "nest",
+  "input": "1. a\n   1. nested"
+ },
+ {
+  "id": "b031",
+  "cat": "nest",
+  "input": "* a\n  * b\n  * b2\n    * c"
+ },
+ {
+  "id": "b032",
+  "cat": "nest",
+  "input": "* a\n    * deep\n  * mid"
+ },
+ {
+  "id": "b033",
   "cat": "code",
   "input": "```\ncode\n```"
  },
  {
-  "id": "b024",
+  "id": "b034",
   "cat": "code",
   "input": "```js\nlet x = 1\n```"
  },
  {
-  "id": "b025",
+  "id": "b035",
   "cat": "code",
   "input": "~~~\ntilde fence\n~~~"
  },
  {
-  "id": "b026",
+  "id": "b036",
   "cat": "code",
   "input": "```\nunclosed code"
  },
  {
-  "id": "b027",
+  "id": "b037",
   "cat": "code",
   "input": "```python\na\nb\nc\n```"
  },
  {
-  "id": "b028",
+  "id": "b038",
   "cat": "code",
   "input": "```\n[[NotARef]] #notag\n```"
  },
  {
-  "id": "b029",
+  "id": "b039",
   "cat": "code",
   "input": "    four space indent"
  },
  {
-  "id": "b030",
+  "id": "b040",
   "cat": "prop",
   "input": "key:: value"
  },
  {
-  "id": "b031",
+  "id": "b041",
   "cat": "prop",
   "input": "key:: value\nother:: 1"
  },
  {
-  "id": "b032",
+  "id": "b042",
   "cat": "prop",
   "input": "alias:: a, b, c"
  },
  {
-  "id": "b033",
+  "id": "b043",
   "cat": "prop",
   "input": "tags:: [[Foo]], [[Bar]]"
  },
  {
-  "id": "b034",
+  "id": "b044",
   "cat": "prop",
   "input": "key:: value\n\nnot a prop"
  },
  {
-  "id": "b035",
+  "id": "b045",
   "cat": "quote",
   "input": "> a quote"
  },
  {
-  "id": "b036",
+  "id": "b046",
   "cat": "quote",
   "input": "> line one\n> line two"
  },
  {
-  "id": "b037",
+  "id": "b047",
   "cat": "quote",
   "input": "#+BEGIN_QUOTE\nquoted\n#+END_QUOTE"
  },
  {
-  "id": "b038",
+  "id": "b048",
   "cat": "quote",
   "input": "#+BEGIN_NOTE\nnote body\n#+END_NOTE"
  },
  {
-  "id": "b039",
+  "id": "b049",
   "cat": "hr",
   "input": "---"
  },
  {
-  "id": "b040",
+  "id": "b050",
   "cat": "hr",
   "input": "***"
  },
  {
-  "id": "b041",
+  "id": "b051",
   "cat": "hr",
   "input": "___"
  },
  {
-  "id": "b042",
+  "id": "b052",
   "cat": "table",
   "input": "| a | b |\n| - | - |\n| 1 | 2 |"
  },
  {
-  "id": "b043",
+  "id": "b053",
   "cat": "table",
   "input": "| h1 | h2 | h3 |\n|---|---|---|\n| x | y | z |"
  },
  {
-  "id": "b044",
+  "id": "b054",
   "cat": "footnote",
   "input": "text[^1]\n\n[^1]: the definition"
  },
  {
-  "id": "b045",
+  "id": "b055",
   "cat": "para",
   "input": "line one\nline two"
  },
  {
-  "id": "b046",
+  "id": "b056",
   "cat": "para",
   "input": "para one\n\npara two"
  },
  {
-  "id": "b047",
+  "id": "b057",
   "cat": "para",
   "input": "a\nb\n\nc\nd"
  },
  {
-  "id": "b048",
+  "id": "b058",
   "cat": "mixed",
   "input": "# Title\n- bullet one\n- bullet two"
  },
  {
-  "id": "b049",
+  "id": "b059",
   "cat": "mixed",
   "input": "intro para\n\n## Section\n\n```js\ncode()\n```\n\nclosing"
  },
  {
-  "id": "b050",
+  "id": "b060",
   "cat": "mixed",
   "input": "- task\n  key:: value"
  },
  {
-  "id": "b051",
+  "id": "b061",
   "cat": "edge",
   "input": ""
  },
  {
-  "id": "b052",
+  "id": "b062",
   "cat": "edge",
   "input": "   "
  },
  {
-  "id": "b053",
+  "id": "b063",
   "cat": "edge",
   "input": "\n\n"
  },
  {
-  "id": "b054",
+  "id": "b064",
   "cat": "edge",
   "input": "<div>raw html</div>"
  }

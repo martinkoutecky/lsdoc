@@ -277,336 +277,384 @@
  },
  {
   "id": "o046",
+  "cat": "nest",
+  "input": "+ a\n  + b",
+  "format": "org"
+ },
+ {
+  "id": "o047",
+  "cat": "nest",
+  "input": "+ a\n  + b\n    + c",
+  "format": "org"
+ },
+ {
+  "id": "o048",
+  "cat": "nest",
+  "input": "+ a\n + b",
+  "format": "org"
+ },
+ {
+  "id": "o049",
+  "cat": "nest",
+  "input": "+ a\n+ b",
+  "format": "org"
+ },
+ {
+  "id": "o050",
+  "cat": "nest",
+  "input": "1. a\n   2. b",
+  "format": "org"
+ },
+ {
+  "id": "o051",
+  "cat": "nest",
+  "input": "1. a\n   2. b\n   3. c",
+  "format": "org"
+ },
+ {
+  "id": "o052",
+  "cat": "nest",
+  "input": "- a\n  1. b",
+  "format": "org"
+ },
+ {
+  "id": "o053",
+  "cat": "nest",
+  "input": "+ a\n    + deep\n  + mid",
+  "format": "org"
+ },
+ {
+  "id": "o054",
   "cat": "table",
   "input": "| a | b |\n|---+---|\n| 1 | 2 |",
   "format": "org"
  },
  {
-  "id": "o047",
+  "id": "o055",
   "cat": "fn",
   "input": "see [fn:1] ref",
   "format": "org"
  },
  {
-  "id": "o048",
+  "id": "o056",
   "cat": "fn",
   "input": "[fn:1] the definition",
   "format": "org"
  },
  {
-  "id": "o049",
+  "id": "o057",
   "cat": "misc",
   "input": "a plain paragraph\nsecond line",
   "format": "org"
  },
  {
-  "id": "o050",
+  "id": "o058",
   "cat": "misc",
   "input": "* parent\n** child with /em/ and [[link]]",
   "format": "org"
  },
  {
-  "id": "o051",
+  "id": "o059",
   "cat": "misc",
   "input": "",
   "format": "org"
  },
  {
-  "id": "o052",
+  "id": "o060",
   "cat": "misc",
   "input": "   ",
   "format": "org"
  },
  {
-  "id": "o053",
+  "id": "o061",
   "cat": "verbatim",
   "input": ": text",
   "format": "org"
  },
  {
-  "id": "o054",
+  "id": "o062",
   "cat": "verbatim",
   "input": ":text",
   "format": "org"
  },
  {
-  "id": "o055",
+  "id": "o063",
   "cat": "verbatim",
   "input": ": ",
   "format": "org"
  },
  {
-  "id": "o056",
+  "id": "o064",
   "cat": "verbatim",
   "input": ":",
   "format": "org"
  },
  {
-  "id": "o057",
+  "id": "o065",
   "cat": "verbatim",
   "input": ":  double",
   "format": "org"
  },
  {
-  "id": "o058",
+  "id": "o066",
   "cat": "verbatim",
   "input": ": a b  ",
   "format": "org"
  },
  {
-  "id": "o059",
+  "id": "o067",
   "cat": "verbatim",
   "input": ":key: value",
   "format": "org"
  },
  {
-  "id": "o060",
+  "id": "o068",
   "cat": "verbatim",
   "input": ":tag1:tag2:",
   "format": "org"
  },
  {
-  "id": "o061",
+  "id": "o069",
   "cat": "verbatim",
   "input": ":END:",
   "format": "org"
  },
  {
-  "id": "o062",
+  "id": "o070",
   "cat": "verbatim",
   "input": ":PROPERTIES:",
   "format": "org"
  },
  {
-  "id": "o063",
+  "id": "o071",
   "cat": "verbatim",
   "input": ": line1\n: line2\n: line3",
   "format": "org"
  },
  {
-  "id": "o064",
+  "id": "o072",
   "cat": "verbatim",
   "input": "  : indented",
   "format": "org"
  },
  {
-  "id": "o065",
+  "id": "o073",
   "cat": "verbatim",
   "input": ": text\n:NAME:\ncontent\n:END:",
   "format": "org"
  },
  {
-  "id": "o066",
+  "id": "o074",
   "cat": "verbatim",
   "input": ":PROPERTIES:\n:key: value\n:END:",
   "format": "org"
  },
  {
-  "id": "o067",
+  "id": "o075",
   "cat": "verbatim",
   "input": ":LOGBOOK:\nCLOCK: x\n:END:",
   "format": "org"
  },
  {
-  "id": "o068",
+  "id": "o076",
   "cat": "verbatim",
   "input": ":PROPERTIES:\n:a: 1\n:END:\n:more: stuff",
   "format": "org"
  },
  {
-  "id": "o069",
+  "id": "o077",
   "cat": "fndef",
   "input": "[fn:1]",
   "format": "org"
  },
  {
-  "id": "o070",
+  "id": "o078",
   "cat": "fndef",
   "input": "[fn:1]   ",
   "format": "org"
  },
  {
-  "id": "o071",
+  "id": "o079",
   "cat": "fndef",
   "input": "[fn:1] body",
   "format": "org"
  },
  {
-  "id": "o072",
+  "id": "o080",
   "cat": "fndef",
   "input": "[fn:1]body",
   "format": "org"
  },
  {
-  "id": "o073",
+  "id": "o081",
   "cat": "fndef",
   "input": "[fn:1]:x",
   "format": "org"
  },
  {
-  "id": "o074",
+  "id": "o082",
   "cat": "fndef",
   "input": "[fn:1]*x",
   "format": "org"
  },
  {
-  "id": "o075",
+  "id": "o083",
   "cat": "fndef",
   "input": "[fn:1]#x",
   "format": "org"
  },
  {
-  "id": "o076",
+  "id": "o084",
   "cat": "fndef",
   "input": "[fn:1][x",
   "format": "org"
  },
  {
-  "id": "o077",
+  "id": "o085",
   "cat": "fndef",
   "input": "[fn:1]-x",
   "format": "org"
  },
  {
-  "id": "o078",
+  "id": "o086",
   "cat": "fndef",
   "input": " [fn:1] body",
   "format": "org"
  },
  {
-  "id": "o079",
+  "id": "o087",
   "cat": "list-empty",
   "input": "+ ",
   "format": "org"
  },
  {
-  "id": "o080",
+  "id": "o088",
   "cat": "list-empty",
   "input": "- ",
   "format": "org"
  },
  {
-  "id": "o081",
+  "id": "o089",
   "cat": "list-empty",
   "input": "1. ",
   "format": "org"
  },
  {
-  "id": "o082",
+  "id": "o090",
   "cat": "list-empty",
   "input": "- [ ]",
   "format": "org"
  },
  {
-  "id": "o083",
+  "id": "o091",
   "cat": "list-empty",
   "input": "- [ ] x",
   "format": "org"
  },
  {
-  "id": "o084",
+  "id": "o092",
   "cat": "list-empty",
   "input": "+ x",
   "format": "org"
  },
  {
-  "id": "o085",
+  "id": "o093",
   "cat": "list-indent",
   "input": "  - x",
   "format": "org"
  },
  {
-  "id": "o086",
+  "id": "o094",
   "cat": "list-indent",
   "input": "  + y",
   "format": "org"
  },
  {
-  "id": "o087",
+  "id": "o095",
   "cat": "list-indent",
   "input": "  1. z",
   "format": "org"
  },
  {
-  "id": "o088",
+  "id": "o096",
   "cat": "table-bad",
   "input": "| a | b",
   "format": "org"
  },
  {
-  "id": "o089",
+  "id": "o097",
   "cat": "table-bad",
   "input": "|a",
   "format": "org"
  },
  {
-  "id": "o090",
+  "id": "o098",
   "cat": "table-bad",
   "input": "|",
   "format": "org"
  },
  {
-  "id": "o091",
+  "id": "o099",
   "cat": "table-bad",
   "input": "| a | b |",
   "format": "org"
  },
  {
-  "id": "o092",
+  "id": "o100",
   "cat": "table-bad",
   "input": "||",
   "format": "org"
  },
  {
-  "id": "o093",
+  "id": "o101",
   "cat": "table-bad",
   "input": "| a | b |\n| c | d",
   "format": "org"
  },
  {
-  "id": "o094",
+  "id": "o102",
   "cat": "directive",
   "input": "#+TITLE: hello  ",
   "format": "org"
  },
  {
-  "id": "o095",
+  "id": "o103",
   "cat": "directive",
   "input": "  #+TODO: x",
   "format": "org"
  },
  {
-  "id": "o096",
+  "id": "o104",
   "cat": "directive",
   "input": "#+a:b:c",
   "format": "org"
  },
  {
-  "id": "o097",
+  "id": "o105",
   "cat": "head-ws",
   "input": "*** ",
   "format": "org"
  },
  {
-  "id": "o098",
+  "id": "o106",
   "cat": "head-ws",
   "input": "* TODO ",
   "format": "org"
  },
  {
-  "id": "o099",
+  "id": "o107",
   "cat": "head-ws",
   "input": "*   ",
   "format": "org"
  },
  {
-  "id": "o100",
+  "id": "o108",
   "cat": "head-ws",
   "input": "* \nreal content",
   "format": "org"
  },
  {
-  "id": "o101",
+  "id": "o109",
   "cat": "head-ws",
   "input": "*** \n* B",
   "format": "org"

@@ -69,6 +69,17 @@ add("drawer", "* h\n:PROPERTIES:\n:id: x\n:END:");
 add("list", "- milk\n- eggs");
 add("list", "+ plus item");
 add("list", "1. first\n2. second");
+
+// nested org lists. NB: org `-` is a list item only at column 0, so an indented
+// `  - x` is NOT a list line (it can't nest); `+` and `N.` DO nest via indent.
+add("nest", "+ a\n  + b");                 // b nested under a
+add("nest", "+ a\n  + b\n    + c");        // a > b > c (3 levels)
+add("nest", "+ a\n + b");                  // 1-space indent still nests
+add("nest", "+ a\n+ b");                   // equal indent → siblings
+add("nest", "1. a\n   2. b");             // numbered nests
+add("nest", "1. a\n   2. b\n   3. c");     // b,c siblings under a
+add("nest", "- a\n  1. b");               // `-` parent (col0) + numbered child
+add("nest", "+ a\n    + deep\n  + mid");   // mid (indent 2) is a TOP sibling of a
 add("table", "| a | b |\n|---+---|\n| 1 | 2 |");
 
 // footnotes

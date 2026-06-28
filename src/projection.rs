@@ -172,11 +172,63 @@ pub struct ListItem {
     pub number: Option<u32>,
     pub indent: u32,
     pub content: Vec<Block>,
-    pub items: Vec<Block>,
+    /// Nested child items (mldoc nests a deeper-indented item into the preceding
+    /// item's `items` sub-array). Built by `nest_items` from the flat line sequence.
+    pub items: Vec<ListItem>,
     /// Markdown definition-list term (`term\n: def` → item `name`). Empty for all
     /// other list items (mldoc emits `name: []`, cleaned away on both sides).
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub name: Vec<Inline>,
+}
+
+/// Fold a flat, in-order sequence of list items (each carrying its `indent`, `items`
+/// empty) into mldoc's nested tree. Rule, verified against mldoc over 40k random
+/// md+org inputs: an item's children are the maximal following run whose indent is
+/// **≥ the FIRST child's indent**; a shallower item unwinds the stack fully (it may
+/// rejoin an ancestor's run or become a top-level sibling). E.g. `a(0) deep(4) mid(2)`
+/// → `mid` is a top-level sibling of `a` (NOT a child), because `mid`'s indent (2) is
+/// below `deep`'s child-run floor (4). Iterative (explicit stack), single-pass O(n),
+/// no recursion — deep nesting can't overflow the stack.
+pub fn nest_items(flat: Vec<ListItem>) -> Vec<ListItem> {
+    struct Frame {
+        item: ListItem,
+        children: Vec<ListItem>,
+        child_min_indent: u32,
+    }
+    let n = flat.len();
+    let indents: Vec<u32> = flat.iter().map(|it| it.indent).collect();
+    let mut roots: Vec<ListItem> = Vec::new();
+    let mut stack: Vec<Frame> = Vec::new();
+
+    let push_done = |item: ListItem, stack: &mut Vec<Frame>, roots: &mut Vec<ListItem>| {
+        match stack.last_mut() {
+            Some(parent) => parent.children.push(item),
+            None => roots.push(item),
+        }
+    };
+
+    for (i, mut cur) in flat.into_iter().enumerate() {
+        // Close frames whose child-run `cur` is too shallow to join.
+        while stack.last().is_some_and(|top| cur.indent < top.child_min_indent) {
+            let f = stack.pop().unwrap();
+            let mut done = f.item;
+            done.items = f.children;
+            push_done(done, &mut stack, &mut roots);
+        }
+        cur.items = Vec::new();
+        if i + 1 < n && indents[i + 1] > cur.indent {
+            // `cur` opens a child run floored at the next item's indent.
+            stack.push(Frame { item: cur, children: Vec::new(), child_min_indent: indents[i + 1] });
+        } else {
+            push_done(cur, &mut stack, &mut roots);
+        }
+    }
+    while let Some(f) = stack.pop() {
+        let mut done = f.item;
+        done.items = f.children;
+        push_done(done, &mut stack, &mut roots);
+    }
+    roots
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

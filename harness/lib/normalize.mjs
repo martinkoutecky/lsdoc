@@ -65,6 +65,17 @@ export function normInline(seg) {
 
 // ---- block ----------------------------------------------------------------
 
+// One list item: block-shaped `content`, recursively-nested `items` (list-items,
+// NOT blocks), and the def-list `name` (inline term). Matches lsdoc's ListItem.
+export function normItem(it) {
+  return {
+    ordered: it.ordered, number: it.number, indent: it.indent,
+    content: (it.content ?? []).map(normNode),
+    items: (it.items ?? []).map(normItem),
+    name: (it.name ?? []).map(normInline),
+  };
+}
+
 export function normNode(node) {
   if (!Array.isArray(node)) return { kind: "raw", v: node };
   const t = node[0];
@@ -83,15 +94,12 @@ export function normNode(node) {
       return b;
     }
     case "List": {
-      // ordered/explicit list: array of items, each with block content + sub-items.
-      // `name` carries the markdown definition-list term (empty for normal items).
-      const items = (node[1] ?? []).map((it) => ({
-        ordered: it.ordered, number: it.number, indent: it.indent,
-        content: (it.content ?? []).map(normNode),
-        items: (it.items ?? []).map(normNode),
-        name: (it.name ?? []).map(normInline),
-      }));
-      return { kind: "list", items };
+      // ordered/explicit list: array of items, each with block content + NESTED
+      // sub-items (mldoc folds a deeper-indented item into the preceding item's
+      // `items` sub-array). `content` is block-shaped (normNode); `items` are
+      // list-items (recurse via normItem, NOT normNode). `name` carries the markdown
+      // definition-list term (empty for normal items).
+      return { kind: "list", items: (node[1] ?? []).map(normItem) };
     }
     case "Src": {
       const s = node[1] ?? {};
@@ -167,23 +175,26 @@ export function cleanInlines(arr) {
   return out;
 }
 
+// Clean one list item: block-shaped `content`, recursively-nested `items` (list-items,
+// cleaned as items — NOT blocks), and the def-list term `name` (dropped when empty,
+// since mldoc emits `name: []` for every non-def item while lsdoc omits it).
+function cleanItem(it) {
+  const cleaned = {
+    ...it,
+    content: (it.content ?? []).map(cleanBlock),
+    items: (it.items ?? []).map(cleanItem),
+  };
+  const name = cleanInlines(it.name ?? []);
+  if (name.length) cleaned.name = name;
+  else delete cleaned.name;
+  return cleaned;
+}
+
 export function cleanBlock(b) {
   if (!b || typeof b !== "object") return b;
   if (b.inline) b.inline = cleanInlines(b.inline);
   if (b.children) b.children = b.children.map(cleanBlock);
-  if (b.items) b.items = b.items.map((it) => {
-    const cleaned = {
-      ...it,
-      content: (it.content ?? []).map(cleanBlock),
-      items: (it.items ?? []).map(cleanBlock),
-    };
-    // The definition-list term `name`: clean its inlines and drop it when empty
-    // (mldoc emits `name: []` for every non-def item; lsdoc omits it). Mirrors labels.
-    const name = cleanInlines(it.name ?? []);
-    if (name.length) cleaned.name = name;
-    else delete cleaned.name;
-    return cleaned;
-  });
+  if (b.items) b.items = b.items.map(cleanItem);
   // Table cells carry the same cosmetic empty-Plain noise (mldoc emits a `[Plain ""]`
   // for an empty cell `||`; lsdoc emits `[]`) — clean each cell the same way.
   if (b.kind === "table") {

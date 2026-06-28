@@ -306,7 +306,10 @@ pub fn parse(input: &str) -> Vec<Block> {
                     break;
                 }
             }
-            out.push(Block::List { items, span: Some(Span(lines[start].start, lines[i - 1].end)) });
+            out.push(Block::List {
+                items: crate::projection::nest_items(items),
+                span: Some(Span(lines[start].start, lines[i - 1].end)),
+            });
             absorb = true;
             continue;
         }
@@ -2311,6 +2314,47 @@ mod tests {
             Block::List { items, .. } => assert_eq!(items[0].indent, 2),
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn nested_org_lists() {
+        // Compact tree shape "a[b,c]" (a with children b,c); see `nest_items`. Org
+        // `-` nests only as a col-0 sibling/parent; `+` and `N.` nest via indent.
+        fn label(it: &ListItem) -> String {
+            match &it.content[0] {
+                Block::Paragraph { inline, .. } => match inline.first() {
+                    Some(Inline::Plain { text }) => text.clone(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            }
+        }
+        fn shape(items: &[ListItem]) -> String {
+            items
+                .iter()
+                .map(|it| {
+                    if it.items.is_empty() {
+                        label(it)
+                    } else {
+                        format!("{}[{}]", label(it), shape(&it.items))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+        let items = |input: &str| -> Vec<ListItem> {
+            match &parse(input)[0] {
+                Block::List { items, .. } => items.clone(),
+                b => panic!("not a list: {b:?}"),
+            }
+        };
+        assert_eq!(shape(&items("+ a\n  + b")), "a[b]");
+        assert_eq!(shape(&items("+ a\n  + b\n    + c")), "a[b[c]]");
+        assert_eq!(shape(&items("+ a\n + b")), "a[b]");
+        assert_eq!(shape(&items("+ a\n+ b")), "a,b");
+        assert_eq!(shape(&items("1. a\n   2. b\n   3. c")), "a[b,c]");
+        assert_eq!(shape(&items("- a\n  1. b")), "a[b]"); // col-0 `-` parent + numbered child
+        assert_eq!(shape(&items("+ a\n    + deep\n  + mid")), "a[deep],mid");
     }
 
     #[test]

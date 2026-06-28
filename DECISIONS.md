@@ -95,18 +95,13 @@ targets) and verifies them with its own unit tests — just not against this ora
 ## Intentional deviations from mldoc (allowlist)
 
 Tracked in `harness/allowlist.json` (id + reason); `compare.mjs` excludes these
-from diff counts but still reports them. **The original allowlist family was
-eliminated** (2026-06-28, Martin-approved) — LaTeX entities/environments
-(`m054`/`m056`/`m089`), markdown definition lists (`m135`), and the bullet-line /
-bullet-prefix block constructs (`c047`/`m096`/`m097`/`m114`/`m115`/`m116`) are now
-matched (rules below). Current entries:
-
-- **`b021`** — a nested ordered list via markdown indentation
-  (`1. a\n   1. nested`): mldoc folds the nested item into the parent's sub-items
-  (normalizes to a `raw` node); lsdoc emits two flat items. Logseq nests via
-  outline bullets, not markdown list indentation. Revisit if a real graph needs it.
-  (Distinct family from the eliminated bullet-line cases — the divergence is in how
-  mldoc *re-nests* indented numbered items, not in detecting a block construct.)
+from diff counts but still reports them. **The allowlist is now EMPTY** (`[]`):
+the original family was eliminated 2026-06-28 (Martin-approved) — LaTeX
+entities/environments (`m054`/`m056`/`m089`), markdown definition lists (`m135`),
+and the bullet-line / bullet-prefix block constructs
+(`c047`/`m096`/`m097`/`m114`/`m115`/`m116`) — and the last entry, `b021`
+(indented-numbered-list re-nesting), was resolved by implementing real list nesting
+(rule below). There are no remaining intentional deviations.
 
 ## LaTeX entities + environments (Markdown AND Org; replicated from `entity.ml` / `latex_env.ml`)
 
@@ -148,6 +143,31 @@ matched (rules below). Current entries:
   (`intro\nterm\n: def` → `Paragraph[intro]` + def-list). Implemented in `parse.rs`
   (`is_def_opener`/`is_def_continuation`/`build_def_list`); Org `: def` stays an
   `Example` (untouched).
+
+## Nested lists (Markdown AND Org; replicated from `lists.ml`)
+
+- A `List` node's items are a **tree**, not a flat sequence: mldoc folds a
+  deeper-indented item into the preceding item's `items` sub-array (`ListItem.items:
+  Vec<ListItem>`, projection key `items`). This applies to the `List`-node path only
+  — md `*`/`+`/`N.` and org `-`(col-0)/`+`/`N.`; md `-` dash bullets stay flat
+  `Heading{unordered}` blocks with `level = 1 + indent` (unchanged).
+- **Fold rule** (verified against mldoc over 40k random md+org inputs, `nest_items` in
+  `projection.rs`): the block segmenter first collects the maximal run of consecutive
+  list lines into a flat `(indent, item)` sequence (indentation differences do **not**
+  break the group); `nest_items` then folds it. An item's **children are the maximal
+  following run whose indent is ≥ the FIRST child's indent**; any strictly-greater
+  indent nests (no fixed step — `* a\n * b` with one space nests). A shallower item
+  **unwinds the stack fully**: it rejoins the nearest ancestor run it fits, else
+  becomes a top-level sibling. The discriminating case is `* a\n    * deep\n  * mid`
+  → `deep`(4) is a child of `a`(0), but `mid`(2) is a **top-level sibling of `a`**
+  (not a child), because `mid`'s indent is below `deep`'s child-run floor (4) — a
+  plain indent-stack would wrongly make `mid` a child of `a`. Equal indents under the
+  same parent are siblings; mixed ordered/unordered types nest fine.
+- Implemented **iteratively** (explicit frame stack, no recursion), single-pass O(n),
+  so a pathological deeply-indented list can't overflow the stack. `normalize.mjs`
+  (`normItem`/`cleanItem`), `compare.mjs` (`skelItem`) and `refs.rs`
+  (`walk_list_item`, which also walks the def-list `name`) recurse the nested items
+  as items — matching the oracle's generic deep AST walk.
 
 ## Block construct on a `-` bullet line (Markdown; replicated from `heading0.ml`)
 
@@ -344,10 +364,11 @@ dedup against `corpus.json`/`corpus.blocks.json`.
   - **Timestamp repeater** (`+1m`/`++2w`/`.+1d`) parsed into mldoc's
     `repetition:[[kind],[duration],n]` JSON.
 
-  The LaTeX entity/environment, markdown definition-list, and bullet-line block
-  constructs that were once allowlisted here are now matched (see the dedicated rule
-  sections above). The only remaining allowlisted markdown deviation is `b021`
-  (indented numbered-list re-nesting). No `refs` or `block-struct` diffs remain.
+  The LaTeX entity/environment, markdown definition-list, bullet-line block
+  constructs, and indented-numbered-list re-nesting (`b021`) that were once
+  allowlisted here are now matched (see the dedicated rule sections above). The
+  **allowlist is empty** — no markdown deviations remain. No `refs` or `block-struct`
+  diffs remain.
 
 ## M6 Org-mode (replicated from the oracle + mldoc 1.5.7 source)
 
@@ -363,8 +384,9 @@ untouched (md gate stays 0-diff). Two inline nodes were added in lockstep to
 drawer → headline → table → latex-env → fenced/`#+BEGIN`/verbatim/quote/`$$`/raw-html
 block → footnote → list → hr → paragraph. Org `~/research/org-graph` (16 real `.org`) +
 53 hand-written + 25 mined `test_org.ml` inputs all reach **0 diffs** (refs +
-block-struct + blocks-full); **no new allowlist entries** (the sole remaining
-allowlisted case, `b021`, is Markdown).
+block-struct + blocks-full); **the allowlist is empty** (`b021` was resolved by the
+nested-list rule). Org `+`/`N.` lists nest via indentation like Markdown; org `-`
+nests only as a column-0 sibling/parent (an indented `  - x` is not a list line).
 
 ### Block rules
 - **Headline** `*{n}` at column 0 + space/EOL → `Bullet{level:n}` (mldoc
@@ -526,7 +548,6 @@ per SPEC §5 — it is documented, not chased and not allowlisted:
   unlike a Paragraph). Matching that exact predicate is binding to mldoc internals; lsdoc
   keeps the single-line footnote def. (~15/20k.)
 
-No new allowlist entries (the sole remaining case, `b021`, is Markdown); the real org
-graph + hand-written + mined corpora stay at 0-diff with 49 new `o###` fuzz regressions
-added.
+No allowlist entries (the allowlist is empty); the real org graph + hand-written +
+mined corpora stay at 0-diff with 49 new `o###` fuzz regressions added.
 `node fuzz-split.mjs N seed org` is the kept diagnostic (structural vs inline-soup).

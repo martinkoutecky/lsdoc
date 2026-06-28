@@ -39,6 +39,19 @@ add("list", "3. starts at three");
 add("list", "1. a\n   1. nested ordered");
 add("list", "1. a\n- mixed bullet");
 
+// nested lists (mldoc folds a deeper-indented item into the preceding item's
+// `items` sub-array; any strictly-greater indent nests, no fixed step).
+add("nest", "* a\n  * b");                 // b nested under a
+add("nest", "* a\n  * b\n    * c");        // a > b > c (3 levels)
+add("nest", "* a\n * b");                  // 1-space indent still nests
+add("nest", "* a\n* b");                   // equal indent → siblings
+add("nest", "+ a\n  + b");                 // `+` nests too
+add("nest", "1. a\n   2. b\n   3. c");     // b,c siblings, both children of a
+add("nest", "* a\n  1. b");               // mixed unordered/ordered nests
+add("nest", "1. a\n   1. nested");        // the former b021 (indented numbered)
+add("nest", "* a\n  * b\n  * b2\n    * c"); // a > [b, b2 > [c]]
+add("nest", "* a\n    * deep\n  * mid");   // mid (indent 2) is a TOP sibling of a, not a child
+
 // code fences (mldoc → Src)
 add("code", "```\ncode\n```");
 add("code", "```js\nlet x = 1\n```");

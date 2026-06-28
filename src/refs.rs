@@ -8,7 +8,7 @@
 //! With the M1 stub parser (plain text only) this returns empty; it produces real
 //! signal once the parser emits links/tags/macros (M4).
 
-use crate::projection::{Block, Inline, Refs, Url};
+use crate::projection::{Block, Inline, ListItem, Refs, Url};
 
 pub fn extract_refs(blocks: &[Block]) -> Refs {
     let mut page = Vec::new();
@@ -36,12 +36,7 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>) {
         }
         Block::List { items, .. } => {
             for it in items {
-                for c in &it.content {
-                    walk_block(c, page, block);
-                }
-                for c in &it.items {
-                    walk_block(c, page, block);
-                }
+                walk_list_item(it, page, block);
             }
         }
         Block::Table { header, rows, .. } => {
@@ -73,6 +68,19 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>) {
         | Block::Drawer { .. }
         | Block::Directive { .. }
         | Block::Example { .. } => {}
+    }
+}
+
+/// Walk a list item's def-list term `name`, its block content, and (recursively) its
+/// nested child items — mirroring the oracle's generic deep walk over the AST (which
+/// recurses into every `name`/`content`/`items` field). See `harness/lib/refs.mjs`.
+fn walk_list_item(it: &ListItem, page: &mut Vec<String>, block: &mut Vec<String>) {
+    walk_inlines(&it.name, page, block);
+    for c in &it.content {
+        walk_block(c, page, block);
+    }
+    for sub in &it.items {
+        walk_list_item(sub, page, block);
     }
 }
 
