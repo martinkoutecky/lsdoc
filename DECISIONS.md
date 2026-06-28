@@ -118,8 +118,99 @@ close, else paragraph) → `Src`; `>` → `Quote`; `#+BEGIN_X…#+END_X` → `Qu
 (incl. blank lines) coalesces into one `Paragraph`. M2 gate = `block-struct`
 (kind/level/nesting/props), which ignores inline content + spans.
 
+## M3/M4 inline rules (replicated from the oracle + mldoc 1.5.7 source)
+
+The inline parser (`src/inline.rs`) is a single left-to-right byte scanner whose
+dispatch mirrors mldoc's `inline_choices` (`lib/syntax/inline.ml`, verified against
+the live oracle). On the first byte we pick the one construct mldoc would try; on
+failure we fall back to a *plain run*. A marker byte (`* _ ^ [ ~ \` = $ #`) whose
+construct fails is emitted as one literal char; an ordinary dispatch byte
+(`< { ! @ (`) whose construct fails is swallowed into the following plain run
+(they are not `plain` delimiters in mldoc) — this is why `(https://a.com)` stays
+plain but `see https://a.com` links.
+
+Constructs handled (parity verified): plain, break (`\n`), hard break (`>=2`
+trailing spaces + `\n`), inline code (single `` ` `` and double `` `` `` incl.
+*empty* `` `````` ``), emphasis, page refs `[[…]]`, nested links `[[ …[[ ]]… ]]`,
+markdown links/images `[l](u)` / `![l](u)` (incl. block-ref `[l](((uuid)))`,
+page-ref, file `.md`/`.markdown`, complex `proto://`, search), bare URLs,
+autolinks `<scheme:…>`, email `<a@b>`, inline HTML, tags `#…` / `#[[…]]`, block
+refs `((…))`, macros `{{…}}` / `{{{…}}}`, latex `$…$` / `$$…$$` / `\(…\)` /
+`\[…\]`, timestamps (`<date>`, ranges, `SCHEDULED:`/`DEADLINE:`/`CLOSED:`),
+footnote refs `[^id]`, escapes.
+
+Quirks worth knowing (all matched):
+- **Emphasis is NOT a CommonMark delimiter stack.** mldoc is recursive-descent
+  `between_string`: an opener matches the *first later* valid closer of the same
+  marker; content is flat, then re-parsed for nesting. Dispatch tries `***`/`**`/`*`
+  (and `___`/`__`/`_`) longest-first; `***x***` → `Italic[Bold[x]]`. Left-flank =
+  marker followed by non-whitespace; close = byte before non-whitespace; `_`/`__`
+  additionally require the byte *before the opener* and *after the closer* to be an
+  ASCII-punct/whitespace delimiter (so `snake_case`, `a_b_c` are NOT italic). The
+  first-opener-wins rule gives `*a *b* c*` → `Italic["a *b"] + " c*"` (not the
+  CommonMark inner pairing). Empty content is rejected (`d**e` stays plain).
+- **Emphasis spans newlines** (mldoc `whitespace_chars` include `\n`), but the `\n`
+  is captured as literal plain text inside the emphasis (no `Break` node).
+- **Inside emphasis** only emphasis, links/page-refs, sub/sup, code and plain are
+  recognized — NOT tags, block-refs, macros, latex, bare URLs, images (`==#tag==`
+  keeps `#tag` plain; `**[[Foo]]**` keeps the ref).
+- **Code precedence:** at `` ` `` mldoc tries single-backtick first, then double
+  (`` `` ``). `` ```[[Foo]]``` `` → `Code "`[[Foo]]"` + `` ` `` (double consumes 2,
+  the 3rd is content). Refs never leak out of code; the emphasis closer-search skips
+  code spans.
+- **Backslash escapes** drop the backslash and make the char literal: `\[[a]]` →
+  `[[a]]` (no ref), `\#tag`, `\((u))`, `` \` `` are plain; `\\` → one `\`;
+  `\<letter>+` (entity) → the letters; a `\` before a non-escapable char is kept.
+  Extracted **values** (page/block-ref names, tag text, URL links) are additionally
+  *unescaped* (`\X`→`X` for ASCII punct) while `full_text` stays raw — matching
+  mldoc's transform; this affects the OG ref set.
+- **Page ref** `[[…]]`: ends at the first `]]`, single `]` allowed inside, no
+  newline, non-empty (`[[]]` is plain). `[[name]]` precedence is page-ref *before*
+  markdown link, so `[[Foo](bar)]]` → Page_ref "Foo](bar)".
+- **Link labels** are parsed by a restricted grammar (emphasis/code/latex only,
+  consume-all-or-keep-plain): `[a *b* c](u)` keeps `a *b* c` plain, `[**b**](u)`
+  bolds, `[#tag](u)`/`[[[x]]](u)` keep the tag/ref as plain label text.
+- **Bare URL tail** (after `/`?`#`) stops only at whitespace or an unmatched `)`/`]`
+  (balancing `()`/`[]`), keeps `< > { }`, and drops a trailing `,;.!?` that precedes
+  whitespace/EOL. The host part stops at the inline-link delimiters `[]<>{}()`.
+- **Tags:** charset is byte-wise non-space, excluding `,;.!?'":#` and `[` (which
+  starts a `[[page]]` child); `.`/`;` are kept mid-name but stripped when trailing
+  before whitespace/EOL. Unicode/emoji/glued (`c#sharp`→`sharp`) all tag.
+- **Macros:** name = up to `}`/`(`/space; args split on `,` with each arg being a
+  nested-link / page-ref / `((…))` / `"…"` / run-to-comma; if the args don't fully
+  consume, the whole macro fails and re-parses as plain + inner refs
+  (`{{embed [[Foo]] ((uuid))}}` → plain + page ref + block ref).
+- **Block-layer title stripping** (in `parse.rs`, the only block changes besides
+  calling `parse_inline`): heading/bullet titles strip a leading `#{1,n} ` (heading
+  in a bullet), then a task **marker** (`TODO `/`DOING `/… ) and **priority**
+  (`[#A]`); `*`/`+`/`N.` *list* items also strip a leading checkbox `[ ]`/`[x]`
+  (mldoc lists0) — but `-` bullets do NOT. Quote `>` lines are de-prefixed and
+  re-parsed as nested blocks; a `Src` swallows trailing blank lines.
+
 ## Complexity decisions
 
-_(per-phase complexity recorded here as phases land; target: nothing worse than
-O(n log n) without justification. Emphasis resolution uses a single-pass
-delimiter-stack algorithm, not recursive backtracking.)_
+- **Block segmentation** (`parse.rs`): O(n), one line scan; fences pre-paired.
+- **Inline parse** (`inline.rs`): O(n) amortized. Plain runs, code spans, page/block
+  refs, bare URLs and bracket-balanced scans each cover disjoint regions. Emphasis
+  uses a forward closer-search per opener bounded by a per-pattern **no-closer
+  cache** (once a marker is proven to have no closer ahead, later openers of that
+  marker short-circuit), and the open-run length is measured capped at 3 — so even
+  `*`×10⁵ or `*a `×n is linear, not O(n²). Runs of unmatched `[` / `(` / `{` are kept
+  linear by a monotone **closer-absent cache** (`]]`/`](`/`))`/`}}`), since a 2-byte
+  closer absent from position p is absent from every later position. Adversarial
+  perf is unit-tested (`inline::tests::adversarial_runs_terminate`, <0.2s). No phase
+  is worse than O(n log n).
+- Emphasis is single-pass (no recursive trial-and-error / backtracking); matched
+  content is re-parsed once on a strictly-smaller substring (bounded by nesting
+  depth), never re-scanned on failure.
+
+## Differential fuzzer (M5 seed)
+
+`harness/fuzz.mjs` generates biased-random markdown (adversarial token alphabet),
+runs both mldoc and lsdoc, and diffs the projection. No panics over 8k+ inputs
+(byte-safety holds on café/中文/😀/zero-width). Residual fuzz-only divergences are
+all (a) block-segmenter edge cases deliberately out of M3/M4 scope (lone `>`, bare
+`-\n`, loose property/`$$` detection) or (b) deep adversarial bracket/emphasis/macro
+nesting in random soup that does not occur in real content (the realism corpus —
+`~/research/tine-test` + kitchen-sink — is in the gate and passes 0-diff). Not
+allowlisted: they are not gate inputs.

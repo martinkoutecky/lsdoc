@@ -172,6 +172,12 @@ pub enum Inline {
     Timestamp { ts: String, date: serde_json::Value },
     #[serde(rename = "fnref")]
     Fnref { name: String },
+    /// Inline raw HTML, e.g. `<span class="x">…</span>` (mldoc `Inline_Html`).
+    #[serde(rename = "inline_html")]
+    InlineHtml { text: String },
+    /// Email autolink `<a@b.com>` (mldoc `Email`); payload is the raw address obj.
+    #[serde(rename = "email")]
+    Email { text: serde_json::Value },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

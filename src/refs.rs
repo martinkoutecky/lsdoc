@@ -56,8 +56,16 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>) {
                 }
             }
         }
+        Block::Properties { props, .. } => {
+            // mldoc stores each property's value as a parsed inline list (the AST's
+            // 3rd tuple element), which OG's block.cljs walks for refs. Re-parse each
+            // value to recover those page/block refs (e.g. `tags:: [[Foo]], Bar`).
+            for (_k, v) in props {
+                let inl = crate::inline::parse_inline(v);
+                walk_inlines(&inl, page, block);
+            }
+        }
         Block::Src { .. }
-        | Block::Properties { .. }
         | Block::Hr { .. }
         | Block::RawHtml { .. }
         | Block::DisplayedMath { .. }

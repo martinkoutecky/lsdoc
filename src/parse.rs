@@ -47,12 +47,19 @@ pub fn parse(input: &str) -> Vec<Block> {
             } else {
                 String::new()
             };
+            i = *close + 1;
+            // mldoc's Src swallows trailing blank lines (so they don't become a
+            // leading break on the following paragraph). Spans are not compared.
+            let mut end = lines[*close].end;
+            while i < lines.len() && lines[i].text.is_empty() {
+                end = lines[i].end;
+                i += 1;
+            }
             out.push(Block::Src {
                 lang: lang.clone(),
                 code,
-                span: Some(Span(line.start, lines[*close].end)),
+                span: Some(Span(line.start, end)),
             });
-            i = *close + 1;
             continue;
         }
 
@@ -84,7 +91,7 @@ pub fn parse(input: &str) -> Vec<Block> {
             out.push(Block::Heading {
                 level: 1,
                 size: Some(size),
-                inline: stub_inline(t),
+                inline: stub_inline(strip_markers(t[size as usize..].trim_start())),
                 span: Some(Span(line.start, line.end)),
             });
             i += 1;
@@ -104,7 +111,7 @@ pub fn parse(input: &str) -> Vec<Block> {
             flush_para(&mut out, &mut para, input);
             out.push(Block::Bullet {
                 level,
-                inline: stub_inline(t),
+                inline: stub_inline(bullet_title(t)),
                 span: Some(Span(line.start, line.end)),
             });
             i += 1;
@@ -112,11 +119,11 @@ pub fn parse(input: &str) -> Vec<Block> {
         }
 
         // 6. footnote definition
-        if let Some(fname) = footnote_def_name(t) {
+        if let Some((fname, content)) = footnote_def(t) {
             flush_para(&mut out, &mut para, input);
             out.push(Block::FootnoteDef {
                 name: fname,
-                inline: stub_inline(t),
+                inline: stub_inline(content),
                 span: Some(Span(line.start, line.end)),
             });
             i += 1;
@@ -175,19 +182,19 @@ pub fn parse(input: &str) -> Vec<Block> {
             continue;
         }
 
-        // 10. quote (group of consecutive `>` lines, indentation tolerated)
+        // 10. quote (group of consecutive `>` lines, indentation tolerated). mldoc
+        // strips the `>` (+ one space) prefix and parses the body as nested blocks.
         if t.trim_start().starts_with('>') {
             flush_para(&mut out, &mut para, input);
             let start = i;
+            let mut body = String::new();
             while i < lines.len() && lines[i].text.trim_start().starts_with('>') {
+                body.push_str(strip_quote_prefix(lines[i].text));
+                body.push('\n');
                 i += 1;
             }
-            let body = input[lines[start].start..lines[i - 1].end].to_string();
             out.push(Block::Quote {
-                children: vec![Block::Paragraph {
-                    inline: stub_inline(&body),
-                    span: None,
-                }],
+                children: parse(&body),
                 span: Some(Span(lines[start].start, lines[i - 1].end)),
             });
             continue;
@@ -253,13 +260,81 @@ fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &s
 }
 
 fn stub_inline(s: &str) -> Vec<Inline> {
-    // M2 placeholder; M3 replaces with the real inline parser. (Ignored by the
-    // block-struct gate.)
-    if s.is_empty() {
-        vec![]
+    // The real inline parser (M3/M4). Name kept for the existing call sites.
+    crate::inline::parse_inline(s)
+}
+
+/// mldoc heading/bullet task markers (`Heading0.marker`), stripped from the title.
+const MARKERS: &[&str] = &[
+    "TODO",
+    "DOING",
+    "WAITING",
+    "WAIT",
+    "DONE",
+    "CANCELED",
+    "CANCELLED",
+    "STARTED",
+    "IN-PROGRESS",
+    "NOW",
+    "LATER",
+];
+
+/// Title text of an ATX-ish bullet/heading content: strip a leading `#{1,n} ` run
+/// (mldoc parses a heading inside a bullet, e.g. `- ## X` → bullet titled `X`), then
+/// a leading task marker (`TODO `…) and priority (`[#A]`), matching mldoc's
+/// `level *> marker *> priority *> title` order.
+fn strip_atx(s: &str) -> &str {
+    let hashes = s.bytes().take_while(|&b| b == b'#').count();
+    let s = if hashes > 0 {
+        let after = &s[hashes..];
+        if after.starts_with(' ') || after.starts_with('\t') {
+            after.trim_start()
+        } else {
+            s
+        }
     } else {
-        vec![Inline::Plain { text: s.to_string() }]
+        s
+    };
+    strip_markers(s)
+}
+
+/// Strip a leading task marker (followed by a space) and priority `[#X]`.
+fn strip_markers(s: &str) -> &str {
+    let mut s = s;
+    for m in MARKERS {
+        if let Some(rest) = s.strip_prefix(m) {
+            if rest.starts_with(' ') {
+                s = rest.trim_start();
+                break;
+            }
+        }
     }
+    // priority `[#X]` (exactly "[#", one ASCII char, "]")
+    let b = s.as_bytes();
+    if b.len() >= 4 && b[0] == b'[' && b[1] == b'#' && b[2] < 0x80 && b[3] == b']' {
+        return s[4..].trim_start();
+    }
+    s
+}
+
+/// Strip a leading list checkbox `[ ]` / `[x]` / `[X]` (+ spaces). mldoc strips this
+/// only for `*`/`+`/`N.` lists (lists0), NOT for `-` bullets (heading0).
+fn strip_checkbox(s: &str) -> &str {
+    let rest = if let Some(r) = s.strip_prefix("[ ]") {
+        r
+    } else if let Some(r) = s.strip_prefix("[x]").or_else(|| s.strip_prefix("[X]")) {
+        r
+    } else {
+        return s;
+    };
+    rest.trim_start()
+}
+
+/// Bullet title: drop the leading whitespace + `-`, then heading/marker prefixes.
+fn bullet_title(t: &str) -> &str {
+    let ws = leading_ws(t);
+    let rest = t[ws + 1..].trim_start(); // skip '-' then leading spaces
+    strip_atx(rest)
 }
 
 fn split_lines(input: &str) -> Vec<Line<'_>> {
@@ -378,7 +453,7 @@ fn list_item(s: &str) -> Option<ListItem> {
                 number: None,
                 indent: ws as u32,
                 content: vec![Block::Paragraph {
-                    inline: stub_inline(rest),
+                    inline: stub_inline(strip_atx(strip_checkbox(after.trim_start()))),
                     span: None,
                 }],
                 items: vec![],
@@ -397,7 +472,7 @@ fn list_item(s: &str) -> Option<ListItem> {
                         number: Some(number),
                         indent: ws as u32,
                         content: vec![Block::Paragraph {
-                            inline: stub_inline(rest),
+                            inline: stub_inline(strip_atx(strip_checkbox(after2.trim_start()))),
                             span: None,
                         }],
                         items: vec![],
@@ -425,15 +500,19 @@ fn property(s: &str) -> Option<(String, String)> {
     Some((key.to_string(), value.to_string()))
 }
 
-fn footnote_def_name(s: &str) -> Option<String> {
+fn footnote_def(s: &str) -> Option<(String, &str)> {
     let rest = s.trim_start().strip_prefix("[^")?;
     let end = rest.find(']')?;
     let name = &rest[..end];
-    if rest[end + 1..].starts_with(':') {
-        Some(name.to_string())
-    } else {
-        None
-    }
+    let after = rest[end + 1..].strip_prefix(':')?;
+    Some((name.to_string(), after.trim_start()))
+}
+
+/// Strip a quote line's `>` prefix (after leading ws) and one optional space.
+fn strip_quote_prefix(s: &str) -> &str {
+    let s = s.trim_start();
+    let s = s.strip_prefix('>').unwrap_or(s);
+    s.strip_prefix(' ').unwrap_or(s)
 }
 
 fn callout_begin(s: &str) -> Option<String> {

@@ -21,3 +21,7 @@ harness/report.json
 # Editor / OS
 .DS_Store
 *.swp
+
+# Fuzz harness temp outputs (regenerated)
+harness/corpus.fuzz.json
+harness/lsdoc-fuzz.json
