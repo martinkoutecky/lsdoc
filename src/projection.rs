@@ -129,6 +129,15 @@ pub enum Block {
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },
+    /// LaTeX environment block `\begin{X} … \end{X}` (mldoc `Latex_Environment`).
+    /// mldoc shape: `["Latex_Environment", name, null, content]` (name lowercased).
+    #[serde(rename = "latex_env")]
+    LatexEnv {
+        name: String,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "properties")]
     Properties {
         props: Vec<(String, String)>,
@@ -164,6 +173,10 @@ pub struct ListItem {
     pub indent: u32,
     pub content: Vec<Block>,
     pub items: Vec<Block>,
+    /// Markdown definition-list term (`term\n: def` → item `name`). Empty for all
+    /// other list items (mldoc emits `name: []`, cleaned away on both sides).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub name: Vec<Inline>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -212,6 +225,17 @@ pub enum Inline {
     /// Email autolink `<a@b.com>` (mldoc `Email`); payload is the raw address obj.
     #[serde(rename = "email")]
     Email { text: serde_json::Value },
+    /// LaTeX named entity `\Delta` / `\Delta{}` (mldoc `Entity`), resolved from the
+    /// 339-entry table in `entities.rs`. Carries mldoc's full entity record.
+    #[serde(rename = "entity")]
+    Entity {
+        name: String,
+        latex: String,
+        latex_mathp: bool,
+        html: String,
+        ascii: String,
+        unicode: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

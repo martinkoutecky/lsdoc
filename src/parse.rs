@@ -85,6 +85,22 @@ pub fn parse(input: &str) -> Vec<Block> {
             // no matching END → fall through (treat as paragraph text).
         }
 
+        // 2b. LaTeX environment `\begin{X} … \end{X}` (mldoc Latex_env, before Block).
+        let line_content_end = line.start + t.len();
+        if let Some((name, content, consumed_end)) =
+            crate::inline::parse_latex_env(input, line.start, line_content_end)
+        {
+            flush_para(&mut out, &mut para, input);
+            out.push(Block::LatexEnv { name, content, span: Some(Span(line.start, consumed_end)) });
+            // resume at the first line starting at/after consumed_end (always > i).
+            let mut ni = i + 1;
+            while ni < lines.len() && lines[ni].start < consumed_end {
+                ni += 1;
+            }
+            i = ni;
+            continue;
+        }
+
         // 3. heading
         if let Some(size) = heading_size(t) {
             flush_para(&mut out, &mut para, input);
@@ -110,8 +126,84 @@ pub fn parse(input: &str) -> Vec<Block> {
             continue;
         }
 
-        // 5. `-` bullet (mldoc Heading{unordered})
+        // 5. `-` bullet (mldoc Heading{unordered}).
         if let Some(level) = dash_bullet_level(t) {
+            // mldoc's bullet title is a lookahead (heading0.ml `title_aux_p`): if the
+            // text after the bullet prefix parses as a block construct, the bullet gets
+            // an EMPTY title and the construct is parsed as the next block. We replicate
+            // the two openers that occur in real outlines: a fenced code block and a
+            // markdown blockquote (only on `-` bullets; `*`/`+` are Lists, untouched).
+            let dw = leading_ws(t);
+            let after = t[dw + 1..].trim_start(); // after '-' + spaces
+            let content = strip_atx_hashes(after); // after optional `#{1,n}` size run
+            let content_off = line.start + (t.len() - content.len());
+            // (a) fenced code opener on the bullet line — only splits if it CLOSES
+            // (an unclosed `- ``` ` stays a normal bullet titled "```", per mldoc).
+            if let Some((fchar, frun)) = fence_marker(content) {
+                // `content` is already leading-ws-stripped, so `fence_marker` matched at
+                // its very start (a true fence opener).
+                {
+                    if let Some(close) = find_matching_fence(&lines, i, fchar) {
+                        flush_para(&mut out, &mut para, input);
+                        out.push(Block::Bullet {
+                            level,
+                            inline: vec![],
+                            marker: None,
+                            priority: None,
+                            htags: vec![],
+                            span: Some(Span(line.start, content_off)),
+                        });
+                        let lang = fence_lang(&content[frun..]);
+                        let code = if close > i + 1 {
+                            input[lines[i + 1].start..lines[close - 1].end].to_string()
+                        } else {
+                            String::new()
+                        };
+                        let mut end = lines[close].end;
+                        i = close + 1;
+                        while i < lines.len() && lines[i].text.is_empty() {
+                            end = lines[i].end;
+                            i += 1;
+                        }
+                        out.push(Block::Src { lang, code, span: Some(Span(content_off, end)) });
+                        continue;
+                    }
+                }
+            }
+            // (b) markdown blockquote opener on the bullet line (lazy continuation).
+            if quote_opens(content) {
+                flush_para(&mut out, &mut para, input);
+                out.push(Block::Bullet {
+                    level,
+                    inline: vec![],
+                    marker: None,
+                    priority: None,
+                    htags: vec![],
+                    span: Some(Span(line.start, content_off)),
+                });
+                let mut body = String::new();
+                if let Some(c) = quote_line_content(content, true) {
+                    body.push_str(&c);
+                    body.push('\n');
+                }
+                i += 1;
+                while i < lines.len() {
+                    match quote_line_content(lines[i].text, false) {
+                        Some(c) => {
+                            body.push_str(&c);
+                            body.push('\n');
+                            i += 1;
+                        }
+                        None => break,
+                    }
+                }
+                out.push(Block::Quote {
+                    children: vec![Block::Paragraph { inline: stub_inline(&body), span: None }],
+                    span: Some(Span(content_off, lines[i - 1].end)),
+                });
+                continue;
+            }
+            // normal bullet.
             flush_para(&mut out, &mut para, input);
             let (marker, priority, title) = bullet_parts(t);
             out.push(Block::Bullet {
@@ -278,6 +370,25 @@ pub fn parse(input: &str) -> Vec<Block> {
             // no :END: → fall through to paragraph.
         }
 
+        // 11d. markdown definition list (mldoc `lists0.ml` `md_definition`, the Lists
+        // fallback, tried just above paragraph): a (would-be paragraph) term line
+        // immediately followed by a `: <def>` line. mldoc pulls the term out of a
+        // running paragraph (`intro\nterm\n: def` → Paragraph[intro] + def-list), so
+        // we check it here at the paragraph point, after every other block construct.
+        if !t.trim_start().is_empty()
+            && i + 1 < lines.len()
+            && is_def_opener(lines[i + 1].text)
+        {
+            flush_para(&mut out, &mut para, input);
+            let (item, ni) = build_def_list(&lines, i);
+            out.push(Block::List {
+                items: vec![item],
+                span: Some(Span(line.start, lines[ni - 1].end)),
+            });
+            i = ni;
+            continue;
+        }
+
         // 12. plain line — accumulate into the current paragraph.
         para = Some(match para {
             Some((s, _)) => (s, line.end),
@@ -426,7 +537,7 @@ fn pair_fences(lines: &[Line]) -> HashMap<usize, (usize, String)> {
                 Some((oidx, oc)) => {
                     if c == oc {
                         let (_, mend) = fence_marker(lines[oidx].text).unwrap();
-                        let lang = lines[oidx].text[mend..].trim().to_string();
+                        let lang = fence_lang(&lines[oidx].text[mend..]);
                         out.insert(oidx, (idx, lang));
                         open = None;
                     }
@@ -436,6 +547,20 @@ fn pair_fences(lines: &[Line]) -> HashMap<usize, (usize, String)> {
         }
     }
     out
+}
+
+/// Language of a fence from its info string (the text after the ``` run): mldoc's
+/// `language` is the FIRST whitespace-delimited token (`clj :results` → `clj`, the
+/// `:results` is a separate `options` field we don't model).
+fn fence_lang(info: &str) -> String {
+    info.split_whitespace().next().unwrap_or("").to_string()
+}
+
+/// First subsequent line (after `from`) that is a fence marker of char `fchar`. Used
+/// for a fence opened *on a `-` bullet line* (whose opener isn't seen by `pair_fences`
+/// because the line starts with `-`).
+fn find_matching_fence(lines: &[Line], from: usize, fchar: u8) -> Option<usize> {
+    (from + 1..lines.len()).find(|&k| fence_marker(lines[k].text).map(|(c, _)| c) == Some(fchar))
 }
 
 /// A code-fence marker line: 3+ ` or ~ after optional leading whitespace (Logseq
@@ -516,6 +641,7 @@ fn list_item(s: &str) -> Option<ListItem> {
                     span: None,
                 }],
                 items: vec![],
+                name: vec![],
             });
         }
     }
@@ -535,6 +661,7 @@ fn list_item(s: &str) -> Option<ListItem> {
                             span: None,
                         }],
                         items: vec![],
+                        name: vec![],
                     });
                 }
             }
@@ -631,6 +758,81 @@ fn drawer_property(s: &str) -> Option<(String, String)> {
     // and a trailing CR from CRLF inputs).
     let value = t[pos + 1..].trim();
     Some((key.to_string(), value.to_string()))
+}
+
+/// Does line `s` OPEN a markdown definition (a `: <def>` line)? mldoc
+/// `markdown_definition.ml`: `spaces *> ':' *> ws(≥1) *> term_definition` where the
+/// first `l` is `spaces *> satisfy(∉ ':' '#' eol) *> line(take_till1 eol)` — so after
+/// the `:` and its required whitespace there must be ≥2 non-eol chars whose first is
+/// not `:`/`#` (the quirky take_till1-after-satisfy gives the ≥2 rule, e.g. `: a` is
+/// NOT a def but `: ab` is).
+fn is_def_opener(s: &str) -> bool {
+    let rest = match s.trim_start().strip_prefix(':') {
+        Some(r) => r,
+        None => return false,
+    };
+    // ws = take_while1 is_space: ≥1 space/tab required (`:nospace` is not a def).
+    if !(rest.starts_with(' ') || rest.starts_with('\t')) {
+        return false;
+    }
+    def_line_content_ok(rest.trim_start())
+}
+
+/// A definition continuation line (mldoc term_definition `l`): after leading spaces,
+/// the same ≥2-chars / first-∉`:`#` rule (`: ab\nx` stops at `ab`; `: ab\ncc` joins).
+fn is_def_continuation(s: &str) -> bool {
+    def_line_content_ok(s.trim_start())
+}
+
+/// The shared `satisfy(∉ ':' '#' eol) *> take_till1 eol` test on the content (already
+/// leading-space-stripped): first char ∉ {`:`,`#`,CR}, and ≥1 more non-CR char.
+fn def_line_content_ok(content: &str) -> bool {
+    let mut it = content.chars();
+    match it.next() {
+        Some(c0) if c0 != ':' && c0 != '#' && c0 != '\r' => {
+            matches!(it.next(), Some(c) if c != '\r')
+        }
+        _ => false,
+    }
+}
+
+/// Build the markdown definition list whose term is `lines[i]` and whose `:` items
+/// follow. Returns the single `ListItem` and the next line index (after the items and
+/// any trailing blank lines mldoc's `<* optional eols` absorbs).
+fn build_def_list(lines: &[Line], i: usize) -> (ListItem, usize) {
+    let name = stub_inline(lines[i].text.trim_start()); // mldoc name = `spaces *> line`
+    let mut content: Vec<Block> = Vec::new();
+    let mut j = i + 1;
+    while j < lines.len() && is_def_opener(lines[j].text) {
+        // item first line: drop `<spaces>:` then the required ws (and any more spaces).
+        let first = lines[j].text.trim_start().strip_prefix(':').unwrap_or("").trim_start();
+        let mut item_lines = vec![first.to_string()];
+        j += 1;
+        // continuation lines (non-`:`-leading, same ≥2 rule), joined with '\n'.
+        while j < lines.len() && is_def_continuation(lines[j].text) {
+            item_lines.push(lines[j].text.trim_start().to_string());
+            j += 1;
+        }
+        // mldoc inline-parses `String.trim`-ed of the joined item.
+        let item_text = item_lines.join("\n");
+        content.push(Block::Paragraph {
+            inline: stub_inline(item_text.trim()),
+            span: None,
+        });
+    }
+    // absorb trailing blank lines (mldoc `definition_parse <* optional eols`).
+    while j < lines.len() && lines[j].text.trim().is_empty() {
+        j += 1;
+    }
+    let item = ListItem {
+        ordered: false,
+        number: None,
+        indent: 0,
+        content,
+        items: vec![],
+        name,
+    };
+    (item, j)
 }
 
 fn callout_begin(s: &str) -> Option<String> {
@@ -734,6 +936,7 @@ mod tests {
             Block::Drawer { .. } => "drawer",
             Block::Directive { .. } => "directive",
             Block::Example { .. } => "example",
+            Block::LatexEnv { .. } => "latex_env",
         }).collect()
     }
 
@@ -815,7 +1018,8 @@ mod tests {
             | Block::Hr { span, .. } | Block::Table { span, .. }
             | Block::FootnoteDef { span, .. } | Block::RawHtml { span, .. }
             | Block::DisplayedMath { span, .. } | Block::Drawer { span, .. }
-            | Block::Directive { span, .. } | Block::Example { span, .. } => *span,
+            | Block::Directive { span, .. } | Block::Example { span, .. }
+            | Block::LatexEnv { span, .. } => *span,
         }
     }
 
@@ -861,6 +1065,105 @@ mod tests {
         assert_eq!(kinds(">foo\nbar"), ["quote"]);
         // a `- ` line ends the quote (new block).
         assert_eq!(kinds("> q\n- item"), ["quote", "bullet"]);
+    }
+
+    #[test]
+    fn latex_environment_block() {
+        // multi-line env: content is everything between `\begin{X}` (after one eol) and
+        // `\end{X}`; the node name is lowercased.
+        match &parse("\\begin{equation}\nx=1\ny=2\n\\end{equation}")[0] {
+            Block::LatexEnv { name, content, .. } => {
+                assert_eq!(name, "equation");
+                assert_eq!(content, "x=1\ny=2\n");
+            }
+            _ => panic!(),
+        }
+        // single-line env.
+        match &parse("\\begin{eq}a b\\end{eq}")[0] {
+            Block::LatexEnv { name, content, .. } => {
+                assert_eq!(name, "eq");
+                assert_eq!(content, "a b");
+            }
+            _ => panic!(),
+        }
+        assert_eq!(kinds("  \\begin{eq}a\\end{eq}"), ["latex_env"]); // leading indent
+        // an unclosed `\begin` still becomes an env to EOF (mldoc).
+        match &parse("\\begin{eq}\nx=1")[0] {
+            Block::LatexEnv { content, .. } => assert_eq!(content, "x=1"),
+            _ => panic!(),
+        }
+        // text before `\begin` ⇒ NOT an env (it's a paragraph).
+        assert_eq!(kinds("hi \\begin{eq}x\\end{eq}"), ["paragraph"]);
+        // case-insensitive end match.
+        match &parse("\\begin{Eq}x\\END{eq}")[0] {
+            Block::LatexEnv { name, content, .. } => { assert_eq!(name, "eq"); assert_eq!(content, "x"); }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn markdown_definition_list() {
+        // term + `: def` → a List whose item carries the term as `name`.
+        match &parse("term\n: definition")[0] {
+            Block::List { items, .. } => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].name, vec![Inline::Plain { text: "term".into() }]);
+                assert!(matches!(items[0].content[0], Block::Paragraph { .. }));
+            }
+            _ => panic!(),
+        }
+        assert_eq!(kinds("term\n: definition"), ["list"]);
+        // multi-def: one item, two content paragraphs.
+        match &parse("term\n: def1\n: def2")[0] {
+            Block::List { items, .. } => assert_eq!(items[0].content.len(), 2),
+            _ => panic!(),
+        }
+        // two terms (continuation): item1 content joins `d1`+`t2` across a Break.
+        match &parse("t1\n: d1\nt2\n: d2")[0] {
+            Block::List { items, .. } => {
+                assert_eq!(items[0].name, vec![Inline::Plain { text: "t1".into() }]);
+                match &items[0].content[0] {
+                    Block::Paragraph { inline, .. } => assert_eq!(inline, &vec![
+                        Inline::Plain { text: "d1".into() }, Inline::Break,
+                        Inline::Plain { text: "t2".into() },
+                    ]),
+                    _ => panic!(),
+                }
+            }
+            _ => panic!(),
+        }
+        // quirks: no space after `:`, single-char def, and a `:`/`#`-leading def all fail.
+        assert_eq!(kinds("term\n:nospace"), ["paragraph"]);
+        assert_eq!(kinds("term\n: a"), ["paragraph"]);      // <2 chars after `: `
+        assert_eq!(kinds("term\n: #x"), ["paragraph"]);
+        // a running paragraph keeps all but the last line; that becomes the term.
+        assert_eq!(kinds("intro\nterm\n: definition"), ["paragraph", "list"]);
+    }
+
+    #[test]
+    fn block_construct_on_bullet_line() {
+        // a `-` bullet whose content opens a fence → empty bullet + Src.
+        assert_eq!(kinds("- ```\ncode\n```"), ["bullet", "src"]);
+        match &parse("- ```\ncode\n```")[0] {
+            Block::Bullet { inline, .. } => assert!(inline.is_empty()),
+            _ => panic!(),
+        }
+        match &parse("- ``` clj :results\n(inc 2)\n```")[1] {
+            Block::Src { lang, code, .. } => { assert_eq!(lang, "clj"); assert_eq!(code, "(inc 2)\n"); }
+            _ => panic!(),
+        }
+        // a `-` bullet opening a blockquote (with lazy continuation).
+        assert_eq!(kinds("- > q"), ["bullet", "quote"]);
+        assert_eq!(kinds("  - > line3\n    > line4"), ["bullet", "quote"]);
+        // `*`/`+` are Lists — NOT split (the ``` is item content).
+        assert_eq!(kinds("* ```\nx\n```"), ["list", "paragraph"]);
+        // an UNCLOSED fence stays a normal bullet (title "```"); a lone `-`/`> ` too.
+        assert_eq!(kinds("- ```\nnoclose"), ["bullet", "paragraph"]);
+        assert_eq!(kinds("- normal text"), ["bullet"]);
+        match &parse("- >")[0] {
+            Block::Bullet { inline, .. } => assert_eq!(inline, &vec![Inline::Plain { text: ">".into() }]),
+            _ => panic!(),
+        }
     }
 
     #[test]

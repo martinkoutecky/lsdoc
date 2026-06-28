@@ -46,7 +46,7 @@ const s = (v) => JSON.stringify(canon(v));
 function skel(b) {
   if (!b || typeof b !== "object") return b;
   const o = { kind: b.kind };
-  for (const k of ["level", "size", "lang", "code", "props", "span", "name", "htags", "text", "marker", "priority", "value"]) {
+  for (const k of ["level", "size", "lang", "code", "props", "span", "name", "htags", "text", "marker", "priority", "value", "content"]) {
     if (k in b) o[k] = b[k];
   }
   if (b.children) o.children = b.children.map(skel);

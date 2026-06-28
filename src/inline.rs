@@ -349,14 +349,30 @@ impl<'a> Scanner<'a> {
         let next = self.b.get(self.i + 1).copied();
         match next {
             Some(c) if c.is_ascii_alphabetic() => {
-                // entity: `\` + letters  -> the letters as plain (backslash dropped).
+                // entity: `\` + letters (+ optional `{}`). A name in the LaTeX entity
+                // table → `Entity`; otherwise the bare letters as plain (backslash
+                // dropped). The `{}` is consumed either way (mldoc: `\Delta{}G`→Entity
+                // +"G", `\foo{}G`→"fooG").
                 let start = self.i + 1;
                 let mut j = start;
                 while j < self.n && self.b[j].is_ascii_alphabetic() {
                     j += 1;
                 }
-                let seg = &self.s[start..j];
-                self.pending.push_str(seg);
+                let name = &self.s[start..j];
+                if self.s[j..].starts_with("{}") {
+                    j += 2;
+                }
+                match crate::entities::find(name) {
+                    Some(e) => self.push(Inline::Entity {
+                        name: e.name.to_string(),
+                        latex: e.latex.to_string(),
+                        latex_mathp: e.latex_mathp,
+                        html: e.html.to_string(),
+                        ascii: e.ascii.to_string(),
+                        unicode: e.unicode.to_string(),
+                    }),
+                    None => self.pending.push_str(name),
+                }
                 self.i = j;
             }
             Some(c) if is_md_escape_char(c) => {
@@ -1871,7 +1887,51 @@ pub(crate) fn parse_inline_html(s: &str, at: usize) -> Option<(usize, String)> {
     Some((open_end + 1, s[at..open_end + 1].to_string()))
 }
 
-fn find_ci(s: &str, from: usize, needle: &str) -> Option<usize> {
+/// Block-level LaTeX environment `\begin{NAME} … \end{NAME}` (mldoc `latex_env.ml`,
+/// shared by the Markdown and Org block segmenters). The opener must be at the start
+/// of the line at `line_start` after optional leading spaces/tabs (`spaces *>`); text
+/// before `\begin` disqualifies it. mldoc grammar:
+///   `spaces *> "\begin{" *> take_while1(≠'}') <* '}' <* spaces_or_eols`,
+///   content = all chars until a case-insensitive `\end{NAME}` (or EOF); the node
+///   name is lowercased. `line_end` is the byte offset of the opener line's content
+///   end (the `\n` or EOF) — the name is taken within that line (realistic envs name
+///   the environment on the begin line). Returns `(name, content, consumed_end)`
+///   where `consumed_end` is the byte offset just past `\end{NAME}` (or EOF).
+pub(crate) fn parse_latex_env(
+    input: &str,
+    line_start: usize,
+    line_end: usize,
+) -> Option<(String, String, usize)> {
+    let b = input.as_bytes();
+    let mut p = line_start;
+    while p < line_end && (b[p] == b' ' || b[p] == b'\t') {
+        p += 1;
+    }
+    if !input[p..].starts_with("\\begin{") {
+        return None;
+    }
+    let name_start = p + 7; // past "\begin{"
+    let mut j = name_start;
+    while j < line_end && b[j] != b'}' {
+        j += 1;
+    }
+    if j >= line_end || b[j] != b'}' || j == name_start {
+        return None;
+    }
+    let name = &input[name_start..j];
+    // spaces_or_eols after `\begin{NAME}` (spaces, tabs, newlines, CR).
+    let mut cs = j + 1;
+    while cs < input.len() && matches!(b[cs], b' ' | b'\t' | b'\n' | b'\r') {
+        cs += 1;
+    }
+    let ending = format!("\\end{{{}}}", name);
+    match find_ci(input, cs, &ending) {
+        Some(e) => Some((name.to_ascii_lowercase(), input[cs..e].to_string(), e + ending.len())),
+        None => Some((name.to_ascii_lowercase(), input[cs..].to_string(), input.len())),
+    }
+}
+
+pub(crate) fn find_ci(s: &str, from: usize, needle: &str) -> Option<usize> {
     let hay = s.as_bytes();
     let nb = needle.as_bytes();
     let n = hay.len();
@@ -2201,6 +2261,7 @@ mod tests {
             Inline::Verbatim { text } => format!("verb({text})"),
             Inline::Subscript { .. } => "sub".into(),
             Inline::Superscript { .. } => "sup".into(),
+            Inline::Entity { unicode, .. } => format!("entity({unicode})"),
         }
     }
     fn url_kind(u: &Url) -> String {
@@ -2441,6 +2502,31 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn latex_entities() {
+        // a known entity name → Entity (backslash + letters), with " G" plain after.
+        match &pi("\\Delta G")[0] {
+            Inline::Entity { name, latex, latex_mathp, html, ascii, unicode } => {
+                assert_eq!(name, "Delta");
+                assert_eq!(latex, "\\Delta");
+                assert!(*latex_mathp);
+                assert_eq!(html, "&Delta;");
+                assert_eq!(ascii, "Delta");
+                assert_eq!(unicode, "Δ");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(kinds("\\Delta G"), ["entity(Δ)", "plain( G)"]);
+        // optional `{}` consumed after the name (entity or not).
+        assert_eq!(kinds("\\Delta{}G"), ["entity(Δ)", "plain(G)"]);
+        assert_eq!(kinds("\\foo{}G"), ["plain(fooG)"]); // unknown → bare letters
+        assert_eq!(kinds("\\foo G"), ["plain(foo G)"]);
+        // inside `$…$` the backslash stays a Latex_Fragment (entity path not taken).
+        assert_eq!(kinds("$\\Delta$"), ["latex(Inline:\\Delta)"]);
+        // case-sensitive table (AA vs aa are distinct entities).
+        assert_eq!(kinds("\\AA"), ["entity(Å)"]);
     }
 
     #[test]

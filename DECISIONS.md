@@ -95,36 +95,75 @@ targets) and verifies them with its own unit tests — just not against this ora
 ## Intentional deviations from mldoc (allowlist)
 
 Tracked in `harness/allowlist.json` (id + reason); `compare.mjs` excludes these
-from diff counts but still reports them. Current entries:
+from diff counts but still reports them. **The original allowlist family was
+eliminated** (2026-06-28, Martin-approved) — LaTeX entities/environments
+(`m054`/`m056`/`m089`), markdown definition lists (`m135`), and the bullet-line /
+bullet-prefix block constructs (`c047`/`m096`/`m097`/`m114`/`m115`/`m116`) are now
+matched (rules below). Current entries:
 
-- **`c047`** — a fenced code block opened *on a bullet line* (`` - ```calc ``):
-  mldoc splits an empty bullet `- ` then a `Src`; lsdoc keeps it as one bullet.
-  Adversarial — Logseq writes code under a bullet as a nested child block, not on
-  the bullet line. Revisit if a real graph needs it.
 - **`b021`** — a nested ordered list via markdown indentation
   (`1. a\n   1. nested`): mldoc folds the nested item into the parent's sub-items
   (normalizes to a `raw` node); lsdoc emits two flat items. Logseq nests via
   outline bullets, not markdown list indentation. Revisit if a real graph needs it.
-- **`m096`/`m097`** — a fenced code block opened *after a bullet prefix*
-  (`- ```\ncode\n``` `): mldoc splits an empty bullet `- ` then a `Src`; lsdoc keeps
-  the ``` on the bullet line. Same class as `c047` — Logseq nests code under a bullet
-  as a child block, not on the bullet line.
-- **`m114`/`m115`/`m116`** — a markdown blockquote (and a tab-indented property/fence
-  tail) opened *after a bullet prefix* (`  - > line3`): mldoc splits an empty bullet
-  then a `Quote` (lazy-joining the next `> ` line across indentation); lsdoc keeps
-  `> line3` as the bullet title. Same family as `c047`/`b021` (a block construct
-  starting after the bullet prefix); not how Logseq writes outlines.
-- **`m135`** — a markdown **definition list** (`term\n: definition`): mldoc emits a
-  `List` whose item carries a `name` (the term) with the definition as content; lsdoc
-  emits a paragraph. Def-list syntax is niche in Logseq (outline bullets / `key:: value`)
-  and the list-item `name` field is outside the modeled projection.
-- **`m054`/`m056`** — a LaTeX **named entity** (`\Delta`, `\Delta{}`): mldoc maps it
-  to an `Entity` node via a ~2k-entry LaTeX entity table; lsdoc renders an unknown
-  `\word` as the bare letters (correct for non-entities). Porting the entity table is
-  disproportionate for a math/org construct rare in Logseq Markdown.
-- **`m089`** — a LaTeX **environment** block (`\begin{equation}…\end{equation}`):
-  mldoc emits a `Latex_Environment` block; lsdoc emits a paragraph. Not modeled in the
-  projection; a math/org construct rare in Logseq Markdown.
+  (Distinct family from the eliminated bullet-line cases — the divergence is in how
+  mldoc *re-nests* indented numbered items, not in detecting a block construct.)
+
+## LaTeX entities + environments (Markdown AND Org; replicated from `entity.ml` / `latex_env.ml`)
+
+- **Named entity** (`Inline::Entity`, projection key `entity`): at a `\` + ≥1 ASCII
+  letters, the letters are looked up in the 339-entry mldoc table
+  (`src/entities.rs`, `find()` over a `OnceLock<HashMap>`, **case-sensitive** —
+  `Delta`/`delta`, `AA`/`aa` are distinct). A hit → an `Entity` carrying mldoc's full
+  record `{name, latex, latex_mathp, html, ascii, unicode}`; a miss → the bare letters
+  as plain (backslash dropped, the prior behavior). An optional `{}` immediately after
+  the letters is consumed **either way** (`\Delta{}G`→Entity+"G", `\foo{}G`→"fooG").
+  Inside `$…$`/`$$…$$`/`\(…\)`/`\[…\]` the backslash is part of a `Latex_Fragment`
+  (the `$`/`\(` dispatch runs first), so the entity path is never reached there.
+  Wired in `inline.rs backslash()` (md) and `org.rs backslash()` (org).
+- **Environment block** (`Block::LatexEnv`, projection key `latex_env`,
+  `["Latex_Environment", name, null, content]`): a line that, after optional leading
+  spaces/tabs (`spaces *>` — text before `\begin` disqualifies it), starts with
+  `\begin{NAME}`. After the `}` a `spaces_or_eols` run (spaces/tabs/newlines) is
+  dropped; `content` is then everything up to a **case-insensitive** `\end{NAME}` (or
+  EOF if absent — an unclosed `\begin` still becomes an env to EOF); the node `name` is
+  lowercased. Shared helper `inline::parse_latex_env`, called from both block
+  segmenters (between Table and the fenced/begin blocks, mirroring mldoc's parser
+  order). The block consumes `[line.start, end-of-\end{NAME})`; the line loop resumes
+  at the first line at/after that offset. (A `\begin…\end` that ends mid-line leaves a
+  small span gap / drops a following-line leading `Break` vs mldoc — fuzz-only, not in
+  any gate corpus; envs in real content occupy whole lines.)
+
+## Markdown definition list (Markdown only; replicated from `markdown_definition.ml`)
+
+- `term\n: definition` → a `List` whose single item carries the term as `name`
+  (`ListItem.name: Vec<Inline>`, projection key `name`, `skip_serializing_if`-empty;
+  `normalize.mjs`/`cleanBlock` likewise drop an empty `name`, so non-def items match).
+  The item's `content` is one `Paragraph` per `:`-definition. A definition opens on a
+  `(spaces) : (≥1 space) <content>` line and mldoc's `take_till1`-after-`satisfy`
+  imposes a quirky **≥2-char** rule: the content's first char must be ∉ `{:`,`#`}` and
+  there must be ≥1 more char (`: a` is NOT a def, `: ab` is). Continuation lines (next
+  non-`:`/`#`-leading lines, same ≥2 rule) join into the same paragraph across a
+  `Break`. Tried just above the paragraph fallback (mldoc's Lists fallback, after every
+  other block construct), and it **pulls the term out of a running paragraph**
+  (`intro\nterm\n: def` → `Paragraph[intro]` + def-list). Implemented in `parse.rs`
+  (`is_def_opener`/`is_def_continuation`/`build_def_list`); Org `: def` stays an
+  `Example` (untouched).
+
+## Block construct on a `-` bullet line (Markdown; replicated from `heading0.ml`)
+
+- mldoc's bullet title is a lookahead (`title_aux_p`): if the text after the bullet
+  prefix parses as a block construct, the bullet gets an **empty title** and the
+  construct becomes the next block. lsdoc replicates the two openers that occur in real
+  outlines, on `-` bullets only (`*`/`+` are Lists — their ``` is item content, NOT
+  split): a **fenced code** opener (`` - ```lang `` → empty Bullet + `Src`; only when
+  the fence actually closes — an unclosed `` - ``` `` stays a normal bullet titled
+  ` ``` `; `Src` language is the first info-string token) and a **markdown blockquote**
+  opener (`- > q` / indented `  - > l3` → empty Bullet + `Quote` with lazy
+  continuation; a lone `- >` stays a normal bullet). Implemented in the `parse.rs`
+  dash-bullet branch. (Other lookahead constructs — Hr/Table/Footnote/Latex_env/Drawer
+  after a bullet prefix — are not split; none occur in the gate corpus, and a bullet
+  carrying a task **marker** before the opener is left unsplit, both being adversarial
+  forms Logseq does not produce.)
 
 ## M2 block-structure rules (replicated from the oracle)
 
@@ -180,7 +219,8 @@ Quirks worth knowing (all matched):
   code spans.
 - **Backslash escapes** drop the backslash and make the char literal: `\[[a]]` →
   `[[a]]` (no ref), `\#tag`, `\((u))`, `` \` `` are plain; `\\` → one `\`;
-  `\<letter>+` (entity) → the letters; a `\` before a non-escapable char is kept.
+  `\<letter>+` (+ optional `{}`) → an `Entity` if the name is in the LaTeX table, else
+  the bare letters (see the LaTeX section); a `\` before a non-escapable char is kept.
   Extracted **values** (page/block-ref names, tag text, URL links) are additionally
   *unescaped* (`\X`→`X` for ASCII punct) while `full_text` stays raw — matching
   mldoc's transform; this affects the OG ref set.
@@ -304,9 +344,10 @@ dedup against `corpus.json`/`corpus.blocks.json`.
   - **Timestamp repeater** (`+1m`/`++2w`/`.+1d`) parsed into mldoc's
     `repetition:[[kind],[duration],n]` JSON.
 
-  Remaining diffs are allowlisted (see above): LaTeX entity/environment tables (niche),
-  markdown definition lists, and block constructs opened after a bullet prefix (the
-  `c047`/`b021` adversarial family). No `refs` or `block-struct` diffs remain.
+  The LaTeX entity/environment, markdown definition-list, and bullet-line block
+  constructs that were once allowlisted here are now matched (see the dedicated rule
+  sections above). The only remaining allowlisted markdown deviation is `b021`
+  (indented numbered-list re-nesting). No `refs` or `block-struct` diffs remain.
 
 ## M6 Org-mode (replicated from the oracle + mldoc 1.5.7 source)
 
@@ -319,11 +360,11 @@ untouched (md gate stays 0-diff). Two inline nodes were added in lockstep to
 `projection.rs` + `harness/lib/normalize.mjs`: `Subscript`, `Superscript`.
 
 **Doc-level block order** (mldoc `mldoc_parser.ml`, `Org` config): directive →
-drawer → headline → table → fenced/`#+BEGIN`/verbatim/quote/`$$`/raw-html block →
-footnote → list → hr → paragraph. Org `~/research/org-graph` (16 real `.org`) +
+drawer → headline → table → latex-env → fenced/`#+BEGIN`/verbatim/quote/`$$`/raw-html
+block → footnote → list → hr → paragraph. Org `~/research/org-graph` (16 real `.org`) +
 53 hand-written + 25 mined `test_org.ml` inputs all reach **0 diffs** (refs +
-block-struct + blocks-full); **no new allowlist entries** (the 11 allowlisted are
-all pre-existing Markdown cases).
+block-struct + blocks-full); **no new allowlist entries** (the sole remaining
+allowlisted case, `b021`, is Markdown).
 
 ### Block rules
 - **Headline** `*{n}` at column 0 + space/EOL → `Bullet{level:n}` (mldoc
@@ -397,10 +438,11 @@ all pre-existing Markdown cases).
   `[…]` tries org-link → inactive `[date]` timestamp → `[fn:…]` footnote ref.
 - **Escapes**: Org does **NOT** unescape (`md_unescaped` is Markdown-only), so `a\*b`
   → Plain `a\*b` (backslash kept), `\\`→`\\`. `\`+eol → `Hard_Break_Line`
-  (`org_hard_breakline`); `\(…\)`/`\[…\]` → latex; `\letters` → bare letters (the ~2k
-  LaTeX **entity table is not ported** — an unknown `\word` renders as its letters; a
-  real entity like `\alpha` would diverge, same niche class as the md `m054` allowlist,
-  but none occur in the Org corpus). NOTE: the reused page-ref/tag/bare-url value
+  (`org_hard_breakline`); `\(…\)`/`\[…\]` → latex; `\letters` (+ optional `{}`) → an
+  `Entity` if the letters are in the 339-entry table (`entities.rs`, same path as
+  Markdown), else the bare letters. Block-level `\begin{X}…\end{X}` is a
+  `Latex_Environment` in Org too (see the dedicated LaTeX section). NOTE: the reused
+  page-ref/tag/bare-url value
   scanners *do* call `unescape`, which is a no-op on real Org content (no backslashes
   in those positions across the whole corpus); a synthetic `[[a\]b]]` would
   technically under-keep the backslash in the extracted *value* only.
@@ -484,6 +526,7 @@ per SPEC §5 — it is documented, not chased and not allowlisted:
   unlike a Paragraph). Matching that exact predicate is binding to mldoc internals; lsdoc
   keeps the single-line footnote def. (~15/20k.)
 
-No new allowlist entries (the 11 are all pre-existing Markdown cases); the real org graph
-+ hand-written + mined corpora stay at 0-diff with 49 new `o###` fuzz regressions added.
+No new allowlist entries (the sole remaining case, `b021`, is Markdown); the real org
+graph + hand-written + mined corpora stay at 0-diff with 49 new `o###` fuzz regressions
+added.
 `node fuzz-split.mjs N seed org` is the kept diagnostic (structural vs inline-soup).

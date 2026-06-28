@@ -6,6 +6,7 @@
 //! for the oracle/harness. Built milestone by milestone; modules grow as each
 //! construct lands (block structure, inline core, dialect inline, …).
 
+pub mod entities;
 pub mod inline;
 pub mod org;
 pub mod parse;

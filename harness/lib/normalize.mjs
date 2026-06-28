@@ -54,6 +54,11 @@ export function normInline(seg) {
     case "Email": return { k: "email", text: seg[1] };
     case "Inline_Hiccup": return { k: "hiccup", v: seg[1] };
     case "Inline_Html": return { k: "inline_html", text: seg[1] };
+    case "Entity": {
+      const e = seg[1] ?? {};
+      return { k: "entity", name: e.name, latex: e.latex, latex_mathp: e.latex_mathp,
+               html: e.html, ascii: e.ascii, unicode: e.unicode };
+    }
     default: return { k: "inline:" + t, v: seg[1] };
   }
 }
@@ -78,11 +83,13 @@ export function normNode(node) {
       return b;
     }
     case "List": {
-      // ordered/explicit list: array of items, each with block content + sub-items
+      // ordered/explicit list: array of items, each with block content + sub-items.
+      // `name` carries the markdown definition-list term (empty for normal items).
       const items = (node[1] ?? []).map((it) => ({
         ordered: it.ordered, number: it.number, indent: it.indent,
         content: (it.content ?? []).map(normNode),
         items: (it.items ?? []).map(normNode),
+        name: (it.name ?? []).map(normInline),
       }));
       return { kind: "list", items };
     }
@@ -115,6 +122,9 @@ export function normNode(node) {
       return { kind: "raw_html", text: node[1] };
     case "Displayed_Math":
       return { kind: "displayed_math", text: node[1] };
+    case "Latex_Environment":
+      // ["Latex_Environment", name, options(null), content]
+      return { kind: "latex_env", name: node[1], content: node[3] };
     case "Directive":
       // org `#+KEY: value` -> ["Directive", key, value]
       return { kind: "directive", name: node[1], value: node[2] };
@@ -161,11 +171,19 @@ export function cleanBlock(b) {
   if (!b || typeof b !== "object") return b;
   if (b.inline) b.inline = cleanInlines(b.inline);
   if (b.children) b.children = b.children.map(cleanBlock);
-  if (b.items) b.items = b.items.map((it) => ({
-    ...it,
-    content: (it.content ?? []).map(cleanBlock),
-    items: (it.items ?? []).map(cleanBlock),
-  }));
+  if (b.items) b.items = b.items.map((it) => {
+    const cleaned = {
+      ...it,
+      content: (it.content ?? []).map(cleanBlock),
+      items: (it.items ?? []).map(cleanBlock),
+    };
+    // The definition-list term `name`: clean its inlines and drop it when empty
+    // (mldoc emits `name: []` for every non-def item; lsdoc omits it). Mirrors labels.
+    const name = cleanInlines(it.name ?? []);
+    if (name.length) cleaned.name = name;
+    else delete cleaned.name;
+    return cleaned;
+  });
   // Table cells carry the same cosmetic empty-Plain noise (mldoc emits a `[Plain ""]`
   // for an empty cell `||`; lsdoc emits `[]`) — clean each cell the same way.
   if (b.kind === "table") {

@@ -166,6 +166,22 @@ pub fn parse(input: &str) -> Vec<Block> {
             continue;
         }
 
+        // 4b. LaTeX environment `\begin{X} … \end{X}` (mldoc Latex_env, before Block).
+        let line_content_end = line.start + t.len();
+        if let Some((name, content, consumed_end)) =
+            crate::inline::parse_latex_env(input, line.start, line_content_end)
+        {
+            flush_para(&mut out, &mut para, input);
+            out.push(Block::LatexEnv { name, content, span: Some(Span(line.start, consumed_end)) });
+            absorb = false;
+            let mut ni = i + 1;
+            while ni < lines.len() && lines[ni].start < consumed_end {
+                ni += 1;
+            }
+            i = ni;
+            continue;
+        }
+
         // 5. fenced code block (```/~~~) — markdown fences work in Org too.
         if let Some((close, lang)) = fences.get(&i) {
             flush_para(&mut out, &mut para, input);
@@ -700,6 +716,7 @@ fn list_item(s: &str) -> Option<ListItem> {
             span: None,
         }],
         items: vec![],
+        name: vec![],
     };
     // mldoc requires non-empty content after the marker (and after any checkbox): a
     // bare `- `/`+ `/`1. ` (or `- [ ]`) is a Paragraph, only `- x` is a List.
@@ -1148,18 +1165,30 @@ impl<'a> OrgScanner<'a> {
                     return;
                 }
             }
-            // entity `\letters` (+ optional `{}`) → bare letters (entity table not ported).
+            // entity `\letters` (+ optional `{}`): a name in the LaTeX entity table →
+            // `Entity`; otherwise the bare letters (backslash dropped). The `{}` is
+            // consumed either way (same as Markdown).
             if self.b.get(self.i + 1).is_some_and(|c| c.is_ascii_alphabetic()) {
                 let start = self.i + 1;
                 let mut j = start;
                 while j < self.n && self.b[j].is_ascii_alphabetic() {
                     j += 1;
                 }
-                let seg = self.s[start..j].to_string();
+                let name = self.s[start..j].to_string();
                 if self.s[j..].starts_with("{}") {
                     j += 2;
                 }
-                self.push_plain(&seg);
+                match crate::entities::find(&name) {
+                    Some(e) => self.push(Inline::Entity {
+                        name: e.name.to_string(),
+                        latex: e.latex.to_string(),
+                        latex_mathp: e.latex_mathp,
+                        html: e.html.to_string(),
+                        ascii: e.ascii.to_string(),
+                        unicode: e.unicode.to_string(),
+                    }),
+                    None => self.push_plain(&name),
+                }
                 self.i = j;
                 return;
             }
@@ -1876,6 +1905,7 @@ mod tests {
             Inline::Timestamp { ts, .. } => format!("ts({ts})"),
             Inline::InlineHtml { text } => format!("html({text})"),
             Inline::Email { .. } => "email".into(),
+            Inline::Entity { unicode, .. } => format!("entity({unicode})"),
         }
     }
     fn uk(u: &Url) -> String {
@@ -1924,6 +1954,7 @@ mod tests {
                 Block::Drawer { .. } => "drawer",
                 Block::Directive { .. } => "directive",
                 Block::Example { .. } => "example",
+                Block::LatexEnv { .. } => "latex_env",
             })
             .collect()
     }
@@ -2173,6 +2204,24 @@ mod tests {
     }
 
     // ---- robustness -------------------------------------------------------
+
+    #[test]
+    fn latex_entities_and_environment_org() {
+        // Org resolves the same LaTeX entity table as Markdown.
+        match &pi("\\Delta G")[0] {
+            Inline::Entity { name, unicode, .. } => { assert_eq!(name, "Delta"); assert_eq!(unicode, "Δ"); }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(ks("\\Delta{}G"), ["entity(Δ)", "plain(G)"]);
+        assert_eq!(ks("\\foo G"), ["plain(foo G)"]); // unknown → bare letters (bksl kept? no — dropped)
+        // block-level LaTeX environment in Org.
+        match &parse("\\begin{equation}\nx=1\n\\end{equation}")[0] {
+            Block::LatexEnv { name, content, .. } => { assert_eq!(name, "equation"); assert_eq!(content, "x=1\n"); }
+            _ => panic!(),
+        }
+        assert_eq!(bkinds("\\begin{eq}a b\\end{eq}"), ["latex_env"]);
+        assert_eq!(bkinds("hi \\begin{eq}x\\end{eq}"), ["paragraph"]); // text before ⇒ not env
+    }
 
     #[test]
     fn unicode_does_not_panic() {
