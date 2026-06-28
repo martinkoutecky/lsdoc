@@ -118,6 +118,11 @@ add("bullet-size", "- # TODO task");        // size + marker
 add("bullet-size", "- ## [#A] prioritised");
 add("bullet-size", "- #nospace");           // not a heading (no space) → size none
 add("bullet-size", "- plain bullet");       // size none
+// dash directly followed by an ATX run is a bullet (no space needed); `-#x`/`-x` are not.
+add("bullet-size", "-## HEADINGS");         // → bullet size 2 (realmut-found)
+add("bullet-size", "-# x");                 // → bullet size 1
+add("bullet-size", "-#x");                  // → paragraph (no space after #)
+add("bullet-size", "-#### ");               // → bullet size 4 + trailing-ws paragraph
 
 // bullet-line block-opener splits (Gap 2: post-marker block construct ⇒ empty bullet +
 // sibling block, matching mldoc). Found by the Tine integration + a post-marker audit.

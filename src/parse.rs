@@ -772,12 +772,17 @@ fn leading_ws(s: &str) -> usize {
 
 /// `(ws)- ` (or a lone `(ws)-` at end-of-line) ⇒ bullet of level `1 + ws` (each
 /// space/tab counts 1). mldoc (heading0) accepts `-` followed by a space/tab OR
-/// end-of-line (`- ` and a bare `-` are both empty bullets).
+/// end-of-line (`- ` and a bare `-` are both empty bullets), OR directly by an ATX
+/// heading run (`-## x` → bullet with size 2, no space needed; but `-#x`/`-x` are not).
 fn dash_bullet_level(s: &str) -> Option<u32> {
     let ws = leading_ws(s);
     let rest = &s[ws..];
     let after = rest.strip_prefix('-')?;
-    if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
+    if after.is_empty()
+        || after.starts_with(' ')
+        || after.starts_with('\t')
+        || atx_size(after).0.is_some()
+    {
         Some(1 + ws as u32)
     } else {
         None

@@ -737,3 +737,40 @@ marker prefix while lsdoc over-strips it; blank-line-inside-a-list splitting; an
 / directive nuances. The aggressive-mutation realmut residuals (wrap-in-emphasis, concat) are
 NOT reachable from minimal realistic edits and are not chased; the standing tripwire (next)
 will use a realistic-only mutation set.
+
+## B reachability conclusion + the standing tripwire (`realmut.mjs`)
+
+**The method (answers "what proof that X can't occur in realistic input"):** you can't *prove*
+it; you GROUND "realistic" in real data and try to break it. `harness/realmut.mjs` mutates
+real-graph fragments and runs the differential; a divergence on mutated-real content is, by
+construction, a reachable bug. Two mutation modes: **realistic** (default — insert token,
+delete char, dup/split/join line, indent/dedent: edits a user actually makes) and **aggressive**
+(also wrap-in-emphasis / concat — derived-from-real-but-not-realistic).
+
+**It worked.** The aggressive run found 588 divergences; the structural ones, plus the
+realistic-mode residual, drove a string of real fixes the adversarial-generator audit (6B)
+had MISSED: org list/footnote-body continuation, indented `*`, `# comment`, the 5 md-structural
+classes (empty markers, empty-node trailing-ws, leading-ws heading), the Tine gaps
+(`Bullet.size`, bullet-openers), and `-## x` (dash directly + ATX run → bullet). 6B only audited
+*structural* mismatches from a synthetic generator and called the floor "mostly unreachable" —
+under-tested; the real-data method is strictly stronger.
+
+**Residual (realistic mode ≈ 360) is characterized, not dismissed.** Per-bucket minimal-repro
+adjudication (construct the smallest realistic input for each bucket; if it matches, the bucket
+needs something non-minimal) — the bias-mitigated default is "reachable until shown otherwise":
+- **Fragment-windowing artifacts** (the bulk): `realmut` cuts files into 1–4-line windows, so a
+  window can be *half a table* (`|---|---|` mid-table) or a *macro's middle line* (`{{emb⏎ed`)
+  — not a real block body. Minimal whole-block versions match. The clean fix is to mutate real
+  **block bodies** (Tine's per-block `raw`), not file windows — a future step needing Tine's
+  block split.
+- **mldoc-combinator emphasis** (`**`/`*` boundary on char-mangled input): minimal realistic
+  versions match (`a **b`, `x *y* **z` ✓); divergence needs specific delimiter pileups —
+  mldoc-implementation-defined, bug-for-bug-on-garbage, not chased.
+- **Tracked edges** (small, real-ish, not yet fixed): markdown table with header+separator but
+  **no body** (`| a | b |\n|---|---|`); `*`/`N.` list **content** retains mldoc's `#`/task-marker
+  prefix while lsdoc over-strips; blank-line-inside-a-list splitting.
+
+**Tripwire (B5):** `realmut.mjs` is the committed standing diagnostic — run `node realmut.mjs`
+(realistic) periodically; a JUMP above the fragment-windowing baseline = a new reachable bug.
+It is NOT yet a hard 0-gate (the file-window fragment model has an irreducible artifact floor);
+mutating real block bodies would make it one.
