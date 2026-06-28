@@ -1,0 +1,902 @@
+{
+ "summary": {
+  "total": 157,
+  "prongA_pageDivergences": 27,
+  "prongA_blockDivergences_uuidGated": 2,
+  "prongB_ran": true,
+  "prongB_pageVsMldoc": 41,
+  "prongB_blockVsMldoc": 4
+ },
+ "pageDiv": [
+  {
+   "id": "c009",
+   "cat": "brackets",
+   "input": "[[Foo](bar)]]",
+   "rust": [
+    "Foo](bar)"
+   ],
+   "ts": []
+  },
+  {
+   "id": "c011",
+   "cat": "brackets",
+   "input": "[[a](b)]] and [[c]]",
+   "rust": [
+    "a](b)",
+    "c"
+   ],
+   "ts": [
+    "c"
+   ]
+  },
+  {
+   "id": "c037",
+   "cat": "code",
+   "input": "``[[Foo]]``",
+   "rust": [],
+   "ts": [
+    "Foo"
+   ]
+  },
+  {
+   "id": "c038",
+   "cat": "code",
+   "input": "``a [[Foo]] b``",
+   "rust": [],
+   "ts": [
+    "Foo"
+   ]
+  },
+  {
+   "id": "c048",
+   "cat": "code",
+   "input": "```\ntext [[Foo]]",
+   "rust": [],
+   "ts": [
+    "Foo"
+   ]
+  },
+  {
+   "id": "c049",
+   "cat": "code",
+   "input": "```js\n[[A]] and #B",
+   "rust": [],
+   "ts": [
+    "A",
+    "B"
+   ]
+  },
+  {
+   "id": "c050",
+   "cat": "code",
+   "input": "```\n[[A]]\n```\n[[B]]\n```\n[[C]]",
+   "rust": [
+    "B"
+   ],
+   "ts": [
+    "B",
+    "C"
+   ]
+  },
+  {
+   "id": "c051",
+   "cat": "code",
+   "input": "`one` two ``[[Foo]]`` end",
+   "rust": [],
+   "ts": [
+    "Foo"
+   ]
+  },
+  {
+   "id": "c059",
+   "cat": "link",
+   "input": "[#tag](u)",
+   "rust": [
+    "tag"
+   ],
+   "ts": []
+  },
+  {
+   "id": "c077",
+   "cat": "emph",
+   "input": "_#tag_",
+   "rust": [],
+   "ts": [
+    "tag"
+   ]
+  },
+  {
+   "id": "c090",
+   "cat": "tag",
+   "input": "#t.",
+   "rust": [
+    "t."
+   ],
+   "ts": [
+    "t"
+   ]
+  },
+  {
+   "id": "c092",
+   "cat": "tag",
+   "input": "#t#t",
+   "rust": [
+    "t"
+   ],
+   "ts": [
+    "t",
+    "t"
+   ]
+  },
+  {
+   "id": "c093",
+   "cat": "tag",
+   "input": "#中文",
+   "rust": [
+    "中文"
+   ],
+   "ts": []
+  },
+  {
+   "id": "c094",
+   "cat": "tag",
+   "input": "#café",
+   "rust": [
+    "café"
+   ],
+   "ts": [
+    "caf"
+   ]
+  },
+  {
+   "id": "c097",
+   "cat": "tag",
+   "input": "#tag.foo",
+   "rust": [
+    "tag.foo"
+   ],
+   "ts": [
+    "tag"
+   ]
+  },
+  {
+   "id": "c099",
+   "cat": "tag",
+   "input": "#a.b.c",
+   "rust": [
+    "a.b.c"
+   ],
+   "ts": [
+    "a"
+   ]
+  },
+  {
+   "id": "c100",
+   "cat": "tag",
+   "input": "word#tag",
+   "rust": [],
+   "ts": [
+    "tag"
+   ]
+  },
+  {
+   "id": "c101",
+   "cat": "tag",
+   "input": "a#b",
+   "rust": [],
+   "ts": [
+    "b"
+   ]
+  },
+  {
+   "id": "c102",
+   "cat": "tag",
+   "input": "c#sharp",
+   "rust": [],
+   "ts": [
+    "sharp"
+   ]
+  },
+  {
+   "id": "c113",
+   "cat": "tag",
+   "input": "email#fragment",
+   "rust": [],
+   "ts": [
+    "fragment"
+   ]
+  },
+  {
+   "id": "c117",
+   "cat": "tag",
+   "input": "#naïve",
+   "rust": [
+    "naïve"
+   ],
+   "ts": [
+    "na"
+   ]
+  },
+  {
+   "id": "c118",
+   "cat": "tag",
+   "input": "pre #tag.next",
+   "rust": [
+    "tag.next"
+   ],
+   "ts": [
+    "tag"
+   ]
+  },
+  {
+   "id": "c131",
+   "cat": "macro",
+   "input": "{{query [[Foo]]}}",
+   "rust": [
+    "Foo"
+   ],
+   "ts": []
+  },
+  {
+   "id": "c132",
+   "cat": "macro",
+   "input": "{{embed [[Foo]]}}",
+   "rust": [
+    "Foo"
+   ],
+   "ts": []
+  },
+  {
+   "id": "c133",
+   "cat": "macro",
+   "input": "{{embed [[Foo]] ((11111111-1111-1111-1111-111111111111))}}",
+   "rust": [
+    "Foo"
+   ],
+   "ts": []
+  },
+  {
+   "id": "c136",
+   "cat": "macro",
+   "input": "{{renderer :x, [[Foo]]}}",
+   "rust": [
+    "Foo"
+   ],
+   "ts": []
+  },
+  {
+   "id": "c144",
+   "cat": "unicode",
+   "input": "#étag",
+   "rust": [
+    "étag"
+   ],
+   "ts": []
+  }
+ ],
+ "blockDiv": [
+  {
+   "id": "c128",
+   "cat": "macro",
+   "input": "{{embed ((11111111-1111-1111-1111-111111111111))}}",
+   "rust": [
+    "11111111-1111-1111-1111-111111111111"
+   ],
+   "ts": [],
+   "ts_raw": [],
+   "macro": [
+    "embed ((11111111-1111-1111-1111-111111111111))"
+   ]
+  },
+  {
+   "id": "c133",
+   "cat": "macro",
+   "input": "{{embed [[Foo]] ((11111111-1111-1111-1111-111111111111))}}",
+   "rust": [
+    "11111111-1111-1111-1111-111111111111"
+   ],
+   "ts": [],
+   "ts_raw": [],
+   "macro": [
+    "embed [[Foo]] ((11111111-1111-1111-1111-111111111111))"
+   ]
+  }
+ ],
+ "pageVsMldoc": [
+  {
+   "id": "c000",
+   "cat": "brackets",
+   "input": "[[a[[b]]c]]",
+   "rust": [
+    "a[[b"
+   ],
+   "ts": [
+    "a[[b"
+   ],
+   "mldoc": [],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c004",
+   "cat": "brackets",
+   "input": "[[]]",
+   "rust": [
+    ""
+   ],
+   "ts": [
+    ""
+   ],
+   "mldoc": [],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c009",
+   "cat": "brackets",
+   "input": "[[Foo](bar)]]",
+   "rust": [
+    "Foo](bar)"
+   ],
+   "ts": [],
+   "mldoc": [
+    "Foo](bar)"
+   ],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c011",
+   "cat": "brackets",
+   "input": "[[a](b)]] and [[c]]",
+   "rust": [
+    "a](b)",
+    "c"
+   ],
+   "ts": [
+    "c"
+   ],
+   "mldoc": [
+    "a](b)",
+    "c"
+   ],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c013",
+   "cat": "brackets",
+   "input": "[[a\nb]]",
+   "rust": [
+    "a\nb"
+   ],
+   "ts": [
+    "a\nb"
+   ],
+   "mldoc": [],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c037",
+   "cat": "code",
+   "input": "``[[Foo]]``",
+   "rust": [],
+   "ts": [
+    "Foo"
+   ],
+   "mldoc": [],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c038",
+   "cat": "code",
+   "input": "``a [[Foo]] b``",
+   "rust": [],
+   "ts": [
+    "Foo"
+   ],
+   "mldoc": [],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c048",
+   "cat": "code",
+   "input": "```\ntext [[Foo]]",
+   "rust": [],
+   "ts": [
+    "Foo"
+   ],
+   "mldoc": [
+    "Foo"
+   ],
+   "cls": "TS=OG, RUST_WRONG"
+  },
+  {
+   "id": "c049",
+   "cat": "code",
+   "input": "```js\n[[A]] and #B",
+   "rust": [],
+   "ts": [
+    "A",
+    "B"
+   ],
+   "mldoc": [
+    "A",
+    "B"
+   ],
+   "cls": "TS=OG, RUST_WRONG"
+  },
+  {
+   "id": "c050",
+   "cat": "code",
+   "input": "```\n[[A]]\n```\n[[B]]\n```\n[[C]]",
+   "rust": [
+    "B"
+   ],
+   "ts": [
+    "B",
+    "C"
+   ],
+   "mldoc": [
+    "B",
+    "C"
+   ],
+   "cls": "TS=OG, RUST_WRONG"
+  },
+  {
+   "id": "c051",
+   "cat": "code",
+   "input": "`one` two ``[[Foo]]`` end",
+   "rust": [],
+   "ts": [
+    "Foo"
+   ],
+   "mldoc": [],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c055",
+   "cat": "link",
+   "input": "![[[Foo]]](u)",
+   "rust": [
+    "[Foo"
+   ],
+   "ts": [
+    "[Foo"
+   ],
+   "mldoc": [],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c059",
+   "cat": "link",
+   "input": "[#tag](u)",
+   "rust": [
+    "tag"
+   ],
+   "ts": [],
+   "mldoc": [],
+   "cls": "TS=OG, RUST_WRONG"
+  },
+  {
+   "id": "c066",
+   "cat": "escape",
+   "input": "\\[[a]]",
+   "rust": [
+    "a"
+   ],
+   "ts": [
+    "a"
+   ],
+   "mldoc": [],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c068",
+   "cat": "escape",
+   "input": "\\#tag",
+   "rust": [
+    "tag"
+   ],
+   "ts": [
+    "tag"
+   ],
+   "mldoc": [],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c069",
+   "cat": "escape",
+   "input": "a \\[[b]] c",
+   "rust": [
+    "b"
+   ],
+   "ts": [
+    "b"
+   ],
+   "mldoc": [],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c071",
+   "cat": "escape",
+   "input": "\\`[[a]]\\`",
+   "rust": [],
+   "ts": [],
+   "mldoc": [
+    "a"
+   ],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c077",
+   "cat": "emph",
+   "input": "_#tag_",
+   "rust": [],
+   "ts": [
+    "tag"
+   ],
+   "mldoc": [],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c079",
+   "cat": "emph",
+   "input": "==#tag==",
+   "rust": [
+    "tag"
+   ],
+   "ts": [
+    "tag"
+   ],
+   "mldoc": [],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c090",
+   "cat": "tag",
+   "input": "#t.",
+   "rust": [
+    "t."
+   ],
+   "ts": [
+    "t"
+   ],
+   "mldoc": [
+    "t"
+   ],
+   "cls": "TS=OG, RUST_WRONG"
+  },
+  {
+   "id": "c092",
+   "cat": "tag",
+   "input": "#t#t",
+   "rust": [
+    "t"
+   ],
+   "ts": [
+    "t",
+    "t"
+   ],
+   "mldoc": [
+    "t",
+    "t"
+   ],
+   "cls": "TS=OG, RUST_WRONG"
+  },
+  {
+   "id": "c093",
+   "cat": "tag",
+   "input": "#中文",
+   "rust": [
+    "中文"
+   ],
+   "ts": [],
+   "mldoc": [
+    "中文"
+   ],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c094",
+   "cat": "tag",
+   "input": "#café",
+   "rust": [
+    "café"
+   ],
+   "ts": [
+    "caf"
+   ],
+   "mldoc": [
+    "café"
+   ],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c097",
+   "cat": "tag",
+   "input": "#tag.foo",
+   "rust": [
+    "tag.foo"
+   ],
+   "ts": [
+    "tag"
+   ],
+   "mldoc": [
+    "tag.foo"
+   ],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c099",
+   "cat": "tag",
+   "input": "#a.b.c",
+   "rust": [
+    "a.b.c"
+   ],
+   "ts": [
+    "a"
+   ],
+   "mldoc": [
+    "a.b.c"
+   ],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c100",
+   "cat": "tag",
+   "input": "word#tag",
+   "rust": [],
+   "ts": [
+    "tag"
+   ],
+   "mldoc": [
+    "tag"
+   ],
+   "cls": "TS=OG, RUST_WRONG"
+  },
+  {
+   "id": "c101",
+   "cat": "tag",
+   "input": "a#b",
+   "rust": [],
+   "ts": [
+    "b"
+   ],
+   "mldoc": [
+    "b"
+   ],
+   "cls": "TS=OG, RUST_WRONG"
+  },
+  {
+   "id": "c102",
+   "cat": "tag",
+   "input": "c#sharp",
+   "rust": [],
+   "ts": [
+    "sharp"
+   ],
+   "mldoc": [
+    "sharp"
+   ],
+   "cls": "TS=OG, RUST_WRONG"
+  },
+  {
+   "id": "c105",
+   "cat": "tag",
+   "input": "(#tag)",
+   "rust": [
+    "tag"
+   ],
+   "ts": [
+    "tag"
+   ],
+   "mldoc": [
+    "tag)"
+   ],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c110",
+   "cat": "tag",
+   "input": "#[[unclosed",
+   "rust": [],
+   "ts": [],
+   "mldoc": [
+    "[[unclosed"
+   ],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c113",
+   "cat": "tag",
+   "input": "email#fragment",
+   "rust": [],
+   "ts": [
+    "fragment"
+   ],
+   "mldoc": [
+    "fragment"
+   ],
+   "cls": "TS=OG, RUST_WRONG"
+  },
+  {
+   "id": "c116",
+   "cat": "tag",
+   "input": "x#中文",
+   "rust": [],
+   "ts": [],
+   "mldoc": [
+    "中文"
+   ],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c117",
+   "cat": "tag",
+   "input": "#naïve",
+   "rust": [
+    "naïve"
+   ],
+   "ts": [
+    "na"
+   ],
+   "mldoc": [
+    "naïve"
+   ],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c118",
+   "cat": "tag",
+   "input": "pre #tag.next",
+   "rust": [
+    "tag.next"
+   ],
+   "ts": [
+    "tag"
+   ],
+   "mldoc": [
+    "tag.next"
+   ],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c131",
+   "cat": "macro",
+   "input": "{{query [[Foo]]}}",
+   "rust": [
+    "Foo"
+   ],
+   "ts": [],
+   "mldoc": [],
+   "cls": "TS=OG, RUST_WRONG"
+  },
+  {
+   "id": "c132",
+   "cat": "macro",
+   "input": "{{embed [[Foo]]}}",
+   "rust": [
+    "Foo"
+   ],
+   "ts": [],
+   "mldoc": [
+    "Foo"
+   ],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c133",
+   "cat": "macro",
+   "input": "{{embed [[Foo]] ((11111111-1111-1111-1111-111111111111))}}",
+   "rust": [
+    "Foo"
+   ],
+   "ts": [],
+   "mldoc": [
+    "Foo"
+   ],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c136",
+   "cat": "macro",
+   "input": "{{renderer :x, [[Foo]]}}",
+   "rust": [
+    "Foo"
+   ],
+   "ts": [],
+   "mldoc": [],
+   "cls": "TS=OG, RUST_WRONG"
+  },
+  {
+   "id": "c142",
+   "cat": "unicode",
+   "input": "#tag​suffix",
+   "rust": [
+    "tag"
+   ],
+   "ts": [
+    "tag"
+   ],
+   "mldoc": [
+    "tag​suffix"
+   ],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c144",
+   "cat": "unicode",
+   "input": "#étag",
+   "rust": [
+    "étag"
+   ],
+   "ts": [],
+   "mldoc": [
+    "étag"
+   ],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c147",
+   "cat": "unicode",
+   "input": "#😀",
+   "rust": [],
+   "ts": [],
+   "mldoc": [
+    "😀"
+   ],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  }
+ ],
+ "blockVsMldoc": [
+  {
+   "id": "c022",
+   "cat": "parens",
+   "input": "[label]:((11111111-1111-1111-1111-111111111111))",
+   "rust": [
+    "11111111-1111-1111-1111-111111111111"
+   ],
+   "ts": [
+    "11111111-1111-1111-1111-111111111111"
+   ],
+   "mldoc": [],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c067",
+   "cat": "escape",
+   "input": "\\((11111111-1111-1111-1111-111111111111))",
+   "rust": [
+    "11111111-1111-1111-1111-111111111111"
+   ],
+   "ts": [
+    "11111111-1111-1111-1111-111111111111"
+   ],
+   "mldoc": [],
+   "cls": "BOTH_TINE_AGREE_≠_OG"
+  },
+  {
+   "id": "c128",
+   "cat": "macro",
+   "input": "{{embed ((11111111-1111-1111-1111-111111111111))}}",
+   "rust": [
+    "11111111-1111-1111-1111-111111111111"
+   ],
+   "ts": [],
+   "mldoc": [
+    "11111111-1111-1111-1111-111111111111"
+   ],
+   "cls": "RUST=OG, TS_WRONG"
+  },
+  {
+   "id": "c133",
+   "cat": "macro",
+   "input": "{{embed [[Foo]] ((11111111-1111-1111-1111-111111111111))}}",
+   "rust": [
+    "11111111-1111-1111-1111-111111111111"
+   ],
+   "ts": [],
+   "mldoc": [
+    "11111111-1111-1111-1111-111111111111"
+   ],
+   "cls": "RUST=OG, TS_WRONG"
+  }
+ ]
+}

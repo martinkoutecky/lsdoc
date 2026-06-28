@@ -1,0 +1,12 @@
+[package]
+name = "rust-runner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tine-core = { path = "/aux/koutecky/logseq/logseq-claude/crates/tine-core" }
+serde_json = "1"
+
+[[bin]]
+name = "rust-runner"
+path = "src/main.rs"
