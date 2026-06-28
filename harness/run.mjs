@@ -25,21 +25,27 @@ function run(cmd, args, opts = {}) {
 }
 
 // 1. corpus — generate all sources, then merge into corpus.all.json (derived).
+//    Markdown sources are untagged (default "md"); Org sources carry format:"org".
 if (!process.argv.includes("--no-gen")) {
   run("node", [join(__dir, "corpus.gen.mjs")]);
   run("node", [join(__dir, "corpus.blocks.gen.mjs")]);
-  run("node", [join(__dir, "corpus.mined.gen.mjs")]); // mined mldoc/OG test inputs
-  run("node", [join(__dir, "corpus.real.gen.mjs")]); // real files (machine-specific; [] if absent)
+  run("node", [join(__dir, "corpus.mined.gen.mjs")]);     // mined mldoc/OG md test inputs
+  run("node", [join(__dir, "corpus.real.gen.mjs")]);      // real md files (machine-specific)
+  run("node", [join(__dir, "corpus.org.gen.mjs")]);       // hand-written org adversarial
+  run("node", [join(__dir, "corpus.org.real.gen.mjs")]);  // real org graph (machine-specific)
 }
 const load = (f) => JSON.parse(readFileSync(join(__dir, f), "utf8"));
+const strip = (a) => a.map(({ id, input, format }) => ({ id, input, format })); // drop `file`/`cat`
 const inline = load("corpus.json");
 const blocks = load("corpus.blocks.json");
 const mined = load("corpus.mined.json");
-const real = load("corpus.real.json").map((r) => ({ id: r.id, input: r.input })); // drop `file`
-const all = [...inline, ...blocks, ...mined, ...real];
+const real = strip(load("corpus.real.json"));
+const org = load("corpus.org.json");
+const orgReal = strip(load("corpus.org.real.json"));
+const all = [...inline, ...blocks, ...mined, ...real, ...org, ...orgReal];
 const allPath = join(__dir, "corpus.all.json");
 writeFileSync(allPath, JSON.stringify(all, null, 1));
-console.log(`corpus: ${inline.length} inline + ${blocks.length} block + ${mined.length} mined + ${real.length} real = ${all.length} total`);
+console.log(`corpus: ${inline.length} inline + ${blocks.length} block + ${mined.length} mined + ${real.length} real + ${org.length} org + ${orgReal.length} org-real = ${all.length} total`);
 
 // 2. oracle
 run("node", [join(__dir, "oracle.mjs"), allPath]);

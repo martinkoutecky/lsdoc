@@ -12,6 +12,8 @@ use std::fs;
 struct CorpusItem {
     id: String,
     input: String,
+    #[serde(default)]
+    format: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -34,7 +36,7 @@ fn main() {
     let out: Vec<OutItem> = corpus
         .into_iter()
         .map(|c| OutItem {
-            projection: lsdoc::parse_to_projection(&c.input),
+            projection: lsdoc::parse_format(&c.input, c.format.as_deref().unwrap_or("md")),
             id: c.id,
             input: c.input,
         })

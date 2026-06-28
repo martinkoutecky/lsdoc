@@ -1,0 +1,320 @@
+[
+ {
+  "id": "o000",
+  "cat": "head",
+  "input": "* Heading",
+  "format": "org"
+ },
+ {
+  "id": "o001",
+  "cat": "head",
+  "input": "** Sub",
+  "format": "org"
+ },
+ {
+  "id": "o002",
+  "cat": "head",
+  "input": "*** Deep",
+  "format": "org"
+ },
+ {
+  "id": "o003",
+  "cat": "head",
+  "input": "*no space",
+  "format": "org"
+ },
+ {
+  "id": "o004",
+  "cat": "head",
+  "input": "* TODO task",
+  "format": "org"
+ },
+ {
+  "id": "o005",
+  "cat": "head",
+  "input": "* DONE done",
+  "format": "org"
+ },
+ {
+  "id": "o006",
+  "cat": "head",
+  "input": "* DOING [#A] urgent",
+  "format": "org"
+ },
+ {
+  "id": "o007",
+  "cat": "head",
+  "input": "* TODO [#B] with :tag1:tag2:",
+  "format": "org"
+ },
+ {
+  "id": "o008",
+  "cat": "head",
+  "input": "* plain :only:tags:",
+  "format": "org"
+ },
+ {
+  "id": "o009",
+  "cat": "head",
+  "input": "*  extra spaces",
+  "format": "org"
+ },
+ {
+  "id": "o010",
+  "cat": "head",
+  "input": "* TODO",
+  "format": "org"
+ },
+ {
+  "id": "o011",
+  "cat": "emph",
+  "input": "*bold* and /italic/",
+  "format": "org"
+ },
+ {
+  "id": "o012",
+  "cat": "emph",
+  "input": "_underline_ +strike+",
+  "format": "org"
+ },
+ {
+  "id": "o013",
+  "cat": "emph",
+  "input": "~code~ and =verbatim=",
+  "format": "org"
+ },
+ {
+  "id": "o014",
+  "cat": "emph",
+  "input": "^^highlight^^",
+  "format": "org"
+ },
+ {
+  "id": "o015",
+  "cat": "emph",
+  "input": "a/b/c paths stay literal",
+  "format": "org"
+ },
+ {
+  "id": "o016",
+  "cat": "emph",
+  "input": "snake_case_var literal",
+  "format": "org"
+ },
+ {
+  "id": "o017",
+  "cat": "emph",
+  "input": "2*3*4 literal",
+  "format": "org"
+ },
+ {
+  "id": "o018",
+  "cat": "emph",
+  "input": "nested /it *bo* it/",
+  "format": "org"
+ },
+ {
+  "id": "o019",
+  "cat": "emph",
+  "input": "*bold spanning\nnewline*",
+  "format": "org"
+ },
+ {
+  "id": "o020",
+  "cat": "link",
+  "input": "[[target]]",
+  "format": "org"
+ },
+ {
+  "id": "o021",
+  "cat": "link",
+  "input": "[[target][label]]",
+  "format": "org"
+ },
+ {
+  "id": "o022",
+  "cat": "link",
+  "input": "[[https://orgmode.org][site]]",
+  "format": "org"
+ },
+ {
+  "id": "o023",
+  "cat": "link",
+  "input": "[[https://x.org]]",
+  "format": "org"
+ },
+ {
+  "id": "o024",
+  "cat": "link",
+  "input": "[[id:11111111-1111-1111-1111-111111111111]]",
+  "format": "org"
+ },
+ {
+  "id": "o025",
+  "cat": "link",
+  "input": "[[a]] and [[b][c]]",
+  "format": "org"
+ },
+ {
+  "id": "o026",
+  "cat": "ts",
+  "input": "met <2026-06-26 Fri>",
+  "format": "org"
+ },
+ {
+  "id": "o027",
+  "cat": "ts",
+  "input": "logged [2026-06-20 Sat]",
+  "format": "org"
+ },
+ {
+  "id": "o028",
+  "cat": "ts",
+  "input": "* h\nSCHEDULED: <2026-06-26 Fri>",
+  "format": "org"
+ },
+ {
+  "id": "o029",
+  "cat": "ts",
+  "input": "* h\nDEADLINE: <2026-07-01 Wed>",
+  "format": "org"
+ },
+ {
+  "id": "o030",
+  "cat": "ts",
+  "input": "range <2026-06-26 Fri>--<2026-06-28 Sun>",
+  "format": "org"
+ },
+ {
+  "id": "o031",
+  "cat": "kw",
+  "input": "#+TITLE: my title",
+  "format": "org"
+ },
+ {
+  "id": "o032",
+  "cat": "kw",
+  "input": "#+FILETAGS: :a:b:",
+  "format": "org"
+ },
+ {
+  "id": "o033",
+  "cat": "kw",
+  "input": "#+ICON: 🚀",
+  "format": "org"
+ },
+ {
+  "id": "o034",
+  "cat": "kw",
+  "input": "#+AUTHOR: someone",
+  "format": "org"
+ },
+ {
+  "id": "o035",
+  "cat": "block",
+  "input": "#+BEGIN_SRC clojure\n(defn x [])\n#+END_SRC",
+  "format": "org"
+ },
+ {
+  "id": "o036",
+  "cat": "block",
+  "input": "#+BEGIN_QUOTE\nquoted text\n#+END_QUOTE",
+  "format": "org"
+ },
+ {
+  "id": "o037",
+  "cat": "block",
+  "input": "#+BEGIN_EXAMPLE\nliteral\n#+END_EXAMPLE",
+  "format": "org"
+ },
+ {
+  "id": "o038",
+  "cat": "block",
+  "input": "#+BEGIN_SRC\n* star line stays code\n#+END_SRC",
+  "format": "org"
+ },
+ {
+  "id": "o039",
+  "cat": "drawer",
+  "input": ":PROPERTIES:\n:key: value\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o040",
+  "cat": "drawer",
+  "input": ":PROPERTIES:\n:key: value\n:another: 2\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o041",
+  "cat": "drawer",
+  "input": ":LOGBOOK:\nCLOCK: [2026-06-14]\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o042",
+  "cat": "drawer",
+  "input": "* h\n:PROPERTIES:\n:id: x\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o043",
+  "cat": "list",
+  "input": "- milk\n- eggs",
+  "format": "org"
+ },
+ {
+  "id": "o044",
+  "cat": "list",
+  "input": "+ plus item",
+  "format": "org"
+ },
+ {
+  "id": "o045",
+  "cat": "list",
+  "input": "1. first\n2. second",
+  "format": "org"
+ },
+ {
+  "id": "o046",
+  "cat": "table",
+  "input": "| a | b |\n|---+---|\n| 1 | 2 |",
+  "format": "org"
+ },
+ {
+  "id": "o047",
+  "cat": "fn",
+  "input": "see [fn:1] ref",
+  "format": "org"
+ },
+ {
+  "id": "o048",
+  "cat": "fn",
+  "input": "[fn:1] the definition",
+  "format": "org"
+ },
+ {
+  "id": "o049",
+  "cat": "misc",
+  "input": "a plain paragraph\nsecond line",
+  "format": "org"
+ },
+ {
+  "id": "o050",
+  "cat": "misc",
+  "input": "* parent\n** child with /em/ and [[link]]",
+  "format": "org"
+ },
+ {
+  "id": "o051",
+  "cat": "misc",
+  "input": "",
+  "format": "org"
+ },
+ {
+  "id": "o052",
+  "cat": "misc",
+  "input": "   ",
+  "format": "org"
+ }
+]
