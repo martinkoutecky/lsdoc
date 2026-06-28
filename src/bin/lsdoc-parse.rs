@@ -20,7 +20,7 @@ struct CorpusItem {
 struct OutItem {
     id: String,
     input: String,
-    projection: lsdoc::projection::Projection,
+    projection: lsdoc::ast::Projection,
 }
 
 fn main() {

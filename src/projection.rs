@@ -1,11 +1,14 @@
-//! The "observable projection": the lossy, comparison-only view of a parse that
-//! is diffed against mldoc (the oracle). Its `serde` output must match
+//! lsdoc's AST — the render-complete, `serde`-serializable parse tree, re-exported
+//! as the public, frozen [`crate::ast`] (see that module + `AST.md` for the wire
+//! contract). It is **both** the integration surface Tine renders from AND the
+//! "observable projection" diffed against mldoc: its `serde` output matches
 //! `harness/lib/normalize.mjs` exactly (key names + value shapes), so the Node
-//! `compare.mjs` can deep-equal the two sides.
+//! `compare.mjs` can deep-equal the two sides, gating every field to 0-diff.
 //!
-//! This is NOT lsdoc's real AST (which is richer and carries inline spans). Once
-//! the real parser lands (M2+), a `project()` step maps real AST → these types.
-//! For now the stub parser builds these directly.
+//! (Earlier this was framed as a lossy "comparison-only" view distinct from a
+//! richer real AST. That framing is retired: render-relevant fields are carried
+//! and gated; the only excluded detail is inline source spans — out of scope for a
+//! read-only renderer, verified by lsdoc's own unit tests. See `DECISIONS.md`.)
 
 use serde::Serialize;
 
@@ -293,6 +296,8 @@ pub enum Inline {
     Macro { name: String, args: Vec<String> },
     #[serde(rename = "latex")]
     Latex { mode: String, body: String },
+    /// `ts` ∈ {`Date`,`Range`,`Scheduled`,`Deadline`,`Closed`}; `date` is mldoc's
+    /// raw date/range record, **declared opaque** for rendering (shape in `AST.md`).
     #[serde(rename = "timestamp")]
     Timestamp { ts: String, date: serde_json::Value },
     #[serde(rename = "fnref")]
@@ -300,7 +305,8 @@ pub enum Inline {
     /// Inline raw HTML, e.g. `<span class="x">…</span>` (mldoc `Inline_Html`).
     #[serde(rename = "inline_html")]
     InlineHtml { text: String },
-    /// Email autolink `<a@b.com>` (mldoc `Email`); payload is the raw address obj.
+    /// Email autolink `<a@b.com>` (mldoc `Email`); `text` is mldoc's raw address
+    /// record, **declared opaque** for rendering (shape in `AST.md`).
     #[serde(rename = "email")]
     Email { text: serde_json::Value },
     /// LaTeX named entity `\Delta` / `\Delta{}` (mldoc `Entity`), resolved from the
