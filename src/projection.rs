@@ -63,6 +63,11 @@ pub enum Block {
     #[serde(rename = "bullet")]
     Bullet {
         level: u32,
+        /// Heading level when the bullet body is an ATX heading (`- ## Title` → 2),
+        /// the `#`-count (uncapped); `None` for a non-heading bullet. Mirrors
+        /// `Heading.size` so a renderer can show a block-authored heading.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        size: Option<u32>,
         inline: Vec<Inline>,
         #[serde(skip_serializing_if = "Option::is_none")]
         marker: Option<String>,

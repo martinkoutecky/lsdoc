@@ -108,6 +108,33 @@ add("checkbox", "- [ ] dash is NOT a checkbox");   // → Heading, literal "[ ] 
 add("checkbox", "* [-] not a checkbox marker");    // `[-]` is literal text
 add("checkbox", "* [ ] a\n  * [x] nested done");   // checkbox survives nesting
 
+// bullet heading-size (Gap 1: a `- ## Title` block carries the heading level as `size`,
+// mirroring Heading.size; mldoc Heading{unordered, size}). Found by the Tine integration.
+add("bullet-size", "- # Heading one");
+add("bullet-size", "- ## Heading two");
+add("bullet-size", "- ###### six");
+add("bullet-size", "- ####### seven");      // uncapped
+add("bullet-size", "- # TODO task");        // size + marker
+add("bullet-size", "- ## [#A] prioritised");
+add("bullet-size", "- #nospace");           // not a heading (no space) → size none
+add("bullet-size", "- plain bullet");       // size none
+
+// bullet-line block-opener splits (Gap 2: post-marker block construct ⇒ empty bullet +
+// sibling block, matching mldoc). Found by the Tine integration + a post-marker audit.
+add("bullet-open", "- ---");                 // → bullet + hr (common divider)
+add("bullet-open", "- ***");
+add("bullet-open", "- ___");
+add("bullet-open", "- $$ E = mc^2 $$");      // → bullet + displayed_math
+add("bullet-open", "- [^1]: the body");      // → bullet + footnote_def
+add("bullet-open", "- <div>x</div>");        // → bullet + raw_html
+add("bullet-open", "- \\begin{eq}a\\end{eq}"); // → bullet + latex_env
+add("bullet-open", "- | a | b |");           // → bullet + table (single row)
+add("bullet-open", "- | a | b |\n| 1 | 2 |"); // → bullet + table (multi-row)
+add("bullet-open", "- # ---");               // size 1 + hr
+add("bullet-open", "- # $$ x $$");           // size 1 + displayed_math
+add("bullet-open", "- # | a |");             // size 1 + table
+add("bullet-open", "- # [^1]: b");           // size 1, NO footnote split (inline ref)
+
 // edge / empty
 add("edge", "");
 add("edge", "   ");

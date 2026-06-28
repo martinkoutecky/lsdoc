@@ -135,8 +135,22 @@ pub fn parse(input: &str) -> Vec<Block> {
             // markdown blockquote (only on `-` bullets; `*`/`+` are Lists, untouched).
             let dw = leading_ws(t);
             let after = t[dw + 1..].trim_start(); // after '-' + spaces
-            let content = strip_atx_hashes(after); // after optional `#{1,n}` size run
+            let (size, content) = atx_size(after); // heading `#{1,n}` size + the rest
             let content_off = line.start + (t.len() - content.len());
+            // emit the empty (title-less) bullet that precedes a split-off sibling block.
+            macro_rules! empty_bullet {
+                () => {
+                    out.push(Block::Bullet {
+                        level,
+                        size,
+                        inline: vec![],
+                        marker: None,
+                        priority: None,
+                        htags: vec![],
+                        span: Some(Span(line.start, content_off)),
+                    });
+                };
+            }
             // (a) fenced code opener on the bullet line — only splits if it CLOSES
             // (an unclosed `- ``` ` stays a normal bullet titled "```", per mldoc).
             if let Some((fchar, frun)) = fence_marker(content) {
@@ -145,14 +159,7 @@ pub fn parse(input: &str) -> Vec<Block> {
                 {
                     if let Some(close) = find_matching_fence(&lines, i, fchar) {
                         flush_para(&mut out, &mut para, input);
-                        out.push(Block::Bullet {
-                            level,
-                            inline: vec![],
-                            marker: None,
-                            priority: None,
-                            htags: vec![],
-                            span: Some(Span(line.start, content_off)),
-                        });
+                        empty_bullet!();
                         let lang = fence_lang(&content[frun..]);
                         let code = if close > i + 1 {
                             input[lines[i + 1].start..lines[close - 1].end].to_string()
@@ -173,14 +180,7 @@ pub fn parse(input: &str) -> Vec<Block> {
             // (b) markdown blockquote opener on the bullet line (lazy continuation).
             if quote_opens(content) {
                 flush_para(&mut out, &mut para, input);
-                out.push(Block::Bullet {
-                    level,
-                    inline: vec![],
-                    marker: None,
-                    priority: None,
-                    htags: vec![],
-                    span: Some(Span(line.start, content_off)),
-                });
+                empty_bullet!();
                 let mut body = String::new();
                 if let Some(c) = quote_line_content(content, true) {
                     body.push_str(&c);
@@ -211,14 +211,7 @@ pub fn parse(input: &str) -> Vec<Block> {
             // run; the property `key` rejects bullet prefixes via its space check.
             if let Some(kv) = property(content) {
                 flush_para(&mut out, &mut para, input);
-                out.push(Block::Bullet {
-                    level,
-                    inline: vec![],
-                    marker: None,
-                    priority: None,
-                    htags: vec![],
-                    span: Some(Span(line.start, content_off)),
-                });
+                empty_bullet!();
                 let mut props = vec![kv];
                 let mut end = line.end;
                 i += 1;
@@ -236,11 +229,78 @@ pub fn parse(input: &str) -> Vec<Block> {
                 out.push(Block::Properties { props, span: Some(Span(content_off, end)) });
                 continue;
             }
+            // (d) horizontal rule opener (`---`/`***`/`___`).
+            if is_hr(content) {
+                flush_para(&mut out, &mut para, input);
+                empty_bullet!();
+                out.push(Block::Hr { span: Some(Span(content_off, line.end)) });
+                i += 1;
+                continue;
+            }
+            // (e) block displayed-math opener `$$ … $$` (single line).
+            if let Some(math) = displayed_math(content) {
+                flush_para(&mut out, &mut para, input);
+                empty_bullet!();
+                out.push(Block::DisplayedMath { text: math, span: Some(Span(content_off, line.end)) });
+                i += 1;
+                continue;
+            }
+            // (f) raw-HTML opener.
+            if is_raw_html(content) {
+                flush_para(&mut out, &mut para, input);
+                empty_bullet!();
+                out.push(Block::RawHtml { text: content.to_string(), span: Some(Span(content_off, line.end)) });
+                i += 1;
+                continue;
+            }
+            // (g) LaTeX environment opener `\begin{X} … \end{X}` (may span lines).
+            if let Some((name, lc, consumed_end)) =
+                crate::inline::parse_latex_env(input, content_off, line.start + t.len())
+            {
+                flush_para(&mut out, &mut para, input);
+                empty_bullet!();
+                out.push(Block::LatexEnv { name, content: lc, span: Some(Span(content_off, consumed_end)) });
+                let mut ni = i + 1;
+                while ni < lines.len() && lines[ni].start < consumed_end {
+                    ni += 1;
+                }
+                i = ni;
+                continue;
+            }
+            // (h) table opener `| … |` (consumes following `|` lines).
+            if content.trim_start().starts_with('|') {
+                flush_para(&mut out, &mut para, input);
+                empty_bullet!();
+                let mut texts: Vec<&str> = vec![content];
+                i += 1;
+                while i < lines.len() && lines[i].text.trim_start().starts_with('|') {
+                    texts.push(lines[i].text);
+                    i += 1;
+                }
+                out.push(build_table_from_texts(&texts, content_off, lines[i - 1].end));
+                continue;
+            }
+            // (i) footnote-definition opener — only WITHOUT a `#` prefix (with a `#`,
+            // `[^id]` is an inline footnote ref in the heading title, per mldoc heading0).
+            if size.is_none() {
+                if let Some((fname, fbody)) = footnote_def(content) {
+                    flush_para(&mut out, &mut para, input);
+                    empty_bullet!();
+                    out.push(Block::FootnoteDef {
+                        name: fname,
+                        inline: stub_inline(fbody),
+                        span: Some(Span(content_off, line.end)),
+                    });
+                    i += 1;
+                    continue;
+                }
+            }
             // normal bullet.
             flush_para(&mut out, &mut para, input);
-            let (marker, priority, title) = bullet_parts(t);
+            let (marker, priority, title) = split_markers(content);
             out.push(Block::Bullet {
                 level,
+                size,
                 inline: stub_inline(title),
                 marker,
                 priority,
@@ -472,14 +532,21 @@ const MARKERS: &[&str] = &[
 /// Strip a leading ATX `#{1,n}` run from a bullet/heading title (mldoc parses a
 /// heading inside a bullet, e.g. `- ## X` → bullet titled `X`).
 fn strip_atx_hashes(s: &str) -> &str {
+    atx_size(s).1
+}
+
+/// Split a leading ATX `#`-run that forms a heading size (uncapped `#`-count, must be
+/// followed by a space/tab or end-of-line) off `s`. Returns (size, rest-after-the-run,
+/// leading-ws-trimmed). `None` when there is no valid `#`-run (`#nospace`, `text`).
+fn atx_size(s: &str) -> (Option<u32>, &str) {
     let hashes = s.bytes().take_while(|&b| b == b'#').count();
     if hashes > 0 {
         let after = &s[hashes..];
         if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
-            return after.trim_start();
+            return (Some(hashes as u32), after.trim_start());
         }
     }
-    s
+    (None, s)
 }
 
 fn strip_atx(s: &str) -> &str {
@@ -530,13 +597,6 @@ fn split_checkbox(s: &str) -> (Option<bool>, &str) {
     }
 }
 
-/// Bullet parts: drop leading whitespace + `-`, then an ATX `#` run, then extract
-/// the task marker + priority. Returns (marker, priority, title).
-fn bullet_parts(t: &str) -> (Option<String>, Option<String>, &str) {
-    let ws = leading_ws(t);
-    let rest = t[ws + 1..].trim_start(); // skip '-' then leading spaces
-    split_markers(strip_atx_hashes(rest))
-}
 
 fn split_lines(input: &str) -> Vec<Line<'_>> {
     let mut lines = Vec::new();
@@ -980,6 +1040,31 @@ mod tests {
     }
 
     #[test]
+    fn bullet_heading_size_and_openers() {
+        // Gap 1: `- ## Title` carries the heading level as Bullet.size (uncapped).
+        let size = |s: &str| match &parse(s)[0] {
+            Block::Bullet { size, .. } => *size,
+            _ => panic!("expected Bullet"),
+        };
+        assert_eq!(size("- # h"), Some(1));
+        assert_eq!(size("- ###### h"), Some(6));
+        assert_eq!(size("- ####### h"), Some(7)); // uncapped
+        assert_eq!(size("- # TODO x"), Some(1)); // size then marker
+        assert_eq!(size("- #nospace"), None); // no space ⇒ not a heading
+        assert_eq!(size("- plain"), None);
+        // Gap 2: post-marker block openers split into [empty bullet, sibling block].
+        assert_eq!(kinds("- ---"), ["bullet", "hr"]);
+        assert_eq!(kinds("- $$ x $$"), ["bullet", "displayed_math"]);
+        assert_eq!(kinds("- [^1]: body"), ["bullet", "footnote_def"]);
+        assert_eq!(kinds("- <div>x</div>"), ["bullet", "raw_html"]);
+        assert_eq!(kinds("- \\begin{eq}a\\end{eq}"), ["bullet", "latex_env"]);
+        assert_eq!(kinds("- | a | b |"), ["bullet", "table"]);
+        // size + opener combine; but `[^id]:` after a `#` is an inline ref (no split).
+        assert_eq!(kinds("- # ---"), ["bullet", "hr"]);
+        assert_eq!(kinds("- # [^1]: b"), ["bullet"]);
+    }
+
+    #[test]
     fn block_kinds() {
         assert_eq!(kinds("# h"), ["heading"]);
         assert_eq!(kinds("#nospace"), ["paragraph"]);
@@ -1261,6 +1346,13 @@ mod tests {
 }
 
 fn build_table(rows: &[Line], start: usize, end: usize) -> Block {
+    let texts: Vec<&str> = rows.iter().map(|l| l.text).collect();
+    build_table_from_texts(&texts, start, end)
+}
+
+/// Build a `Table` from raw row strings (used by both the top-level table block and the
+/// `- | … |` bullet-opener split, whose first row is a mid-line bullet body, not a `Line`).
+fn build_table_from_texts(rows: &[&str], start: usize, end: usize) -> Block {
     let split_cells = |s: &str| -> Vec<Vec<Inline>> {
         let t = s.trim();
         let t = t.strip_prefix('|').unwrap_or(t);
@@ -1278,13 +1370,13 @@ fn build_table(rows: &[Line], start: usize, end: usize) -> Block {
             })
     };
 
-    let header = rows.first().map(|l| split_cells(l.text));
+    let header = rows.first().map(|l| split_cells(l));
     let mut data_start = 1;
-    if rows.len() > 1 && is_sep(rows[1].text) {
+    if rows.len() > 1 && is_sep(rows[1]) {
         data_start = 2;
     }
     let body: Vec<Vec<Vec<Inline>>> =
-        rows[data_start.min(rows.len())..].iter().map(|l| split_cells(l.text)).collect();
+        rows[data_start.min(rows.len())..].iter().map(|l| split_cells(l)).collect();
 
     Block::Table {
         header,

@@ -9,7 +9,8 @@ section.
 - **Toolchain.** Shared Rust toolchain on the persistent `/aux` mount
   (`/aux/koutecky/logseq/.toolchain/{cargo,rustup}`), sourced via
   `scripts/env.sh`. lsdoc is standalone (no dependency on Tine's `env.sh` or its
-  browser tooling) but reuses the same toolchain. cargo 1.96, edition 2024.
+  browser tooling) but reuses the same toolchain. cargo 1.96; crate edition 2021
+  (dropped from 2024 to lower the consumer MSRV; see the integration prereqs).
 - **Oracle = `mldoc@1.5.7` under Node** (the version OG pins). Installed in
   `harness/`. `package-lock.json` is committed for a reproducible oracle;
   `node_modules` is git-ignored.
@@ -678,3 +679,36 @@ terminate — all probe-confirmed. Linear in body length (100k-line perf case). 
 - **Whitespace-only continuation line** (`[fn:1] body\n   \ncont`): the *downstream* paragraph
   keeps `"   ",Break` in mldoc; lsdoc drops the ws-only line. Footnote body itself is correct;
   general `absorb`/ws-line issue, value-only. STILL OPEN (rare; low value).
+
+## Tine integration render gaps (v0.1.1; from TINE-RENDER-GAPS.md)
+
+The Tine session, integrating lsdoc as the renderer, found two gaps by feeding **real Tine
+blocks** through lsdoc the OG way: it re-prepends the block pattern (`format!("- {raw}")`)
+and parses — the per-block re-bulleted form the whole-file gate didn't exercise. Both fixed.
+
+**Gap 1 — `Bullet.size` (additive field).** A markdown heading authored as a block is stored
+de-bulleted (`## Title`) and re-bulleted to `- ## Title`; mldoc emits `Heading{unordered,
+size:2}` but lsdoc's `Bullet` had no `size`, dropping every block-authored heading's level.
+Added `Bullet.size: Option<u32>` (the uncapped `#`-count; `None` for non-heading bullets),
+mirroring `Heading.size`. **The trap (RENDER-PARITY §1):** the gate passed before *because*
+`normalize.mjs` also dropped `size` on unordered headings — so the fix required adding `size`
+to BOTH the AST and `normalize.mjs` (kept only when non-null, to match lsdoc's skipped `None`)
+so the projection actually compares it. Additive serde field ⇒ Tine consumes it on the bump.
+
+**Gap 2 — bullet-line block-opener splits.** When a bullet's post-marker (post-`#`) body is a
+block-level construct, mldoc emits `[empty bullet, that block]` (heading0.ml title lookahead);
+lsdoc folded it into the bullet inline. The split machinery existed for `code`/`quote`/
+`property`; an audit of post-marker openers found **six** missing (not the three Tine first
+hit): `$$…$$`→`displayed_math`, `---`/`***`/`___`→`hr`, `[^id]:`→`footnote_def`,
+`<html>`→`raw_html`, `\begin{}…\end{}`→`latex_env`, `| … |`→`table`. All now split to a
+sibling block (`- ---` → a real `<hr>`, not literal text). Probe-derived rules: the `#`-size
+and the opener combine (`- # ---` → size-1 empty bullet + hr), EXCEPT the footnote opener
+splits **only without a `#`** (`- # [^1]: b` parses `[^id]` as an inline ref in the heading
+title — mldoc quirk). `build_table` was refactored to `build_table_from_texts` so the table
+opener (whose first row is a mid-line bullet body) reuses it.
+
+Verified: gate 744→**765/765** 0-diff (`- #`…`- ######` + all openers + size/opener combos);
+19 fresh hand cases match; `cargo test` 64→65; fuzz md 1.39% / org 4.86% unchanged, panic-free;
+perf/stack pass. AST-shape change is a single additive `Bullet.size` ⇒ **v0.1.1** (no renamed
+tags / removed variants). NOTE: distinct from the separate realmut-found md structural bugs
+(`1. ` empty marker, `## `/`- ` trailing-ws, leading-ws heading) — those remain queued.

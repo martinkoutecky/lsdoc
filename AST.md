@@ -31,7 +31,7 @@ Markdown and Org produce the **same** AST.
 |---|---|---|---|
 | `paragraph` | `inline: Inline[]` | `span` | a text paragraph |
 | `heading` | `level: u32`, `size: u32\|null`, `inline: Inline[]` | `marker`, `priority`, `htags: string[]`, `span` | ATX `#…`/setext heading; org `*` headline with a `#`-level (md). `size` = setext/ATX size |
-| `bullet` | `level: u32`, `inline: Inline[]` | `marker`, `priority`, `htags: string[]`, `span` | outline bullet (md `-`) / org headline (`*`) — mldoc `Heading{unordered}` |
+| `bullet` | `level: u32`, `inline: Inline[]` | `size: u32`, `marker`, `priority`, `htags: string[]`, `span` | outline bullet (md `-`) / org headline (`*`) — mldoc `Heading{unordered}`. `size` = heading level when the body is an ATX heading (`- ## T` → 2), else absent |
 | `list` | `items: ListItem[]` | `span` | `*`/`+`/`N.` (md) and `-`/`+`/`N.` (org) list |
 | `src` | `lang: string`, `code: string` | `span` | fenced/`#+BEGIN_SRC` code block. `lang` may be `""` |
 | `quote` | `children: Block[]` | `span` | `>` blockquote / `#+BEGIN_QUOTE` |

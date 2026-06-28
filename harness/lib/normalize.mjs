@@ -94,6 +94,9 @@ export function normNode(node) {
       const b = h.unordered
         ? { kind: "bullet", level: h.level }
         : { kind: "heading", level: h.level, size: h.size };
+      // a bullet whose body is an ATX heading carries `size` (the #-count); plain
+      // bullets have size:null in mldoc → omit so it matches lsdoc's skipped `None`.
+      if (h.unordered && h.size != null) b.size = h.size;
       b.inline = (h.title ?? []).map(normInline);
       if (h.tags?.length) b.htags = h.tags;       // org `:tag1:tag2:` on a headline
       if (h.marker) b.marker = h.marker;          // org TODO/DOING/DONE/… (also md)

@@ -351,21 +351,126 @@
  },
  {
   "id": "b070",
+  "cat": "bullet-size",
+  "input": "- # Heading one"
+ },
+ {
+  "id": "b071",
+  "cat": "bullet-size",
+  "input": "- ## Heading two"
+ },
+ {
+  "id": "b072",
+  "cat": "bullet-size",
+  "input": "- ###### six"
+ },
+ {
+  "id": "b073",
+  "cat": "bullet-size",
+  "input": "- ####### seven"
+ },
+ {
+  "id": "b074",
+  "cat": "bullet-size",
+  "input": "- # TODO task"
+ },
+ {
+  "id": "b075",
+  "cat": "bullet-size",
+  "input": "- ## [#A] prioritised"
+ },
+ {
+  "id": "b076",
+  "cat": "bullet-size",
+  "input": "- #nospace"
+ },
+ {
+  "id": "b077",
+  "cat": "bullet-size",
+  "input": "- plain bullet"
+ },
+ {
+  "id": "b078",
+  "cat": "bullet-open",
+  "input": "- ---"
+ },
+ {
+  "id": "b079",
+  "cat": "bullet-open",
+  "input": "- ***"
+ },
+ {
+  "id": "b080",
+  "cat": "bullet-open",
+  "input": "- ___"
+ },
+ {
+  "id": "b081",
+  "cat": "bullet-open",
+  "input": "- $$ E = mc^2 $$"
+ },
+ {
+  "id": "b082",
+  "cat": "bullet-open",
+  "input": "- [^1]: the body"
+ },
+ {
+  "id": "b083",
+  "cat": "bullet-open",
+  "input": "- <div>x</div>"
+ },
+ {
+  "id": "b084",
+  "cat": "bullet-open",
+  "input": "- \\begin{eq}a\\end{eq}"
+ },
+ {
+  "id": "b085",
+  "cat": "bullet-open",
+  "input": "- | a | b |"
+ },
+ {
+  "id": "b086",
+  "cat": "bullet-open",
+  "input": "- | a | b |\n| 1 | 2 |"
+ },
+ {
+  "id": "b087",
+  "cat": "bullet-open",
+  "input": "- # ---"
+ },
+ {
+  "id": "b088",
+  "cat": "bullet-open",
+  "input": "- # $$ x $$"
+ },
+ {
+  "id": "b089",
+  "cat": "bullet-open",
+  "input": "- # | a |"
+ },
+ {
+  "id": "b090",
+  "cat": "bullet-open",
+  "input": "- # [^1]: b"
+ },
+ {
+  "id": "b091",
   "cat": "edge",
   "input": ""
  },
  {
-  "id": "b071",
+  "id": "b092",
   "cat": "edge",
   "input": "   "
  },
  {
-  "id": "b072",
+  "id": "b093",
   "cat": "edge",
   "input": "\n\n"
  },
  {
-  "id": "b073",
+  "id": "b094",
   "cat": "edge",
   "input": "<div>raw html</div>"
  }

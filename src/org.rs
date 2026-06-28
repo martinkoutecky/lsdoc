@@ -166,6 +166,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
             let empty_title = inline.is_empty() && htags.is_empty();
             out.push(Block::Bullet {
                 level,
+                size: None, // org headlines carry no `#`-size (mldoc Heading.size = null)
                 inline,
                 marker,
                 priority,
