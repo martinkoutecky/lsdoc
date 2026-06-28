@@ -107,6 +107,21 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
             continue;
         }
 
+        // 1b. comment `# text` (mldoc Comment). Unlike Directive this IS a valid
+        // list-item content block (mldoc `- a\n  # c` → item content [Paragraph, Comment]),
+        // so it is NOT gated on `in_item`. `#+…` is a directive (handled above);
+        // `#c`/`# `/`##` are paragraphs. Absorbs a following blank line.
+        if let Some(text) = org_comment(t) {
+            flush_para(&mut out, &mut para, input, in_item);
+            out.push(Block::Comment {
+                text: text.to_string(),
+                span: Some(Span(line.start, line.end)),
+            });
+            absorb = true;
+            i += 1;
+            continue;
+        }
+
         // 2. drawer `:PROPERTIES:`/`:NAME:` … `:END:` — not a list-item content block
         // (inside an item a `:`-line is verbatim/Example via step 7 instead).
         if let Some(name) = drawer_begin(t).filter(|_| !in_item) {
@@ -440,6 +455,21 @@ fn directive(s: &str) -> Option<(String, String)> {
     }
     let value = rest[pos + 1..].trim_start();
     Some((key.to_string(), value.to_string()))
+}
+
+/// Org comment `# text` (mldoc `Comment`): optional leading ws, a single `#`, then
+/// ≥1 space/tab, then non-empty content (leading spaces stripped, **trailing kept**).
+/// `#c` (no space), `# ` (empty), `##…` (two hashes), `#+…` (directive) are NOT comments.
+fn org_comment(s: &str) -> Option<&str> {
+    let rest = s.trim_start().strip_prefix('#')?;
+    if !rest.starts_with(' ') && !rest.starts_with('\t') {
+        return None; // `##…`, `#+…`, `#c` — second char must be a space/tab
+    }
+    let content = rest.trim_start_matches([' ', '\t']);
+    if content.is_empty() {
+        return None; // `# ` with nothing after
+    }
+    Some(content)
 }
 
 // ---- drawers --------------------------------------------------------------
@@ -2269,10 +2299,28 @@ mod tests {
                 Block::DisplayedMath { .. } => "displayed_math",
                 Block::Drawer { .. } => "drawer",
                 Block::Directive { .. } => "directive",
+                Block::Comment { .. } => "comment",
                 Block::Example { .. } => "example",
                 Block::LatexEnv { .. } => "latex_env",
             })
             .collect()
+    }
+
+    #[test]
+    fn org_comment_block() {
+        assert_eq!(bkinds("# c"), ["comment"]);
+        assert_eq!(bkinds("  # indented"), ["comment"]);
+        assert_eq!(bkinds("#c"), ["paragraph"]); // no space after #
+        assert_eq!(bkinds("# "), ["paragraph"]); // empty content
+        assert_eq!(bkinds("##  two"), ["paragraph"]); // two hashes
+        assert_eq!(bkinds("#+TITLE: x"), ["directive"]); // #+ is a directive
+        assert_eq!(bkinds("# a\n# b"), ["comment", "comment"]);
+        assert_eq!(bkinds("- a\n# c"), ["list", "comment"]); // col-0 # terminates the list
+        // content: leading spaces stripped, trailing kept; not inline-parsed.
+        match &parse("   # x  ")[0] {
+            Block::Comment { text, .. } => assert_eq!(text, "x  "),
+            _ => panic!("expected Comment"),
+        }
     }
 
     // ---- headlines --------------------------------------------------------

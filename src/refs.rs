@@ -74,6 +74,7 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>) {
         | Block::LatexEnv { .. }
         | Block::Drawer { .. }
         | Block::Directive { .. }
+        | Block::Comment { .. }
         | Block::Example { .. } => {}
     }
 }

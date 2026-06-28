@@ -143,6 +143,9 @@ export function normNode(node) {
     case "Directive":
       // org `#+KEY: value` -> ["Directive", key, value]
       return { kind: "directive", name: node[1], value: node[2] };
+    case "Comment":
+      // org `# text` -> ["Comment", text]
+      return { kind: "comment", text: node[1] };
     case "Example":
       // org `#+BEGIN_EXAMPLE … #+END_EXAMPLE` -> ["Example", [lines…]]
       return { kind: "example", code: (node[1] ?? []).join("") };

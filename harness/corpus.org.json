@@ -1294,5 +1294,95 @@
   "cat": "istar",
   "input": "* TODO task\n  * sub star",
   "format": "org"
+ },
+ {
+  "id": "o216",
+  "cat": "comment",
+  "input": "# c",
+  "format": "org"
+ },
+ {
+  "id": "o217",
+  "cat": "comment",
+  "input": "# a comment",
+  "format": "org"
+ },
+ {
+  "id": "o218",
+  "cat": "comment",
+  "input": "  # indented",
+  "format": "org"
+ },
+ {
+  "id": "o219",
+  "cat": "comment",
+  "input": "#  two spaces",
+  "format": "org"
+ },
+ {
+  "id": "o220",
+  "cat": "comment",
+  "input": "   # x  ",
+  "format": "org"
+ },
+ {
+  "id": "o221",
+  "cat": "comment",
+  "input": "#c",
+  "format": "org"
+ },
+ {
+  "id": "o222",
+  "cat": "comment",
+  "input": "# ",
+  "format": "org"
+ },
+ {
+  "id": "o223",
+  "cat": "comment",
+  "input": "##  two",
+  "format": "org"
+ },
+ {
+  "id": "o224",
+  "cat": "comment",
+  "input": "# a\n# b",
+  "format": "org"
+ },
+ {
+  "id": "o225",
+  "cat": "comment",
+  "input": "# a\nplain",
+  "format": "org"
+ },
+ {
+  "id": "o226",
+  "cat": "comment",
+  "input": "# note\n\nafter",
+  "format": "org"
+ },
+ {
+  "id": "o227",
+  "cat": "comment",
+  "input": "- a\n# c",
+  "format": "org"
+ },
+ {
+  "id": "o228",
+  "cat": "comment",
+  "input": "- a\n  # c",
+  "format": "org"
+ },
+ {
+  "id": "o229",
+  "cat": "comment",
+  "input": "[fn:1] body\n# c",
+  "format": "org"
+ },
+ {
+  "id": "o230",
+  "cat": "comment",
+  "input": "[fn:1] body\n  # x",
+  "format": "org"
  }
 ]

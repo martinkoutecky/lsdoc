@@ -130,6 +130,14 @@ pub enum Block {
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },
+    /// Org comment line `# text` (mldoc `Comment`). `text` is the raw content after
+    /// `#` + spaces (leading stripped, trailing kept); not inline-parsed, not rendered.
+    #[serde(rename = "comment")]
+    Comment {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     /// Org `#+BEGIN_EXAMPLE … #+END_EXAMPLE` literal block (mldoc `Example`).
     #[serde(rename = "example")]
     Example {

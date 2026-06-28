@@ -40,6 +40,7 @@ Markdown and Org produce the **same** AST.
 | `displayed_math` | `text: string` | `span` | block `$$…$$` (mldoc `Displayed_Math`) |
 | `drawer` | `name: string` | `span` | org `:NAME: … :END:` (content opaque — name only) |
 | `directive` | `name: string`, `value: string` | `span` | org `#+KEY: value` |
+| `comment` | `text: string` | `span` | org `# text` comment line (not rendered) |
 | `example` | `code: string` | `span` | org `#+BEGIN_EXAMPLE` / fixed-width `:` lines |
 | `latex_env` | `name: string`, `content: string` | `span` | `\begin{X}…\end{X}` (name lowercased) |
 | `properties` | `props: [string, string][]` | `span` | `key:: value` block / org `:PROPERTIES:` |

@@ -666,12 +666,15 @@ directive, `#+BEGIN_X`, hr, another `[fn:N]`, a 1-byte line). Notably `+`/`N.`/t
 `:`-lines/`<<target>>` **fold as text**; indented `+` is de-indented while indented `* - #`
 terminate — all probe-confirmed. Linear in body length (100k-line perf case). 713/713 gate.
 
-**Two pre-existing gaps this work EXPOSED (footnote-unrelated, newly tracked):**
-- **Org `# comment` blocks.** `# c` / `  # indented` → mldoc `Comment` block; lsdoc emits a
-  `Paragraph` and `normalize.mjs` has no `Comment` case (→ `block:Comment` fallback). Standard
-  org syntax, so reachable — but fixing it ADDS a `Block::Comment` AST variant, the one
-  change-type that needs Tine-contract coordination (v0.1.0 is handed off). Pending a
-  fix-now-vs-defer decision; not yet in the gated corpus.
+**Two pre-existing gaps this work EXPOSED (footnote-unrelated):**
+- **Org `# comment` blocks (FIXED).** `# text` (single `#` + ≥1 space + non-empty content,
+  leading stripped/trailing kept; `#c`/`# `/`##`/`#+…` excluded) → `Block::Comment`. Standard
+  org syntax. mldoc treats it as a list-item content block too (`- a\n  # c` → item content
+  `[Paragraph, Comment]`), so detection is NOT `in_item`-gated; it absorbs a following blank.
+  This is a NEW AST variant (`comment`) — the one change-type that needs Tine-contract
+  coordination; landed on master post-v0.1.0 (Martin: "fix now, no new tag"), so Tine adds one
+  `comment` case whenever it bumps past v0.1.0. Also resolved the indented-`#` footnote residual
+  (`[fn:1] body\n# x` → `[footnote_def, comment]`). MD `# c` is still a heading (org-only fix).
 - **Whitespace-only continuation line** (`[fn:1] body\n   \ncont`): the *downstream* paragraph
   keeps `"   ",Break` in mldoc; lsdoc drops the ws-only line. Footnote body itself is correct;
-  general `absorb`/ws-line issue, value-only.
+  general `absorb`/ws-line issue, value-only. STILL OPEN (rare; low value).

@@ -294,6 +294,24 @@ add("istar", "  * [ ] task");                       // indented star + checkbox
 add("istar", "  * ");                               // empty → paragraph (needs content)
 add("istar", "* TODO task\n  * sub star");          // the 6B in-context repro
 
+// (9) org comments `# text` (mldoc Comment). Single `#` + ≥1 space + non-empty
+// content (leading stripped, trailing kept). `#c`/`# `/`##`/`#+…` are NOT comments.
+add("comment", "# c");                              // Comment "c"
+add("comment", "# a comment");                      // Comment "a comment"
+add("comment", "  # indented");                     // Comment "indented" (leading ws ok)
+add("comment", "#  two spaces");                    // Comment "two spaces"
+add("comment", "   # x  ");                         // Comment "x  " (trailing kept)
+add("comment", "#c");                               // Paragraph (no space)
+add("comment", "# ");                               // Paragraph (empty content)
+add("comment", "##  two");                          // Paragraph (two hashes)
+add("comment", "# a\n# b");                         // two Comment blocks
+add("comment", "# a\nplain");                       // Comment + Paragraph
+add("comment", "# note\n\nafter");                  // Comment absorbs the blank
+add("comment", "- a\n# c");                         // List + Comment (col-0 terminates)
+add("comment", "- a\n  # c");                       // Comment is in-item content
+add("comment", "[fn:1] body\n# c");                 // footnote def + Comment (terminates)
+add("comment", "[fn:1] body\n  # x");               // was the indented-# footnote residual
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

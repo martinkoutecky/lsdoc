@@ -973,6 +973,7 @@ mod tests {
             Block::DisplayedMath { .. } => "displayed_math",
             Block::Drawer { .. } => "drawer",
             Block::Directive { .. } => "directive",
+            Block::Comment { .. } => "comment",
             Block::Example { .. } => "example",
             Block::LatexEnv { .. } => "latex_env",
         }).collect()
@@ -1056,7 +1057,8 @@ mod tests {
             | Block::Hr { span, .. } | Block::Table { span, .. }
             | Block::FootnoteDef { span, .. } | Block::RawHtml { span, .. }
             | Block::DisplayedMath { span, .. } | Block::Drawer { span, .. }
-            | Block::Directive { span, .. } | Block::Example { span, .. }
+            | Block::Directive { span, .. } | Block::Comment { span, .. }
+            | Block::Example { span, .. }
             | Block::LatexEnv { span, .. } => *span,
         }
     }
