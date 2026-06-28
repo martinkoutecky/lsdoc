@@ -129,6 +129,7 @@ pub fn parse(input: &str) -> Vec<Block> {
         if let Some(level) = headline_level(t) {
             flush_para(&mut out, &mut para, input);
             let (marker, priority, inline, htags) = headline_parts(t);
+            let empty_title = inline.is_empty() && htags.is_empty();
             out.push(Block::Bullet {
                 level,
                 inline,
@@ -138,15 +139,26 @@ pub fn parse(input: &str) -> Vec<Block> {
                 span: Some(Span(line.start, line.end)),
             });
             absorb = false;
+            // mldoc quirk: an EMPTY-title headline that still has trailing whitespace
+            // (`*** `, `* TODO `) emits the empty bullet, then the leftover whitespace
+            // begins a fresh paragraph that absorbs the following lines (`* \nx` →
+            // Bullet + Paragraph[" ", Break, "x"]). A *block-construct* remainder
+            // (`* :x`/`* #+K:v`/`* | a |`) is left as documented adversarial noise.
+            if empty_title {
+                let content_len = t.trim_end_matches([' ', '\t']).len();
+                if content_len < t.len() {
+                    para = Some((line.start + content_len, line.end));
+                }
+            }
             i += 1;
             continue;
         }
 
-        // 4. table (group of consecutive `|` lines)
-        if t.trim_start().starts_with('|') {
+        // 4. table (group of consecutive well-formed `|…|` rows)
+        if is_table_row(t) {
             flush_para(&mut out, &mut para, input);
             let start = i;
-            while i < lines.len() && lines[i].text.trim_start().starts_with('|') {
+            while i < lines.len() && is_table_row(lines[i].text) {
                 i += 1;
             }
             out.push(build_table(&lines[start..i], lines[start].start, lines[i - 1].end));
@@ -339,9 +351,11 @@ fn leading_ws(s: &str) -> usize {
 
 // ---- directive ------------------------------------------------------------
 
-/// `#+KEY: value` where KEY has no `:` and is not `BEGIN_…`. Returns (key, value).
+/// `#+KEY: value` where KEY is non-empty and not `BEGIN_…`. Returns (key, value).
+/// Leading whitespace is allowed (mldoc: `  #+KEY: v` is a directive). The value is
+/// **left-trimmed only** — mldoc keeps trailing whitespace (`#+TITLE: x  ` → `x  `).
 fn directive(s: &str) -> Option<(String, String)> {
-    let rest = s.strip_prefix("#+")?;
+    let rest = s.trim_start().strip_prefix("#+")?;
     let pos = rest.find(':')?;
     let key = &rest[..pos];
     if key.is_empty() || key.bytes().any(|b| b == b'\n' || b == b'\r') {
@@ -350,7 +364,7 @@ fn directive(s: &str) -> Option<(String, String)> {
     if key.len() >= 6 && key[..6].eq_ignore_ascii_case("begin_") {
         return None;
     }
-    let value = rest[pos + 1..].trim();
+    let value = rest[pos + 1..].trim_start();
     Some((key.to_string(), value.to_string()))
 }
 
@@ -579,20 +593,20 @@ fn pair_fences(lines: &[Line]) -> std::collections::HashMap<usize, (usize, Strin
     out
 }
 
-/// A line that is part of an Org verbatim block: starts (after ws) with `:` followed
-/// by a space or end-of-line (NOT `:NAME:` which is a drawer, handled earlier).
+/// A line that is part of an Org fixed-width block: starts (after optional ws) with a
+/// `:`. mldoc maps ANY `:`-prefixed line that is NOT part of a recognized
+/// `:NAME: … :END:` drawer (tried first in `parse`) to a verbatim `Example` — incl.
+/// `: text`, `:text`, `:key: value`, `:tag1:tag2:`, a bare `:END:`/`:PROPERTIES:`.
 fn is_verbatim_line(s: &str) -> bool {
-    let t = s.trim_start();
-    match t.strip_prefix(':') {
-        Some(rest) => rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t'),
-        None => false,
-    }
+    s[leading_ws(s)..].starts_with(':')
 }
 
+/// Fixed-width line content (mldoc): drop the leading ws, the `:`, then any following
+/// ASCII space/tab (`:    x` → `x`); trailing/internal ws kept (`: a b  ` → `a b  `).
 fn verbatim_content(s: &str) -> &str {
-    let t = s.trim_start();
+    let t = &s[leading_ws(s)..];
     let rest = t.strip_prefix(':').unwrap_or(t);
-    rest.strip_prefix(' ').unwrap_or(rest)
+    &rest[leading_ws(rest)..]
 }
 
 fn quote_opens(s: &str) -> bool {
@@ -652,15 +666,24 @@ fn is_raw_html(s: &str) -> bool {
     t.contains("</")
 }
 
-/// Org footnote definition `[fn:name] text` at line start. Returns (name, content).
+/// Org footnote definition `[fn:name] text`. Returns (name, content). Leading
+/// whitespace is allowed (mldoc). mldoc requires a **non-empty body whose first char
+/// does not begin a block construct** (`* # [ -`): `[fn:1] text`/`[fn:1]:x` →
+/// Footnote_Definition, but a bare `[fn:1]` (or `[fn:1]*x`/`[fn:1]-x`/`[fn:1]#x`/
+/// `[fn:1][x`) is an inline footnote ref inside a Paragraph.
 fn footnote_def(s: &str) -> Option<(String, &str)> {
-    let rest = s.strip_prefix("[fn:")?;
+    let rest = s.trim_start().strip_prefix("[fn:")?;
     let end = rest.find(']')?;
     let name = &rest[..end];
     if name.is_empty() || name.contains('\n') || name.contains('\r') {
         return None;
     }
-    Some((name.to_string(), rest[end + 1..].trim_start()))
+    let content = rest[end + 1..].trim_start();
+    let first = content.bytes().next()?;
+    if matches!(first, b'*' | b'#' | b'[' | b'-') {
+        return None;
+    }
+    Some((name.to_string(), content))
 }
 
 /// Org list item at indent 0: `- `/`+ ` (unordered) or `N. ` (ordered). A `* `
@@ -678,9 +701,18 @@ fn list_item(s: &str) -> Option<ListItem> {
         }],
         items: vec![],
     };
-    if let Some(after) = rest.strip_prefix('-').or_else(|| rest.strip_prefix('+')) {
+    // mldoc requires non-empty content after the marker (and after any checkbox): a
+    // bare `- `/`+ `/`1. ` (or `- [ ]`) is a Paragraph, only `- x` is a List.
+    // `-` is a bullet ONLY at column 0 (mldoc quirk: an indented `  - x` is a
+    // Paragraph, while indented `  + x`/`  1. x` stay Lists).
+    let dash = if ws == 0 { rest.strip_prefix('-') } else { None };
+    if let Some(after) = dash.or_else(|| rest.strip_prefix('+')) {
         if after.starts_with(' ') || after.starts_with('\t') {
-            return Some(mk_item(false, None, after.trim_start()));
+            let content = after.trim_start();
+            if strip_checkbox(content).trim().is_empty() {
+                return None;
+            }
+            return Some(mk_item(false, None, content));
         }
     }
     let digits = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
@@ -688,7 +720,11 @@ fn list_item(s: &str) -> Option<ListItem> {
         if let Some(after) = rest[digits..].strip_prefix('.') {
             if after.starts_with(' ') || after.starts_with('\t') {
                 if let Ok(number) = rest[..digits].parse::<u32>() {
-                    return Some(mk_item(true, Some(number), after.trim_start()));
+                    let content = after.trim_start();
+                    if strip_checkbox(content).trim().is_empty() {
+                        return None;
+                    }
+                    return Some(mk_item(true, Some(number), content));
                 }
             }
         }
@@ -713,6 +749,14 @@ fn is_org_hr(s: &str) -> bool {
 }
 
 // ---- table ----------------------------------------------------------------
+
+/// An Org table row: the trimmed line both starts AND ends with `|` and is at least 2
+/// bytes (`||`/`| a |`/`|---+---|` are rows; `|`, `|a`, `| a | b` are not — mldoc
+/// makes those Paragraphs and breaks the table group at the first non-row line).
+fn is_table_row(s: &str) -> bool {
+    let t = s.trim();
+    t.len() >= 2 && t.starts_with('|') && t.ends_with('|')
+}
 
 fn build_table(rows: &[Line], start: usize, end: usize) -> Block {
     let split_cells = |s: &str| -> Vec<Vec<Inline>> {
@@ -2145,6 +2189,137 @@ mod tests {
         ] {
             let _ = parse(s);
         }
+    }
+
+    // ---- M6 fuzz-hardening (block over/under-detection vs mldoc) ----------
+
+    #[test]
+    fn verbatim_colon_lines() {
+        // ANY `:`-prefixed line that isn't a recognized drawer → fixed-width Example.
+        assert_eq!(bkinds(": text"), ["example"]);
+        assert_eq!(bkinds(":text"), ["example"]);
+        assert_eq!(bkinds(":key: value"), ["example"]); // standalone "property"
+        assert_eq!(bkinds(":tag1:tag2:"), ["example"]);
+        assert_eq!(bkinds(":END:"), ["example"]); // bare :END:
+        assert_eq!(bkinds(":PROPERTIES:"), ["example"]); // unclosed drawer head
+        assert_eq!(bkinds("  : indented"), ["example"]);
+        // content: leading ws after `:` stripped, trailing kept.
+        match &parse(":    x")[0] {
+            Block::Example { code, .. } => assert_eq!(code, "x\n"),
+            _ => panic!(),
+        }
+        match &parse(": a b  ")[0] {
+            Block::Example { code, .. } => assert_eq!(code, "a b  \n"),
+            _ => panic!(),
+        }
+        // consecutive `:` lines coalesce into ONE Example.
+        match &parse(": line1\n: line2\n: line3")[0] {
+            Block::Example { code, .. } => assert_eq!(code, "line1\nline2\nline3\n"),
+            _ => panic!(),
+        }
+        // valid drawers must STAY drawers, not verbatim.
+        assert_eq!(bkinds(":PROPERTIES:\n:k: v\n:END:"), ["properties"]);
+        assert_eq!(bkinds(":LOGBOOK:\nCLOCK: x\n:END:"), ["drawer"]);
+        // properties drawer followed by a `:`-line → drawer + Example.
+        assert_eq!(bkinds(":PROPERTIES:\n:k: v\n:END:\n:more: stuff"), ["properties", "example"]);
+        // verbatim run swallows an embedded `:NAME:` (drawer not re-tried mid-run).
+        assert_eq!(bkinds(": text\n:NAME:\ncontent\n:END:"), ["example", "paragraph", "example"]);
+    }
+
+    #[test]
+    fn footnote_def_needs_body() {
+        assert_eq!(bkinds("[fn:1]"), ["paragraph"]); // bare ref
+        assert_eq!(bkinds("[fn:1]   "), ["paragraph"]); // no body
+        assert_eq!(bkinds("[fn:1] body"), ["footnote_def"]);
+        assert_eq!(bkinds("[fn:1]body"), ["footnote_def"]); // no space ok
+        assert_eq!(bkinds("[fn:1]:x"), ["footnote_def"]);
+        assert_eq!(bkinds(" [fn:1] body"), ["footnote_def"]); // leading ws ok
+        // forbidden first char (`* # [ -`) → inline ref in a paragraph.
+        for s in ["[fn:1]*x", "[fn:1]#x", "[fn:1][x", "[fn:1]-x"] {
+            assert_eq!(bkinds(s), ["paragraph"], "{s}");
+        }
+    }
+
+    #[test]
+    fn empty_list_marker_is_paragraph() {
+        for s in ["+ ", "- ", "1. ", "- [ ]", "- [ ]   "] {
+            assert_eq!(bkinds(s), ["paragraph"], "{s}");
+        }
+        for s in ["+ x", "- x", "1. x", "- [ ] x", "+ [X] done"] {
+            assert_eq!(bkinds(s), ["list"], "{s}");
+        }
+    }
+
+    #[test]
+    fn indented_dash_is_paragraph() {
+        // `-` is a bullet only at column 0; indented `-` is prose (mldoc quirk).
+        assert_eq!(bkinds("  - x"), ["paragraph"]);
+        assert_eq!(bkinds("\t- x"), ["paragraph"]);
+        // but indented `+`/`N.` stay lists.
+        assert_eq!(bkinds("  + y"), ["list"]);
+        assert_eq!(bkinds("  1. z"), ["list"]);
+        match &parse("  + y")[0] {
+            Block::List { items, .. } => assert_eq!(items[0].indent, 2),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn malformed_table_is_paragraph() {
+        // a row must start AND end with `|`.
+        for s in ["| a | b", "|a", "|", "| a |\\"] {
+            assert_eq!(bkinds(s), ["paragraph"], "{s}");
+        }
+        for s in ["| a | b |", "||", "| a |", "| a |   "] {
+            assert_eq!(bkinds(s), ["table"], "{s}");
+        }
+        // a non-row line breaks the table group.
+        assert_eq!(bkinds("| a | b |\n| c | d"), ["table", "paragraph"]);
+    }
+
+    #[test]
+    fn directive_leading_ws_and_value_trim() {
+        assert_eq!(bkinds("  #+TODO: x"), ["directive"]); // leading ws allowed
+        // value is left-trimmed only (mldoc keeps trailing whitespace).
+        match &parse("#+TITLE: hello  ")[0] {
+            Block::Directive { name, value, .. } => {
+                assert_eq!(name, "TITLE");
+                assert_eq!(value, "hello  ");
+            }
+            _ => panic!(),
+        }
+        match &parse("#+a:b:c")[0] {
+            Block::Directive { name, value, .. } => {
+                assert_eq!(name, "a");
+                assert_eq!(value, "b:c");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn empty_headline_trailing_ws_splits() {
+        // empty-title headline + trailing ws → Bullet + Paragraph(leftover ws).
+        assert_eq!(bkinds("*** "), ["bullet", "paragraph"]);
+        assert_eq!(bkinds("* TODO "), ["bullet", "paragraph"]);
+        assert_eq!(bkinds("*   "), ["bullet", "paragraph"]);
+        // no trailing ws → no split.
+        assert_eq!(bkinds("*"), ["bullet"]);
+        // a real title (even with trailing ws) is NOT split.
+        assert_eq!(bkinds("* title "), ["bullet"]);
+        // the leftover-ws paragraph absorbs following lines.
+        match &parse("* \nreal content")[1] {
+            Block::Paragraph { inline, .. } => assert_eq!(
+                inline,
+                &vec![
+                    Inline::Plain { text: " ".into() },
+                    Inline::Break,
+                    Inline::Plain { text: "real content".into() },
+                ]
+            ),
+            _ => panic!(),
+        }
+        assert_eq!(bkinds("*** \n* B"), ["bullet", "paragraph", "bullet"]);
     }
 
     #[test]

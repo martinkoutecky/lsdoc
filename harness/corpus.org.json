@@ -316,5 +316,299 @@
   "cat": "misc",
   "input": "   ",
   "format": "org"
+ },
+ {
+  "id": "o053",
+  "cat": "verbatim",
+  "input": ": text",
+  "format": "org"
+ },
+ {
+  "id": "o054",
+  "cat": "verbatim",
+  "input": ":text",
+  "format": "org"
+ },
+ {
+  "id": "o055",
+  "cat": "verbatim",
+  "input": ": ",
+  "format": "org"
+ },
+ {
+  "id": "o056",
+  "cat": "verbatim",
+  "input": ":",
+  "format": "org"
+ },
+ {
+  "id": "o057",
+  "cat": "verbatim",
+  "input": ":  double",
+  "format": "org"
+ },
+ {
+  "id": "o058",
+  "cat": "verbatim",
+  "input": ": a b  ",
+  "format": "org"
+ },
+ {
+  "id": "o059",
+  "cat": "verbatim",
+  "input": ":key: value",
+  "format": "org"
+ },
+ {
+  "id": "o060",
+  "cat": "verbatim",
+  "input": ":tag1:tag2:",
+  "format": "org"
+ },
+ {
+  "id": "o061",
+  "cat": "verbatim",
+  "input": ":END:",
+  "format": "org"
+ },
+ {
+  "id": "o062",
+  "cat": "verbatim",
+  "input": ":PROPERTIES:",
+  "format": "org"
+ },
+ {
+  "id": "o063",
+  "cat": "verbatim",
+  "input": ": line1\n: line2\n: line3",
+  "format": "org"
+ },
+ {
+  "id": "o064",
+  "cat": "verbatim",
+  "input": "  : indented",
+  "format": "org"
+ },
+ {
+  "id": "o065",
+  "cat": "verbatim",
+  "input": ": text\n:NAME:\ncontent\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o066",
+  "cat": "verbatim",
+  "input": ":PROPERTIES:\n:key: value\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o067",
+  "cat": "verbatim",
+  "input": ":LOGBOOK:\nCLOCK: x\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o068",
+  "cat": "verbatim",
+  "input": ":PROPERTIES:\n:a: 1\n:END:\n:more: stuff",
+  "format": "org"
+ },
+ {
+  "id": "o069",
+  "cat": "fndef",
+  "input": "[fn:1]",
+  "format": "org"
+ },
+ {
+  "id": "o070",
+  "cat": "fndef",
+  "input": "[fn:1]   ",
+  "format": "org"
+ },
+ {
+  "id": "o071",
+  "cat": "fndef",
+  "input": "[fn:1] body",
+  "format": "org"
+ },
+ {
+  "id": "o072",
+  "cat": "fndef",
+  "input": "[fn:1]body",
+  "format": "org"
+ },
+ {
+  "id": "o073",
+  "cat": "fndef",
+  "input": "[fn:1]:x",
+  "format": "org"
+ },
+ {
+  "id": "o074",
+  "cat": "fndef",
+  "input": "[fn:1]*x",
+  "format": "org"
+ },
+ {
+  "id": "o075",
+  "cat": "fndef",
+  "input": "[fn:1]#x",
+  "format": "org"
+ },
+ {
+  "id": "o076",
+  "cat": "fndef",
+  "input": "[fn:1][x",
+  "format": "org"
+ },
+ {
+  "id": "o077",
+  "cat": "fndef",
+  "input": "[fn:1]-x",
+  "format": "org"
+ },
+ {
+  "id": "o078",
+  "cat": "fndef",
+  "input": " [fn:1] body",
+  "format": "org"
+ },
+ {
+  "id": "o079",
+  "cat": "list-empty",
+  "input": "+ ",
+  "format": "org"
+ },
+ {
+  "id": "o080",
+  "cat": "list-empty",
+  "input": "- ",
+  "format": "org"
+ },
+ {
+  "id": "o081",
+  "cat": "list-empty",
+  "input": "1. ",
+  "format": "org"
+ },
+ {
+  "id": "o082",
+  "cat": "list-empty",
+  "input": "- [ ]",
+  "format": "org"
+ },
+ {
+  "id": "o083",
+  "cat": "list-empty",
+  "input": "- [ ] x",
+  "format": "org"
+ },
+ {
+  "id": "o084",
+  "cat": "list-empty",
+  "input": "+ x",
+  "format": "org"
+ },
+ {
+  "id": "o085",
+  "cat": "list-indent",
+  "input": "  - x",
+  "format": "org"
+ },
+ {
+  "id": "o086",
+  "cat": "list-indent",
+  "input": "  + y",
+  "format": "org"
+ },
+ {
+  "id": "o087",
+  "cat": "list-indent",
+  "input": "  1. z",
+  "format": "org"
+ },
+ {
+  "id": "o088",
+  "cat": "table-bad",
+  "input": "| a | b",
+  "format": "org"
+ },
+ {
+  "id": "o089",
+  "cat": "table-bad",
+  "input": "|a",
+  "format": "org"
+ },
+ {
+  "id": "o090",
+  "cat": "table-bad",
+  "input": "|",
+  "format": "org"
+ },
+ {
+  "id": "o091",
+  "cat": "table-bad",
+  "input": "| a | b |",
+  "format": "org"
+ },
+ {
+  "id": "o092",
+  "cat": "table-bad",
+  "input": "||",
+  "format": "org"
+ },
+ {
+  "id": "o093",
+  "cat": "table-bad",
+  "input": "| a | b |\n| c | d",
+  "format": "org"
+ },
+ {
+  "id": "o094",
+  "cat": "directive",
+  "input": "#+TITLE: hello  ",
+  "format": "org"
+ },
+ {
+  "id": "o095",
+  "cat": "directive",
+  "input": "  #+TODO: x",
+  "format": "org"
+ },
+ {
+  "id": "o096",
+  "cat": "directive",
+  "input": "#+a:b:c",
+  "format": "org"
+ },
+ {
+  "id": "o097",
+  "cat": "head-ws",
+  "input": "*** ",
+  "format": "org"
+ },
+ {
+  "id": "o098",
+  "cat": "head-ws",
+  "input": "* TODO ",
+  "format": "org"
+ },
+ {
+  "id": "o099",
+  "cat": "head-ws",
+  "input": "*   ",
+  "format": "org"
+ },
+ {
+  "id": "o100",
+  "cat": "head-ws",
+  "input": "* \nreal content",
+  "format": "org"
+ },
+ {
+  "id": "o101",
+  "cat": "head-ws",
+  "input": "*** \n* B",
+  "format": "org"
  }
 ]

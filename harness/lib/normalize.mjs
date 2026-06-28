@@ -166,6 +166,12 @@ export function cleanBlock(b) {
     content: (it.content ?? []).map(cleanBlock),
     items: (it.items ?? []).map(cleanBlock),
   }));
+  // Table cells carry the same cosmetic empty-Plain noise (mldoc emits a `[Plain ""]`
+  // for an empty cell `||`; lsdoc emits `[]`) — clean each cell the same way.
+  if (b.kind === "table") {
+    if (b.header) b.header = b.header.map(cleanInlines);
+    if (b.rows) b.rows = b.rows.map((r) => r.map(cleanInlines));
+  }
   return b;
 }
 

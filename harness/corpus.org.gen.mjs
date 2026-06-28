@@ -81,6 +81,74 @@ add("misc", "* parent\n** child with /em/ and [[link]]");
 add("misc", "");
 add("misc", "   ");
 
+// --- M6 fuzz-hardening regressions (probed against mldoc format:"Org") ---------
+// (1) `:`-prefixed lines are Org fixed-width Example blocks (NOT a recognized
+//     `:NAME: … :END:` drawer). content = after the `:`, leading ws stripped.
+add("verbatim", ": text");                 // Example "text"
+add("verbatim", ":text");                  // Example "text" (no space)
+add("verbatim", ": ");                      // Example ""
+add("verbatim", ":");                       // Example ""
+add("verbatim", ":  double");              // Example "double" (all leading ws)
+add("verbatim", ": a b  ");                // Example "a b  " (trailing kept)
+add("verbatim", ":key: value");            // standalone "property" → Example
+add("verbatim", ":tag1:tag2:");            // Example
+add("verbatim", ":END:");                   // bare :END: → Example
+add("verbatim", ":PROPERTIES:");           // unclosed drawer head → Example
+add("verbatim", ": line1\n: line2\n: line3"); // one Example, 3 lines
+add("verbatim", "  : indented");           // leading ws before `:` → Example
+add("verbatim", ": text\n:NAME:\ncontent\n:END:"); // Example[text,NAME:] + para + Example[END:]
+// these must STAY drawers (not verbatim):
+add("verbatim", ":PROPERTIES:\n:key: value\n:END:");          // Property_Drawer
+add("verbatim", ":LOGBOOK:\nCLOCK: x\n:END:");                // Drawer
+add("verbatim", ":PROPERTIES:\n:a: 1\n:END:\n:more: stuff");  // drawer + Example
+
+// (2) footnote definition needs a non-empty body whose first char doesn't begin a
+//     block construct (`* # [ -`); else it's an inline ref in a Paragraph.
+add("fndef", "[fn:1]");                     // Paragraph (bare ref)
+add("fndef", "[fn:1]   ");                 // Paragraph (no body)
+add("fndef", "[fn:1] body");               // Footnote_Definition
+add("fndef", "[fn:1]body");                // Footnote_Definition (no space)
+add("fndef", "[fn:1]:x");                  // Footnote_Definition
+add("fndef", "[fn:1]*x");                  // Paragraph (forbidden first char)
+add("fndef", "[fn:1]#x");                  // Paragraph
+add("fndef", "[fn:1][x");                  // Paragraph
+add("fndef", "[fn:1]-x");                  // Paragraph
+add("fndef", " [fn:1] body");              // Footnote_Definition (leading ws ok)
+
+// (3) empty list marker → Paragraph; `- [ ]` (checkbox, no content) → Paragraph.
+add("list-empty", "+ ");                    // Paragraph
+add("list-empty", "- ");                    // Paragraph
+add("list-empty", "1. ");                   // Paragraph
+add("list-empty", "- [ ]");                // Paragraph
+add("list-empty", "- [ ] x");              // List
+add("list-empty", "+ x");                   // List
+// `-` is a bullet only at column 0; indented `-` is a Paragraph (mldoc quirk),
+// while indented `+`/`N.` stay Lists.
+add("list-indent", "  - x");               // Paragraph
+add("list-indent", "  + y");               // List (indent 2)
+add("list-indent", "  1. z");              // List (indent 2)
+
+// (4) malformed table (row must start AND end with `|`) → Paragraph.
+add("table-bad", "| a | b");               // Paragraph (no closing pipe)
+add("table-bad", "|a");                     // Paragraph
+add("table-bad", "|");                      // Paragraph (single pipe)
+add("table-bad", "| a | b |");             // Table
+add("table-bad", "||");                     // Table (one empty cell)
+add("table-bad", "| a | b |\n| c | d");    // Table + Paragraph
+
+// (5) directive: leading whitespace allowed; value is LEFT-trimmed only (mldoc keeps
+//     trailing whitespace).
+add("directive", "#+TITLE: hello  ");      // value "hello  "
+add("directive", "  #+TODO: x");           // directive (leading ws)
+add("directive", "#+a:b:c");               // key "a", value "b:c"
+
+// (6) empty-title headline with trailing whitespace → Bullet + Paragraph(leftover ws).
+add("head-ws", "*** ");                     // Bullet + Paragraph[" "]
+add("head-ws", "* TODO ");                  // Bullet(TODO) + Paragraph[" "]
+add("head-ws", "*   ");                     // Bullet + Paragraph["   "]
+add("head-ws", "* \nreal content");        // Bullet + Paragraph[" ", Break, "real content"]
+add("head-ws", "*** \n* B");               // Bullet + Paragraph[" ", Break] + Bullet
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

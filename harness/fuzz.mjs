@@ -11,10 +11,12 @@ import { extractRefs } from "./lib/refs.mjs";
 
 const require = createRequire(import.meta.url);
 const { Mldoc } = require("mldoc");
+// Format from argv[4] ("md" default, "org"): `node fuzz.mjs 20000 1 org`.
+const FORMAT = process.argv[4] === "org" ? "org" : "md";
 const MLDOC_CFG = JSON.stringify({
   toc: false, parse_outline_only: false, heading_number: false,
-  keep_line_break: true, format: "Markdown", heading_to_list: false,
-  export_md_remove_options: [],
+  keep_line_break: true, format: FORMAT === "org" ? "Org" : "Markdown",
+  heading_to_list: false, export_md_remove_options: [],
 });
 const parseToProjection = (input) => {
   const ast = JSON.parse(Mldoc.parseJson(input, MLDOC_CFG));
@@ -31,8 +33,8 @@ const rng = () => {
 };
 const pick = (a) => a[Math.floor(rng() * a.length)];
 
-// token alphabet biased toward the adversarial inline band.
-const TOKENS = [
+// token alphabet biased toward the adversarial inline band, per format.
+const TOKENS_MD = [
   "*", "**", "***", "_", "__", "~~", "==", "^^", "`", "``",
   "[[", "]]", "((", "))", "{{", "}}", "[", "]", "(", ")", "{", "}",
   "#", "#tag", "[[Foo]]", "((11111111-1111-1111-1111-111111111111))",
@@ -41,6 +43,15 @@ const TOKENS = [
   "a", "b", " ", "  ", "\n", "café", "中文", "😀", ".", ",", "!", ":", "-", "/",
   "TODO ", "[#A] ", "[ ] ", "\t", "word", "x", "#[[", "tag", "::",
 ];
+const TOKENS_ORG = [
+  "* ", "** ", "*** ", "*", "/", "_", "+", "~", "=", "^", "^^",
+  "[[", "]]", "][", "[[target]]", "[[t][l]]", "[fn:1]", "<2026-06-26 Fri>", "[2026-06-20 Sat]",
+  "#+TITLE: ", "#+BEGIN_SRC ", "#+END_SRC", "#+BEGIN_QUOTE", "#+END_QUOTE", "#+NAME: ",
+  ":PROPERTIES:", ":key: value", ":END:", "SCHEDULED: ", "DEADLINE: ",
+  "TODO ", "DONE ", "[#A] ", ":tag1:tag2:", "- ", "+ ", "1. ", "| a | b |",
+  "\\", "a", "b", " ", "  ", "\n", "café", "中文", "😀", ".", "/", "_x", "^y", "word",
+];
+const TOKENS = FORMAT === "org" ? TOKENS_ORG : TOKENS_MD;
 
 function genInput() {
   const len = 1 + Math.floor(rng() * 14);
@@ -66,7 +77,7 @@ const S = (v) => JSON.stringify(canon(v));
 
 // build the corpus, run lsdoc once over all of it.
 const inputs = [];
-for (let i = 0; i < N; i++) inputs.push({ id: `f${i}`, input: genInput() });
+for (let i = 0; i < N; i++) inputs.push({ id: `f${i}`, input: genInput(), format: FORMAT });
 const corpusPath = join(__dir, "corpus.fuzz.json");
 writeFileSync(corpusPath, JSON.stringify(inputs, null, 0));
 

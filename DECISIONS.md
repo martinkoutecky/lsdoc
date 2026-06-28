@@ -419,3 +419,71 @@ Block segmentation O(n) (one line scan; fences pre-paired). Inline O(n) amortise
 emphasis no-closer cache and the 2-byte `seq_present`/single-`]` `has_rbracket` absent
 caches keep `*`×n / `[[`×n / `((`×n / `_`×n runs linear (unit-tested,
 `org::tests::adversarial_runs_terminate`, <0.3 s).
+
+### M6 Org fuzz-hardening
+Differential fuzzing against mldoc-Org (`node fuzz.mjs N seed org`, biased token-soup)
+surfaced a **~21.6% block-mismatch** rate (vs the ~1.4% Markdown floor) — real
+edge-case gaps the curated corpus missed. `node fuzz-split.mjs` separates **structural**
+(different block-kind sequence — genuine over/under-detection) from **inline-soup**
+(same block-kinds, inline tokenization noise on garbage). Six block-rule fixes (all
+probed against mldoc, unit-tested in `org::tests`, added as `o###` regressions in
+`corpus.org.gen.mjs`) drove block-mismatch **21.6% → ~7.3%** (structural 752 → 323 per
+20k; refs 6% → 2.1%); the md fuzz floor is unchanged (only `org.rs` changed):
+
+- **Fixed-width `:` block.** ANY line that (after optional ws) starts with `:` and is
+  NOT part of a recognized `:NAME: … :END:` drawer (tried first) → a verbatim
+  `Example` (mldoc maps `: text`/`:text`/`:key: value`/`:tag1:tag2:`/bare `:END:`/
+  `:PROPERTIES:` all to `Example`). Consecutive `:`-lines coalesce into one `Example`;
+  content = after the `:`, leading ws stripped, trailing/internal kept (`:  x` → `x`,
+  `: a b  ` → `a b  `). A valid `:PROPERTIES:…:END:`/`:LOGBOOK:…` stays Property_Drawer/
+  Drawer; once a fixed-width run starts, an embedded `:NAME:` is swallowed as text (mldoc
+  does not re-try the drawer mid-run). (Was: lsdoc only matched `: `/`:`-then-space → the
+  biggest bucket, ~1200/20k.)
+- **Footnote definition needs a body.** `[fn:1]` (or `[fn:1]   `) is an inline footnote
+  ref in a Paragraph; only `[fn:1] body` is a `Footnote_Definition`. mldoc additionally
+  rejects a body whose first non-ws char **begins a block construct** (`* # [ -`):
+  `[fn:1]:x`/`[fn:1]/x` → def, `[fn:1]*x`/`[fn:1]-x`/`[fn:1]#x`/`[fn:1][x` → Paragraph.
+  Leading ws before `[fn:` is allowed.
+- **Empty list marker → Paragraph.** `- `/`+ `/`1. ` (and `- [ ]` with a checkbox but no
+  content) → Paragraph; only a non-empty item (`- x`, `- [ ] x`) is a `List` (mirrors the
+  md "quote needs content" rule). Also: **`-` is a bullet only at column 0** — an indented
+  `  - x` is a Paragraph, while indented `  + x`/`  1. x` stay Lists (mldoc quirk).
+- **Malformed table → Paragraph.** An Org table row's trimmed line must start AND end
+  with `|` (≥ 2 bytes): `| a |`/`||`/`|---+---|` are rows, `| a | b`/`|a`/`|` are not;
+  a non-row line breaks the table group. (Was: lsdoc accepted any `|`-prefixed line.)
+- **Directive.** Leading whitespace is allowed (`  #+K: v`); the value is **left-trimmed
+  only** — mldoc keeps trailing whitespace (`#+TITLE: x  ` → `x  `). (Was: `.trim()` ⇒
+  the largest same-kind bucket, 302/20k.)
+- **Empty-title headline with trailing whitespace.** `*** `/`* TODO ` emit the empty
+  bullet, then the leftover whitespace begins a fresh paragraph that absorbs following
+  lines (`* \nx` → Bullet + Paragraph[" ", Break, "x"]). A *block-construct* remainder
+  (`* :x` → Example, `* #+K: v` → Directive, `* | a |` → Table) is left as adversarial
+  noise (see below).
+
+Also extended `normalize.mjs` `cleanBlock` to strip the cosmetic empty-`Plain ""` from
+**table cells** (mldoc emits `[Plain ""]` for an empty cell `||`; lsdoc emits `[]`) — the
+same cleaning already applied to inline arrays, now applied to both sides' cells.
+
+**Residual fuzz situation (analogous to the md fuzzer note).** After the fixes the
+remaining ~7.3% block-mismatch is dominated by **same-block-kind inline-soup** (~5.6%):
+inline tokenization differences on pure mixed-delimiter garbage (denser than md because
+Org has more single-char delimiters `* / _ + ~ = ^`). The residual **structural** chunk
+(~1.6%) is all mldoc combinator quirks on adversarial input, NOT realistic content, so —
+per SPEC §5 — it is documented, not chased and not allowlisted:
+- **block construct glued onto an empty headline** (`* :PROPERTIES:`/`* #+K: v`/
+  `* | a |` on ONE line): mldoc emits the empty bullet + the re-parsed block; a real
+  headline always has a title, and a real heading+drawer is on separate lines (already
+  matched). lsdoc keeps the remainder as the headline title.
+- **`#+BEGIN_X: v` with a colon and no matching `#+END_X`** → mldoc `Property_Drawer`
+  (a `#+key:value` Drawer.parse2 fallback). Real `#+BEGIN_…` blocks have no colon.
+- **`:END:word` (drawer end with trailing junk)** → mldoc closes the drawer and re-parses
+  `word`; a real `:END:` is alone on its line.
+- **multi-line footnote-definition continuation**: mldoc's footnote body greedily absorbs
+  following lines as plain text — but with footnote-specific terminators (stops at
+  headline/list/directive/footnote/blank, yet absorbs a table/quote/`:`-line *as text*,
+  unlike a Paragraph). Matching that exact predicate is binding to mldoc internals; lsdoc
+  keeps the single-line footnote def. (~15/20k.)
+
+No new allowlist entries (the 11 are all pre-existing Markdown cases); the real org graph
++ hand-written + mined corpora stay at 0-diff with 49 new `o###` fuzz regressions added.
+`node fuzz-split.mjs N seed org` is the kept diagnostic (structural vs inline-soup).
