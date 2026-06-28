@@ -69,7 +69,9 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>) {
         | Block::Hr { .. }
         | Block::RawHtml { .. }
         | Block::DisplayedMath { .. }
-        | Block::Drawer { .. } => {}
+        | Block::Drawer { .. }
+        | Block::Directive { .. }
+        | Block::Example { .. } => {}
     }
 }
 

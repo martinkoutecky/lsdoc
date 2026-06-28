@@ -88,10 +88,14 @@ pub fn parse(input: &str) -> Vec<Block> {
         // 3. heading
         if let Some(size) = heading_size(t) {
             flush_para(&mut out, &mut para, input);
+            let (marker, priority, title) = split_markers(t[size as usize..].trim_start());
             out.push(Block::Heading {
                 level: 1,
                 size: Some(size),
-                inline: stub_inline(strip_markers(t[size as usize..].trim_start())),
+                inline: stub_inline(title),
+                marker,
+                priority,
+                htags: vec![],
                 span: Some(Span(line.start, line.end)),
             });
             i += 1;
@@ -109,9 +113,13 @@ pub fn parse(input: &str) -> Vec<Block> {
         // 5. `-` bullet (mldoc Heading{unordered})
         if let Some(level) = dash_bullet_level(t) {
             flush_para(&mut out, &mut para, input);
+            let (marker, priority, title) = bullet_parts(t);
             out.push(Block::Bullet {
                 level,
-                inline: stub_inline(bullet_title(t)),
+                inline: stub_inline(title),
+                marker,
+                priority,
+                htags: vec![],
                 span: Some(Span(line.start, line.end)),
             });
             i += 1;
@@ -317,29 +325,37 @@ const MARKERS: &[&str] = &[
 /// (mldoc parses a heading inside a bullet, e.g. `- ## X` → bullet titled `X`), then
 /// a leading task marker (`TODO `…) and priority (`[#A]`), matching mldoc's
 /// `level *> marker *> priority *> title` order.
-fn strip_atx(s: &str) -> &str {
+/// Strip a leading ATX `#{1,n}` run from a bullet/heading title (mldoc parses a
+/// heading inside a bullet, e.g. `- ## X` → bullet titled `X`).
+fn strip_atx_hashes(s: &str) -> &str {
     let hashes = s.bytes().take_while(|&b| b == b'#').count();
-    let s = if hashes > 0 {
+    if hashes > 0 {
         let after = &s[hashes..];
-        // a heading prefix in a bullet is `#{1,n}` followed by a space/tab OR the end
-        // of the title (mldoc parses `- ##` as a bullet with an empty heading title).
         if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
-            after.trim_start()
-        } else {
-            s
+            return after.trim_start();
         }
-    } else {
-        s
-    };
-    strip_markers(s)
+    }
+    s
+}
+
+fn strip_atx(s: &str) -> &str {
+    strip_markers(strip_atx_hashes(s))
 }
 
 /// Strip a leading task marker (followed by a space) and priority `[#X]`.
 fn strip_markers(s: &str) -> &str {
+    split_markers(s).2
+}
+
+/// Extract a leading task marker (`TODO `…) and priority `[#X]`, in mldoc's
+/// `marker *> priority *> title` order. Returns (marker, priority, remaining title).
+fn split_markers(s: &str) -> (Option<String>, Option<String>, &str) {
+    let mut marker = None;
     let mut s = s;
     for m in MARKERS {
         if let Some(rest) = s.strip_prefix(m) {
             if rest.starts_with(' ') {
+                marker = Some((*m).to_string());
                 s = rest.trim_start();
                 break;
             }
@@ -347,10 +363,14 @@ fn strip_markers(s: &str) -> &str {
     }
     // priority `[#X]` (exactly "[#", one ASCII char, "]")
     let b = s.as_bytes();
-    if b.len() >= 4 && b[0] == b'[' && b[1] == b'#' && b[2] < 0x80 && b[3] == b']' {
-        return s[4..].trim_start();
-    }
-    s
+    let priority = if b.len() >= 4 && b[0] == b'[' && b[1] == b'#' && b[2] < 0x80 && b[3] == b']' {
+        let p = (b[2] as char).to_string();
+        s = s[4..].trim_start();
+        Some(p)
+    } else {
+        None
+    };
+    (marker, priority, s)
 }
 
 /// Strip a leading list checkbox `[ ]` / `[x]` / `[X]` (+ spaces). mldoc strips this
@@ -366,11 +386,12 @@ fn strip_checkbox(s: &str) -> &str {
     rest.trim_start()
 }
 
-/// Bullet title: drop the leading whitespace + `-`, then heading/marker prefixes.
-fn bullet_title(t: &str) -> &str {
+/// Bullet parts: drop leading whitespace + `-`, then an ATX `#` run, then extract
+/// the task marker + priority. Returns (marker, priority, title).
+fn bullet_parts(t: &str) -> (Option<String>, Option<String>, &str) {
     let ws = leading_ws(t);
     let rest = t[ws + 1..].trim_start(); // skip '-' then leading spaces
-    strip_atx(rest)
+    split_markers(strip_atx_hashes(rest))
 }
 
 fn split_lines(input: &str) -> Vec<Line<'_>> {
@@ -711,6 +732,8 @@ mod tests {
             Block::RawHtml { .. } => "raw_html",
             Block::DisplayedMath { .. } => "displayed_math",
             Block::Drawer { .. } => "drawer",
+            Block::Directive { .. } => "directive",
+            Block::Example { .. } => "example",
         }).collect()
     }
 
@@ -791,7 +814,8 @@ mod tests {
             | Block::Custom { span, .. } | Block::Properties { span, .. }
             | Block::Hr { span, .. } | Block::Table { span, .. }
             | Block::FootnoteDef { span, .. } | Block::RawHtml { span, .. }
-            | Block::DisplayedMath { span, .. } | Block::Drawer { span, .. } => *span,
+            | Block::DisplayedMath { span, .. } | Block::Drawer { span, .. }
+            | Block::Directive { span, .. } | Block::Example { span, .. } => *span,
         }
     }
 

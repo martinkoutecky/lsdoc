@@ -41,14 +41,27 @@ pub enum Block {
         level: u32,
         size: Option<u32>,
         inline: Vec<Inline>,
+        /// task marker (TODO/DOING/DONE/…), org `[#A]` priority, org `:tags:`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        marker: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        priority: Option<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        htags: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },
-    /// Logseq outline bullet — mldoc emits these as `Heading{unordered:true}`.
+    /// Outline bullet (md `-`) / org headline (`*`) — mldoc `Heading{unordered:true}`.
     #[serde(rename = "bullet")]
     Bullet {
         level: u32,
         inline: Vec<Inline>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        marker: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        priority: Option<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        htags: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },
@@ -98,6 +111,21 @@ pub enum Block {
     #[serde(rename = "drawer")]
     Drawer {
         name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
+    /// Org keyword line `#+KEY: value` (mldoc `Directive`).
+    #[serde(rename = "directive")]
+    Directive {
+        name: String,
+        value: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
+    /// Org `#+BEGIN_EXAMPLE … #+END_EXAMPLE` literal block (mldoc `Example`).
+    #[serde(rename = "example")]
+    Example {
+        code: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },

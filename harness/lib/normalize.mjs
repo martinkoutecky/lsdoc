@@ -70,7 +70,9 @@ export function normNode(node) {
         ? { kind: "bullet", level: h.level }
         : { kind: "heading", level: h.level, size: h.size };
       b.inline = (h.title ?? []).map(normInline);
-      if (h.tags?.length) b.htags = h.tags;
+      if (h.tags?.length) b.htags = h.tags;       // org `:tag1:tag2:` on a headline
+      if (h.marker) b.marker = h.marker;          // org TODO/DOING/DONE/… (also md)
+      if (h.priority) b.priority = h.priority;    // org `[#A]`
       return b;
     }
     case "List": {
@@ -111,6 +113,12 @@ export function normNode(node) {
       return { kind: "raw_html", text: node[1] };
     case "Displayed_Math":
       return { kind: "displayed_math", text: node[1] };
+    case "Directive":
+      // org `#+KEY: value` -> ["Directive", key, value]
+      return { kind: "directive", name: node[1], value: node[2] };
+    case "Example":
+      // org `#+BEGIN_EXAMPLE … #+END_EXAMPLE` -> ["Example", [lines…]]
+      return { kind: "example", code: (node[1] ?? []).join("") };
     case "Drawer":
       // Content treated as opaque (logbook/clock metadata — not indexed/rendered);
       // compare on name only. See DECISIONS.md.
