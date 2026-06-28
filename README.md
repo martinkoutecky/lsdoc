@@ -54,10 +54,13 @@ cargo test                     # unit + golden tests
 
 # Oracle harness (Node 20):
 cd harness && npm install      # installs mldoc@1.5.7 (once)
-node probe.mjs                 # dump raw mldoc AST for sample inputs (design aid)
-```
 
-(The end-to-end differential regression runner is built in milestone 1.)
+# One-command differential regression loop (the dev gate):
+#   corpus.gen → mldoc oracle → lsdoc parse → compare → report
+node run.mjs                   # exits non-zero on any divergence
+node run.mjs --no-gen          # skip corpus regeneration
+#   writes divergences.json (drill-down); node probe.mjs dumps raw mldoc AST.
+```
 
 ## Layout
 

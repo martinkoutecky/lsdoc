@@ -41,6 +41,9 @@ identity. Findings from the AST-shape probe (`harness/probe.mjs`, mldoc 1.5.7,
   be on **kind + payload + order + nesting only** — mldoc gives no inline spans to
   diff against. lsdoc still *preserves* inline spans (its own design-for-Tine
   requirement); it just can't validate them against this oracle.
+- **Spans are UTF-8 byte offsets** (verified: `#café` end=6 bytes not 5 chars;
+  `#中文` end=7). This matches Rust `&str` byte indexing exactly — block spans
+  compare directly, no char/byte conversion needed on either side.
 - **Lists are `Heading` nodes**, not a distinct list node: a bullet `- x` parses
   to `["Heading", {unordered:true, level:<indent-derived>, size:null, title:[…]}]`;
   ordered items have `unordered:false, size:<n>`. The normalized projection must
