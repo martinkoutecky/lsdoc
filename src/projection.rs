@@ -10,16 +10,16 @@
 //! and gated; the only excluded detail is inline source spans — out of scope for a
 //! read-only renderer, verified by lsdoc's own unit tests. See `DECISIONS.md`.)
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One input's parse result: block tree + OG-faithful ref set.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Projection {
     pub blocks: Vec<Block>,
     pub refs: Refs,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Refs {
     pub page: Vec<String>,
     pub block: Vec<String>,
@@ -27,7 +27,7 @@ pub struct Refs {
 
 /// Block source span `[start, end]` (byte offsets). Serializes as a 2-array to
 /// match mldoc's `{start_pos,end_pos}` after normalization.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Span(pub usize, pub usize);
 
 /// `serde` `skip_serializing_if` for `bool` fields that default to `false`.
@@ -35,7 +35,7 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind")]
 pub enum Block {
     #[serde(rename = "paragraph")]
@@ -54,7 +54,7 @@ pub enum Block {
         marker: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         priority: Option<String>,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         htags: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
@@ -68,7 +68,7 @@ pub enum Block {
         marker: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         priority: Option<String>,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         htags: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
@@ -173,7 +173,7 @@ pub enum Block {
     },
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ListItem {
     pub ordered: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -244,7 +244,7 @@ pub fn nest_items(flat: Vec<ListItem>) -> Vec<ListItem> {
     roots
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "k")]
 pub enum Inline {
     #[serde(rename = "plain")]
@@ -268,7 +268,7 @@ pub enum Inline {
     #[serde(rename = "link")]
     Link {
         url: Url,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         label: Vec<Inline>,
         full: String,
         /// `![…](…)` markdown image. mldoc carries **no** native image flag; both
@@ -322,7 +322,7 @@ pub enum Inline {
     },
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum Url {
     #[serde(rename = "page_ref")]
