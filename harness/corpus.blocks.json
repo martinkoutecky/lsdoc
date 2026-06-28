@@ -641,21 +641,86 @@
  },
  {
   "id": "b128",
+  "cat": "edge-table",
+  "input": "| a | b |\n|---|---|"
+ },
+ {
+  "id": "b129",
+  "cat": "edge-table",
+  "input": "| a | b |\n|---|---|\n| 1 | 2 |"
+ },
+ {
+  "id": "b130",
+  "cat": "edge-listraw",
+  "input": "* # heading"
+ },
+ {
+  "id": "b131",
+  "cat": "edge-listraw",
+  "input": "* TODO task"
+ },
+ {
+  "id": "b132",
+  "cat": "edge-listraw",
+  "input": "1. # h"
+ },
+ {
+  "id": "b133",
+  "cat": "edge-listraw",
+  "input": "* ## TODO x"
+ },
+ {
+  "id": "b134",
+  "cat": "edge-listraw",
+  "input": "* [ ] # x"
+ },
+ {
+  "id": "b135",
+  "cat": "edge-listblank",
+  "input": "* a\n\n* b"
+ },
+ {
+  "id": "b136",
+  "cat": "edge-listblank",
+  "input": "* a\n\n\n* b"
+ },
+ {
+  "id": "b137",
+  "cat": "edge-listblank",
+  "input": "1. a\n\n2. b"
+ },
+ {
+  "id": "b138",
+  "cat": "edge-listblank",
+  "input": "* a\n\nplain"
+ },
+ {
+  "id": "b139",
+  "cat": "edge-listblank",
+  "input": "* a\n\n* b\n\n* c"
+ },
+ {
+  "id": "b140",
+  "cat": "edge-listblank",
+  "input": "* a\n\n# h"
+ },
+ {
+  "id": "b141",
   "cat": "edge",
   "input": ""
  },
  {
-  "id": "b129",
+  "id": "b142",
   "cat": "edge",
   "input": "   "
  },
  {
-  "id": "b130",
+  "id": "b143",
   "cat": "edge",
   "input": "\n\n"
  },
  {
-  "id": "b131",
+  "id": "b144",
   "cat": "edge",
   "input": "<div>raw html</div>"
  }

@@ -181,6 +181,22 @@ add("realmut-ws-heading", "  ## ");         // leading ws + empty + trailing ws 
 add("realmut-ws-heading", "  - ");          // leading ws + empty bullet trailing split
 add("realmut-ws-heading", "foo\n  # bar");  // heading interrupts a paragraph
 
+// realmut tracked-edge fixes (B): table header+sep no body; list content kept raw
+// (no `#`/marker strip); a single blank line between list items is absorbed.
+add("edge-table", "| a | b |\n|---|---|");        // header+sep, no body → sep stays a body row
+add("edge-table", "| a | b |\n|---|---|\n| 1 | 2 |"); // body present → sep dropped (unchanged)
+add("edge-listraw", "* # heading");                // list content "# heading" (NOT stripped)
+add("edge-listraw", "* TODO task");                // "TODO task" (marker kept)
+add("edge-listraw", "1. # h");
+add("edge-listraw", "* ## TODO x");                // "## TODO x"
+add("edge-listraw", "* [ ] # x");                  // checkbox stripped, "# x" kept
+add("edge-listblank", "* a\n\n* b");               // one blank absorbed → List(a,b)
+add("edge-listblank", "* a\n\n\n* b");             // two blanks → List + para + List
+add("edge-listblank", "1. a\n\n2. b");
+add("edge-listblank", "* a\n\nplain");             // blank then non-item → list ends
+add("edge-listblank", "* a\n\n* b\n\n* c");        // multiple single-blanks absorbed
+add("edge-listblank", "* a\n\n# h");               // blank then heading → list ends
+
 // edge / empty
 add("edge", "");
 add("edge", "   ");

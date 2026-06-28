@@ -766,9 +766,14 @@ needs something non-minimal) — the bias-mitigated default is "reachable until 
 - **mldoc-combinator emphasis** (`**`/`*` boundary on char-mangled input): minimal realistic
   versions match (`a **b`, `x *y* **z` ✓); divergence needs specific delimiter pileups —
   mldoc-implementation-defined, bug-for-bug-on-garbage, not chased.
-- **Tracked edges** (small, real-ish, not yet fixed): markdown table with header+separator but
-  **no body** (`| a | b |\n|---|---|`); `*`/`N.` list **content** retains mldoc's `#`/task-marker
-  prefix while lsdoc over-strips; blank-line-inside-a-list splitting.
+- **Tracked edges — now FIXED (B #2):** (1) markdown table with header+separator but **no body**
+  (`| a | b |\n|---|---|`) — the `|---|` separator is dropped only when a body row follows it
+  (else it stays a body row). (2) `*`/`+`/`N.` list **content** is raw — mldoc does NOT strip ATX
+  `#`/task-markers there (`* # h` → "# h", `* TODO x` → "TODO x"; only `-` bullets strip), so
+  `strip_atx` was removed from `list_item`. (3) a list absorbs ONE blank line (`two_eols`): a
+  single blank between items continues the list (`* a\n\n* b` → one list) and a single trailing
+  blank is consumed (never its own paragraph: `* a\n\n# h` → `[list, heading]`); 2+ blanks split.
+  Gate 802→815/815; realmut realistic 363→345.
 
 **Tripwire (B5):** `realmut.mjs` is the committed standing diagnostic — run `node realmut.mjs`
 (realistic) periodically; a JUMP above the fragment-windowing baseline = a new reachable bug.

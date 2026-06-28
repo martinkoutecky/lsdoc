@@ -411,18 +411,34 @@ pub fn parse(input: &str) -> Vec<Block> {
             flush_para(&mut out, &mut para, input);
             let start = i;
             let mut items = vec![item];
+            let mut last = i; // last line index that belongs to the list
             i += 1;
             while i < lines.len() {
                 if let Some(it) = list_item(lines[i].text) {
                     items.push(it);
+                    last = i;
                     i += 1;
+                } else if lines[i].text.trim().is_empty() {
+                    // mldoc's list absorbs ONE blank line (two_eols): the list span
+                    // extends through it. If the next line is another item the list
+                    // continues; otherwise the list ends here (the blank consumed, so it
+                    // never becomes its own paragraph). A SECOND consecutive blank is not
+                    // absorbed — it ends the list and becomes a paragraph.
+                    let next_is_item = i + 1 < lines.len()
+                        && !lines[i + 1].text.trim().is_empty()
+                        && list_item(lines[i + 1].text).is_some();
+                    last = i;
+                    i += 1;
+                    if !next_is_item {
+                        break;
+                    }
                 } else {
                     break;
                 }
             }
             out.push(Block::List {
                 items: crate::projection::nest_items(items),
-                span: Some(Span(lines[start].start, lines[i - 1].end)),
+                span: Some(Span(lines[start].start, lines[last].end)),
             });
             continue;
         }
@@ -576,12 +592,6 @@ const MARKERS: &[&str] = &[
 /// (mldoc parses a heading inside a bullet, e.g. `- ## X` → bullet titled `X`), then
 /// a leading task marker (`TODO `…) and priority (`[#A]`), matching mldoc's
 /// `level *> marker *> priority *> title` order.
-/// Strip a leading ATX `#{1,n}` run from a bullet/heading title (mldoc parses a
-/// heading inside a bullet, e.g. `- ## X` → bullet titled `X`).
-fn strip_atx_hashes(s: &str) -> &str {
-    atx_size(s).1
-}
-
 /// Split a leading ATX `#`-run that forms a heading size (uncapped `#`-count, must be
 /// followed by a space/tab or end-of-line) off `s`. Returns (size, rest-after-the-run,
 /// leading-ws-trimmed). `None` when there is no valid `#`-run (`#nospace`, `text`).
@@ -594,15 +604,6 @@ fn atx_size(s: &str) -> (Option<u32>, &str) {
         }
     }
     (None, s)
-}
-
-fn strip_atx(s: &str) -> &str {
-    strip_markers(strip_atx_hashes(s))
-}
-
-/// Strip a leading task marker (followed by a space) and priority `[#X]`.
-fn strip_markers(s: &str) -> &str {
-    split_markers(s).2
 }
 
 /// Extract a leading task marker (`TODO `…) and priority `[#X]`, in mldoc's
@@ -806,7 +807,10 @@ fn list_item(s: &str) -> Option<ListItem> {
                 number: None,
                 indent: ws as u32,
                 content: vec![Block::Paragraph {
-                    inline: stub_inline(strip_atx(body)),
+                    // `*`/`+`/`N.` list content is RAW after the marker+checkbox — mldoc
+                    // does NOT strip ATX `#`/task-markers here (unlike `-` bullets):
+                    // `* # h` → "# h", `* TODO x` → "TODO x".
+                    inline: stub_inline(body),
                     span: None,
                 }],
                 items: vec![],
@@ -833,7 +837,7 @@ fn list_item(s: &str) -> Option<ListItem> {
                         number: Some(number),
                         indent: ws as u32,
                         content: vec![Block::Paragraph {
-                            inline: stub_inline(strip_atx(body)),
+                            inline: stub_inline(body), // raw (no `#`/marker strip — mldoc)
                             span: None,
                         }],
                         items: vec![],
@@ -1142,6 +1146,40 @@ mod tests {
         // size + opener combine; but `[^id]:` after a `#` is an inline ref (no split).
         assert_eq!(kinds("- # ---"), ["bullet", "hr"]);
         assert_eq!(kinds("- # [^1]: b"), ["bullet"]);
+    }
+
+    #[test]
+    fn realmut_tracked_edges() {
+        // table header+separator, no body → the separator stays a body row.
+        match &parse("| a | b |\n|---|---|")[0] {
+            Block::Table { header, rows, .. } => {
+                assert!(header.is_some());
+                assert_eq!(rows.len(), 1); // the `|---|` row, kept
+            }
+            _ => panic!("expected Table"),
+        }
+        match &parse("| a | b |\n|---|---|\n| 1 | 2 |")[0] {
+            Block::Table { rows, .. } => assert_eq!(rows.len(), 1), // sep dropped, 1 body row
+            _ => panic!(),
+        }
+        // `*`/`N.` list content is raw (no `#`/marker strip).
+        let item0_text = |s: &str| match &parse(s)[0] {
+            Block::List { items, .. } => match &items[0].content[0] {
+                Block::Paragraph { inline, .. } => match &inline[0] {
+                    Inline::Plain { text } => text.clone(),
+                    _ => panic!(),
+                },
+                _ => panic!(),
+            },
+            _ => panic!("expected List"),
+        };
+        assert_eq!(item0_text("* # heading"), "# heading");
+        assert_eq!(item0_text("* TODO task"), "TODO task");
+        assert_eq!(item0_text("1. # h"), "# h");
+        // a single blank between items is absorbed; 2+ blanks split.
+        assert_eq!(kinds("* a\n\n* b"), ["list"]);
+        assert_eq!(kinds("* a\n\n\n* b"), ["list", "paragraph", "list"]);
+        assert_eq!(kinds("* a\n\n# h"), ["list", "heading"]); // list absorbs the trailing blank
     }
 
     #[test]
@@ -1534,7 +1572,9 @@ fn build_table_from_texts(rows: &[&str], start: usize, end: usize) -> Block {
 
     let header = rows.first().map(|l| split_cells(l));
     let mut data_start = 1;
-    if rows.len() > 1 && is_sep(rows[1]) {
+    // The `|---|` separator row is dropped ONLY when a body row follows it; a table that
+    // is just header+separator (no body) keeps the separator as a body row (mldoc quirk).
+    if rows.len() > 2 && is_sep(rows[1]) {
         data_start = 2;
     }
     let body: Vec<Vec<Vec<Inline>>> =
