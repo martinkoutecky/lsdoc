@@ -6,5 +6,41 @@
  {
   "id": "b021",
   "reason": "nested ordered list via markdown indentation (`1. a\\n   1. nested`): mldoc folds the nested item into the parent's sub-items (normalizes to a `raw` node); lsdoc emits two flat items. Logseq nests via outline bullets, not markdown indentation. Revisit if a real graph needs it."
+ },
+ {
+  "id": "m096",
+  "reason": "fence opened after a bullet prefix (`- ```\\ncode\\n````): mldoc splits an empty bullet `- ` then a Src; lsdoc keeps the ``` on the bullet line. Same class as c047 — Logseq nests code under a bullet as a child block, not on the bullet line."
+ },
+ {
+  "id": "m097",
+  "reason": "fence (with language) opened after a bullet prefix (`- ``` clj :results\\n…`): same class as c047/m096 — mldoc emits empty bullet + Src, lsdoc keeps it on the bullet line. Adversarial outline form not produced by Logseq."
+ },
+ {
+  "id": "m114",
+  "reason": "markdown blockquote opened after a bullet prefix (`  - > line3`): mldoc splits an empty bullet `  - ` then a Quote (lazy-joining the next `> ` line across indentation); lsdoc keeps `> line3` as the bullet title. Same family as c047/b021 (a block construct starting after the bullet prefix). Logseq nests quotes as child blocks."
+ },
+ {
+  "id": "m115",
+  "reason": "same as m114 (quote opened after a bullet prefix, deeper nesting): mldoc emits empty bullet + lazy-joined Quote; lsdoc keeps the quote on the bullet line. Adversarial outline indentation, not produced by Logseq."
+ },
+ {
+  "id": "m116",
+  "reason": "same as m114/m115 plus a tab-indented property/fence tail: mldoc's bullet-prefix block split + lazy continuation diverge from lsdoc's per-line outline model. Adversarial; not produced by Logseq."
+ },
+ {
+  "id": "m135",
+  "reason": "markdown definition list (`term\\n: definition`): mldoc emits a List whose item carries a `name` (the term) and the definition as content; lsdoc emits a paragraph. Def-list syntax is niche in Logseq (it uses outline bullets / `key:: value`), and the list-item `name` field is outside the modeled projection. Revisit if a real graph needs it."
+ },
+ {
+  "id": "m054",
+  "reason": "LaTeX named entity (`\\Delta G`): mldoc maps `\\Delta` to an `Entity` node via a ~2k-entry LaTeX entity table; lsdoc renders an unknown `\\word` as the bare letters (correct for non-entities). Porting the full entity table is disproportionate for a math/org-flavored construct rare in Logseq Markdown."
+ },
+ {
+  "id": "m056",
+  "reason": "LaTeX named entity with `{}` (`\\Delta{}G`): same as m054 — `\\Delta` is a table entity in mldoc; lsdoc emits the bare letters. Entity table not ported (niche in Logseq Markdown)."
+ },
+ {
+  "id": "m089",
+  "reason": "LaTeX environment block (`\\begin{equation}…\\end{equation}`): mldoc emits a `Latex_Environment` block; lsdoc emits a paragraph. Latex_Environment is not modeled in the projection and is a math/org construct rare in Logseq Markdown."
  }
 ]

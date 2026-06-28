@@ -105,6 +105,26 @@ from diff counts but still reports them. Current entries:
   (`1. a\n   1. nested`): mldoc folds the nested item into the parent's sub-items
   (normalizes to a `raw` node); lsdoc emits two flat items. Logseq nests via
   outline bullets, not markdown list indentation. Revisit if a real graph needs it.
+- **`m096`/`m097`** — a fenced code block opened *after a bullet prefix*
+  (`- ```\ncode\n``` `): mldoc splits an empty bullet `- ` then a `Src`; lsdoc keeps
+  the ``` on the bullet line. Same class as `c047` — Logseq nests code under a bullet
+  as a child block, not on the bullet line.
+- **`m114`/`m115`/`m116`** — a markdown blockquote (and a tab-indented property/fence
+  tail) opened *after a bullet prefix* (`  - > line3`): mldoc splits an empty bullet
+  then a `Quote` (lazy-joining the next `> ` line across indentation); lsdoc keeps
+  `> line3` as the bullet title. Same family as `c047`/`b021` (a block construct
+  starting after the bullet prefix); not how Logseq writes outlines.
+- **`m135`** — a markdown **definition list** (`term\n: definition`): mldoc emits a
+  `List` whose item carries a `name` (the term) with the definition as content; lsdoc
+  emits a paragraph. Def-list syntax is niche in Logseq (outline bullets / `key:: value`)
+  and the list-item `name` field is outside the modeled projection.
+- **`m054`/`m056`** — a LaTeX **named entity** (`\Delta`, `\Delta{}`): mldoc maps it
+  to an `Entity` node via a ~2k-entry LaTeX entity table; lsdoc renders an unknown
+  `\word` as the bare letters (correct for non-entities). Porting the entity table is
+  disproportionate for a math/org construct rare in Logseq Markdown.
+- **`m089`** — a LaTeX **environment** block (`\begin{equation}…\end{equation}`):
+  mldoc emits a `Latex_Environment` block; lsdoc emits a paragraph. Not modeled in the
+  projection; a math/org construct rare in Logseq Markdown.
 
 ## M2 block-structure rules (replicated from the oracle)
 
@@ -214,3 +234,55 @@ all (a) block-segmenter edge cases deliberately out of M3/M4 scope (lone `>`, ba
 nesting in random soup that does not occur in real content (the realism corpus —
 `~/research/tine-test` + kitchen-sink — is in the gate and passes 0-diff). Not
 allowlisted: they are not gate inputs.
+
+## Mined test corpus (M5)
+
+`harness/corpus.mined.gen.mjs` → `harness/corpus.mined.json` (committed like
+`corpus.blocks.json`; generated from the committed generator, self-contained — strings
+embedded as data, no clone needed at runtime). Merged into the differential run by
+`run.mjs` alongside the inline/block/real corpora (`m###` ids). 202 unique inputs after
+dedup against `corpus.json`/`corpus.blocks.json`.
+
+- **Sources.** mldoc's OCaml tests (cloned `logseq/mldoc`, default branch HEAD `bedae99`
+  — no `v1.5.7` tag exists, nearest are `v1.5.5`/`v1.5.8`; `test_markdown.ml`/
+  `test_outline_markdown.ml` line counts match the 1.5.7-era in SPEC §5): the INPUT is
+  the first OCaml string literal after each `check_aux`/`check_aux2` call, decoded with
+  full OCaml escape + line-continuation (`\`+newline+blanks) handling — **99**
+  (test_markdown), **91** (test_outline_markdown), **14** (test_export_markdown), **0
+  skipped**. Plus OG graph-parser cljs tests (`/aux/.../og/.../test/`): markdown input
+  strings curated by reading `mldoc_test`/`block_test`/`extract_test`/`text_test`/
+  `property_test` — org-format (`:org` config) and org-syntax (`#+TITLE`,
+  `[[file:…][…]]`) inputs excluded; a few `(str …)`-built block-ref/timestamp cases
+  reconstructed from their literal constants.
+
+- **mldoc behaviors surfaced and replicated** (all real, now matched):
+  - **Markdown link destination** (`link_url_part_inner`): the raw between-parens text
+    is split into a destination + optional trailing ` "title"`; the title is dropped and
+    the destination **value is unescaped** (`\)`→`)`, `\.`→`.`) while `full_text` keeps
+    the raw backslash. `<…>` destinations are angle-stripped (inner spaces kept), and
+    `[[page-ref]]`/`((block-ref))` parts keep their inner spaces. On a consume-all
+    failure (e.g. `((uuid)) extra`) the *whole* raw text is the destination.
+  - **Link label** balances single `[…]` brackets (`![lab[el]]…`) and the label **value
+    is unescaped** (`\]`→`]`) while `full_text` stays raw.
+  - **Emphasis** closer-search skips backslash-escaped chars: `\*`/`` \` `` inside
+    emphasis is literal content, not a closer (`*a\*b*` → Italic[`a*b`]).
+  - **Tags** parse a nested-link child (`#[[nested [[tag]]]]` → `Tag[Nested_link]`), not
+    just a page-ref.
+  - **`:PROPERTIES:` drawer** → `Property_Drawer` even in Markdown (mldoc `drawer.ml`),
+    with `:key: value` lines as properties (refs walked from the values). A `#+name:
+    value` org directive **immediately following a property line is folded into the same
+    drawer** (`a:: 1\n#+b: 2` → props a, b) — a standalone `#+…:` is a Directive (not in
+    the corpus, left as a paragraph).
+  - **Bullets**: `#{1,n}` heading-prefix in a bullet strips at end-of-title too (`- ##`
+    → empty bullet), and a lone `-` at end-of-line is an (empty) bullet.
+  - **Markdown blockquote** (`md_blockquote`): a `>` line opens a quote whose body is the
+    de-`>`'d lines **plus lazy continuation** (following non-`>` lines) until a blank
+    line or a new-block line (`- `/`# `/`id:: `/bare `-`/`#`); the body is a **flat
+    Paragraph** (with keep_line_break breaks) — the property/heading/bullet parsers are
+    NOT applied inside a quote, so `> a:: b` stays a paragraph.
+  - **Timestamp repeater** (`+1m`/`++2w`/`.+1d`) parsed into mldoc's
+    `repetition:[[kind],[duration],n]` JSON.
+
+  Remaining diffs are allowlisted (see above): LaTeX entity/environment tables (niche),
+  markdown definition lists, and block constructs opened after a bullet prefix (the
+  `c047`/`b021` adversarial family). No `refs` or `block-struct` diffs remain.

@@ -28,16 +28,18 @@ function run(cmd, args, opts = {}) {
 if (!process.argv.includes("--no-gen")) {
   run("node", [join(__dir, "corpus.gen.mjs")]);
   run("node", [join(__dir, "corpus.blocks.gen.mjs")]);
+  run("node", [join(__dir, "corpus.mined.gen.mjs")]); // mined mldoc/OG test inputs
   run("node", [join(__dir, "corpus.real.gen.mjs")]); // real files (machine-specific; [] if absent)
 }
 const load = (f) => JSON.parse(readFileSync(join(__dir, f), "utf8"));
 const inline = load("corpus.json");
 const blocks = load("corpus.blocks.json");
+const mined = load("corpus.mined.json");
 const real = load("corpus.real.json").map((r) => ({ id: r.id, input: r.input })); // drop `file`
-const all = [...inline, ...blocks, ...real];
+const all = [...inline, ...blocks, ...mined, ...real];
 const allPath = join(__dir, "corpus.all.json");
 writeFileSync(allPath, JSON.stringify(all, null, 1));
-console.log(`corpus: ${inline.length} inline + ${blocks.length} block + ${real.length} real = ${all.length} total`);
+console.log(`corpus: ${inline.length} inline + ${blocks.length} block + ${mined.length} mined + ${real.length} real = ${all.length} total`);
 
 // 2. oracle
 run("node", [join(__dir, "oracle.mjs"), allPath]);

@@ -609,6 +609,15 @@ impl<'a> Scanner<'a> {
         let mut j = from;
         while j < self.n {
             let cur = self.b[j];
+            if cur == b'\\' {
+                // a backslash-escaped char (incl. `\*`, `\_`, `` \` ``) can't close
+                // an emphasis (mldoc treats it as literal content). Skip both bytes.
+                j += 1;
+                if j < self.n {
+                    j += char_len(self.b[j]);
+                }
+                continue;
+            }
             if cur == b'`' {
                 // skip over a code span so a marker inside it can't close.
                 if let Some(end) = self.code_span_end(j) {
@@ -1110,7 +1119,14 @@ fn parse_tag_name(s: &str, start: usize) -> (usize, Vec<Inline>) {
             break;
         }
         if c == b'[' {
-            // (b) page ref
+            // (b) nested link `[[ …[[ ]]… ]]` (tried before page-ref, mirroring the
+            // top-level bracket dispatch) then page ref.
+            if let Some((end, content)) = parse_nested_link(s, i) {
+                flush(&mut plain, &mut children);
+                children.push(Inline::NestedLink { content });
+                i = end;
+                continue;
+            }
             if let Some((end, name, full)) = parse_page_ref(s, i) {
                 flush(&mut plain, &mut children);
                 children.push(Inline::Link {
@@ -1309,7 +1325,11 @@ fn parse_md_link(s: &str, at: usize, image: bool) -> Option<MdLink> {
             end = close + 1;
         }
     }
-    let url = classify_url(&url_text);
+    // mldoc re-parses the raw between-parens text into a destination + optional
+    // `"title"` (link_url_part_inner); the title is dropped, the destination value is
+    // unescaped (full_text keeps the raw url_text). See DECISIONS.md.
+    let dest = link_destination(&url_text);
+    let url = classify_url(&dest);
     let label = parse_label_inline(&label_text);
     let prefix = if image { "!" } else { "" };
     let full = format!("{}[{}]({}){}", prefix, label_text, url_text, metadata);
@@ -1361,13 +1381,14 @@ fn parse_label(s: &str, at: usize) -> Option<(String, usize)> {
             continue;
         }
         if c == b'[' {
-            // page-ref or balanced brackets, kept as raw text
+            // page-ref, then single-bracket-balanced `[…]` (mldoc label_part_choices:
+            // page_ref <|> string_contains_balanced_brackets [('[',']')]), kept raw.
             if let Some((end, _name, full)) = parse_page_ref(s, j) {
                 out.push_str(&full);
                 j = end;
                 continue;
             }
-            if let Some((end, content)) = match_brackets(s, j) {
+            if let Some((end, content)) = match_single_brackets(s, j) {
                 out.push_str(&content);
                 j = end;
                 continue;
@@ -1472,7 +1493,9 @@ fn parse_label_inline(label_text: &str) -> Vec<Inline> {
                 if let Some(nodes) = reparse_label_text(&t) {
                     out.extend(nodes);
                 } else {
-                    out.push(Inline::Plain { text: t });
+                    // label value is unescaped (`\]`→`]`, `\*`→`*`, …) while full_text
+                    // keeps the raw backslash (mldoc). Mirrors page-ref value unescape.
+                    out.push(Inline::Plain { text: unescape(&t) });
                 }
             }
         }
@@ -1550,6 +1573,146 @@ fn reparse_label_text(t: &str) -> Option<Vec<Inline>> {
         }
     }
     None
+}
+
+/// From a `[` at `at`, match the balancing `]` counting nested single brackets
+/// (mldoc `string_contains_balanced_brackets [('[',']')]`). `\[`/`\]` are escaped.
+/// Returns (end_index, matched_string incl. the outer brackets). Stops at a newline.
+fn match_single_brackets(s: &str, at: usize) -> Option<(usize, String)> {
+    let b = s.as_bytes();
+    let n = b.len();
+    if b.get(at) != Some(&b'[') {
+        return None;
+    }
+    let mut depth: i32 = 0;
+    let mut j = at;
+    while j < n {
+        let c = b[j];
+        if c == b'\n' || c == b'\r' {
+            return None;
+        }
+        if c == b'\\' && j + 1 < n {
+            j += 1 + char_len(b[j + 1]);
+            continue;
+        }
+        if c == b'[' {
+            depth += 1;
+            j += 1;
+        } else if c == b']' {
+            depth -= 1;
+            j += 1;
+            if depth == 0 {
+                return Some((j, s[at..j].to_string()));
+            }
+        } else {
+            j += char_len(c);
+        }
+    }
+    None
+}
+
+/// Extract a markdown link's *destination* from the raw between-parens text,
+/// dropping an optional trailing ` "title"` and unescaping the value — a port of
+/// mldoc `link_url_part_inner`. The url-parts are: `((block-ref))`, `<…>` (angles
+/// stripped, inner spaces kept), `[[page-ref]]` (inner spaces kept), runs of
+/// non-space/non-`[` chars, or a lone `[`; they stop at the first space outside
+/// those. After the parts, optional spaces then a `"…"` title-to-end is allowed;
+/// anything else fails and the *whole* raw text becomes the destination.
+fn link_destination(url_text: &str) -> String {
+    let b = url_text.as_bytes();
+    let n = b.len();
+    let mut j = 0usize;
+    let mut dest = String::new();
+    let mut part_count = 0usize;
+    let mut had_angle = false;
+    while j < n {
+        let c = b[j];
+        if c == b' ' {
+            break;
+        }
+        // block ref ((...))
+        if url_text[j..].starts_with("((") {
+            if let Some(end) = find_sub(b, j + 2, b"))") {
+                dest.push_str(&url_text[j..end + 2]);
+                j = end + 2;
+                part_count += 1;
+                continue;
+            }
+        }
+        // <...> (angles stripped from the value; inner spaces allowed)
+        if c == b'<' {
+            let mut k = j + 1;
+            while k < n && b[k] != b'<' && b[k] != b'>' {
+                k += 1;
+            }
+            if k < n && b[k] == b'>' && k > j + 1 {
+                dest.push_str(&url_text[j + 1..k]);
+                j = k + 1;
+                part_count += 1;
+                had_angle = true;
+                continue;
+            }
+        }
+        // [[page ref]] (inner spaces allowed)
+        if url_text[j..].starts_with("[[") {
+            if let Some((end, _name, full)) = parse_page_ref(url_text, j) {
+                dest.push_str(&full);
+                j = end;
+                part_count += 1;
+                continue;
+            }
+        }
+        // run of non-space, non-'[' chars
+        if c != b'[' {
+            let run_start = j;
+            while j < n {
+                let cc = b[j];
+                if cc == b' ' || cc == b'\n' || cc == b'\r' || cc == b'[' {
+                    break;
+                }
+                j += char_len(cc);
+            }
+            if j > run_start {
+                dest.push_str(&url_text[run_start..j]);
+                part_count += 1;
+                continue;
+            }
+        }
+        // lone '[' (did not start '[[')
+        dest.push_str(&url_text[j..j + char_len(c)]);
+        j += char_len(c);
+        part_count += 1;
+    }
+    // after the url-parts: optional spaces, then end-of-string or a `"…"` title.
+    let rest = url_text[j..].trim_start();
+    let title_ok = rest.is_empty() || is_quoted_title(rest);
+    if (had_angle && part_count > 1) || !title_ok {
+        // consume:All failed → the whole raw text is the destination.
+        unescape(url_text.trim())
+    } else {
+        unescape(dest.trim())
+    }
+}
+
+/// Is `s` exactly a `"…"` title (non-empty content, no unescaped `"` before the end)?
+fn is_quoted_title(s: &str) -> bool {
+    let b = s.as_bytes();
+    let n = b.len();
+    if n < 3 || b[0] != b'"' || b[n - 1] != b'"' {
+        return false;
+    }
+    let mut i = 1;
+    while i < n - 1 {
+        if b[i] == b'\\' && i + 1 < n - 1 {
+            i += 2;
+            continue;
+        }
+        if b[i] == b'"' {
+            return false; // a bare `"` before the closing quote
+        }
+        i += 1;
+    }
+    true
 }
 
 fn classify_url(url_text: &str) -> Url {
@@ -1938,6 +2101,34 @@ fn parse_bracket_date(
     Some((j + 1, obj))
 }
 
+/// Parse an org timestamp repeater token (`+1m`, `++2w`, `.+1d`) into mldoc's JSON
+/// shape `[[kind],[duration],n]` (e.g. `[["Plus"],["Month"],1]`); None if not one.
+fn parse_repetition(tok: &str) -> Option<serde_json::Value> {
+    let (kind, rest) = if let Some(r) = tok.strip_prefix(".+") {
+        ("Dotted", r)
+    } else if let Some(r) = tok.strip_prefix("++") {
+        ("DoublePlus", r)
+    } else if let Some(r) = tok.strip_prefix('+') {
+        ("Plus", r)
+    } else {
+        return None;
+    };
+    let rb = rest.as_bytes();
+    if rb.is_empty() {
+        return None;
+    }
+    let dur = match rb[rb.len() - 1] {
+        b'h' => "Hour",
+        b'd' => "Day",
+        b'w' => "Week",
+        b'm' => "Month",
+        b'y' => "Year",
+        _ => return None,
+    };
+    let n: i64 = rest[..rest.len() - 1].parse().ok()?; // unit is ASCII → boundary safe
+    Some(serde_json::json!([[kind], [dur], n]))
+}
+
 fn parse_date_inner(inner: &str, active: bool) -> Option<serde_json::Value> {
     // "YYYY-MM-DD WDAY [HH:MM] [repeat...]"
     let mut parts = inner.split_whitespace();
@@ -1961,15 +2152,19 @@ fn parse_date_inner(inner: &str, active: bool) -> Option<serde_json::Value> {
         serde_json::json!({ "year": year, "month": month, "day": day }),
     );
     obj.insert("wday".to_string(), serde_json::json!(wday));
-    // optional time HH:MM
-    if let Some(tok) = parts.next() {
+    // optional time `HH:MM` and/or repeater `+1m`/`++2w`/`.+1d` (mldoc timestamp.ml).
+    for tok in parts {
         if let Some((h, m)) = tok.split_once(':') {
             if let (Ok(hour), Ok(min)) = (h.parse::<i64>(), m.parse::<i64>()) {
                 obj.insert(
                     "time".to_string(),
                     serde_json::json!({ "hour": hour, "min": min }),
                 );
+                continue;
             }
+        }
+        if let Some(rep) = parse_repetition(tok) {
+            obj.insert("repetition".to_string(), rep);
         }
     }
     obj.insert("active".to_string(), serde_json::json!(active));
@@ -2158,6 +2353,91 @@ mod tests {
             "😀#tag",
         ] {
             let _ = pi(s);
+        }
+    }
+
+    #[test]
+    fn escaped_marker_in_emphasis() {
+        // a backslash-escaped marker inside emphasis is literal, not a closer (M5).
+        match &pi("*a\\*b*")[0] {
+            Inline::Emphasis { emph, children } => {
+                assert_eq!(emph, "Italic");
+                assert_eq!(children, &vec![Inline::Plain { text: "a*b".into() }]);
+            }
+            _ => panic!(),
+        }
+        // _a*b\*_  -> Italic["a*b*"] (inner * has no unescaped closer)
+        match &pi("_a*b\\*_")[0] {
+            Inline::Emphasis { children, .. } => {
+                assert_eq!(children, &vec![Inline::Plain { text: "a*b*".into() }]);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn link_title_and_url_unescape() {
+        // trailing "title" dropped from the url value; full_text keeps it (M5).
+        match &pi("[a](u \"t\")")[0] {
+            Inline::Link { url, full, .. } => {
+                assert!(matches!(url, Url::Search { v } if v == "u"));
+                assert_eq!(full, "[a](u \"t\")");
+            }
+            _ => panic!(),
+        }
+        // <bbb> angle-stripped + title dropped.
+        assert_eq!(kinds("[a](<bbb> \"cc\")"), ["link(search:bbb)"]);
+        // page-ref kept inside a destination, with its inner space.
+        assert_eq!(kinds("[a](bbb[[ccc \"dd\"]] \"e f\")"), ["link(search:bbb[[ccc \"dd\"]])"]);
+        // url value is unescaped (\)→)), full keeps the backslash.
+        match &pi("[x](a\\)b)")[0] {
+            Inline::Link { url, full, .. } => {
+                assert!(matches!(url, Url::Search { v } if v == "a)b"));
+                assert_eq!(full, "[x](a\\)b)");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn link_label_brackets_and_unescape() {
+        // single [..] balanced inside an image label (M5).
+        match &pi("![lab[el]](u)")[0] {
+            Inline::Link { label, .. } => {
+                assert_eq!(label, &vec![Inline::Plain { text: "lab[el]".into() }]);
+            }
+            _ => panic!(),
+        }
+        // escaped ] in a label: value unescaped, full raw.
+        match &pi("[label\\](x)](xxx)")[0] {
+            Inline::Link { label, full, url } => {
+                assert_eq!(label, &vec![Inline::Plain { text: "label](x)".into() }]);
+                assert!(matches!(url, Url::Search { v } if v == "xxx"));
+                assert_eq!(full, "[label\\](x)](xxx)");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn tag_with_nested_link() {
+        // #[[nested [[tag]]]] -> Tag[Nested_link] (M5).
+        match &pi("#[[nested [[tag]]]]")[0] {
+            Inline::Tag { children } => {
+                assert_eq!(children, &vec![Inline::NestedLink { content: "[[nested [[tag]]]]".into() }]);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn timestamp_with_repeater() {
+        match &pi("SCHEDULED: <2004-12-25 Sat +1m>")[0] {
+            Inline::Timestamp { ts, date } => {
+                assert_eq!(ts, "Scheduled");
+                assert_eq!(date["repetition"], serde_json::json!([["Plus"], ["Month"], 1]));
+            }
+            _ => panic!(),
         }
     }
 

@@ -141,13 +141,18 @@ pub fn parse(input: &str) -> Vec<Block> {
             continue;
         }
 
-        // 8. property drawer (group of consecutive `key:: value` lines)
+        // 8. property drawer (group of consecutive `key:: value` lines). mldoc folds
+        // trailing `#+name: value` org directives into the same drawer (drawer.ml
+        // `many1 (parse1 <|> parse2)`), so `a:: 1\n#+b: 2` → props a, b.
         if property(t).is_some() {
             flush_para(&mut out, &mut para, input);
             let start = i;
             let mut props = Vec::new();
             while i < lines.len() {
                 if let Some(kv) = property(lines[i].text) {
+                    props.push(kv);
+                    i += 1;
+                } else if let Some(kv) = directive_property(lines[i].text) {
                     props.push(kv);
                     i += 1;
                 } else {
@@ -182,19 +187,38 @@ pub fn parse(input: &str) -> Vec<Block> {
             continue;
         }
 
-        // 10. quote (group of consecutive `>` lines, indentation tolerated). mldoc
-        // strips the `>` (+ one space) prefix and parses the body as nested blocks.
+        // 10. markdown blockquote (mldoc block0.ml `md_blockquote`): a `>` line opens
+        // a quote whose body is the de-`>`'d lines PLUS lazy continuation lines (no
+        // `>` needed) until a blank line or a line that starts a new block
+        // (`- `/`# `/`id:: `/bare `-`/`#`). The body is parsed as block-content — for
+        // markdown prose that is a single Paragraph (with keep_line_break breaks); the
+        // property/heading/bullet parsers are NOT applied inside a quote.
         if t.trim_start().starts_with('>') {
             flush_para(&mut out, &mut para, input);
             let start = i;
             let mut body = String::new();
-            while i < lines.len() && lines[i].text.trim_start().starts_with('>') {
-                body.push_str(strip_quote_prefix(lines[i].text));
+            // first line: strip the opening `>` then process its remainder like a
+            // continuation (mldoc consumes one `>` then runs lines_while on the rest).
+            if let Some(c) = quote_line_content(lines[i].text, true) {
+                body.push_str(&c);
                 body.push('\n');
-                i += 1;
+            }
+            i += 1;
+            while i < lines.len() {
+                match quote_line_content(lines[i].text, false) {
+                    Some(c) => {
+                        body.push_str(&c);
+                        body.push('\n');
+                        i += 1;
+                    }
+                    None => break,
+                }
             }
             out.push(Block::Quote {
-                children: parse(&body),
+                children: vec![Block::Paragraph {
+                    inline: stub_inline(&body),
+                    span: None,
+                }],
                 span: Some(Span(lines[start].start, lines[i - 1].end)),
             });
             continue;
@@ -222,14 +246,22 @@ pub fn parse(input: &str) -> Vec<Block> {
             continue;
         }
 
-        // 11c. org-style drawer `:NAME: … :END:` (e.g. :LOGBOOK:).
+        // 11c. org-style drawer `:NAME: … :END:` (e.g. :LOGBOOK:). The special
+        // `:PROPERTIES:` drawer becomes a Property_Drawer even in Markdown (mldoc
+        // drawer.ml), with `:key: value` lines parsed as properties.
         if let Some(name) = drawer_begin(t) {
             if let Some(close) = find_drawer_end(&lines, i) {
                 flush_para(&mut out, &mut para, input);
-                out.push(Block::Drawer {
-                    name,
-                    span: Some(Span(line.start, lines[close].end)),
-                });
+                let span = Some(Span(line.start, lines[close].end));
+                if name == "properties" {
+                    let props = lines[i + 1..close]
+                        .iter()
+                        .filter_map(|l| drawer_property(l.text))
+                        .collect();
+                    out.push(Block::Properties { props, span });
+                } else {
+                    out.push(Block::Drawer { name, span });
+                }
                 i = close + 1;
                 continue;
             }
@@ -287,7 +319,9 @@ fn strip_atx(s: &str) -> &str {
     let hashes = s.bytes().take_while(|&b| b == b'#').count();
     let s = if hashes > 0 {
         let after = &s[hashes..];
-        if after.starts_with(' ') || after.starts_with('\t') {
+        // a heading prefix in a bullet is `#{1,n}` followed by a space/tab OR the end
+        // of the title (mldoc parses `- ##` as a bullet with an empty heading title).
+        if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
             after.trim_start()
         } else {
             s
@@ -430,12 +464,14 @@ fn leading_ws(s: &str) -> usize {
     s.bytes().take_while(|&b| b == b' ' || b == b'\t').count()
 }
 
-/// `(ws)- ` ⇒ bullet of level `1 + ws` (each space/tab counts 1).
+/// `(ws)- ` (or a lone `(ws)-` at end-of-line) ⇒ bullet of level `1 + ws` (each
+/// space/tab counts 1). mldoc (heading0) accepts `-` followed by a space/tab OR
+/// end-of-line (`- ` and a bare `-` are both empty bullets).
 fn dash_bullet_level(s: &str) -> Option<u32> {
     let ws = leading_ws(s);
     let rest = &s[ws..];
     let after = rest.strip_prefix('-')?;
-    if after.starts_with(' ') || after.starts_with('\t') {
+    if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
         Some(1 + ws as u32)
     } else {
         None
@@ -508,11 +544,59 @@ fn footnote_def(s: &str) -> Option<(String, &str)> {
     Some((name.to_string(), after.trim_start()))
 }
 
-/// Strip a quote line's `>` prefix (after leading ws) and one optional space.
-fn strip_quote_prefix(s: &str) -> &str {
-    let s = s.trim_start();
-    let s = s.strip_prefix('>').unwrap_or(s);
-    s.strip_prefix(' ').unwrap_or(s)
+/// One blockquote body line (mldoc `md_blockquote` `lines_while`): from a raw line,
+/// strip leading ws, an optional `>` (required only on the first line — handled by
+/// the caller passing `first=true`, which still strips it), and following ws, and
+/// return the remaining content. Returns `None` to STOP the quote: on a blank line
+/// (no `>`, empty after ws) or a line that opens a new block (`- `/`# `/`id:: ` or a
+/// bare `-`/`#`). A line that is just `>`(+ws) yields `Some("")` (an empty quote line).
+fn quote_line_content(s: &str, first: bool) -> Option<String> {
+    let t = s.trim_start();
+    let had_gt = t.starts_with('>');
+    let rest = if had_gt { t[1..].trim_start() } else { t };
+    let _ = first; // first vs continuation differ only in that the first always has `>`
+    if rest.is_empty() {
+        // `>`(+ws) → empty quote line (continue); a truly blank line → stop.
+        return if had_gt { Some(String::new()) } else { None };
+    }
+    // a continuation line that starts a new block ends the quote.
+    if rest.starts_with("- ")
+        || rest.starts_with("# ")
+        || rest.starts_with("id:: ")
+        || rest == "-"
+        || rest == "#"
+    {
+        return None;
+    }
+    Some(rest.to_string())
+}
+
+/// `#+name: value` org directive line, folded into an adjacent markdown property
+/// drawer (mldoc drawer.ml `parse2`). Returns (name, value).
+fn directive_property(s: &str) -> Option<(String, String)> {
+    let t = s.trim_start().strip_prefix("#+")?;
+    let pos = t.find(':')?;
+    let key = &t[..pos];
+    if key.is_empty() || key.contains(' ') || key.contains('\t') {
+        return None;
+    }
+    let value = t[pos + 1..].trim();
+    Some((key.to_string(), value.to_string()))
+}
+
+/// One `:key: value` line of a `:PROPERTIES:` drawer (mldoc drawer.ml `property`):
+/// `:` key `:` value (key has no `:`/space). Returns None for non-property lines.
+fn drawer_property(s: &str) -> Option<(String, String)> {
+    let t = s.trim_start().strip_prefix(':')?;
+    let pos = t.find(':')?;
+    let key = &t[..pos];
+    if key.is_empty() || key.contains(' ') || key.contains('\t') || key.eq_ignore_ascii_case("end") {
+        return None;
+    }
+    // value = rest of line after the key's closing `:`, trimmed (drops a leading space
+    // and a trailing CR from CRLF inputs).
+    let value = t[pos + 1..].trim();
+    Some((key.to_string(), value.to_string()))
 }
 
 fn callout_begin(s: &str) -> Option<String> {
@@ -674,6 +758,50 @@ mod tests {
             | Block::FootnoteDef { span, .. } | Block::RawHtml { span, .. }
             | Block::DisplayedMath { span, .. } | Block::Drawer { span, .. } => *span,
         }
+    }
+
+    #[test]
+    fn properties_drawer_and_directive_fold() {
+        // :PROPERTIES: drawer parses to a Property_Drawer even in Markdown (M5).
+        match &parse(":PROPERTIES:\n:type: x\n:creator: y\n:END:")[0] {
+            Block::Properties { props, .. } => {
+                assert_eq!(props, &vec![("type".into(), "x".into()), ("creator".into(), "y".into())]);
+            }
+            _ => panic!(),
+        }
+        // a #+name: value directive is folded into an adjacent property drawer.
+        match &parse("a:: 1\n#+b: 2")[0] {
+            Block::Properties { props, .. } => {
+                assert_eq!(props, &vec![("a".into(), "1".into()), ("b".into(), "2".into())]);
+            }
+            _ => panic!(),
+        }
+        assert_eq!(kinds("a:: 1\n#+b: 2"), ["properties"]);
+    }
+
+    #[test]
+    fn empty_and_eol_bullets() {
+        // `- ##` is a bullet whose heading-prefix leaves an empty title (M5).
+        assert_eq!(kinds("- ##"), ["bullet"]);
+        match &parse("- ##")[0] {
+            Block::Bullet { inline, .. } => assert!(inline.is_empty()),
+            _ => panic!(),
+        }
+        // a lone `-` at end-of-line is an (empty) bullet.
+        assert_eq!(kinds("+ x\n  -"), ["list", "bullet"]);
+    }
+
+    #[test]
+    fn blockquote_flat_paragraph_and_lazy_continuation() {
+        // quote body is a flat paragraph, NOT re-segmented into a property drawer (M5).
+        match &parse("> a:: b")[0] {
+            Block::Quote { children, .. } => assert!(matches!(children[0], Block::Paragraph { .. })),
+            _ => panic!(),
+        }
+        // a following non-`>` line lazily continues the quote (one quote block).
+        assert_eq!(kinds(">foo\nbar"), ["quote"]);
+        // a `- ` line ends the quote (new block).
+        assert_eq!(kinds("> q\n- item"), ["quote", "bullet"]);
     }
 
     #[test]
