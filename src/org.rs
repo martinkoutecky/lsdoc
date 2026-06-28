@@ -53,14 +53,32 @@ const MARKERS: &[&str] = &[
 ];
 
 pub fn parse(input: &str) -> Vec<Block> {
+    parse_doc(input, false)
+}
+
+/// Block segmenter. `in_item` = re-parsing the **content** of an Org list item.
+/// mldoc parses list-item content with `list_content_parsers` (mldoc_parser.ml),
+/// whose choice set does NOT include Directive/Drawer/Heading/Footnote/List — so
+/// inside an item those constructs stay paragraphs (`#+K: v`), verbatim (`:x` →
+/// Example) or inline (`[fn:1] x`), never their own block. Everything else (Table,
+/// `#+BEGIN`/fences/`:`-verbatim/`>`-quote/`$$`/`<html>`, Latex_env, Hr, Paragraph)
+/// is recognised in both contexts. Quote/Custom children re-enter via `parse`
+/// (`in_item = false`), matching mldoc's `block_content_parsers` for those.
+fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
     let lines = split_lines(input);
     let fences = pair_fences(&lines);
     let mut out: Vec<Block> = Vec::new();
     let mut para: Option<(usize, usize)> = None;
-    // After an "absorbing" block (Directive/Comment/Block/List/Footnote) mldoc's
-    // `<* optional eols` swallows the following blank lines; Heading/Table/Drawer do
-    // not, so a blank line there becomes a (leading-Break) paragraph.
+    // After an "absorbing" block (Directive/Comment/Block/Footnote) mldoc's
+    // `<* optional eols` swallows the following blank lines; Heading/Table/Drawer/List
+    // do not (a List only consumes the single blank that ends its last item, via
+    // `two_eols`), so a further blank there becomes a (leading-Break) paragraph.
     let mut absorb = false;
+    // Memoised collapse floor: once a list starting at line `s` collapses with its
+    // trigger at line `e`, every list-start in `[s, e)` collapses the same way (the
+    // suffix is identical). Skipping the collector for those lines keeps repeated
+    // collapses linear instead of O(n²) re-scanning.
+    let mut collapse_floor = 0usize;
     let mut i = 0;
 
     while i < lines.len() {
@@ -80,19 +98,20 @@ pub fn parse(input: &str) -> Vec<Block> {
             continue;
         }
 
-        // 1. directive `#+KEY: value` (KEY != BEGIN_…)
-        if let Some((name, value)) = directive(t) {
-            flush_para(&mut out, &mut para, input);
+        // 1. directive `#+KEY: value` (KEY != BEGIN_…) — not a list-item content block.
+        if let Some((name, value)) = directive(t).filter(|_| !in_item) {
+            flush_para(&mut out, &mut para, input, in_item);
             out.push(Block::Directive { name, value, span: Some(Span(line.start, line.end)) });
             absorb = true;
             i += 1;
             continue;
         }
 
-        // 2. drawer `:PROPERTIES:`/`:NAME:` … `:END:`
-        if let Some(name) = drawer_begin(t) {
+        // 2. drawer `:PROPERTIES:`/`:NAME:` … `:END:` — not a list-item content block
+        // (inside an item a `:`-line is verbatim/Example via step 7 instead).
+        if let Some(name) = drawer_begin(t).filter(|_| !in_item) {
             if let Some(close) = find_drawer_end(&lines, i) {
-                flush_para(&mut out, &mut para, input);
+                flush_para(&mut out, &mut para, input, in_item);
                 if name == "properties" {
                     let mut props: Vec<(String, String)> = lines[i + 1..close]
                         .iter()
@@ -125,9 +144,9 @@ pub fn parse(input: &str) -> Vec<Block> {
             }
         }
 
-        // 3. headline `*{n} `
-        if let Some(level) = headline_level(t) {
-            flush_para(&mut out, &mut para, input);
+        // 3. headline `*{n} ` — not a list-item content block (stays a paragraph line).
+        if let Some(level) = headline_level(t).filter(|_| !in_item) {
+            flush_para(&mut out, &mut para, input, in_item);
             let (marker, priority, inline, htags) = headline_parts(t);
             let empty_title = inline.is_empty() && htags.is_empty();
             out.push(Block::Bullet {
@@ -156,7 +175,7 @@ pub fn parse(input: &str) -> Vec<Block> {
 
         // 4. table (group of consecutive well-formed `|…|` rows)
         if is_table_row(t) {
-            flush_para(&mut out, &mut para, input);
+            flush_para(&mut out, &mut para, input, in_item);
             let start = i;
             while i < lines.len() && is_table_row(lines[i].text) {
                 i += 1;
@@ -171,7 +190,7 @@ pub fn parse(input: &str) -> Vec<Block> {
         if let Some((name, content, consumed_end)) =
             crate::inline::parse_latex_env(input, line.start, line_content_end)
         {
-            flush_para(&mut out, &mut para, input);
+            flush_para(&mut out, &mut para, input, in_item);
             out.push(Block::LatexEnv { name, content, span: Some(Span(line.start, consumed_end)) });
             absorb = false;
             let mut ni = i + 1;
@@ -184,7 +203,7 @@ pub fn parse(input: &str) -> Vec<Block> {
 
         // 5. fenced code block (```/~~~) — markdown fences work in Org too.
         if let Some((close, lang)) = fences.get(&i) {
-            flush_para(&mut out, &mut para, input);
+            flush_para(&mut out, &mut para, input, in_item);
             let code = if *close > i + 1 {
                 input[lines[i + 1].start..lines[*close - 1].end].to_string()
             } else {
@@ -199,7 +218,7 @@ pub fn parse(input: &str) -> Vec<Block> {
         // 6. `#+BEGIN_X` … `#+END_X` block
         if let Some(name) = block_begin(t) {
             if let Some(close) = find_block_end(&lines, i, &name) {
-                flush_para(&mut out, &mut para, input);
+                flush_para(&mut out, &mut para, input, in_item);
                 let inner = block_code(&lines[i + 1..close]);
                 let span = Some(Span(line.start, lines[close].end));
                 let lname = name.to_ascii_lowercase();
@@ -220,7 +239,7 @@ pub fn parse(input: &str) -> Vec<Block> {
 
         // 7. verbatim block (Org): consecutive lines starting with `:` → Example.
         if is_verbatim_line(t) {
-            flush_para(&mut out, &mut para, input);
+            flush_para(&mut out, &mut para, input, in_item);
             let start = i;
             let mut code = String::new();
             while i < lines.len() && is_verbatim_line(lines[i].text) {
@@ -235,7 +254,7 @@ pub fn parse(input: &str) -> Vec<Block> {
 
         // 8. markdown blockquote (`>` …) — also recognised in Org.
         if quote_opens(t) {
-            flush_para(&mut out, &mut para, input);
+            flush_para(&mut out, &mut para, input, in_item);
             let start = i;
             let mut body = String::new();
             if let Some(c) = quote_line_content(lines[i].text) {
@@ -263,7 +282,7 @@ pub fn parse(input: &str) -> Vec<Block> {
 
         // 9. block-level displayed math `$$ … $$`.
         if let Some(math) = displayed_math(t) {
-            flush_para(&mut out, &mut para, input);
+            flush_para(&mut out, &mut para, input, in_item);
             out.push(Block::DisplayedMath { text: math, span: Some(Span(line.start, line.end)) });
             absorb = false;
             i += 1;
@@ -272,16 +291,17 @@ pub fn parse(input: &str) -> Vec<Block> {
 
         // 10. raw HTML (single line, complete element).
         if is_raw_html(t) {
-            flush_para(&mut out, &mut para, input);
+            flush_para(&mut out, &mut para, input, in_item);
             out.push(Block::RawHtml { text: t.to_string(), span: Some(Span(line.start, line.end)) });
             absorb = false;
             i += 1;
             continue;
         }
 
-        // 11. footnote definition `[fn:name] text`.
-        if let Some((name, content)) = footnote_def(t) {
-            flush_para(&mut out, &mut para, input);
+        // 11. footnote definition `[fn:name] text` — not a list-item content block
+        // (inside an item it stays an inline footnote ref in a paragraph).
+        if let Some((name, content)) = footnote_def(t).filter(|_| !in_item) {
+            flush_para(&mut out, &mut para, input, in_item);
             out.push(Block::FootnoteDef {
                 name,
                 inline: parse_inline_org_top(content),
@@ -292,31 +312,39 @@ pub fn parse(input: &str) -> Vec<Block> {
             continue;
         }
 
-        // 12. list (group of consecutive `- `/`+ `/`N. ` items at indent 0)
-        if let Some(item) = list_item(t) {
-            flush_para(&mut out, &mut para, input);
-            let start = i;
-            let mut items = vec![item];
-            i += 1;
-            while i < lines.len() {
-                if let Some(it) = list_item(lines[i].text) {
-                    items.push(it);
-                    i += 1;
-                } else {
-                    break;
+        // 12. list — mldoc Org list parser (lists0.ml): multi-line item-continuation
+        // folding + the indented-`-` collapse quirk (see `collect_list`). Disabled in
+        // list-item content. `collapse_floor` skips list-starts inside a region that
+        // already collapsed (linearity). On collapse the region falls through to the
+        // paragraph fallback below, which reproduces mldoc's failed-list Paragraph.
+        if !in_item && i >= collapse_floor && list_marker(t).is_some() {
+            match collect_list(&lines, i) {
+                Ok((block, next)) => {
+                    flush_para(&mut out, &mut para, input, in_item);
+                    out.push(block);
+                    absorb = false;
+                    i = next;
+                    continue;
+                }
+                Err(Collapse { kept, resume, trigger }) => {
+                    collapse_floor = trigger;
+                    if let Some(block) = kept {
+                        // partial collapse: emit the surviving prefix List, then resume
+                        // (the failing item onward falls through to the paragraph path).
+                        flush_para(&mut out, &mut para, input, in_item);
+                        out.push(block);
+                        absorb = false;
+                        i = resume;
+                        continue;
+                    }
+                    // full collapse (resume == i == start): fall through to paragraph.
                 }
             }
-            out.push(Block::List {
-                items: crate::projection::nest_items(items),
-                span: Some(Span(lines[start].start, lines[i - 1].end)),
-            });
-            absorb = true;
-            continue;
         }
 
         // 13. horizontal rule (exactly 5 dashes).
         if is_org_hr(t) {
-            flush_para(&mut out, &mut para, input);
+            flush_para(&mut out, &mut para, input, in_item);
             out.push(Block::Hr { span: Some(Span(line.start, line.end)) });
             absorb = false;
             i += 1;
@@ -332,12 +360,22 @@ pub fn parse(input: &str) -> Vec<Block> {
         i += 1;
     }
 
-    flush_para(&mut out, &mut para, input);
+    flush_para(&mut out, &mut para, input, false);
     out
 }
 
-fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &str) {
-    if let Some((s, e)) = para.take() {
+/// Flush the open paragraph. `trim_eol` drops trailing newline(s) from the slice
+/// (so no trailing `Break_Line`): in list-item content (`in_item`) a *following block*
+/// absorbs the paragraph's trailing eols via mldoc's `between_eols` (its block parsers
+/// are tried before `Paragraph.sep`), whereas at the document level `Paragraph.sep`
+/// claims the eol first and it stays a Break. EOF / end-of-content flushes pass `false`.
+fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &str, trim_eol: bool) {
+    if let Some((s, mut e)) = para.take() {
+        if trim_eol {
+            while e > s && matches!(input.as_bytes()[e - 1], b'\n' | b'\r') {
+                e -= 1;
+            }
+        }
         out.push(Block::Paragraph {
             inline: parse_inline_org_top(&input[s..e]),
             span: Some(Span(s, e)),
@@ -686,10 +724,14 @@ fn is_raw_html(s: &str) -> bool {
 }
 
 /// Org footnote definition `[fn:name] text`. Returns (name, content). Leading
-/// whitespace is allowed (mldoc). mldoc requires a **non-empty body whose first char
-/// does not begin a block construct** (`* # [ -`): `[fn:1] text`/`[fn:1]:x` →
-/// Footnote_Definition, but a bare `[fn:1]` (or `[fn:1]*x`/`[fn:1]-x`/`[fn:1]#x`/
-/// `[fn:1][x`) is an inline footnote ref inside a Paragraph.
+/// whitespace is allowed (mldoc). mldoc (`footnote.ml`): after `[fn:name]` + spaces,
+/// the body is `many1 l` where `l = spaces *> satisfy non_eol >>= fun c -> line` —
+/// i.e. (1) the first body char must NOT begin a block construct (`* # [ -`, also
+/// `\r \n`), and (2) `line = take_till1 is_eol` requires **≥1 more char** after that
+/// first char, so a single-byte body fails. So `[fn:1] ab`/`[fn:1]:x`/`[fn:1]/x` →
+/// Footnote_Definition, but `[fn:1] a` (1-byte body), `[fn:1]` (bare ref), `[fn:1]  a`
+/// (still 1-byte after spaces) and `[fn:1]*x`/`[fn:1]-x`/`[fn:1]#x`/`[fn:1][x` (bad
+/// first char) are inline footnote refs inside a Paragraph.
 fn footnote_def(s: &str) -> Option<(String, &str)> {
     let rest = s.trim_start().strip_prefix("[fn:")?;
     let end = rest.find(']')?;
@@ -702,44 +744,45 @@ fn footnote_def(s: &str) -> Option<(String, &str)> {
     if matches!(first, b'*' | b'#' | b'[' | b'-') {
         return None;
     }
+    // mldoc `satisfy non_eol` (1 byte) then `take_till1 is_eol` (≥1 byte): the body
+    // (after leading spaces) needs at least 2 bytes, else it is just an inline ref.
+    if content.len() < 2 {
+        return None;
+    }
     Some((name.to_string(), content))
 }
 
-/// Org list item at indent 0: `- `/`+ ` (unordered) or `N. ` (ordered). A `* `
-/// at column 0 is a headline (handled earlier), so only `-`/`+`/`N.` here.
-fn list_item(s: &str) -> Option<ListItem> {
+/// A parsed Org list marker (mldoc `format_checkbox_parser` + the first content line).
+struct Marker {
+    ordered: bool,
+    number: Option<u32>,
+    checkbox: Option<bool>,
+    indent: usize,
+    /// The raw content after marker + ws + checkbox + spaces (trim_start'd), i.e. the
+    /// first item-content line BEFORE the final `String.trim` mldoc applies at join.
+    body: String,
+}
+
+/// Parse an Org list marker at the line's own indent (mldoc `format_checkbox_parser`,
+/// indent-aware): col-0 → `- `/`+ `/`N. `, indent>0 → `* `/`+ `/`N. ` (`-` is a
+/// bullet ONLY at column 0; `*` ONLY when indented — a col-0 `* x` is a headline).
+/// Requires a marker + ≥1 space and **non-empty content** after any checkbox (mldoc's
+/// `take_till1` needs ≥1 char) — a bare `- `/`+ `/`1. `/`- [ ]` yields None.
+fn list_marker(s: &str) -> Option<Marker> {
     let ws = leading_ws(s);
     let rest = &s[ws..];
-    let mk_item = |ordered, number, content: &str| {
+    let mk = |ordered, number, content: &str| {
         let (checkbox, body) = split_checkbox(content);
-        ListItem {
-            ordered,
-            number,
-            indent: ws as u32,
-            content: vec![Block::Paragraph {
-                inline: parse_inline_org_top(body),
-                span: None,
-            }],
-            items: vec![],
-            name: vec![],
-            checkbox,
+        if body.trim().is_empty() {
+            return None;
         }
+        Some(Marker { ordered, number, checkbox, indent: ws, body: body.to_string() })
     };
-    // mldoc requires non-empty content after the marker (and after any checkbox): a
-    // bare `- `/`+ `/`1. ` (or `- [ ]`) is a Paragraph, only `- x` is a List.
-    // Marker quirks (mldoc lists.ml): `-` is a bullet ONLY at column 0 (an indented
-    // `  - x` is a Paragraph); `*` is the OPPOSITE — a list item ONLY when indented
-    // (a column-0 `* x` is a headline, handled earlier); `+`/`1.` are lists at any
-    // indent. So: dash at col 0, star when indented, plus `+`.
     let dash = if ws == 0 { rest.strip_prefix('-') } else { None };
     let star = if ws > 0 { rest.strip_prefix('*') } else { None };
     if let Some(after) = dash.or(star).or_else(|| rest.strip_prefix('+')) {
         if after.starts_with(' ') || after.starts_with('\t') {
-            let content = after.trim_start();
-            if split_checkbox(content).1.trim().is_empty() {
-                return None;
-            }
-            return Some(mk_item(false, None, content));
+            return mk(false, None, after.trim_start());
         }
     }
     let digits = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
@@ -747,16 +790,170 @@ fn list_item(s: &str) -> Option<ListItem> {
         if let Some(after) = rest[digits..].strip_prefix('.') {
             if after.starts_with(' ') || after.starts_with('\t') {
                 if let Ok(number) = rest[..digits].parse::<u32>() {
-                    let content = after.trim_start();
-                    if split_checkbox(content).1.trim().is_empty() {
-                        return None;
-                    }
-                    return Some(mk_item(true, Some(number), content));
+                    return mk(true, Some(number), after.trim_start());
                 }
             }
         }
     }
     None
+}
+
+/// mldoc `check_listitem` (Org): `(indent, is_item)`. `is_item` marks a line as a
+/// *list-item shape* for the continuation logic — NOTE this is broader than a
+/// parseable marker: a leading integer (`Scanf "%d"`, even `12abc`/`-5`) is `is_item`
+/// regardless of a following `.`, and `- ` is `is_item` at ANY indent. The mismatch
+/// between this and `list_marker` (which fails on `-` at indent>0, on `N` without `.`,
+/// and on empty content) is exactly what drives the collapse. (is_heading is folded
+/// into the caller's col-0 / `headline_level` handling, so not returned.)
+fn check_listitem(line: &str) -> (usize, bool) {
+    let indent = leading_ws(line);
+    if scan_leading_int(line.trim()) {
+        return (indent, true);
+    }
+    let b = line.as_bytes();
+    if b.len() - indent >= 2 {
+        let (p0, p1) = (b[indent], b[indent + 1]);
+        let is_item = (p0 == b'+' && p1 == b' ')
+            || (p0 == b'-' && p1 == b' ')
+            || (indent != 0 && p0 == b'*' && p1 == b' ');
+        (indent, is_item)
+    } else {
+        (indent, false)
+    }
+}
+
+/// mldoc `Scanf.sscanf (String.trim line) "%d"`: does the (already-trimmed) string
+/// begin with an integer (optional `+`/`-` then ≥1 digit)?
+fn scan_leading_int(t: &str) -> bool {
+    let b = t.as_bytes();
+    let i = if matches!(b.first(), Some(b'+' | b'-')) { 1 } else { 0 };
+    b.get(i).is_some_and(u8::is_ascii_digit)
+}
+
+/// A (possibly partial) list collapse: mldoc's recursive list parser failed on a bad
+/// continuation. `kept` is the `List` of items parsed before the failing item (None if
+/// none survive — a full collapse); `resume` is the line the document parser resumes at
+/// (the failing item's marker, re-parsed as a Paragraph); `trigger` memoises the
+/// collapse region for the caller (linearity).
+struct Collapse {
+    kept: Option<Block>,
+    resume: usize,
+    trigger: usize,
+}
+
+/// Collect an Org list starting at line `start` (faithful port of mldoc lists0.ml).
+/// Each item folds its indented multi-line continuation (de-indented via `String.trim`,
+/// re-parsed with the list-item content parser, `parse_doc(.., true)`); deeper
+/// is-item lines become children via the flat sequence + `nest_items`.
+///
+/// COLLAPSE: an indented continuation that is a list-item shape (`check_listitem`)
+/// deeper than the current item but NOT a parseable marker there (`list_marker` None —
+/// an indented `- `, a `N`-no-`.`, or an empty marker) makes the item's child
+/// `list_parser` fail. In mldoc that failure bubbles up the recursion through every
+/// item that is *first at its level*, terminating at (and keeping) the first ancestor
+/// level that has a prior sibling; the failing item onward re-parses as a Paragraph.
+/// `collapse_resume` reproduces that bubble from the flat indent sequence.
+fn collect_list(lines: &[Line], start: usize) -> Result<(Block, usize), Collapse> {
+    let mut flat: Vec<ListItem> = Vec::new();
+    let mut flat_lines: Vec<usize> = Vec::new();
+    let mut flat_indents: Vec<u32> = Vec::new();
+    let mut i = start;
+    while i < lines.len() {
+        let t = lines[i].text;
+        // terminators at a would-be marker position: blank line, a col-0 headline, or
+        // any non-marker line (mldoc heading-lookahead / `format_checkbox` failure).
+        if t.is_empty() || headline_level(t).is_some() {
+            break;
+        }
+        let marker = match list_marker(t) {
+            Some(m) => m,
+            None => break,
+        };
+        let cur_indent = marker.indent;
+        // content = first line (after marker) + folded indented continuation lines.
+        let mut content_lines: Vec<String> = vec![marker.body.trim().to_string()];
+        let mut j = i + 1;
+        let mut trigger: Option<usize> = None;
+        loop {
+            if j >= lines.len() {
+                break; // EOF ends this item's content
+            }
+            let cl = lines[j].text;
+            if cl.is_empty() {
+                j += 1; // mldoc `two_eols`: a blank ends the content AND is consumed
+                break;
+            }
+            let (ci, is_item) = check_listitem(cl);
+            if ci == 0 {
+                break; // a col-0 line ends the content (left for the outer loop)
+            }
+            if is_item {
+                if ci > cur_indent && list_marker(cl).is_none() {
+                    trigger = Some(j); // COLLAPSE trigger (deeper unparseable marker)
+                }
+                break; // child / breakout / collapse — handled below
+            }
+            content_lines.push(cl.trim().to_string()); // fold (de-indented)
+            j += 1;
+        }
+        if let Some(trigger) = trigger {
+            // The failing item P is the one at line `i` (indent `cur_indent`), NOT pushed.
+            let r = collapse_resume(&flat_indents, cur_indent as u32);
+            let resume = if r < flat_lines.len() { flat_lines[r] } else { i };
+            flat.truncate(r);
+            let kept = if flat.is_empty() {
+                None
+            } else {
+                let items = std::mem::take(&mut flat);
+                Some(Block::List {
+                    items: crate::projection::nest_items(items),
+                    span: Some(Span(lines[start].start, lines[resume - 1].end)),
+                })
+            };
+            return Err(Collapse { kept, resume, trigger });
+        }
+        flat.push(ListItem {
+            ordered: marker.ordered,
+            number: marker.number,
+            indent: cur_indent as u32,
+            content: parse_doc(&content_lines.join("\n"), true),
+            items: vec![],
+            name: vec![],
+            checkbox: marker.checkbox,
+        });
+        flat_lines.push(i);
+        flat_indents.push(cur_indent as u32);
+        i = j;
+    }
+    if flat.is_empty() {
+        // defensive: caller gates on `list_marker`, so unreachable.
+        return Err(Collapse { kept: None, resume: start, trigger: start });
+    }
+    let span = Some(Span(lines[start].start, lines[i - 1].end));
+    Ok((Block::List { items: crate::projection::nest_items(flat), span }, i))
+}
+
+/// Given the indents of the successfully-collected list items and the indent of the
+/// failing item P (conceptually at index `flat_indents.len()`), return the flat index
+/// `r` such that items `[0, r)` are kept and the resume point is item `r`'s marker
+/// (or P's marker if `r == flat_indents.len()`). Walks up while the current item is the
+/// *first at its level* (its nearest shallower-or-equal predecessor is strictly
+/// shallower — a parent, not a prior sibling), matching mldoc's failure bubble-up.
+fn collapse_resume(flat_indents: &[u32], p_indent: u32) -> usize {
+    let mut cur_indent = p_indent;
+    let mut cur_index = flat_indents.len();
+    loop {
+        // nearest earlier item with indent <= cur_indent.
+        let q = (0..cur_index).rev().find(|&j| flat_indents[j] <= cur_indent);
+        match q {
+            None => return cur_index,                              // first item overall
+            Some(j) if flat_indents[j] == cur_indent => return cur_index, // prior sibling
+            Some(j) => {
+                cur_index = j; // a parent → bubble up
+                cur_indent = flat_indents[j];
+            }
+        }
+    }
 }
 
 /// Split a leading list checkbox `[ ]`/`[x]`/`[X]` (+ following spaces) off `s`,
@@ -2426,6 +2623,162 @@ mod tests {
         assert_eq!(shape(&items("1. a\n   2. b\n   3. c")), "a[b,c]");
         assert_eq!(shape(&items("- a\n  1. b")), "a[b]"); // col-0 `-` parent + numbered child
         assert_eq!(shape(&items("+ a\n    + deep\n  + mid")), "a[deep],mid");
+    }
+
+    // ---- multi-line list continuation + collapse (mldoc lists0.ml) -----------
+
+    /// Block kinds of a single list item's `content`.
+    fn item_content_kinds(s: &str) -> Vec<&'static str> {
+        match &parse(s)[0] {
+            Block::List { items, .. } => items[0]
+                .content
+                .iter()
+                .map(|b| match b {
+                    Block::Paragraph { .. } => "paragraph",
+                    Block::Quote { .. } => "quote",
+                    Block::Example { .. } => "example",
+                    Block::Table { .. } => "table",
+                    Block::Hr { .. } => "hr",
+                    Block::DisplayedMath { .. } => "displayed_math",
+                    Block::Src { .. } => "src",
+                    _ => "other",
+                })
+                .collect(),
+            b => panic!("not a list: {b:?}"),
+        }
+    }
+
+    #[test]
+    fn list_item_continuation_folds() {
+        // an indented (>=1 space / tab) non-marker line folds into the item content,
+        // de-indented (String.trim) and joined with Break_Line.
+        let para_inline = |s: &str| match &parse(s)[0] {
+            Block::List { items, .. } => match &items[0].content[0] {
+                Block::Paragraph { inline, .. } => inline.clone(),
+                b => panic!("not a paragraph: {b:?}"),
+            },
+            b => panic!("not a list: {b:?}"),
+        };
+        let plains: Vec<String> = para_inline("- a\n  more")
+            .iter()
+            .filter_map(|i| match i {
+                Inline::Plain { text } => Some(text.clone()),
+                Inline::Break => Some("⏎".into()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(plains, ["a", "⏎", "more"]);
+        // fold predicate: >=1-space indent folds; col-0 does NOT.
+        assert_eq!(bkinds("- a\n  more"), ["list"]);
+        assert_eq!(bkinds("- a\n more"), ["list"]);
+        assert_eq!(bkinds("- a\nmore"), ["list", "paragraph"]);
+        assert_eq!(bkinds("- a\n\tmore"), ["list"]); // tab indent
+        assert_eq!(bkinds("- a\n  m1\n  m2"), ["list"]);
+        assert_eq!(bkinds("+ a\n  more"), ["list"]);
+        assert_eq!(bkinds("1. a\n   more"), ["list"]);
+        assert_eq!(bkinds("- [ ] a\n  more"), ["list"]);
+        assert_eq!(bkinds("  + x\n    more"), ["list"]); // list starting at indent>0
+        // blank-line handling (mldoc two_eols): one blank between items is absorbed;
+        // a blank right after the marker breaks the fold.
+        assert_eq!(bkinds("- a\n  more\n\n- b"), ["list"]);
+        assert_eq!(bkinds("- a\n\n  more"), ["list", "paragraph"]);
+        assert_eq!(bkinds("- a\n b\nc"), ["list", "paragraph"]);
+        assert_eq!(bkinds("- a\n\n\nb"), ["list", "paragraph"]);
+        // col-0 terminators end the list, the next block re-parses normally.
+        assert_eq!(bkinds("- a\n  more\n* head"), ["list", "bullet"]);
+        assert_eq!(bkinds("- a\n  more\n#+TITLE: x"), ["list", "directive"]);
+        assert_eq!(bkinds("- a\n  more\n-----"), ["list", "hr"]);
+    }
+
+    #[test]
+    fn list_item_content_reparses_blocks() {
+        // indented constructs fold as the item's content BLOCKS, re-parsed with the
+        // list-item content parser (no Directive/Drawer/Heading/Footnote/List).
+        assert_eq!(item_content_kinds("- a\n  > quote"), ["paragraph", "quote"]);
+        assert_eq!(item_content_kinds("- a\n  : ex"), ["paragraph", "example"]);
+        assert_eq!(item_content_kinds("- a\n  | t |"), ["paragraph", "table"]);
+        assert_eq!(item_content_kinds("- a\n  -----"), ["paragraph", "hr"]);
+        assert_eq!(item_content_kinds("- a\n  $$x$$"), ["paragraph", "displayed_math"]);
+        assert_eq!(
+            item_content_kinds("- a\n  #+BEGIN_SRC\n  x\n  #+END_SRC"),
+            ["paragraph", "src"]
+        );
+        // drawer → verbatim Example (drawer parser not in item content); directive,
+        // headline, footnote, indented `---` stay inside the paragraph.
+        assert_eq!(
+            item_content_kinds("- a\n  :PROPERTIES:\n  :p: 1\n  :END:"),
+            ["paragraph", "example"]
+        );
+        assert_eq!(item_content_kinds("- a\n  #+TITLE: x"), ["paragraph"]);
+        assert_eq!(item_content_kinds("- a\n  [fn:1] body"), ["paragraph"]);
+        assert_eq!(item_content_kinds("- a\n  ---"), ["paragraph"]);
+        // a marker body that itself looks like a marker is plain content (no nesting).
+        assert_eq!(item_content_kinds("- - x"), ["paragraph"]);
+        assert_eq!(item_content_kinds("- * x"), ["paragraph"]);
+    }
+
+    #[test]
+    fn list_indented_dash_collapses() {
+        // an indented `-` (or other deeper-but-unparseable marker) deeper than the
+        // current item makes mldoc's list parser fail → the whole region is a Paragraph.
+        for s in [
+            "- a\n  - nested",
+            "+ a\n  - nested",
+            "1. a\n   more\n   - x",
+            "- a\n  - x\n  more",
+            "- a\n  more\n  - x",
+            "- a\n  + ",       // empty deeper marker
+            "- a\n  12abc",    // integer-prefixed, no `.`
+            "- a\n  -5",       // `-5` is is_item but unparseable
+            "+ a\n  + b\n    - c", // collapse propagates from a grandchild
+        ] {
+            assert_eq!(bkinds(s), ["paragraph"], "should collapse: {s:?}");
+        }
+        // collapse then a col-0 terminator still re-parses the terminator.
+        assert_eq!(bkinds("- a\n  - x\n* h"), ["paragraph", "bullet"]);
+        assert_eq!(bkinds("- a\n  - x\n\n- b"), ["paragraph", "list"]);
+        // breakout (NOT collapse): an indented `-` at indent <= the current item.
+        assert_eq!(bkinds("+ a\n  + b\n  - c"), ["list", "paragraph"]);
+        assert_eq!(bkinds("- a\n- "), ["list", "paragraph"]); // empty trailing marker
+        // PARTIAL collapse: items before the failing item survive as a List; the
+        // failing item onward is a Paragraph (mldoc bubbles up only through
+        // first-at-level items).
+        let kept_len = |s: &str| match &parse(s)[0] {
+            Block::List { items, .. } => items.len(),
+            b => panic!("not a list: {b:?}"),
+        };
+        assert_eq!(bkinds("- a\n- b\n  - z"), ["list", "paragraph"]);
+        assert_eq!(kept_len("- a\n- b\n  - z"), 1); // only `a` survives
+        assert_eq!(bkinds("- a\n- b\n- c\n  - z"), ["list", "paragraph"]);
+        assert_eq!(kept_len("- a\n- b\n- c\n  - z"), 2); // a, b survive
+        assert_eq!(bkinds("+ a\n  + b\n  + c\n    - d"), ["list", "paragraph"]);
+        assert_eq!(kept_len("+ a\n  + b\n  + c\n    - d"), 1); // a (with child b) survives
+        assert_eq!(bkinds("+ p\n+ a\n  + b\n    - c"), ["list", "paragraph"]);
+        assert_eq!(bkinds("1. a\n2. b\n   - z"), ["list", "paragraph"]);
+        // two independent first-item collapses ⇒ one merged Paragraph.
+        assert_eq!(bkinds("- a\n  - z\n- y\n  - w"), ["paragraph"]);
+        // repeated collapses stay linear (collapse-floor memoisation).
+        let big = format!("{}  - z", "- a\n".repeat(40_000));
+        let _ = parse(&big);
+    }
+
+    #[test]
+    fn footnote_def_minimum_body() {
+        // mldoc: footnote def body needs >=2 bytes after the spaces (satisfy + take_till1).
+        assert_eq!(bkinds("[fn:1] a"), ["paragraph"]); // 1-byte body
+        assert_eq!(bkinds("[fn:1]  a"), ["paragraph"]); // still 1 byte after spaces
+        assert_eq!(bkinds("[fn:1]"), ["paragraph"]); // bare ref
+        assert_eq!(bkinds("[fn:1] ab"), ["footnote_def"]);
+        assert_eq!(bkinds("[fn:1] a."), ["footnote_def"]);
+        assert_eq!(bkinds("[fn:1] a b"), ["footnote_def"]);
+        assert_eq!(bkinds("[fn:1]:x"), ["footnote_def"]);
+        assert_eq!(bkinds("[fn:1]/x"), ["footnote_def"]);
+        assert_eq!(bkinds("[fn:1] é"), ["footnote_def"]); // 2 bytes
+        // bad first char stays a paragraph regardless of length.
+        assert_eq!(bkinds("[fn:1]-x"), ["paragraph"]);
+        assert_eq!(bkinds("[fn:1]*x"), ["paragraph"]);
+        assert_eq!(bkinds("[fn:1]#x"), ["paragraph"]);
+        assert_eq!(bkinds("[fn:1][x"), ["paragraph"]);
     }
 
     #[test]

@@ -169,9 +169,76 @@ add("checkbox", "+ [ ] plus");
 add("checkbox", "1. [ ] ordered\n2. [x] ordered done");
 add("checkbox", "- plain item");
 add("checkbox", "- [-] partial is literal");      // `[-]` is NOT a checkbox
-// NOTE: org *nested* list cases (`- a\n  - b`) are intentionally NOT here — they hit
-// a separate, pre-existing org multi-line list-continuation gap (see DECISIONS.md
-// "Org multi-line list continuation"), unrelated to checkbox/render parity.
+// NOTE: org multi-line list continuation + collapse is now implemented; the regression
+// cases live under the "list-cont"/"list-collapse" categories below.
+// (9) Org list multi-line item continuation + indented-`-` collapse (mldoc lists0.ml).
+//     Fold: an indented (>=1 space) non-marker continuation line de-indents (String.trim)
+//     and joins the item's content (re-parsed with the list-item content parser, which
+//     excludes Directive/Drawer/Heading/Footnote/List).
+add("list-cont", "- a\n  more");                 // fold one continuation line
+add("list-cont", "- a\n more");                  // 1-space indent still folds
+add("list-cont", "- a\nmore");                   // col-0 ⇒ NOT folded (List + Paragraph)
+add("list-cont", "- a\n  m1\n  m2");             // multi-line fold
+add("list-cont", "- a\n  more\n- b");            // 2 items (a+fold, then b)
+add("list-cont", "- a\n  more\n  more2\n- b");   // 2 items, multi-line fold
+add("list-cont", "- a\n  more\n\n- b");          // blank between items absorbed (single List)
+add("list-cont", "- a\n\n  more");               // blank then indent ⇒ List + Paragraph("  more")
+add("list-cont", "- a\n b\nc");                  // List(a+b) + Paragraph(c)
+add("list-cont", "+ a\n  more");                 // `+` folds
+add("list-cont", "1. a\n   more");               // ordered folds
+add("list-cont", "- [ ] a\n  more");             // checkbox + fold
+add("list-cont", "- a\n    deep4\n  mid2");      // any indent>=1 folds (de-indented)
+add("list-cont", "- a\n  more\n    deeper");     // deeper indent still folds
+add("list-cont", "- a\n  more\n  ");             // trailing whitespace-only line folds (Break)
+add("list-cont", "- a\n\tmore");                 // tab indent folds
+add("list-cont", "- a\nb");                      // col-0 non-marker terminates (List + Para)
+add("list-cont", "- a\n\nb");                    // blank consumed, then Paragraph(b)
+add("list-cont", "- a\n\n\nb");                  // 2nd blank ⇒ Paragraph(Break, b)
+add("list-cont", "  + x\n    more");             // list starting at indent>0 folds
+// indented constructs fold as item content blocks (re-parsed without lists/drawers):
+add("list-cont", "- a\n  > quote");              // → item content [Para a, Quote]
+add("list-cont", "- a\n  : ex");                 // → [Para a, Example]  (NOT a drawer)
+add("list-cont", "- a\n  | t |");                // → [Para a, Table]
+add("list-cont", "- a\n  -----");                // → [Para a, Hr]
+add("list-cont", "- a\n  ---");                  // indented `---` folds as text (List)
+add("list-cont", "- a\n  #+TITLE: x");           // directive NOT split inside an item (one Para)
+add("list-cont", "- a\n  :PROPERTIES:\n  :p: 1\n  :END:"); // drawer→verbatim Example in item
+add("list-cont", "- a\n  [fn:1] body");          // footnote stays inline ref in item
+add("list-cont", "- a\n  $$x$$");                // → [Para a, displayed_math]
+add("list-cont", "- a\n  #+BEGIN_SRC\n  x\n  #+END_SRC"); // → [Para a, Src]
+// col-0 terminators end the List (next block re-parsed normally):
+add("list-cont", "- a\n  more\n* head");         // → List + Heading
+add("list-cont", "- a\n  more\n#+TITLE: x");     // → List + Directive
+add("list-cont", "- a\n  more\n-----");          // → List + Hr
+add("list-cont", "- - x");                       // body "- x" is item content (no nested list)
+add("list-cont", "- * x");                       // body "* x" is item content (not a heading)
+add("list-cont", "1. - x");                      // ordered, body "- x" content
+
+// (9b) indented-`-` (and unparseable deeper marker) COLLAPSE: whole region → Paragraph.
+add("list-collapse", "- a\n  - nested");         // indented `-` ⇒ Paragraph
+add("list-collapse", "+ a\n  - nested");         // collapse even for `+`
+add("list-collapse", "1. a\n   more\n   - x");   // collapse mid-continuation (ordered)
+add("list-collapse", "- a\n  - x\n  more");      // collapse (indented `-`)
+add("list-collapse", "- a\n  more\n  - x");      // collapse after folding
+add("list-collapse", "- a\n  + ");               // empty deeper marker ⇒ collapse
+add("list-collapse", "- a\n  12abc");            // integer-prefixed (no `.`) ⇒ collapse
+add("list-collapse", "- a\n  -5");               // `-5` is is_item but unparseable ⇒ collapse
+add("list-collapse", "+ a\n  + b\n    - c");     // collapse propagates from a grandchild
+add("list-collapse", "- a\n  - x\n* h");         // collapse Paragraph + Heading
+add("list-collapse", "- a\n  - x\n\n- b");       // collapse Paragraph + (blanks) + List
+// breakout (NOT collapse): an indented `-` at indent <= current item ⇒ List + Paragraph.
+add("list-collapse", "+ a\n  + b\n  - c");       // → List(a[b]) + Paragraph("  - c")
+add("list-collapse", "- a\n- ");                 // empty trailing marker ⇒ List + Paragraph
+// PARTIAL collapse: items before the failing item survive as a List, the failing item
+// onward becomes a Paragraph (mldoc's failure bubbles up only through first-at-level items).
+add("list-collapse", "- a\n- b\n  - z");         // → List(a,b? no: List(a) + Para) ; kept=[a]
+add("list-collapse", "- a\n- b\n- c\n  - z");     // → List(a,b) + Paragraph(c + trigger)
+add("list-collapse", "+ a\n  + b\n  + c\n    - d"); // → List(a[b]) + Paragraph(c + trigger)
+add("list-collapse", "+ p\n+ a\n  + b\n    - c"); // → List(p) + Paragraph(a..trigger)
+add("list-collapse", "- a\n  more\n- b\n  - z");  // → List(a+more) + Paragraph(b + trigger)
+add("list-collapse", "- a\n  - z\n- y\n  - w");   // two independent collapses ⇒ one Paragraph
+add("list-collapse", "1. a\n2. b\n   - z");       // ordered partial collapse
+
 add("target", "see <<my target>> here");
 add("target", "<<target>>");
 add("target", "<<a>> and <<b>>");

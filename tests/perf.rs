@@ -29,6 +29,12 @@ fn org_linear_cases(n: usize) -> Vec<(&'static str, String)> {
         ("o_page_open", "[[".repeat(n / 2)),
         ("o_links", "[[a][b]] ".repeat(n / 9)),
         ("o_deep_emph", format!("{}x{}", "*".repeat(n / 2), "*".repeat(n / 2))),
+        // Org multi-line list: long sibling run, long single-item continuation fold,
+        // and the indented-`-` COLLAPSE (a memoised collapse-floor keeps repeated
+        // collapse attempts linear instead of O(n²) suffix re-scanning).
+        ("o_list_siblings", "- a\n".repeat(n / 4)),
+        ("o_list_fold", format!("- a{}", "\n  cont".repeat(n / 4))),
+        ("o_list_collapse", format!("{}  - z", "- a\n".repeat(n / 4))),
     ]
 }
 

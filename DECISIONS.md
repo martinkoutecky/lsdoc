@@ -610,22 +610,54 @@ gate is now **render-level**: 621 inputs, refs + block-struct + blocks-full all 
 - **`Src.options`** (org header-args `:results …`) — affects babel execution, not display;
   Tine renders read-only code by language. **`Src.pos_meta`** is a span (spans out of scope).
 
-## Org multi-line list continuation (DISCOVERED gap — pre-existing, out of render-parity scope)
+## Fuzz-reachability audit + the org bugs it found (2026-06-28)
 
-Adding nested-list corpus cases for the checkbox work surfaced a **pre-existing** org gap
-unrelated to render fields: lsdoc's org list segmenter treats each line independently and
-does **not** implement mldoc's multi-line list-item continuation:
-- `- a\n  more` — mldoc folds `more` into the item (`List`, content `a\nmore`); lsdoc emits
-  `List` + a separate `Paragraph`.
-- `- a\n  - nested` (and any indented `-` continuation, e.g. `+ a\n  - x`, `- a\n   - x`) —
-  mldoc **collapses the whole thing to a single `Paragraph`** (an indented `-` is not a
-  bullet; indented `+`/`N.` continuations instead stay a `List`); lsdoc emits `List` +
-  `Paragraph`.
+After render parity, a differential **fuzz-reachability** analysis (100k inputs, 50k md +
+50k org) classified the residual structural-mismatch "floor": **20/22 buckets (840/885) are
+unreachable** from realistic input (each provably needs an adversarial feature — two
+block-openers glued with no newline, a stray/dirty `:END:`/`#+END_*`, a construct glued onto
+a headline, md `$$` glued to text; all match once segmented one-block-per-line), and the real
+graphs are structurally **0-diff**. But **2 buckets were genuine parity bugs on valid Org**
+(a block body is arbitrary multi-line content, so this matters regardless of how Logseq stores
+blocks). Both fixed:
 
-This is **not exercised by real content**: Logseq stores each bullet as its own block/file
-line, so a single parsed string is one bullet — these multi-line-within-one-string shapes
-don't occur in the real md/org graphs (both still 0-diff). Fixing it properly is an org
-list-continuation sub-project (interacts with `nest_items`, def-lists, indentation), so it
-is **deliberately left for a separate pass**, not bundled into render parity. The org
-nested-list corpus cases are intentionally omitted (see the note in `corpus.org.gen.mjs`);
-the md nested-list path is unaffected (md `*`/`+`/`N.` nesting is gated and passes).
+1. **Indented `*` list item** (`  * x` → `List`, not `Paragraph`) — contradicted the spec
+   above (`### Block rules`). `*` is now an unordered marker when indented (col-0 `*` is a
+   headline). Only `*` was broken; `-`/`+`/`N.` were already correct.
+
+## Org multi-line list continuation + indented-`-` collapse (FIXED — port of `lists0.ml`)
+
+lsdoc's org list segmenter previously treated each line independently. It now ports mldoc's
+recursive list parser (`collect_list` in `org.rs`):
+- **Continuation fold.** An indented (≥1 space) non-marker line folds into the current item's
+  content (de-indented via `String.trim`, joined with `\n`, re-parsed). `- a\n  more` →
+  `List` item content `a⏎more`; `- a\nmore` (no indent) → `List` + `Paragraph` (not folded);
+  a blank line ends the item (mldoc `two_eols`).
+- **Restricted item content.** Item content uses mldoc's `list_content_parsers` set: NO
+  Directive/Drawer/Heading/Footnote/List inside an item (`#+K: v` stays a paragraph,
+  `:PROPERTIES:`→Example, `[fn:1] x`→inline ref), but `> q`/`: ex`/`| t |`/`-----`/`$$`/
+  `#+BEGIN_…`/`<html>` are real blocks.
+- **Indented-`-` collapse (PARTIAL).** An indented `-` line (not a valid marker) makes mldoc
+  fail the list; the failure **bubbles up only through first-at-level items**, so a surviving
+  prefix stays a `List` and only the failing item onward becomes a `Paragraph`:
+  `- a\n  - z` → `Paragraph`; `- a\n- b\n  - z` → `List(a,b)` + `Paragraph`;
+  `- a\n  - z\n- b` → `Paragraph` + `List(b)`. A `collapse_floor` memo keeps repeated
+  collapses linear (no O(n²)); verified by a 40k-line perf case.
+
+Verified: gate 0-diff (56 new `o###` cases), 28 fresh hand-probed cases all match mldoc,
+org fuzz block-mismatch **7.29% → 4.94%** (panic-free), md unchanged, perf/stack pass.
+
+## Org footnote-definition predicate (FIXED) + body-continuation (still residual)
+
+`[fn:LABEL] body` is a `Footnote_Definition` only if the body (after leading spaces) is
+**≥ 2 bytes** AND its first char doesn't begin a block construct (`* # [ -`); else it is an
+inline footnote *ref* in a `Paragraph` (mldoc `satisfy non_eol` + `take_till1`). So
+`[fn:1] a`/`[fn:1]  a` → `Paragraph`, `[fn:1] ab`/`[fn:1]:x`/`[fn:1] é` (2 bytes) → def.
+lsdoc previously over-detected the 1-char-body case as a def. (6B initially mischaracterized
+this as "continuation folding" — corrected after direct probing; verify-the-prover.)
+
+**Still residual:** the footnote-def *body* multi-line continuation — `[fn:1] body\ncont` →
+mldoc absorbs `cont` into the def's inline body (`[footnote_def]`), lsdoc splits
+(`[footnote_def, paragraph]`). Matching mldoc's footnote-body terminator predicate is the
+footnote analog of the list-continuation work; deferred (footnotes are rare; the def-vs-para
+predicate above is the common case). Tracked here, not allowlisted.
