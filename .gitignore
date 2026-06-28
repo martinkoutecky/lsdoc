@@ -13,6 +13,7 @@ harness/node_modules/
 
 # Harness run outputs (regenerated; not source of truth)
 harness/*-out.json
+harness/corpus.all.json
 harness/divergences.json
 harness/report.json
 

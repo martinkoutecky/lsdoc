@@ -9,6 +9,7 @@
 // Usage: node run.mjs            (full loop)
 //        node run.mjs --no-gen   (skip corpus regen)
 import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -23,12 +24,20 @@ function run(cmd, args, opts = {}) {
   return r;
 }
 
-// 1. corpus
+// 1. corpus — generate both sources, then merge into corpus.all.json (derived).
 if (!process.argv.includes("--no-gen")) {
   run("node", [join(__dir, "corpus.gen.mjs")]);
+  run("node", [join(__dir, "corpus.blocks.gen.mjs")]);
 }
+const inline = JSON.parse(readFileSync(join(__dir, "corpus.json"), "utf8"));
+const blocks = JSON.parse(readFileSync(join(__dir, "corpus.blocks.json"), "utf8"));
+const all = [...inline, ...blocks];
+const allPath = join(__dir, "corpus.all.json");
+writeFileSync(allPath, JSON.stringify(all, null, 1));
+console.log(`corpus: ${inline.length} inline + ${blocks.length} block = ${all.length} total`);
+
 // 2. oracle
-run("node", [join(__dir, "oracle.mjs")]);
+run("node", [join(__dir, "oracle.mjs"), allPath]);
 // 3. lsdoc — build+run via cargo. Toolchain lives on /aux; source env.sh.
 //    spawnSync can't `source`, so we set the env vars cargo needs directly.
 const cargoEnv = {
@@ -38,7 +47,7 @@ const cargoEnv = {
   PATH: `/aux/koutecky/logseq/.toolchain/cargo/bin:${process.env.PATH}`,
 };
 run("cargo", ["run", "-q", "--bin", "lsdoc-parse", "--",
-  join(__dir, "corpus.json"), join(__dir, "lsdoc-out.json")],
+  allPath, join(__dir, "lsdoc-out.json")],
   { cwd: repo, env: cargoEnv });
 // 4. compare (gates: non-zero exit on any divergence)
 const cmp = run("node", [join(__dir, "compare.mjs")], { allowFail: true });
