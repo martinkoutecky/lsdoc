@@ -224,16 +224,31 @@ Quirks worth knowing (all matched):
   content is re-parsed once on a strictly-smaller substring (bounded by nesting
   depth), never re-scanned on failure.
 
-## Differential fuzzer (M5 seed)
+## Differential fuzzer (M5)
 
 `harness/fuzz.mjs` generates biased-random markdown (adversarial token alphabet),
-runs both mldoc and lsdoc, and diffs the projection. No panics over 8k+ inputs
-(byte-safety holds on café/中文/😀/zero-width). Residual fuzz-only divergences are
-all (a) block-segmenter edge cases deliberately out of M3/M4 scope (lone `>`, bare
-`-\n`, loose property/`$$` detection) or (b) deep adversarial bracket/emphasis/macro
-nesting in random soup that does not occur in real content (the realism corpus —
-`~/research/tine-test` + kitchen-sink — is in the gate and passes 0-diff). Not
-allowlisted: they are not gate inputs.
+runs both mldoc and lsdoc, and diffs the projection. **No panics/hangs over 60k+
+inputs across seeds** (byte-safety holds on café/中文/😀/zero-width) — this is the
+robustness guarantee.
+
+`harness/fuzz-triage.mjs` buckets the mismatches by structural signature
+(oracle-block-kinds → lsdoc-block-kinds). The triage drove three **block-level
+over-detections** that could plausibly trip on semi-realistic content, now FIXED
+(probed against mldoc, unit-tested in `parse.rs::fuzz_surfaced_block_edges`):
+- **quote**: opens only with non-whitespace after `>` (`>` / `> ` are paragraphs).
+- **property**: key must contain no `:` — so `http://x.com:: y` is prose, not a
+  property (the `http:` colon disqualifies the key).
+- **raw HTML**: needs a closing `</…>` on the line — a bare `<div>` / `<note this>`
+  is a paragraph (mldoc only emits Raw_Html for a complete element).
+
+Remaining fuzz-only mismatches (after the fixes) are all **same-block-kind**: inline
+tokenization differences on pure mixed-delimiter token-soup (e.g.
+`#[[$}_](url)tagword`), plus mldoc's odd `$$x$$<trailing>` mid-line split (a displayed
+-math block followed by junk on the same line — lsdoc keeps the cleaner whole-line
+behavior). None occur in real content: the realism corpus (`~/research/tine-test` +
+kitchen-sink) AND the 202 mined upstream-test inputs are all in the gate at 0-diff.
+These are not gate inputs and are not allowlisted — exact bug-for-bug parity on random
+garbage would mean binding to mldoc's combinator internals, which SPEC §5 forbids.
 
 ## Mined test corpus (M5)
 

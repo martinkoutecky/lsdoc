@@ -193,7 +193,9 @@ pub fn parse(input: &str) -> Vec<Block> {
         // (`- `/`# `/`id:: `/bare `-`/`#`). The body is parsed as block-content — for
         // markdown prose that is a single Paragraph (with keep_line_break breaks); the
         // property/heading/bullet parsers are NOT applied inside a quote.
-        if t.trim_start().starts_with('>') {
+        // A quote OPENS only if there's non-whitespace after the `>` (mldoc: lone
+        // `>` / `> ` are paragraphs; `>x` / `> x` are quotes).
+        if quote_opens(t) {
             flush_para(&mut out, &mut para, input);
             let start = i;
             let mut body = String::new();
@@ -520,11 +522,22 @@ fn list_item(s: &str) -> Option<ListItem> {
     None
 }
 
+/// Does this line OPEN a blockquote? mldoc requires non-whitespace after the `>`
+/// (a lone `>` or `> ` with nothing after is a paragraph).
+fn quote_opens(s: &str) -> bool {
+    match s.trim_start().strip_prefix('>') {
+        Some(rest) => !rest.trim().is_empty(),
+        None => false,
+    }
+}
+
 fn property(s: &str) -> Option<(String, String)> {
     let s = s.trim_start(); // property lines may be indented under a block
     let pos = s.find("::")?;
     let key = &s[..pos];
-    if key.is_empty() || key.contains(' ') || key.contains('\t') {
+    // key has no whitespace and no `:` — the latter rejects URLs like
+    // `http://x.com:: y` (mldoc: prose, not a property), since `http:` has a colon.
+    if key.is_empty() || key.contains(' ') || key.contains('\t') || key.contains(':') {
         return None;
     }
     let rest = &s[pos + 2..];
@@ -651,8 +664,9 @@ fn find_drawer_end(lines: &[Line], from: usize) -> Option<usize> {
 }
 
 fn is_raw_html(s: &str) -> bool {
-    // `<tag …>` / `</tag>` — a real HTML tag name, NOT an autolink like
-    // `<https://…>` (whose ':' breaks the tag-name rule → stays inline/paragraph).
+    // `<tag …>…</tag>` — a real HTML element, NOT an autolink `<https://…>` and NOT
+    // an incomplete tag. mldoc is strict: a bare `<div>` or `<note this>` is a
+    // paragraph; only a line with an opening tag AND a closing `</…>` is Raw_Html.
     let t = s.trim_start();
     let b = t.as_bytes();
     if b.len() < 2 || b[0] != b'<' {
@@ -669,7 +683,11 @@ fn is_raw_html(s: &str) -> bool {
     if k == name_start || !b[name_start].is_ascii_alphabetic() {
         return false;
     }
-    k < b.len() && matches!(b[k], b'>' | b'/' | b' ' | b'\t')
+    if !matches!(b.get(k), Some(b'>' | b'/' | b' ' | b'\t')) {
+        return false;
+    }
+    // require a closing tag on the line (approximates mldoc's complete-element rule).
+    t.contains("</")
 }
 
 #[cfg(test)]
@@ -719,6 +737,23 @@ mod tests {
         assert_eq!(kinds("<https://x.com>"), ["paragraph"]); // autolink, not html
         assert_eq!(kinds("a\nb\n\nc"), ["paragraph"]); // text coalesces across blanks
         assert_eq!(kinds(""), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn fuzz_surfaced_block_edges() {
+        // quote opens only with non-whitespace after `>`
+        assert_eq!(kinds(">"), ["paragraph"]);
+        assert_eq!(kinds("> "), ["paragraph"]);
+        assert_eq!(kinds(">x"), ["quote"]);
+        assert_eq!(kinds("> x"), ["quote"]);
+        // property key must not contain `:` (URLs are prose, not properties)
+        assert_eq!(kinds("http://x.com:: y"), ["paragraph"]);
+        assert_eq!(kinds("a/b:: c"), ["properties"]);
+        assert_eq!(kinds("a.b:: c"), ["properties"]);
+        // raw html needs a closing tag; a bare/incomplete tag is a paragraph
+        assert_eq!(kinds("<div>"), ["paragraph"]);
+        assert_eq!(kinds("<note this>"), ["paragraph"]);
+        assert_eq!(kinds("<div>x</div>"), ["raw_html"]);
     }
 
     #[test]
