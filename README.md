@@ -12,13 +12,13 @@ the design log (mldoc quirks, intentional deviations, complexity decisions).
 
 ## Status
 
-**Markdown AND Org complete — exact mldoc parity, zero allowlist deviations.** One
-differential gate over **583 inputs** (adversarial + mined mldoc/OG test suites + real
-Markdown graph + real Org graph), both formats: **refs, block-struct, AND blocks-full
-all 583/583 (0 diffs, allowlist empty)**; real content — `~/research/tine-test` (md)
-AND `~/research/org-graph` (org) — is 0-diff; fuzzing is panic-free over 60k+ inputs;
-the perf suite is linear and stack-bounded for both formats. Milestone order (each
-gated by "0 oracle diffs on its slice + perf budgets hold"):
+**Markdown AND Org complete — exact, render-level mldoc parity, zero allowlist
+deviations.** One differential gate over **623 inputs** (adversarial + mined mldoc/OG
+test suites + real Markdown graph + real Org graph), both formats: **refs, block-struct,
+AND blocks-full all 623/623 (0 diffs, allowlist empty)**; real content —
+`~/research/tine-test` (md) AND `~/research/org-graph` (org) — is 0-diff; fuzzing is
+panic-free over 160k+ inputs; the perf suite is linear and stack-bounded for both
+formats. Milestone order (each gated by "0 oracle diffs on its slice + perf budgets hold"):
 
 1. ✅ Harness / oracle / corpus / normalization + regression loop
 2. ✅ Block structure (paragraphs, headings, lists, code fences, properties, quotes, hr, tables)
@@ -26,9 +26,24 @@ gated by "0 oracle diffs on its slice + perf budgets hold"):
 4. ✅ Logseq dialect inline (`[[page]]`, `#tag`, `((uuid))`, `{{macros}}`, math, timestamps)
 5. ✅ Hardening (differential fuzz, perf + stack-overflow gate, real-graph diff)
 6. ✅ Org mode (headlines, markers/priority/tags, org emphasis, `[[t][l]]` links, `#+` directives/blocks, drawers)
+7. ✅ Render-level parity (image-ness, link metadata/title, list checkboxes, org targets)
+   + a blessed public API (`lsdoc::ast` + `parse`/`refs`), consumable as a git dependency
 
-Remaining (future, not built): Tine integration — cross the DTO boundary with the
-serde AST, delete `parseInline.ts`, repoint `refs.rs`.
+## Using lsdoc as a library
+
+The stable surface is **`lsdoc::ast`** (the `serde`-serializable AST — see
+[`AST.md`](AST.md) for the field-by-field render contract) plus the entry points
+`parse(input, format) -> Vec<ast::Block>` (render) and `refs(input, format) -> ast::Refs`
+(index). It depends only on `serde` + `serde_json` and is consumed as a Cargo git
+dependency (AGPL-3.0):
+
+```toml
+lsdoc = { git = "https://github.com/martinkoutecky/lsdoc", rev = "…" }
+```
+
+Edition 2021 (MSRV ≈ 1.70). Tine renders every construct from the AST alone; the lsdoc-side
+integration prereqs (RENDER-PARITY-AND-INTEGRATION.md §1–§3) are complete. Remaining work is
+Tine-side (consume the AST, delete `parseInline.ts`, repoint `refs.rs`'s inline half).
 
 ## The oracle
 
