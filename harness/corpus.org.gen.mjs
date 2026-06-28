@@ -181,6 +181,16 @@ add("target", "text <<no close here");             // unterminated → literal
 add("link-meta", "[[../a.png][img]]{:width 100}"); // org_link_1 metadata
 add("link-meta", "[[file:x.png][cap]]{:width 50, :height 20}");
 add("link-meta", "[[../a.png]]{:height 40}");      // org_link_2: metadata NOT consumed
+// (8) indented `*` is a LIST item (col-0 `*` is a headline) — mldoc lists.ml; the
+// opposite of `-` (bullet only at col 0). Found by the 6B fuzz-reachability check
+// as a real parity bug vs DECISIONS.md:393. `+`/`N.` were already correct.
+add("istar", "  * x");                             // indented star → list (not paragraph)
+add("istar", "    * deep");
+add("istar", "* h\n  * a\n  * b");                  // headline + indented-star list
+add("istar", "  * a\n    * b");                     // nesting via indent
+add("istar", "  * [ ] task");                       // indented star + checkbox
+add("istar", "  * ");                               // empty → paragraph (needs content)
+add("istar", "* TODO task\n  * sub star");          // the 6B in-context repro
 
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));

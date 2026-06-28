@@ -754,5 +754,47 @@
   "cat": "link-meta",
   "input": "[[../a.png]]{:height 40}",
   "format": "org"
+ },
+ {
+  "id": "o126",
+  "cat": "istar",
+  "input": "  * x",
+  "format": "org"
+ },
+ {
+  "id": "o127",
+  "cat": "istar",
+  "input": "    * deep",
+  "format": "org"
+ },
+ {
+  "id": "o128",
+  "cat": "istar",
+  "input": "* h\n  * a\n  * b",
+  "format": "org"
+ },
+ {
+  "id": "o129",
+  "cat": "istar",
+  "input": "  * a\n    * b",
+  "format": "org"
+ },
+ {
+  "id": "o130",
+  "cat": "istar",
+  "input": "  * [ ] task",
+  "format": "org"
+ },
+ {
+  "id": "o131",
+  "cat": "istar",
+  "input": "  * ",
+  "format": "org"
+ },
+ {
+  "id": "o132",
+  "cat": "istar",
+  "input": "* TODO task\n  * sub star",
+  "format": "org"
  }
 ]

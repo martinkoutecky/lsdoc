@@ -727,10 +727,13 @@ fn list_item(s: &str) -> Option<ListItem> {
     };
     // mldoc requires non-empty content after the marker (and after any checkbox): a
     // bare `- `/`+ `/`1. ` (or `- [ ]`) is a Paragraph, only `- x` is a List.
-    // `-` is a bullet ONLY at column 0 (mldoc quirk: an indented `  - x` is a
-    // Paragraph, while indented `  + x`/`  1. x` stay Lists).
+    // Marker quirks (mldoc lists.ml): `-` is a bullet ONLY at column 0 (an indented
+    // `  - x` is a Paragraph); `*` is the OPPOSITE — a list item ONLY when indented
+    // (a column-0 `* x` is a headline, handled earlier); `+`/`1.` are lists at any
+    // indent. So: dash at col 0, star when indented, plus `+`.
     let dash = if ws == 0 { rest.strip_prefix('-') } else { None };
-    if let Some(after) = dash.or_else(|| rest.strip_prefix('+')) {
+    let star = if ws > 0 { rest.strip_prefix('*') } else { None };
+    if let Some(after) = dash.or(star).or_else(|| rest.strip_prefix('+')) {
         if after.starts_with(' ') || after.starts_with('\t') {
             let content = after.trim_start();
             if split_checkbox(content).1.trim().is_empty() {
