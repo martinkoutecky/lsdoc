@@ -29,3 +29,8 @@ harness/lsdoc-fuzz.json
 
 # Subagent working notes (internal; not part of the published parser)
 subagent-tasks/
+
+# realmut (real-corpus mutation fuzz) regenerated outputs
+harness/corpus.realmut.json
+harness/lsdoc-realmut.json
+harness/realmut-divergences.json
