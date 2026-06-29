@@ -645,8 +645,13 @@ fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &s
 }
 
 fn stub_inline(s: &str) -> Vec<Inline> {
-    // The real inline parser (M3/M4). Name kept for the existing call sites.
-    crate::inline::parse_inline(s)
+    // The real inline parser. Name kept for the existing call sites. The `LSDOC_INLINE_V2`
+    // seam routes through the v0.2 lexer+resolver (default v1) for the differential gate.
+    if crate::inline_v2_enabled() {
+        crate::resolver::parse_inline(s)
+    } else {
+        crate::inline::parse_inline(s)
+    }
 }
 
 /// mldoc heading/bullet task markers (`Heading0.marker`), stripped from the title.

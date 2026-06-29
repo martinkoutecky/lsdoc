@@ -69,6 +69,8 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>, org: b
                 // → Search link [no ref]; md `[[x][y]]` → Page_ref "x][y"). C6.
                 let inl = if org {
                     crate::org::parse_inline_org_top(v)
+                } else if crate::inline_v2_enabled() {
+                    crate::resolver::parse_inline(v)
                 } else {
                     crate::inline::parse_inline(v)
                 };

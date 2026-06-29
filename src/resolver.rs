@@ -213,7 +213,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 }
             }
             match end {
-                Some(e) => t = resync(s, toks, t, e, &mut pending, &mut fresh),
+                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx),
                 None => {
                     pending.push('[');
                     t += 1;
@@ -246,7 +246,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 }
             }
             match end {
-                Some(e) => t = resync(s, toks, t, e, &mut pending, &mut fresh),
+                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx),
                 None => {
                     pending.push(c as char);
                     t += 1;
@@ -287,7 +287,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 }
             }
             match end {
-                Some(e) => t = resync(s, toks, t, e, &mut pending, &mut fresh),
+                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx),
                 None => {
                     pending.push(c as char); // escape: drop `\`, keep `(`/`[`
                     t += 1;
@@ -327,7 +327,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 if let Some((node, e)) = opened {
                     flush(&mut out, &mut pending);
                     out.push(node);
-                    t = resync(s, toks, t, e, &mut pending, &mut fresh);
+                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx);
                     continue;
                 }
             }
@@ -353,7 +353,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 if let Some((e, node)) = leaf {
                     flush(&mut out, &mut pending);
                     out.push(node);
-                    t = resync(s, toks, t, e, &mut pending, &mut fresh);
+                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx);
                     continue;
                 }
             }
@@ -367,14 +367,9 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
             continue;
         }
 
-        // Non-delimiter tokens pass straight through.
+        // Non-delimiter tokens pass straight through (Text is handled by its own block above).
         if !matches!(toks[t].kind, Kind::Delim { .. }) {
             match &toks[t].kind {
-                Kind::Text(txt) => {
-                    pending.push_str(txt);
-                    // fresh again only if the run ends in whitespace.
-                    fresh = trailing_ws(txt) > 0;
-                }
                 Kind::Newline(c) => {
                     if ctx.breaks {
                         // hard break: `\n` (not `\r`) immediately preceded by >=2 spaces/tabs
@@ -544,13 +539,16 @@ fn first_crlf(bb: &[u8], from: usize) -> usize {
 /// token boundary; tag / bare-url end mid-Text (at a ws / tag-delim), so when `end` lands
 /// strictly inside a straddling Text token, re-lex its tail `s[end..token_end]` (re-resolving
 /// escapes) into `pending`. (`end` never lands inside a Punct/Delim/Leaf token.)
+#[allow(clippy::too_many_arguments)]
 fn resync(
     s: &str,
     toks: &[Token],
     mut t: usize,
     end: usize,
+    out: &mut Vec<Inline>,
     pending: &mut String,
     fresh: &mut bool,
+    ctx: Ctx,
 ) -> usize {
     let n = s.len();
     let tok_end = |i: usize| if i + 1 < toks.len() { toks[i + 1].off } else { n };
@@ -558,22 +556,43 @@ fn resync(
         t += 1;
     }
     if t < toks.len() && toks[t].off < end {
-        // mid-Text tail (tag / bare-url end): re-lex it and carry its trailing-ws into `fresh`.
-        let mut tail = String::new();
-        for tk in lex(&s[end..tok_end(t)]) {
-            match tk.kind {
-                Kind::Text(x) | Kind::Escape(x) => tail.push_str(&x),
-                _ => {}
-            }
+        // `end` lands strictly inside a straddled token (a tag / bare-url / latex / page-ref
+        // whose raw end falls mid-Text or mid-Escape — escape is CONSTRUCT-LOCAL, so the
+        // token boundaries needn't align). If the tail STARTS a fresh construct (e.g. a tag
+        // consumed `\` and left a `#`, or a `\)`-split left a `(`), re-lex+resolve the rest
+        // from `end` (a fresh dispatch point); otherwise the tail is plain — push it raw.
+        let bb = s.as_bytes();
+        // Straddling a Leaf (a code span the lexer eagerly built but a tag consumed `` ` ``
+        // as a literal char) means the tail spans a region with its own constructs → must
+        // re-dispatch. A plain Text/Escape tail re-dispatches only if it leads a construct.
+        let recurse = matches!(toks[t].kind, Kind::Leaf(_))
+            || bb.get(end).is_some_and(|&c| is_special_lead(c))
+            || (ctx.timestamps && crate::inline::parse_keyword_timestamp(s, end).is_some())
+            || (ctx.urls && crate::inline::parse_bare_url(s, end).is_some());
+        if recurse {
+            flush(out, pending);
+            out.extend(parse_ctx(&s[end..], ctx));
+            return toks.len(); // recursion handled the remainder — stop the outer walk
         }
-        *fresh = trailing_ws(&tail) > 0;
-        pending.push_str(&tail);
+        let tail = &s[end..tok_end(t)];
+        pending.push_str(tail);
+        *fresh = trailing_ws(tail) > 0;
         t += 1;
     } else {
         // clean construct end → fresh dispatch point.
         *fresh = true;
     }
     t
+}
+
+/// A byte that LEADS an inline construct opener (so a straddle tail starting here must be
+/// re-dispatched, not pushed as plain). Closers `] ) } >` are excluded (they `plain_run`).
+fn is_special_lead(c: u8) -> bool {
+    matches!(
+        c,
+        b'#' | b'$' | b'[' | b'(' | b'{' | b'<' | b'!' | b'*' | b'_' | b'~' | b'^' | b'=' | b'`'
+            | b'\\'
+    )
 }
 
 /// Is `c` a SWALLOW byte — `mldoc` dispatches it but a failure runs `plain_run` (rather than
@@ -774,12 +793,9 @@ mod tests {
     }
 
     /// M3b: latex-backslash `\(`/`\[` (whole spans) + angle `<…>` (autolink/email/timestamp/
-    /// html). KNOWN-DEFERRED (review Finding #3, escape-locality): a STANDALONE escape `\X`
-    /// abutting a tag/url/latex-closer is pre-resolved into an `Escape` token by the lexer,
-    /// but mldoc interprets `\` construct-locally (raw inside a tag, the latex closer for
-    /// `\]`). That conflict is a contrived `\`-adjacency the realistic corpus never produces;
-    /// it's audited at M4 against the node gate (and fixed there if real). So no standalone
-    /// escapes / bare-urls here.
+    /// html). Escape-locality (review Finding #3 — a tag reads `\` raw, latex `\]` is its
+    /// closer, a tag treats `` ` `` as a literal char) is handled by `resync`'s straddle
+    /// re-dispatch; the mixed `\`-adjacency cases live in `v2_matches_v1_full_md`.
     #[test]
     fn v2_matches_v1_m3b_latex_angle() {
         const TOKENS: &[&str] = &[
@@ -791,8 +807,27 @@ mod tests {
         assert_eq!(diff_count(TOKENS, 500_000, 0xB4_D2_17), 0);
     }
 
-    /// M3c: bare-url + keyword-timestamp (the no-opener leaves) — WITHOUT backslash escapes
-    /// (see the M3b note on the contrived bare-url-ending-in-`\` straddle).
+    /// M4 comprehensive gate: the full node-fuzz md alphabet (`harness/fuzz.mjs` TOKENS_MD) —
+    /// every inline family mixed, including the `\`-escape / code-span / bare-url adjacencies
+    /// that exercise construct-local escape (resolved by `resync`'s straddle re-dispatch).
+    /// 0-diff vs v1 here ⇒ the v2 resolver holds the md fuzz floor (34/555) and the node gate.
+    #[test]
+    fn v2_matches_v1_full_md() {
+        const TOKENS: &[&str] = &[
+            "*", "**", "***", "_", "__", "~~", "==", "^^", "`", "``",
+            "[[", "]]", "((", "))", "{{", "}}", "[", "]", "(", ")", "{", "}",
+            "#", "#tag", "[[Foo]]", "((11111111-1111-1111-1111-111111111111))",
+            "[label]", "](url)", "{{embed ", "{{query ", "https://x.com/a", "http://y.org",
+            "\\", "\\[", "\\#", "\\`", "$", "$x$", "$$", "!", "![a]", "<", ">", "<https://z.io>",
+            "a", "b", " ", "  ", "\n", "café", "中文", "😀", ".", ",", ":", "-", "/",
+            "TODO ", "[#A] ", "[ ] ", "\t", "word", "x", "#[[", "tag", "::",
+        ];
+        let n = diff_count(TOKENS, 60_000, 0x99);
+        assert_eq!(n, 0, "{n} divergences");
+    }
+
+    /// M3c: bare-url + keyword-timestamp (the no-opener leaves), detected at fresh Text starts.
+    /// (`\`-adjacency cases are covered by `v2_matches_v1_full_md`.)
     #[test]
     fn v2_matches_v1_m3c_bareurl() {
         const TOKENS: &[&str] = &[

@@ -126,7 +126,11 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
                     toks.push(Token { off: i, kind: Kind::Leaf(node) });
                     i = end;
                 } else {
-                    push_pending!(i, "`");
+                    // failed code span: a `` ` `` is a marker-delim, so emit it as a Punct
+                    // (fresh-making) rather than merging into Text — the position after it is a
+                    // fresh dispatch point (`` `((uuid)) `` → `` ` `` + block-ref).
+                    flush!();
+                    toks.push(Token { off: i, kind: Kind::Punct(b'`') });
                     i += 1;
                 }
             }
