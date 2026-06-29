@@ -23,6 +23,7 @@ pub(crate) mod entities;
 pub(crate) mod inline;
 pub(crate) mod lexer;
 pub(crate) mod org;
+pub(crate) mod org_resolver;
 pub(crate) mod parse;
 pub(crate) mod projection;
 pub(crate) mod refs;
@@ -35,6 +36,13 @@ pub(crate) mod resolver;
 /// rewrite (deleted at M11). Returns true (v2) where env is unavailable (e.g. wasm).
 pub(crate) fn inline_v2_enabled() -> bool {
     std::env::var_os("LSDOC_INLINE_V1").is_none()
+}
+
+/// Org inline engine selector (M6, in progress). Routes the Org inline path through the v0.2
+/// `org_resolver` when `LSDOC_ORG_INLINE_V2` is set (the differential gate during the rewrite).
+/// Default = the v1 `org` scanner. (Flipped to v2 at the M6 cutover.)
+pub(crate) fn org_inline_v2_enabled() -> bool {
+    std::env::var_os("LSDOC_ORG_INLINE_V2").is_some()
 }
 
 /// The render contract: the stable, `serde`-serializable AST. **This IS lsdoc's AST**
@@ -83,7 +91,11 @@ pub fn refs(input: &str, format: &str) -> ast::Refs {
 /// selects Org; anything else is Markdown.
 pub fn inline(input: &str, format: &str) -> Vec<ast::Inline> {
     if format == "org" {
-        org::parse_inline_org_top(input)
+        if org_inline_v2_enabled() {
+            org_resolver::parse_inline_org(input)
+        } else {
+            org::parse_inline_org_top(input)
+        }
     } else if inline_v2_enabled() {
         resolver::parse_inline(input)
     } else {
