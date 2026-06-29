@@ -222,6 +222,12 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         // probe locks that in so the lexer/resolver rewrite can't reintroduce O(n²) here.
         ("md_emph_alt", false, 25_000, |n| "*_".repeat(n) + "x" + &"_*".repeat(n)),
         ("org_emph_alt", true, 25_000, |n| "*/".repeat(n) + "x" + &"/*".repeat(n)),
+        // Latex `\(`×n with NO `\)` closer. Was O(n²) in Org (a `find_sub` EOF re-scan per
+        // `\(`); the monotone closer floor (resolver.rs + org_resolver.rs) makes it linear.
+        // Ratio-gated because the absolute-budget `o_inline_latex` case masked the quadratic
+        // (it sat just under budget at low load until n grew). md was already floored.
+        ("md_latex_open", false, 25_000, |n| "\\(".repeat(n)),
+        ("org_latex_open", true, 25_000, |n| "\\(".repeat(n)),
     ]
 }
 

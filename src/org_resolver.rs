@@ -281,6 +281,10 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
     let mut sq_rr = first_seq(bb, b')', b')', 0); // ))
     let mut sq_rbrace = first_seq(bb, b'}', b'}', 0); // }}
     let mut sq_lt_sl = first_seq(bb, b'<', b'/', 0); // </
+    // latex-backslash closer floors: only attempt `\(`/`\[` when a `\)`/`\]` exists ahead, so
+    // a `\(`×n run (no closer) stays O(n) instead of an EOF re-scan per `\(` (mirrors resolver.rs).
+    let mut bs_paren = first_seq(bb, b'\\', b')', 0); // \)
+    let mut bs_brack = first_seq(bb, b'\\', b']', 0); // \]
     // `fresh` = a dispatch point (mldoc `plain_run` stops at PLAIN_DELIMS `\ _ ^ [ * / + $ #`
     // + ws/eol). The SWALLOW openers `~ = < { (` fire only when fresh; mid-plain-run they are
     // absorbed as literal text.
@@ -389,7 +393,14 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 fresh = true;
             }
             Kind::Punct(b'\\') => {
-                let (bs, end) = org_backslash_at(s, bb, off, ctx);
+                // latex closer floor: only let `\(`/`\[` attempt a latex span when its closer
+                // exists ahead (monotone cursor) — keeps a `\(`×n run linear.
+                let latex_ok = match bb.get(off + 1) {
+                    Some(b'(') => present!(bs_paren, b'\\', b')', off),
+                    Some(b'[') => present!(bs_brack, b'\\', b']', off),
+                    _ => false,
+                };
+                let (bs, end) = org_backslash_at(s, bb, off, ctx, latex_ok);
                 match bs {
                     Bs::Node(node) => {
                         flush(&mut out, &mut pending);
@@ -681,7 +692,7 @@ enum Bs {
 /// mldoc Org `backslash()` on raw bytes at `i` (the `\`). ctx-gated: hard-break / latex /
 /// entity all hang off `ctx.entity` (then `ctx.latex`); otherwise `\X`-punct stays literal
 /// (Org never unescapes) and a lone `\` is kept. Returns the action + consumed byte extent.
-fn org_backslash_at(s: &str, bb: &[u8], i: usize, ctx: Ctx) -> (Bs, usize) {
+fn org_backslash_at(s: &str, bb: &[u8], i: usize, ctx: Ctx, latex_ok: bool) -> (Bs, usize) {
     let n = bb.len();
     if ctx.entity {
         match bb.get(i + 1) {
@@ -689,7 +700,11 @@ fn org_backslash_at(s: &str, bb: &[u8], i: usize, ctx: Ctx) -> (Bs, usize) {
             Some(b'\n') | Some(b'\r') => return (Bs::Node(Inline::HardBreak), i + 1),
             _ => {}
         }
-        if ctx.latex {
+        // `latex_ok` is the caller's closer-floor verdict (a `\)`/`\]` exists ahead). When it
+        // is false the `find_sub` scan would fail anyway, so skip it — that is what keeps a
+        // `\(`×n run linear; the result (fall through to the punct-escape `\(` below) is
+        // identical to attempting and failing.
+        if ctx.latex && latex_ok {
             if let Some((node, end)) = crate::inline::parse_latex_backslash_at(s, i) {
                 return (Bs::Node(node), end);
             }
