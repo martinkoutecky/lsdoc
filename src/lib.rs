@@ -28,11 +28,13 @@ pub(crate) mod projection;
 pub(crate) mod refs;
 pub(crate) mod resolver;
 
-/// Dev seam: route the markdown inline path through the v0.2 lexer+resolver when
-/// `LSDOC_INLINE_V2` is set (the differential gate during the rewrite). Default = v1.
-/// Returns `false` where env is unavailable (e.g. wasm), keeping v1 in production.
+/// Inline engine selector. **v2 (the `lexer`+`resolver`) is now the default** markdown inline
+/// implementation (M5 cutover): byte-exact to mldoc over the node gate (1032+99+37) + fuzz
+/// (floor 34/555), linear by construction (`tests/perf.rs`). `LSDOC_INLINE_V1` forces the
+/// legacy v1 scanner, kept as the fast `v2 == v1` differential oracle through the block
+/// rewrite (deleted at M11). Returns true (v2) where env is unavailable (e.g. wasm).
 pub(crate) fn inline_v2_enabled() -> bool {
-    std::env::var_os("LSDOC_INLINE_V2").is_some()
+    std::env::var_os("LSDOC_INLINE_V1").is_none()
 }
 
 /// The render contract: the stable, `serde`-serializable AST. **This IS lsdoc's AST**

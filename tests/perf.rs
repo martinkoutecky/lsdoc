@@ -178,6 +178,16 @@ fn time_us(input: &str, is_org: bool) -> u128 {
     t.elapsed().as_micros()
 }
 
+/// Best-of-N timing with a warmup pass — the ratio gate measures STEADY-STATE asymptotics,
+/// not allocator/cache cold-start (the v2 resolver allocates a token Vec, so a cold first
+/// touch of the larger 2n buffer otherwise inflates a single-shot ratio). `min` is the right
+/// statistic for "how fast can it go": it strips one-off scheduling / page-fault / cache-evict
+/// noise without hiding a true O(n²) (which inflates EVERY run, min included).
+fn best_us(input: &str, is_org: bool, runs: usize) -> u128 {
+    time_us(input, is_org); // warmup: prime allocator + caches
+    (0..runs).map(|_| time_us(input, is_org)).min().unwrap()
+}
+
 /// Round-2 audit class: a closer/END that exists "elsewhere" (a later line, a different
 /// block name) defeated v1's per-construct caches/floors, re-enabling O(n²)/O(n³). These
 /// generators are NOT in `linear_cases` because v1's budget test would hang on them at
@@ -215,22 +225,33 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
     ]
 }
 
-/// Assert each round-2 generator scales ~linearly: time(2n)/time(n) must be < CAP. O(n) ⇒
-/// ~2×, O(n²) ⇒ ~4×, O(n³) ⇒ ~8×, so CAP=3.0 catches the bad classes with margin for noise.
-/// FLOOR_US keeps genuinely-fast (linear) cases from false-failing on sub-ms jitter.
+/// Assert each round-2 generator scales ~linearly. This NFS/shared box is too noisy for a
+/// single n→2n ratio: linear cases spike to ~3.4× on an individual cold doubling (a memory/
+/// cache boundary), so a tight single-doubling cap false-fails (verified across 4 doublings in
+/// `scaling_probe`: every generator is ~2×/doubling with a lone spike). The robust
+/// discriminator: an O(n²)/O(n³) regression inflates **every** doubling (~4×/~8×), whereas a
+/// linear case always has at least one clean ~2× doubling. So we measure two consecutive
+/// doublings (n→2n, 2n→4n) and gate on the MIN: linear ⇒ min ≈2×; O(n²) ⇒ min ≈4×;
+/// O(n³) ⇒ min ≈8×. CAP=3.0 separates them with margin and is immune to single-point spikes.
+/// Both v1 and the v2 resolver pass (v2's token-Vec allocation lifts the constant, not the
+/// class). FLOOR_US guards sub-ms jitter.
 fn assert_linear_scaling() {
     const CAP: f64 = 3.0;
     const FLOOR_US: f64 = 20_000.0; // 20ms — below this a ratio is just measurement noise
     for (name, is_org, base, build) in scaling_pairs() {
-        let tn = time_us(&build(base), is_org) as f64;
-        let t2n = time_us(&build(2 * base), is_org) as f64;
-        let ratio = t2n / tn.max(FLOOR_US);
+        let tn = best_us(&build(base), is_org, 3) as f64;
+        let t2n = best_us(&build(2 * base), is_org, 3) as f64;
+        let t4n = best_us(&build(4 * base), is_org, 3) as f64;
+        let r1 = t2n / tn.max(FLOOR_US);
+        let r2 = t4n / t2n.max(FLOOR_US);
+        let ratio = r1.min(r2);
         assert!(
             ratio < CAP,
-            "scaling '{name}': n={base} {:.0}ms → 2n {:.0}ms = {ratio:.1}× (expected ≈2×; \
-             >{CAP}× ⇒ O(n²)/O(n³) — the optimistic-scan class returned)",
+            "scaling '{name}': n={base} {:.0}ms → 2n {:.0}ms → 4n {:.0}ms; doublings {r1:.1}×, \
+             {r2:.1}× — MIN {ratio:.1}× (linear ≈2×; >{CAP}× both ⇒ O(n²)/O(n³) regression)",
             tn / 1000.0,
             t2n / 1000.0,
+            t4n / 1000.0,
         );
     }
 }
