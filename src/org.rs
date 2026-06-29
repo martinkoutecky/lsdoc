@@ -105,17 +105,25 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
     // the loop jumps past) can never pair with an opener outside it (the fence-straddle
     // bug). Computed on the original lines; the headline-split rewrite never creates an
     // `#+END_`/`:END:`/fence OPENER line, so the indexes stay valid through it + re-enter.
-    let mut end_idxs: Vec<usize> = Vec::new(); // `#+END_…` lines (block closers)
-    let mut drawer_end_idxs: Vec<usize> = Vec::new(); // `:END:` lines (drawer closers)
+    // Drawers (`:NAME:`/`:END:`) are paired globally in ONE forward pending-opener pass
+    // (`pair_drawers`) — O(n) by construction, outermost-first, role-distinct tokens. Drawers
+    // open only outside list items, so in an item context there are none.
+    let drawers = if in_item {
+        std::collections::HashMap::new()
+    } else {
+        // recognize `* :NAME:` headline drawers only where the dispatch would split them
+        // (outside a quote body; in_item is already excluded by this branch).
+        pair_drawers(&lines, !ORG_IN_QUOTE.with(|c| c.get()))
+    };
+    // Callouts (`#+BEGIN_X`/`#+END_X`) are paired globally in ONE forward pending-opener pass
+    // (`pair_callouts`) — outermost-first, prefix-match closer, O(n) by construction (no binary
+    // search, no absence memo). `recognize_headlines` also treats a `* #+BEGIN_X` headline as an
+    // opener at that line (the split rewrites it to its content + re-enters), matching the
+    // dispatch's split condition (outside items + quote bodies).
+    let callouts = pair_callouts(&lines, !in_item && !ORG_IN_QUOTE.with(|c| c.get()));
     let mut fence_line_idxs: std::collections::HashMap<u8, Vec<usize>> =
         std::collections::HashMap::new(); // per-char whole-line ```/~~~ marker lines
     for (idx, l) in lines.iter().enumerate() {
-        if l.text.trim_start().get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
-            end_idxs.push(idx);
-        }
-        if l.text.trim().eq_ignore_ascii_case(":END:") {
-            drawer_end_idxs.push(idx);
-        }
         if let Some((c, _)) = fence_marker(l.text) {
             fence_line_idxs.entry(c).or_default().push(idx);
         }
@@ -132,11 +140,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
     // suffix is identical). Skipping the collector for those lines keeps repeated
     // collapses linear instead of O(n²) re-scanning.
     let mut collapse_floor = 0usize;
-    // Memo for the headline block-opener split (see `headline_split_opener`): block-names
-    // already known to have NO `#+END_` ahead, so repeated unclosed `* #+BEGIN_X` headlines
-    // don't each re-scan to EOF. (Fences need no such memo — `find_matching_fence` is an
-    // O(log n) indexed lookup, not a re-scan.)
-    let mut no_block_end: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut fence_cursor: std::collections::HashMap<u8, usize> = std::collections::HashMap::new();
     let mut i = 0;
 
     while i < lines.len() {
@@ -188,7 +192,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
         // 2. drawer `:PROPERTIES:`/`:NAME:` … `:END:` — not a list-item content block
         // (inside an item a `:`-line is verbatim/Example via step 7 instead).
         if let Some(name) = drawer_begin(t).filter(|_| !in_item) {
-            if let Some(close) = find_drawer_end(&drawer_end_idxs, i) {
+            if let Some(close) = drawers.get(&i).copied() {
                 flush_para(&mut out, &mut para, input, in_item);
                 if name == "properties" {
                     let mut props: Vec<(String, String)> = lines[i + 1..close]
@@ -242,11 +246,10 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
                     content,
                     input,
                     content_off,
-                    &lines,
                     i,
-                    &end_idxs,
-                    &mut no_block_end,
+                    &callouts,
                     &fence_line_idxs,
+                    &mut fence_cursor,
                 )
             {
                 flush_para(&mut out, &mut para, input, in_item);
@@ -266,7 +269,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
                 // belt-and-braces guard (an unclosed fence stays the heading title and
                 // never enters this branch).
                 if let Some((fchar, frun)) = fence_marker(content) {
-                    if let Some(close) = find_matching_fence(&fence_line_idxs, i, fchar) {
+                    if let Some(close) = find_matching_fence(&fence_line_idxs, &mut fence_cursor, i, fchar) {
                         let code = if close > i + 1 {
                             input[lines[i + 1].start..lines[close - 1].end].to_string()
                         } else {
@@ -355,7 +358,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
         // whole-line fence after it — it can never pair across a body boundary the way the
         // old global `pair_fences` pre-pass did (the fence-straddle bug).
         if let Some((c, mend)) = fence_marker(t) {
-            if let Some(close) = find_matching_fence(&fence_line_idxs, i, c) {
+            if let Some(close) = find_matching_fence(&fence_line_idxs, &mut fence_cursor, i, c) {
                 flush_para(&mut out, &mut para, input, in_item);
                 let code = if close > i + 1 {
                     input[lines[i + 1].start..lines[close - 1].end].to_string()
@@ -372,7 +375,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
 
         // 6. `#+BEGIN_X` … `#+END_X` block
         if let Some(name) = block_begin(t) {
-            if let Some(close) = find_block_end(&end_idxs, &lines, &mut no_block_end, i, &name) {
+            if let Some(close) = callouts.get(&i).copied() {
                 flush_para(&mut out, &mut para, input, in_item);
                 let inner = block_code(&lines[i + 1..close]);
                 let span = Some(Span(line_start, lines[close].end));
@@ -695,9 +698,41 @@ fn drawer_begin(s: &str) -> Option<String> {
     Some(inner.to_ascii_lowercase())
 }
 
-/// First `:END:` line after `from`, via the sparse `:END:` index (binary search ⇒ O(log n)).
-fn find_drawer_end(drawer_end_idxs: &[usize], from: usize) -> Option<usize> {
-    drawer_end_idxs.get(drawer_end_idxs.partition_point(|&x| x <= from)).copied()
+/// The post-marker CONTENT of an Org headline (`*{n}[ws](marker)(priority)content`) — the
+/// slice a headline SPLIT re-enters at this same line. `None` if the line is not a headline.
+/// Used so the container-pairing passes see an opener hidden behind a headline marker (e.g.
+/// `* :PROPERTIES:` / `* #+BEGIN_SRC`), since the split rewrites the line to its content.
+fn headline_split_content(t: &str) -> Option<&str> {
+    headline_level(t)?;
+    let stars = t.bytes().take_while(|&b| b == b'*').count();
+    let after = t[stars..].trim_start();
+    let (_, _, content) = split_markers(after);
+    Some(content)
+}
+
+/// Pair every `:NAME:` drawer opener with its `:END:` closer in ONE forward pass with a
+/// pending-opener stack — mldoc's outermost-first `take_until ":END:"` (`:END:` is exact +
+/// name-INDEPENDENT, so the bottom-most pending drawer closes and inner opens become body
+/// content). O(n) by construction. `recognize_headlines` (true outside items/quotes, matching
+/// the dispatch's split condition) also treats a `* :NAME:` headline as a drawer opener at that
+/// line, so the post-split re-enter finds its closer. Returns opener-line-idx → closer-line-idx.
+fn pair_drawers(lines: &[Line], recognize_headlines: bool) -> std::collections::HashMap<usize, usize> {
+    let mut pairs = std::collections::HashMap::new();
+    let mut stack: Vec<usize> = Vec::new(); // pending `:NAME:` opener lines, in order
+    for (idx, l) in lines.iter().enumerate() {
+        if l.text.trim().eq_ignore_ascii_case(":END:") {
+            if let Some(&open) = stack.first() {
+                pairs.insert(open, idx); // outermost (bottom-most) pending drawer closes
+                stack.clear(); // inner pending opens are inside the body (re-parsed)
+            }
+        } else if drawer_begin(l.text).is_some()
+            || (recognize_headlines
+                && headline_split_content(l.text).is_some_and(|c| drawer_begin(c).is_some()))
+        {
+            stack.push(idx);
+        }
+    }
+    pairs
 }
 
 /// One `:key: value` line of a `:PROPERTIES:` drawer (mldoc drawer.ml `property`).
@@ -741,17 +776,17 @@ fn headline_level(s: &str) -> Option<u32> {
 /// always produce their block, so they split unconditionally. A `#+BEGIN_X` block or a
 /// markdown ```/~~~ fence only becomes a block when it CLOSES; an unclosed one reparses
 /// as a Paragraph, so mldoc keeps it as the title (`* #+BEGIN_SRC\nx` → Heading titled
-/// `#+BEGIN_SRC`) — hence the explicit `find_block_end`/`find_close_fence` gate. Comment
-/// (`# x`), list (`- `/`+ `/`N. `) and nested-headline content match none of these.
+/// `#+BEGIN_SRC`) — hence the explicit close gate (`callouts` map for blocks, the fence
+/// cursor for fences). Comment (`# x`), list (`- `/`+ `/`N. `) and nested-headline content
+/// match none of these.
 fn headline_split_opener(
     content: &str,
     input: &str,
     content_off: usize,
-    lines: &[Line],
     i: usize,
-    end_idxs: &[usize],
-    no_block_end: &mut std::collections::HashSet<String>,
+    callouts: &std::collections::HashMap<usize, usize>,
     fence_line_idxs: &std::collections::HashMap<u8, Vec<usize>>,
+    fence_cursor: &mut std::collections::HashMap<u8, usize>,
 ) -> bool {
     if directive(content).is_some()
         || is_verbatim_line(content)
@@ -765,31 +800,36 @@ fn headline_split_opener(
     {
         return true;
     }
-    // A `#+BEGIN_X` block / ```|~~~ fence only splits when it CLOSES. The block-name search
-    // (`find_block_end`) scans `lines[i+1..]`, so it carries a per-name "no `#+END_` ahead"
-    // memo to keep a run of repeated UNCLOSED openers linear (not O(n²)). The fence search is
-    // the indexed `find_matching_fence` (O(log n)), which needs no such memo.
-    if let Some(name) = block_begin(content) {
-        return find_block_end(end_idxs, lines, no_block_end, i, &name).is_some();
+    // A `#+BEGIN_X` block / ```|~~~ fence only splits when it CLOSES. `pair_callouts` already
+    // recorded whether this headline's `#+BEGIN_X` closes (it recognizes headline openers), so
+    // the split test is an O(1) map lookup; the fence test is the monotone-cursor finder.
+    if block_begin(content).is_some() {
+        return callouts.contains_key(&i);
     }
     if let Some((ch, _)) = fence_marker(content) {
-        return find_matching_fence(fence_line_idxs, i, ch).is_some();
+        return find_matching_fence(fence_line_idxs, fence_cursor, i, ch).is_some();
     }
     false
 }
 
 /// First whole-line fence-marker of char `fchar` strictly after `from`, via the per-char
-/// sorted index (`partition_point` ⇒ O(log n), never an EOF re-scan). The single
-/// closer-finder for BOTH a top-level fence opener (step 5) and one in headline content
-/// (step 3, e.g. `* ```` — not itself an index entry). On-demand at the dispatch point, so
-/// it is context-aware (it never pairs across a block/drawer body the loop already jumped).
+/// sorted index + a MONOTONE per-char cursor (O(1) amortized, never an EOF re-scan). The
+/// single closer-finder for BOTH a top-level fence opener (step 5) and one in headline content
+/// (step 3, e.g. `* ```` — not itself an index entry). On-demand at the dispatch point, so it
+/// is context-aware (it never pairs across a block/drawer body the loop already jumped). The
+/// loop reaches fence openers in increasing `from`, so the cursor only advances → O(n) total.
 fn find_matching_fence(
     fence_line_idxs: &std::collections::HashMap<u8, Vec<usize>>,
+    cursor: &mut std::collections::HashMap<u8, usize>,
     from: usize,
     fchar: u8,
 ) -> Option<usize> {
     let v = fence_line_idxs.get(&fchar)?;
-    v.get(v.partition_point(|&x| x <= from)).copied()
+    let cur = cursor.entry(fchar).or_insert(0);
+    while *cur < v.len() && v[*cur] <= from {
+        *cur += 1;
+    }
+    v.get(*cur).copied()
 }
 
 /// Strip a leading task marker (followed by a space) and priority `[#X]`.
@@ -880,32 +920,71 @@ fn block_begin(s: &str) -> Option<String> {
     }
 }
 
-/// First line after `from` whose trimmed start is `#+END_<name>` (prefix match — mldoc-
-/// exact, so trailing junk after the name still closes), via the sparse `#+END_` index +
-/// a per-name "absent from here on" memo. A run of unclosed / `#+END_`-mismatched openers
-/// stays linear (audit R2-P4) instead of re-scanning to EOF per opener. Shared by the main
-/// loop (step 6) and the headline block-opener split.
-fn find_block_end(
-    end_idxs: &[usize],
+/// Pair every `#+BEGIN_<name>` opener with its closer in ONE forward pass with a pending-opener
+/// stack — mldoc's outermost-first `take_until "#+END_<name>"` (case-insensitive PREFIX match).
+/// O(n) by construction: no binary search, no absence memo, no O(n²) on unclosed-opener runs
+/// (the `by_name` position index makes each `#+END_` O(1) for an exact name / O(|suffix|) for
+/// the prefix quirk). `recognize_headlines` (true outside items/quotes) also treats a
+/// `* #+BEGIN_X` headline as an opener at that line, since the split rewrites it to its content
+/// + re-enters. Safe to pre-pair globally: `#+BEGIN`/`#+END` are role-distinct, closer is
+/// textual (ignores fences/drawers — verified vs mldoc). Returns opener-line-idx → closer-line.
+fn pair_callouts(
     lines: &[Line],
-    no_block_end: &mut std::collections::HashSet<String>,
-    from: usize,
-    name: &str,
-) -> Option<usize> {
-    let key = name.to_ascii_lowercase();
-    if no_block_end.contains(&key) {
-        return None;
-    }
-    let needle = format!("#+END_{}", name);
-    let start = end_idxs.partition_point(|&x| x <= from);
-    for &idx in &end_idxs[start..] {
-        let t = lines[idx].text.trim_start();
-        if t.get(..needle.len()).is_some_and(|p| p.eq_ignore_ascii_case(&needle)) {
-            return Some(idx);
+    recognize_headlines: bool,
+) -> std::collections::HashMap<usize, usize> {
+    let mut pairs = std::collections::HashMap::new();
+    let mut stack: Vec<(String, usize)> = Vec::new();
+    let mut by_name: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    for (idx, l) in lines.iter().enumerate() {
+        let opener = block_begin(l.text).or_else(|| {
+            recognize_headlines
+                .then(|| headline_split_content(l.text).and_then(block_begin))
+                .flatten()
+        });
+        if let Some(name) = opener {
+            let nl = name.to_ascii_lowercase();
+            by_name.entry(nl.clone()).or_default().push(stack.len());
+            stack.push((nl, idx));
+            continue;
+        }
+        let t = l.text.trim_start();
+        if t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
+            if let Some(pos) = outermost_callout_match(&by_name, &t[6..]) {
+                pairs.insert(stack[pos].1, idx);
+                for (nm, _) in stack.drain(pos..) {
+                    if let Some(v) = by_name.get_mut(&nm) {
+                        while v.last().is_some_and(|&p| p >= pos) {
+                            v.pop();
+                        }
+                    }
+                }
+            }
         }
     }
-    no_block_end.insert(key);
-    None
+    pairs
+}
+
+/// Stack position of the OUTERMOST pending opener whose name is a case-insensitive prefix of
+/// `suffix` (text after `#+END_`). O(|suffix|): a callout name has no whitespace, so only
+/// prefixes of `suffix`'s leading non-ws run can match. `by_name[name].first()` = that name's
+/// outermost pending opener.
+fn outermost_callout_match(
+    by_name: &std::collections::HashMap<String, Vec<usize>>,
+    suffix: &str,
+) -> Option<usize> {
+    let head_len = suffix.bytes().take_while(|&b| b != b' ' && b != b'\t').count();
+    let head = suffix[..head_len].to_ascii_lowercase();
+    let mut best: Option<usize> = None;
+    let mut k = 1;
+    while k <= head.len() {
+        if head.is_char_boundary(k) {
+            if let Some(&p) = by_name.get(&head[..k]).and_then(|v| v.first()) {
+                best = Some(best.map_or(p, |b: usize| b.min(p)));
+            }
+        }
+        k += 1;
+    }
+    best
 }
 
 /// Language token from a `#+BEGIN_SRC <lang> …` line (first whitespace word).

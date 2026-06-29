@@ -238,6 +238,12 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
             8_000,
             |n| (0..n).map(|k| format!("#+BEGIN_A{k}\n#+END_Z{k}\n")).collect::<String>(),
         ),
+        (
+            "org_callout_uniq",
+            true,
+            8_000,
+            |n| (0..n).map(|k| format!("#+BEGIN_A{k}\n#+END_Z{k}\n")).collect::<String>(),
+        ),
     ]
 }
 
