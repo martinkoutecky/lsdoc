@@ -23,6 +23,13 @@ struct OutItem {
     projection: lsdoc::ast::Projection,
 }
 
+#[derive(Serialize)]
+struct InlineOutItem {
+    id: String,
+    input: String,
+    inline: Vec<lsdoc::ast::Inline>,
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let corpus_path = args.next().unwrap_or_else(|| "harness/corpus.json".to_string());
@@ -32,6 +39,23 @@ fn main() {
         .unwrap_or_else(|e| panic!("read {corpus_path}: {e}"));
     let corpus: Vec<CorpusItem> =
         serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {corpus_path}: {e}"));
+
+    // LSDOC_INLINE=1 → exercise the inline-only entrypoint (`lsdoc::inline`) instead of the
+    // full projection, for the inline differential gate against mldoc `parseInlineJson`.
+    if std::env::var("LSDOC_INLINE").is_ok() {
+        let out: Vec<InlineOutItem> = corpus
+            .into_iter()
+            .map(|c| InlineOutItem {
+                inline: lsdoc::inline(&c.input, c.format.as_deref().unwrap_or("md")),
+                id: c.id,
+                input: c.input,
+            })
+            .collect();
+        let json = serde_json::to_string_pretty(&out).expect("serialize output");
+        fs::write(&out_path, json).unwrap_or_else(|e| panic!("write {out_path}: {e}"));
+        println!("lsdoc: wrote {} inline runs to {out_path}", out.len());
+        return;
+    }
 
     let out: Vec<OutItem> = corpus
         .into_iter()

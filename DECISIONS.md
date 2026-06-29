@@ -890,3 +890,28 @@ implemented to exact mldoc parity:
   negatives + capture/nesting/`"]"`-in-string/unclosed/block-vs-inline) all match mldoc; gate
   1018/1018 0-diff; fuzz md 1.39% / org 3.80% (no regression — a too-broad recognizer was the risk);
   a dedicated hiccup-heavy adversarial fuzz (30k md + 30k org) showed 0 hiccup/placement diffs.
+
+## Public `inline()` entrypoint (v0.1.5) — mldoc `inline->edn` parity
+
+Tine asked for an inline-only parse surface (request: `TINE-INLINE-PARSE.md`): its inline
+contexts (property values, breadcrumbs, ref/query previews, cells) were forced through the BLOCK
+parser, so a line whose leading token opens a block (`>`/`|`/`---`/`#`/`[^1]:`/`$$`) lost its
+inline rendering (dumped as literal) — an OG-parity bug, since OG renders these via
+`gp-mldoc/inline->edn` (a dedicated inline parse), not the block parser.
+
+Added `pub fn inline(input, format) -> Vec<ast::Inline>` (lib.rs) dispatching to the existing
+(already-written, just `pub(crate)`-walled) `inline::parse_inline` / `org::parse_inline_org_top`.
+Pure API-surface; no new AST (`Inline` already public). In inline mode there is NO block-opener/
+table/list/heading detection — leading block tokens are literal text, the rest a full inline run.
+
+**Gated** to byte-exact mldoc INLINE parity via `harness/inlinegate.mjs` (corpus.inline.gen.mjs →
+corpus.inline.json), diffing `lsdoc::inline` (bin `LSDOC_INLINE=1` mode) against mldoc's
+`parseInlineJson` (the actual `inline->edn` — a stronger oracle than self-consistency with the
+block path). Wired into run.mjs as step 6. 37/37 match, incl. every leading-block-opener trigger,
+multi-line `\n`, and org emphasis/`[[target][alias]]`.
+
+Forward-compatible with the [[lsdoc-architecture-redesign]]: mldoc's `inline->edn` IS its inline
+phase exposed; the rebuilt inline phase reimplements `parse_inline` behind this same seam, and
+`inline() == parseInlineJson` becomes a permanent acceptance test for v2. wasm binding is Tine's
+side. Caveat: `inline()` shares the inline-scanner O(n²) classes (R2-P2/P3/P5) until the redesign
+lands — same surface as today's block-routed path, not worse.

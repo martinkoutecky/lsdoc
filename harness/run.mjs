@@ -34,6 +34,7 @@ if (!process.argv.includes("--no-gen")) {
   run("node", [join(__dir, "corpus.org.gen.mjs")]);       // hand-written org adversarial
   run("node", [join(__dir, "corpus.org.mined.gen.mjs")]); // mined mldoc test_org inputs
   run("node", [join(__dir, "corpus.org.real.gen.mjs")]);  // real org graph (machine-specific)
+  run("node", [join(__dir, "corpus.inline.gen.mjs")]);    // inline-only entrypoint corpus
 }
 const load = (f) => JSON.parse(readFileSync(join(__dir, f), "utf8"));
 const strip = (a) => a.map(({ id, input, format }) => ({ id, input, format })); // drop `file`/`cat`
@@ -67,4 +68,7 @@ const cmp = run("node", [join(__dir, "compare.mjs")], { allowFail: true });
 // 5. real-block-body gate (Tine feeds lsdoc per-block, re-bulleted): runs over the
 //    machine-specific block-raws.json exports if present, else skips. See FOR-TINE.md.
 const bg = run("node", [join(__dir, "blockgate.mjs")], { allowFail: true });
-process.exit((cmp.status ?? 0) || (bg.status ?? 0));
+// 6. inline-entrypoint gate: lsdoc `inline()` vs mldoc `parseInlineJson` (the inline->edn /
+//    OG inline-text path Tine uses for property values, breadcrumbs, ref previews, cells).
+const ig = run("node", [join(__dir, "inlinegate.mjs")], { allowFail: true });
+process.exit((cmp.status ?? 0) || (bg.status ?? 0) || (ig.status ?? 0));

@@ -64,6 +64,20 @@ pub fn refs(input: &str, format: &str) -> ast::Refs {
     parse_format(input, format).refs
 }
 
+/// Parse a single run of **inline** markup — no block-opener / table / list / heading
+/// detection. The analogue of mldoc's `inline->edn` (OG's `inline-text`): for property
+/// values, breadcrumbs, ref/query previews, query-table cells — any context that renders
+/// inline markup but is NOT a full block body. Leading `>` / `|` / `---` / `#` / `[^1]:` /
+/// `$$` are literal text here (they only open blocks in the block grammar). `format == "org"`
+/// selects Org; anything else is Markdown.
+pub fn inline(input: &str, format: &str) -> Vec<ast::Inline> {
+    if format == "org" {
+        org::parse_inline_org_top(input)
+    } else {
+        inline::parse_inline(input)
+    }
+}
+
 /// Parse Markdown into the full [`ast::Projection`] (`{ blocks, refs }`).
 pub fn parse_to_projection(input: &str) -> Projection {
     let blocks = parse::parse(input);
