@@ -14,7 +14,7 @@
 //! break / escape / entity; markers + specials are emitted as deferred tokens (rendered
 //! literally until the emphasis / leaf / bracket sub-steps refine them).
 
-use crate::inline::{char_len, is_ws, is_ws_or_nl};
+use crate::inline::{char_len, is_underscore_delim, is_ws, is_ws_or_nl};
 use crate::lexer::{Kind, Token};
 use crate::projection::Inline;
 
@@ -188,15 +188,21 @@ pub(crate) fn org_lex(s: &str) -> Vec<Token> {
                 }
                 toks.push(Token { off: start, kind: Kind::Text(s[start..i].to_string()) });
             }
-            b'\\' => org_backslash(s, &mut i, &mut pending, &mut pending_off, &mut toks),
-            _ if is_marker(c) => {
+            b'\\' => {
+                // ALL of `\`-handling is ctx-gated (hard-break / latex / entity all hang off
+                // `ctx.entity`, then escape) — so defer the whole thing: emit `Punct(\)` and
+                // let the resolver run the ctx-aware `backslash()` on the raw bytes.
                 flush!();
-                let mut j = i;
-                while j < n && b[j] == c {
-                    j += 1;
-                }
-                toks.push(Token { off: i, kind: Kind::Delim { ch: c, len: j - i } });
-                i = j;
+                toks.push(Token { off: i, kind: Kind::Punct(b'\\') });
+                i += 1;
+            }
+            _ if is_marker(c) => {
+                // ONE `Delim{ch,1}` token per marker BYTE — Org emphasis is byte-position based
+                // (fixed k per marker; `^^` reads 2 raw bytes itself), tried at each marker, NOT
+                // run-grouped like md. The resolver works off byte offsets + raw bytes.
+                flush!();
+                toks.push(Token { off: i, kind: Kind::Delim { ch: c, len: 1 } });
+                i += 1;
             }
             _ if is_special(c) => {
                 flush!();
@@ -221,87 +227,6 @@ pub(crate) fn org_lex(s: &str) -> Vec<Token> {
     toks
 }
 
-/// Org `\`-dispatch: `\(`/`\[` latex (deferred, ctx-gated → `LatexBs`); `\name` entity (known
-/// → `Leaf`, unknown → the bare letters, no backslash); `\`+eol hard-break (deferred via a
-/// `Punct(\)` before the `Newline`, ctx-gated in the resolver); `\`+punct kept LITERAL as
-/// `"\X"` (Org never unescapes); lone `\` kept. All are fresh-making.
-fn org_backslash(
-    s: &str,
-    i: &mut usize,
-    pending: &mut String,
-    pending_off: &mut usize,
-    toks: &mut Vec<Token>,
-) {
-    let b = s.as_bytes();
-    let n = b.len();
-    let at = *i;
-    macro_rules! flush_into {
-        () => {
-            if !pending.is_empty() {
-                toks.push(Token { off: *pending_off, kind: Kind::Text(std::mem::take(pending)) });
-            }
-        };
-    }
-    match b.get(at + 1).copied() {
-        Some(ch @ (b'(' | b'[')) => {
-            flush_into!();
-            toks.push(Token { off: at, kind: Kind::LatexBs(ch) });
-            *i = at + 2;
-        }
-        Some(ch) if ch.is_ascii_alphabetic() => {
-            // entity `\name` (+ optional `{}`): known → Leaf, unknown → bare letters (Escape).
-            let mut j = at + 1;
-            while j < n && b[j].is_ascii_alphabetic() {
-                j += 1;
-            }
-            let name = &s[at + 1..j];
-            if j + 1 < n && b[j] == b'{' && b[j + 1] == b'}' {
-                j += 2;
-            }
-            match crate::entities::find(name) {
-                Some(e) => {
-                    flush_into!();
-                    toks.push(Token {
-                        off: at,
-                        kind: Kind::Leaf(Inline::Entity {
-                            name: e.name.to_string(),
-                            latex: e.latex.to_string(),
-                            latex_mathp: e.latex_mathp,
-                            html: e.html.to_string(),
-                            ascii: e.ascii.to_string(),
-                            unicode: e.unicode.to_string(),
-                        }),
-                    });
-                }
-                None => {
-                    flush_into!();
-                    toks.push(Token { off: at, kind: Kind::Escape(name.to_string()) });
-                }
-            }
-            *i = j;
-        }
-        Some(b'\n') | Some(b'\r') => {
-            // `\`+eol → hard-break candidate; the resolver pairs it with the next Newline
-            // (ctx.breaks) or renders `\` literally.
-            flush_into!();
-            toks.push(Token { off: at, kind: Kind::Punct(b'\\') });
-            *i = at + 1;
-        }
-        Some(ch) if ch.is_ascii_punctuation() => {
-            // Org escape: keep BOTH chars literally (no unescape).
-            let w = char_len(ch);
-            flush_into!();
-            toks.push(Token { off: at, kind: Kind::Escape(s[at..at + 1 + w].to_string()) });
-            *i = at + 1 + w;
-        }
-        _ => {
-            // lone `\` (before digit / space / EOF): kept.
-            flush_into!();
-            toks.push(Token { off: at, kind: Kind::Escape("\\".to_string()) });
-            *i = at + 1;
-        }
-    }
-}
 
 /// Parse an Org inline run at top level.
 pub(crate) fn parse_inline_org(text: &str) -> Vec<Inline> {
@@ -319,74 +244,365 @@ fn flush(out: &mut Vec<Inline>, pending: &mut String) {
     }
 }
 
-/// Trailing whitespace byte count of `s` (for the hard-break / fresh logic).
-fn trailing_ws(s: &str) -> usize {
-    s.bytes().rev().take_while(|&b| b == b' ' || b == b'\t').count()
-}
-
-/// M6-core resolver: text / break / escape / entity. Markers (`Delim`) and deferred specials
-/// (`Punct` / `LatexBs`) render as their literal bytes for now (the emphasis / leaf / bracket
-/// sub-steps refine them). `last_plain_char` is threaded already so the stateful emphasis gate
-/// can read it once emphasis lands.
+/// Resolver: ONE ctx-aware pass + stack over the Org tokens. M6 emphasis sub-step: real
+/// emphasis (the stateful backward gate + forward gate / `continue_search`) and sub/super-
+/// script; the remaining specials (`Punct`/`LatexBs`) still render literally (refined by the
+/// leaf / bracket sub-steps). `last_plain_char` mirrors mldoc `push_plain`: updated on EVERY
+/// plain append and PERSISTS across nodes/flush (an emphasis node does NOT reset it).
 fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
-    let _ = s;
+    let bb = s.as_bytes();
     let mut out: Vec<Inline> = Vec::new();
     let mut pending = String::new();
-    // last byte of the most recently FLUSHED Plain node (mldoc `last_plain_char`) — the
-    // backward emphasis gate reads it; `None` = start of input / no plain yet.
     let mut last_plain_char: Option<u8> = None;
-    let _ = &mut last_plain_char;
+    // no_closer[class][k-1]: a failed opener of (marker,k) never re-scans (mldoc bail).
+    let mut no_closer = [[false; 2]; 5];
+
+    macro_rules! append {
+        ($seg:expr) => {{
+            let seg: &str = $seg;
+            if let Some(b) = seg.bytes().next_back() {
+                last_plain_char = Some(b);
+            }
+            pending.push_str(seg);
+        }};
+    }
+    macro_rules! push_byte {
+        ($c:expr) => {{
+            let c: u8 = $c;
+            pending.push(c as char); // markers / deferred specials are ASCII
+            last_plain_char = Some(c);
+        }};
+    }
 
     let mut t = 0usize;
     while t < toks.len() {
+        let off = toks[t].off;
         match &toks[t].kind {
-            Kind::Text(txt) => {
-                pending.push_str(txt);
-            }
-            Kind::Escape(x) => {
-                pending.push_str(x);
-            }
+            Kind::Text(txt) => append!(txt.as_str()),
+            Kind::Escape(x) => append!(x.as_str()),
             Kind::Newline(c) => {
                 if ctx.breaks {
-                    flush_plain(&mut out, &mut pending, &mut last_plain_char);
+                    flush(&mut out, &mut pending);
                     out.push(Inline::Break);
                 } else {
-                    pending.push(*c as char);
+                    append!(if *c == b'\n' { "\n" } else { "\r" });
                 }
             }
             Kind::Leaf(node) => {
-                flush_plain(&mut out, &mut pending, &mut last_plain_char);
+                flush(&mut out, &mut pending);
                 out.push(node.clone());
             }
-            // M6-core stubs: render the literal byte(s); refined by later sub-steps.
-            Kind::Delim { ch, len } => {
-                for _ in 0..*len {
-                    pending.push(*ch as char);
+            Kind::Delim { ch, .. } => {
+                let ch = *ch;
+                let (k, kind, fwd_gate, bwd_gate, continue_search) = match ch {
+                    b'*' => (1, "Bold", false, false, false),
+                    b'/' => (1, "Italic", true, true, false),
+                    b'+' => (1, "Strike_through", true, true, false),
+                    b'_' => (1, "Underline", true, true, true),
+                    b'^' => (2, "Highlight", false, false, false),
+                    _ => unreachable!(),
+                };
+                if let Some((node, end)) = parse_emphasis(
+                    s, bb, off, k, kind, fwd_gate, bwd_gate, continue_search, ctx,
+                    last_plain_char, &mut no_closer,
+                ) {
+                    flush(&mut out, &mut pending);
+                    out.push(node);
+                    t = resync(toks, t, end);
+                    continue;
                 }
+                if (ch == b'_' || ch == b'^') && ctx.scripts {
+                    if let Some((node, end)) = try_script(s, bb, off, ch) {
+                        flush(&mut out, &mut pending);
+                        out.push(node);
+                        t = resync(toks, t, end);
+                        continue;
+                    }
+                }
+                push_byte!(ch);
             }
-            Kind::Punct(c) => {
-                pending.push(*c as char);
+            // `\`-dispatch (ctx-aware backslash: hard-break / latex / entity / escape).
+            Kind::Punct(b'\\') => {
+                let (bs, end) = org_backslash_at(s, bb, off, ctx);
+                match bs {
+                    Bs::Node(node) => {
+                        flush(&mut out, &mut pending);
+                        out.push(node);
+                    }
+                    Bs::Plain(text) => {
+                        if let Some(b) = text.bytes().next_back() {
+                            last_plain_char = Some(b);
+                        }
+                        pending.push_str(&text);
+                    }
+                }
+                t = resync_straddle(s, toks, t, end, &mut pending, &mut last_plain_char);
+                continue;
             }
+            // Deferred specials — literal for now (leaf / bracket sub-steps refine).
+            Kind::Punct(c) => push_byte!(*c),
             Kind::LatexBs(c) => {
-                // unrefined: `\(`/`\[` literal (latex lands in a later sub-step).
-                pending.push('\\');
-                pending.push(*c as char);
+                push_byte!(b'\\');
+                push_byte!(*c);
             }
         }
         t += 1;
     }
-    flush_plain(&mut out, &mut pending, &mut last_plain_char);
+    flush(&mut out, &mut pending);
     out
 }
 
-/// Flush pending plain text, updating `last_plain_char` to its final byte (mldoc updates the
-/// backward-gate state only when a Plain node is emitted).
-fn flush_plain(out: &mut Vec<Inline>, pending: &mut String, last_plain_char: &mut Option<u8>) {
-    if !pending.is_empty() {
-        *last_plain_char = pending.bytes().next_back();
-        flush(out, pending);
+#[allow(clippy::too_many_arguments)]
+fn parse_emphasis(
+    s: &str,
+    bb: &[u8],
+    open_start: usize,
+    k: usize,
+    kind: &str,
+    fwd_gate: bool,
+    bwd_gate: bool,
+    continue_search: bool,
+    ctx: Ctx,
+    before: Option<u8>,
+    no_closer: &mut [[bool; 2]; 5],
+) -> Option<(Inline, usize)> {
+    let n = bb.len();
+    let c = bb[open_start];
+    let content_start = open_start + k;
+    if content_start > n || bb[open_start..content_start].iter().any(|&x| x != c) {
+        return None;
     }
-    let _ = trailing_ws; // used once emphasis lands
+    // left-flanking: opener followed by non-whitespace.
+    let after = *bb.get(content_start)?;
+    if is_ws_or_nl(after) {
+        return None;
+    }
+    // empty content: the next k bytes are themselves the closer pattern.
+    if content_start + k <= n && bb[content_start..content_start + k].iter().all(|&x| x == c) {
+        return None;
+    }
+    // backward gate (top level only): char before opener ∈ punct/whitespace.
+    if bwd_gate && ctx.use_state {
+        let ok = match before {
+            Some(ch) => is_underscore_delim(ch),
+            None => true,
+        };
+        if !ok {
+            return None;
+        }
+    }
+    let ki = k - 1;
+    let ci = class_idx(c);
+    if no_closer[ci][ki] {
+        return None;
+    }
+    let closer = match find_closer(bb, c, k, content_start, fwd_gate, continue_search) {
+        Some(q) => q,
+        None => {
+            no_closer[ci][ki] = true;
+            return None;
+        }
+    };
+    let content = s[content_start..closer].to_string();
+    let children = parse_ctx(&content, Ctx::emph());
+    Some((Inline::Emphasis { emph: kind.to_string(), children }, closer + k))
+}
+
+/// First closing run (len ≥ k) of `c` with a non-ws byte before it (escapes skipped); the
+/// forward gate / `continue_search` exactly as v1 `find_closer`.
+fn find_closer(bb: &[u8], c: u8, k: usize, from: usize, fwd_gate: bool, continue_search: bool) -> Option<usize> {
+    let n = bb.len();
+    let mut j = from;
+    while j < n {
+        let cur = bb[j];
+        if cur == b'\\' {
+            j += 1;
+            if j < n {
+                j += char_len(bb[j]);
+            }
+            continue;
+        }
+        if cur == c {
+            let rl = run_len(bb, j, c);
+            if rl >= k {
+                let before = bb[j - 1];
+                if !is_ws_or_nl(before) {
+                    if fwd_gate {
+                        let fwd_ok = match bb.get(j + k) {
+                            None => true,
+                            Some(&a) => is_underscore_delim(a),
+                        };
+                        if fwd_ok {
+                            return Some(j);
+                        }
+                        if !continue_search {
+                            return None;
+                        }
+                        j += k;
+                        continue;
+                    }
+                    return Some(j);
+                }
+                j += rl;
+                continue;
+            }
+            j += rl;
+            continue;
+        }
+        j += char_len(cur);
+    }
+    None
+}
+
+/// `_x`/`_{x}` → Subscript, `^x`/`^{x}` → Superscript (mldoc `gen_script`). Returns the node
+/// and the consumed byte extent; `None` if no valid script body.
+fn try_script(s: &str, bb: &[u8], i: usize, c: u8) -> Option<(Inline, usize)> {
+    let n = bb.len();
+    let after = *bb.get(i + 1)?;
+    let (content, end) = if after == b'{' {
+        let body_start = i + 2;
+        let mut j = body_start;
+        while j < n && bb[j] != b'}' && bb[j] != b'\n' && bb[j] != b'\r' {
+            j += 1;
+        }
+        if j >= n || bb[j] != b'}' || j == body_start {
+            return None;
+        }
+        (s[body_start..j].to_string(), j + 1)
+    } else {
+        if is_org_space(after) {
+            return None;
+        }
+        let start = i + 1;
+        let mut j = start;
+        while j < n && !is_org_space(bb[j]) {
+            j += char_len(bb[j]);
+        }
+        (s[start..j].to_string(), j)
+    };
+    let children = parse_ctx(&content, Ctx::script());
+    let node = if c == b'_' {
+        Inline::Subscript { children }
+    } else {
+        Inline::Superscript { children }
+    };
+    Some((node, end))
+}
+
+fn run_len(b: &[u8], pos: usize, c: u8) -> usize {
+    let mut k = pos;
+    while k < b.len() && b[k] == c {
+        k += 1;
+    }
+    k - pos
+}
+
+fn is_org_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | 0x0c | 0x1a)
+}
+
+fn class_idx(c: u8) -> usize {
+    match c {
+        b'*' => 0,
+        b'/' => 1,
+        b'+' => 2,
+        b'_' => 3,
+        _ => 4, // '^'
+    }
+}
+
+/// Advance the token cursor to the first token at/after byte `end` (emphasis/script ends land
+/// on a token boundary; tag/bare-url straddles are handled when those sub-steps land).
+fn resync(toks: &[Token], mut t: usize, end: usize) -> usize {
+    while t < toks.len() && toks[t].off < end {
+        t += 1;
+    }
+    t
+}
+
+/// Result of the ctx-aware Org `\`-dispatch.
+enum Bs {
+    Node(Inline),
+    Plain(String),
+}
+
+/// mldoc Org `backslash()` on raw bytes at `i` (the `\`). ctx-gated: hard-break / latex /
+/// entity all hang off `ctx.entity` (then `ctx.latex`); otherwise `\X`-punct stays literal
+/// (Org never unescapes) and a lone `\` is kept. Returns the action + consumed byte extent.
+fn org_backslash_at(s: &str, bb: &[u8], i: usize, ctx: Ctx) -> (Bs, usize) {
+    let n = bb.len();
+    if ctx.entity {
+        match bb.get(i + 1) {
+            None => return (Bs::Plain("\\".to_string()), i + 1),
+            Some(b'\n') | Some(b'\r') => return (Bs::Node(Inline::HardBreak), i + 1),
+            _ => {}
+        }
+        if ctx.latex {
+            if let Some((node, end)) = crate::inline::parse_latex_backslash_at(s, i) {
+                return (Bs::Node(node), end);
+            }
+        }
+        if bb.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()) {
+            let start = i + 1;
+            let mut j = start;
+            while j < n && bb[j].is_ascii_alphabetic() {
+                j += 1;
+            }
+            let name = s[start..j].to_string();
+            if s[j..].starts_with("{}") {
+                j += 2;
+            }
+            return match crate::entities::find(&name) {
+                Some(e) => (
+                    Bs::Node(Inline::Entity {
+                        name: e.name.to_string(),
+                        latex: e.latex.to_string(),
+                        latex_mathp: e.latex_mathp,
+                        html: e.html.to_string(),
+                        ascii: e.ascii.to_string(),
+                        unicode: e.unicode.to_string(),
+                    }),
+                    j,
+                ),
+                None => (Bs::Plain(name), j),
+            };
+        }
+    }
+    match bb.get(i + 1) {
+        Some(&c) if c.is_ascii_punctuation() => {
+            let w = char_len(c);
+            (Bs::Plain(s[i..i + 1 + w].to_string()), i + 1 + w)
+        }
+        _ => (Bs::Plain("\\".to_string()), i + 1),
+    }
+}
+
+/// Resync after a construct whose raw `end` may land MID a Text token (an Org `\X`-escape /
+/// entity that consumed into the following ordinary run): advance past `end`, and if it lands
+/// strictly inside a token, push that token's plain tail `s[end..tok_end]` raw (Org never
+/// unescapes; the straddled token is always ordinary Text).
+fn resync_straddle(
+    s: &str,
+    toks: &[Token],
+    mut t: usize,
+    end: usize,
+    pending: &mut String,
+    last_plain_char: &mut Option<u8>,
+) -> usize {
+    let n = s.len();
+    let tok_end = |i: usize| if i + 1 < toks.len() { toks[i + 1].off } else { n };
+    while t < toks.len() && tok_end(t) <= end {
+        t += 1;
+    }
+    if t < toks.len() && toks[t].off < end {
+        let tail = &s[end..tok_end(t)];
+        if let Some(b) = tail.bytes().next_back() {
+            *last_plain_char = Some(b);
+        }
+        pending.push_str(tail);
+        t += 1;
+    }
+    t
 }
 
 #[cfg(test)]
@@ -430,5 +646,49 @@ mod tests {
         const TOKENS: &[&str] =
             &["a", "b", " ", "\n", "word", "café", "\\,", "\\;", "\\.", "\\Delta", "\\alpha", "x"];
         assert_eq!(diff_count(TOKENS, 300_000, 0x6094), 0);
+    }
+
+    /// M6 emphasis: `*` Bold / `/` Italic / `+` Strike / `_` Underline / `^^` Highlight (the
+    /// stateful backward gate + forward-gate/`continue_search`) and `_x`/`^x` sub/superscript.
+    #[test]
+    fn org_v2_matches_v1_m6_emphasis() {
+        const TOKENS: &[&str] = &[
+            "a", "b", " ", "\n", "x", "word", ".", ",",
+            "*", "/", "+", "_", "^", "^^", "*b*", "/i/", "+s+", "_u_", "^^h^^",
+            "_{sub}", "^{sup}", "\\,", "\\Delta",
+        ];
+        assert_eq!(diff_count(TOKENS, 500_000, 0x5E11), 0);
+    }
+
+    /// Exhaustive small Org emphasis strings over `{* / + _ ^ a space}` (lengths 1..=6) — the
+    /// gate-heavy corner (backward state, `_` continue-search, `^^`/`^x` dual use).
+    #[test]
+    fn org_v2_emphasis_exhaustive() {
+        let alpha = [b'*', b'/', b'+', b'_', b'^', b'a', b' '];
+        let mut diffs = 0;
+        let mut buf = Vec::new();
+        fn rec(alpha: &[u8], buf: &mut Vec<u8>, depth: usize, diffs: &mut usize) {
+            if depth > 0 {
+                let s = std::str::from_utf8(buf).unwrap();
+                let v2 = parse_inline_org(s);
+                let v1 = crate::org::parse_inline_org_top(s);
+                if format!("{v2:?}") != format!("{v1:?}") {
+                    if *diffs < 12 {
+                        eprintln!("ORG EX DIFF {s:?}\n   v1={v1:?}\n   v2={v2:?}\n");
+                    }
+                    *diffs += 1;
+                }
+            }
+            if depth == 6 {
+                return;
+            }
+            for &ch in alpha {
+                buf.push(ch);
+                rec(alpha, buf, depth + 1, diffs);
+                buf.pop();
+            }
+        }
+        rec(&alpha, &mut buf, 0, &mut diffs);
+        assert_eq!(diffs, 0, "{diffs} divergences");
     }
 }
