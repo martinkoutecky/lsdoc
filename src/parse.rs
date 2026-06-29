@@ -32,7 +32,7 @@
 //! - unclosed fences and 4-space indents are paragraphs, not code.
 
 use crate::projection::{Block, Inline, ListItem, Span};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 struct Line<'a> {
     start: usize, // byte offset of line start
@@ -46,17 +46,17 @@ pub fn parse(input: &str) -> Vec<Block> {
     // `[:tag …]` needs a closing `]`, so a line whose `[:` begins at/after this is skipped
     // O(1) — keeping a run of unclosed `[:` block lines linear (see step 11d').
     let last_rbracket = input.rfind(']');
-    // Sparse, sorted closer-line INDEXES so a callout/drawer/dash-fence opener finds
-    // its matching closer by binary-searching only candidate lines, never an EOF
-    // re-scan per opener (kills the O(n²) class — audit R2-P4/P6). Exact mldoc
-    // semantics preserved: the first matching closer line after the opener.
-    let mut end_idxs: Vec<usize> = Vec::new(); // `#+END_…` lines (callout closers)
+    // Container closers are found ON-DEMAND at the dispatch point — no global pre-pairing
+    // (that was the context-blind fence-straddle bug). Callouts: ONE forward pending-opener
+    // pass (`pair_callouts`) reproduces mldoc's outermost-first `take_until #+END_<name>` in
+    // O(n) BY CONSTRUCTION — no binary search, no absence memo, no O(n²) on unclosed-opener
+    // runs. Drawers (`:END:`) and fences (per-char) use sorted closer-line indexes consulted
+    // on-demand; these stay correct because `#+BEGIN`/`#+END`, `:NAME:`/`:END:` and the
+    // fence markers are role-distinct or scope-independent at the level the loop reaches.
+    let callouts = pair_callouts(&lines); // `#+BEGIN_<name>` opener line -> closer line
     let mut drawer_end_idxs: Vec<usize> = Vec::new(); // `:END:` lines (drawer closers)
     let mut fence_line_idxs: HashMap<u8, Vec<usize>> = HashMap::new(); // per-char fence lines
     for (idx, l) in lines.iter().enumerate() {
-        if l.text.trim_start().get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
-            end_idxs.push(idx);
-        }
         if l.text.trim().eq_ignore_ascii_case(":END:") {
             drawer_end_idxs.push(idx);
         }
@@ -64,10 +64,6 @@ pub fn parse(input: &str) -> Vec<Block> {
             fence_line_idxs.entry(c).or_default().push(idx);
         }
     }
-    // Per-callout-NAME memo: once `#+END_<name>` is known absent from `i` onward it is
-    // absent for every later opener too (the suffix only shrinks) — O(1) re-check, so a
-    // run of same-name unclosed openers stays linear even with a stray non-matching `#+END_`.
-    let mut no_callout_end: HashSet<String> = HashSet::new();
 
     let mut out: Vec<Block> = Vec::new();
     let mut para: Option<(usize, usize)> = None;
@@ -112,11 +108,9 @@ pub fn parse(input: &str) -> Vec<Block> {
             // unclosed fence → fall through (treat as paragraph text).
         }
 
-        // 2. callout #+BEGIN_X … #+END_X
+        // 2. callout #+BEGIN_X … #+END_X (closer from the O(n) pending-opener pairing).
         if let Some(name) = callout_begin(t) {
-            if let Some(close) =
-                find_callout_end(&end_idxs, &lines, &mut no_callout_end, i, &name)
-            {
+            if let Some(close) = callouts.get(&i).copied() {
                 flush_para(&mut out, &mut para, input);
                 let inner = if close > i + 1 {
                     input[lines[i + 1].start..lines[close - 1].end].to_string()
@@ -1249,31 +1243,67 @@ fn callout_begin(s: &str) -> Option<String> {
     }
 }
 
-/// First line after `from` whose trimmed start is `#+END_<name>` (prefix match — mldoc-
-/// exact, so trailing junk after the name still closes), via the sparse `#+END_` index +
-/// a per-name "absent from here on" memo. A run of unclosed / `#+END_`-mismatched openers
-/// stays linear (audit R2-P4) instead of re-scanning to EOF per opener.
-fn find_callout_end(
-    end_idxs: &[usize],
-    lines: &[Line],
-    no_end: &mut HashSet<String>,
-    from: usize,
-    name: &str,
-) -> Option<usize> {
-    let key = name.to_ascii_lowercase();
-    if no_end.contains(&key) {
-        return None;
-    }
-    let needle = format!("#+END_{}", name);
-    let start = end_idxs.partition_point(|&x| x <= from);
-    for &idx in &end_idxs[start..] {
-        let t = lines[idx].text.trim_start();
-        if t.get(..needle.len()).is_some_and(|p| p.eq_ignore_ascii_case(&needle)) {
-            return Some(idx);
+/// Pair every `#+BEGIN_<name>` opener with its closer in ONE forward pass with a
+/// pending-opener stack — reproducing mldoc's **outermost-first** `take_until "#+END_<name>"`
+/// (case-insensitive PREFIX match: `#+END_QUOTEX` / `#+END_QUOTE x` close `QUOTE`, `#+END_QUOT`
+/// does not). Returns opener-line-idx → closer-line-idx. **O(n) by construction**: no binary
+/// search, no absence memo, no O(n²) on unclosed-opener runs (the `by_name` position index
+/// makes each `#+END_` O(1) for an exact name, O(|suffix|) for the prefix quirk).
+///
+/// Safe to pre-pair globally (unlike fences): `#+BEGIN`/`#+END` are role-distinct tokens, so a
+/// pre-pass can't mis-assign a line's role, and callout `take_until` is textual (it ignores
+/// fences/drawers — verified vs mldoc), so an opener's first `#+END_<name>` IS its closer
+/// regardless of surrounding containers. Inner openers between a matched opener and its closer
+/// are popped (they live in the body, which the main loop re-parses via recursion).
+fn pair_callouts(lines: &[Line]) -> HashMap<usize, usize> {
+    let mut pairs = HashMap::new();
+    let mut stack: Vec<(String, usize)> = Vec::new(); // pending (name_lower, line_idx), in order
+    // name_lower → its positions in `stack`, ascending; `.first()` = the OUTERMOST pending
+    // opener of that name. Kept in sync on push (append) and pop (drop tail positions ≥ cut).
+    let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    for (idx, l) in lines.iter().enumerate() {
+        if let Some(name) = callout_begin(l.text) {
+            let nl = name.to_ascii_lowercase();
+            by_name.entry(nl.clone()).or_default().push(stack.len());
+            stack.push((nl, idx));
+            continue;
+        }
+        let t = l.text.trim_start();
+        if t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
+            if let Some(pos) = outermost_callout_match(&by_name, &t[6..]) {
+                pairs.insert(stack[pos].1, idx);
+                for (nm, _) in stack.drain(pos..) {
+                    if let Some(v) = by_name.get_mut(&nm) {
+                        while v.last().is_some_and(|&p| p >= pos) {
+                            v.pop();
+                        }
+                    }
+                }
+            }
         }
     }
-    no_end.insert(key);
-    None
+    pairs
+}
+
+/// The stack position of the OUTERMOST (smallest-position) pending opener whose name is a
+/// case-insensitive prefix of `suffix` (the text after `#+END_`). A callout name has no
+/// whitespace, so only prefixes of `suffix`'s leading non-whitespace run can match; checking
+/// those byte-prefixes is O(|suffix|), keeping `pair_callouts` linear even on adversarial
+/// non-matching `#+END_` runs. `by_name[name].first()` is that name's outermost pending opener.
+fn outermost_callout_match(by_name: &HashMap<String, Vec<usize>>, suffix: &str) -> Option<usize> {
+    let head_len = suffix.bytes().take_while(|&b| b != b' ' && b != b'\t').count();
+    let head = suffix[..head_len].to_ascii_lowercase();
+    let mut best: Option<usize> = None;
+    let mut k = 1;
+    while k <= head.len() {
+        if head.is_char_boundary(k) {
+            if let Some(&p) = by_name.get(&head[..k]).and_then(|v| v.first()) {
+                best = Some(best.map_or(p, |b: usize| b.min(p)));
+            }
+        }
+        k += 1;
+    }
+    best
 }
 
 /// A line that is exactly `$$ … $$` (after trimming) ⇒ block-level displayed math.

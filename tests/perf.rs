@@ -228,6 +228,16 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         // (it sat just under budget at low load until n grew). md was already floored.
         ("md_latex_open", false, 25_000, |n| "\\(".repeat(n)),
         ("org_latex_open", true, 25_000, |n| "\\(".repeat(n)),
+        // Callout UNIQUE-name openers each followed by a NON-matching `#+END_`. The old
+        // per-name absence memo never hit (every name distinct) → a full `#+END_`-index scan
+        // per opener → O(n²). The pending-opener `pair_callouts` (by_name position index) is
+        // O(n). (md only; org callout pairing is rewritten in M9.)
+        (
+            "md_callout_uniq",
+            false,
+            8_000,
+            |n| (0..n).map(|k| format!("#+BEGIN_A{k}\n#+END_Z{k}\n")).collect::<String>(),
+        ),
     ]
 }
 
