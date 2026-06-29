@@ -526,7 +526,9 @@ fn directive(s: &str) -> Option<(String, String)> {
     if key.is_empty() || key.bytes().any(|b| b == b'\n' || b == b'\r') {
         return None;
     }
-    if key.len() >= 6 && key[..6].eq_ignore_ascii_case("begin_") {
+    // `key.get(..6)` not `key[..6]`: a directive key is user text, so a multibyte char
+    // straddling byte 6 (`#+END_中:`) would panic on a raw slice. char-boundary-safe.
+    if key.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("begin_")) {
         return None;
     }
     let value = rest[pos + 1..].trim_start();
