@@ -29,7 +29,7 @@
 //! - unclosed fences and 4-space indents are paragraphs, not code.
 
 use crate::projection::{Block, Inline, ListItem, Span};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 struct Line<'a> {
     start: usize, // byte offset of line start
@@ -44,25 +44,28 @@ pub fn parse(input: &str) -> Vec<Block> {
     // O(1) — keeping a run of unclosed `[:` block lines linear (see step 11d').
     let last_rbracket = input.rfind(']');
     let fences = pair_fences(&lines); // open-line-idx -> (close-line-idx, lang)
-    // Name-independent "no closer anywhere ahead" floors (the LAST line index that
-    // could close each unclosed-opener family). `find_callout_end`/`find_drawer_end`/
-    // `find_matching_fence` scan `lines[i+1..]`, so when no candidate closer line
-    // exists past `i` they are skipped in O(1) — keeping a run of UNCLOSED openers
-    // (callouts, drawers, dash-bullet fences) linear instead of O(n²).
-    let last_callout_end = lines.iter().rposition(|l| {
-        let t = l.text.trim_start();
-        t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_"))
-    });
-    let last_drawer_end =
-        lines.iter().rposition(|l| l.text.trim().eq_ignore_ascii_case(":END:"));
-    // Per-fence-char last marker-line index (a dash-bullet fence's closer is the next
-    // same-char fence marker line — see `find_matching_fence`).
-    let mut last_fence_line: HashMap<u8, usize> = HashMap::new();
+    // Sparse, sorted closer-line INDEXES so a callout/drawer/dash-fence opener finds
+    // its matching closer by binary-searching only candidate lines, never an EOF
+    // re-scan per opener (kills the O(n²) class — audit R2-P4/P6). Exact mldoc
+    // semantics preserved: the first matching closer line after the opener.
+    let mut end_idxs: Vec<usize> = Vec::new(); // `#+END_…` lines (callout closers)
+    let mut drawer_end_idxs: Vec<usize> = Vec::new(); // `:END:` lines (drawer closers)
+    let mut fence_line_idxs: HashMap<u8, Vec<usize>> = HashMap::new(); // per-char fence lines
     for (idx, l) in lines.iter().enumerate() {
+        if l.text.trim_start().get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
+            end_idxs.push(idx);
+        }
+        if l.text.trim().eq_ignore_ascii_case(":END:") {
+            drawer_end_idxs.push(idx);
+        }
         if let Some((c, _)) = fence_marker(l.text) {
-            last_fence_line.insert(c, idx);
+            fence_line_idxs.entry(c).or_default().push(idx);
         }
     }
+    // Per-callout-NAME memo: once `#+END_<name>` is known absent from `i` onward it is
+    // absent for every later opener too (the suffix only shrinks) — O(1) re-check, so a
+    // run of same-name unclosed openers stays linear even with a stray non-matching `#+END_`.
+    let mut no_callout_end: HashSet<String> = HashSet::new();
 
     let mut out: Vec<Block> = Vec::new();
     let mut para: Option<(usize, usize)> = None;
@@ -102,9 +105,8 @@ pub fn parse(input: &str) -> Vec<Block> {
 
         // 2. callout #+BEGIN_X … #+END_X
         if let Some(name) = callout_begin(t) {
-            if let Some(close) = last_callout_end
-                .filter(|&e| e > i)
-                .and_then(|_| find_callout_end(&lines, i, &name))
+            if let Some(close) =
+                find_callout_end(&end_idxs, &lines, &mut no_callout_end, i, &name)
             {
                 flush_para(&mut out, &mut para, input);
                 let inner = if close > i + 1 {
@@ -214,11 +216,7 @@ pub fn parse(input: &str) -> Vec<Block> {
                 // `content` is already leading-ws-stripped, so `fence_marker` matched at
                 // its very start (a true fence opener).
                 {
-                    if let Some(close) = last_fence_line
-                        .get(&fchar)
-                        .filter(|&&e| e > i)
-                        .and_then(|_| find_matching_fence(&lines, i, fchar))
-                    {
+                    if let Some(close) = find_matching_fence(&fence_line_idxs, i, fchar) {
                         flush_para(&mut out, &mut para, input);
                         empty_bullet!();
                         let lang = fence_lang(&content[frun..]);
@@ -535,10 +533,7 @@ pub fn parse(input: &str) -> Vec<Block> {
         // `:PROPERTIES:` drawer becomes a Property_Drawer even in Markdown (mldoc
         // drawer.ml), with `:key: value` lines parsed as properties.
         if let Some(name) = drawer_begin(t) {
-            if let Some(close) = last_drawer_end
-                .filter(|&e| e > i)
-                .and_then(|_| find_drawer_end(&lines, i))
-            {
+            if let Some(close) = find_drawer_end(&drawer_end_idxs, i) {
                 flush_para(&mut out, &mut para, input);
                 let span = Some(Span(line_start, lines[close].end));
                 if name == "properties" {
@@ -793,11 +788,16 @@ fn fence_lang(info: &str) -> String {
     info.split_whitespace().next().unwrap_or("").to_string()
 }
 
-/// First subsequent line (after `from`) that is a fence marker of char `fchar`. Used
-/// for a fence opened *on a `-` bullet line* (whose opener isn't seen by `pair_fences`
-/// because the line starts with `-`).
-fn find_matching_fence(lines: &[Line], from: usize, fchar: u8) -> Option<usize> {
-    (from + 1..lines.len()).find(|&k| fence_marker(lines[k].text).map(|(c, _)| c) == Some(fchar))
+/// First fence-marker line of char `fchar` after `from`, via the precomputed per-char
+/// sorted index (binary search ⇒ O(log n), never an EOF re-scan). Used for a fence opened
+/// *on a `-` bullet line* (whose opener isn't seen by `pair_fences`).
+fn find_matching_fence(
+    fence_line_idxs: &HashMap<u8, Vec<usize>>,
+    from: usize,
+    fchar: u8,
+) -> Option<usize> {
+    let v = fence_line_idxs.get(&fchar)?;
+    v.get(v.partition_point(|&x| x <= from)).copied()
 }
 
 /// A code-fence marker line: 3+ ` or ~ after optional leading whitespace (Logseq
@@ -1258,14 +1258,30 @@ fn callout_begin(s: &str) -> Option<String> {
     }
 }
 
-fn find_callout_end(lines: &[Line], from: usize, name: &str) -> Option<usize> {
+/// First line after `from` whose trimmed start is `#+END_<name>` (prefix match — mldoc-
+/// exact, so trailing junk after the name still closes), via the sparse `#+END_` index +
+/// a per-name "absent from here on" memo. A run of unclosed / `#+END_`-mismatched openers
+/// stays linear (audit R2-P4) instead of re-scanning to EOF per opener.
+fn find_callout_end(
+    end_idxs: &[usize],
+    lines: &[Line],
+    no_end: &mut HashSet<String>,
+    from: usize,
+    name: &str,
+) -> Option<usize> {
+    let key = name.to_ascii_lowercase();
+    if no_end.contains(&key) {
+        return None;
+    }
     let needle = format!("#+END_{}", name);
-    for (off, l) in lines[from + 1..].iter().enumerate() {
-        let t = l.text.trim_start();
+    let start = end_idxs.partition_point(|&x| x <= from);
+    for &idx in &end_idxs[start..] {
+        let t = lines[idx].text.trim_start();
         if t.get(..needle.len()).is_some_and(|p| p.eq_ignore_ascii_case(&needle)) {
-            return Some(from + 1 + off);
+            return Some(idx);
         }
     }
+    no_end.insert(key);
     None
 }
 
@@ -1292,11 +1308,9 @@ fn drawer_begin(s: &str) -> Option<String> {
     }
 }
 
-fn find_drawer_end(lines: &[Line], from: usize) -> Option<usize> {
-    lines[from + 1..]
-        .iter()
-        .position(|l| l.text.trim().eq_ignore_ascii_case(":END:"))
-        .map(|off| from + 1 + off)
+/// First `:END:` line after `from`, via the sparse `:END:` index (binary search ⇒ O(log n)).
+fn find_drawer_end(drawer_end_idxs: &[usize], from: usize) -> Option<usize> {
+    drawer_end_idxs.get(drawer_end_idxs.partition_point(|&x| x <= from)).copied()
 }
 
 fn is_raw_html(s: &str) -> bool {

@@ -98,20 +98,22 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
     // closing `]`, so a `[:` line starting at/after it is skipped O(1) (see step 13b).
     let last_rbracket = input.rfind(']');
     let fences = pair_fences(&lines);
-    // Name-independent "no closer anywhere ahead" floors: the LAST line index that
-    // could close a `#+BEGIN_X` block (`#+END_` prefix) / a `:NAME:` drawer (`:END:`).
-    // `find_block_end`/`find_drawer_end` scan `lines[i+1..]`, so when no such line
-    // exists past `i` they can be skipped in O(1) — keeping a run of UNCLOSED openers
-    // (incl. unique names like `#+BEGIN_B0,B1,…`) linear instead of O(n²). These are
-    // computed on the original lines; the headline-split rewrite never creates an
-    // `#+END_`/`:END:` line (none is a block OPENER), so the floors stay valid.
-    let last_block_end =
-        lines.iter().rposition(|l| {
-            let t = l.text.trim_start();
-            t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_"))
-        });
-    let last_drawer_end =
-        lines.iter().rposition(|l| l.text.trim().eq_ignore_ascii_case(":END:"));
+    // Sparse, sorted closer-line INDEXES so a `#+BEGIN_X` block / `:NAME:` drawer opener
+    // finds its matching closer by binary-searching only candidate lines, never an EOF
+    // re-scan per opener (kills the O(n²) class — audit R2-P4/P6). Exact mldoc semantics:
+    // the first matching closer line after the opener. Computed on the original lines; the
+    // headline-split rewrite never creates an `#+END_`/`:END:` line (none is a block
+    // OPENER), so the indexes stay valid through the rewrite + re-enter.
+    let mut end_idxs: Vec<usize> = Vec::new(); // `#+END_…` lines (block closers)
+    let mut drawer_end_idxs: Vec<usize> = Vec::new(); // `:END:` lines (drawer closers)
+    for (idx, l) in lines.iter().enumerate() {
+        if l.text.trim_start().get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
+            end_idxs.push(idx);
+        }
+        if l.text.trim().eq_ignore_ascii_case(":END:") {
+            drawer_end_idxs.push(idx);
+        }
+    }
     let mut out: Vec<Block> = Vec::new();
     let mut para: Option<(usize, usize)> = None;
     // After an "absorbing" block (Directive/Comment/Block/Footnote) mldoc's
@@ -180,10 +182,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
         // 2. drawer `:PROPERTIES:`/`:NAME:` … `:END:` — not a list-item content block
         // (inside an item a `:`-line is verbatim/Example via step 7 instead).
         if let Some(name) = drawer_begin(t).filter(|_| !in_item) {
-            if let Some(close) = last_drawer_end
-                .filter(|&e| e > i)
-                .and_then(|_| find_drawer_end(&lines, i))
-            {
+            if let Some(close) = find_drawer_end(&drawer_end_idxs, i) {
                 flush_para(&mut out, &mut para, input, in_item);
                 if name == "properties" {
                     let mut props: Vec<(String, String)> = lines[i + 1..close]
@@ -239,6 +238,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
                     content_off,
                     &lines,
                     i,
+                    &end_idxs,
                     &mut no_block_end,
                     &mut no_close_fence,
                 )
@@ -359,10 +359,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
 
         // 6. `#+BEGIN_X` … `#+END_X` block
         if let Some(name) = block_begin(t) {
-            if let Some(close) = last_block_end
-                .filter(|&e| e > i)
-                .and_then(|_| find_block_end(&lines, i, &name))
-            {
+            if let Some(close) = find_block_end(&end_idxs, &lines, &mut no_block_end, i, &name) {
                 flush_para(&mut out, &mut para, input, in_item);
                 let inner = block_code(&lines[i + 1..close]);
                 let span = Some(Span(line_start, lines[close].end));
@@ -685,11 +682,9 @@ fn drawer_begin(s: &str) -> Option<String> {
     Some(inner.to_ascii_lowercase())
 }
 
-fn find_drawer_end(lines: &[Line], from: usize) -> Option<usize> {
-    lines[from + 1..]
-        .iter()
-        .position(|l| l.text.trim().eq_ignore_ascii_case(":END:"))
-        .map(|off| from + 1 + off)
+/// First `:END:` line after `from`, via the sparse `:END:` index (binary search ⇒ O(log n)).
+fn find_drawer_end(drawer_end_idxs: &[usize], from: usize) -> Option<usize> {
+    drawer_end_idxs.get(drawer_end_idxs.partition_point(|&x| x <= from)).copied()
 }
 
 /// One `:key: value` line of a `:PROPERTIES:` drawer (mldoc drawer.ml `property`).
@@ -741,6 +736,7 @@ fn headline_split_opener(
     content_off: usize,
     lines: &[Line],
     i: usize,
+    end_idxs: &[usize],
     no_block_end: &mut std::collections::HashSet<String>,
     no_close_fence: &mut std::collections::HashSet<u8>,
 ) -> bool {
@@ -762,15 +758,8 @@ fn headline_split_opener(
     // line (the suffix only shrinks). Each distinct name/char then costs at most ONE full
     // scan — keeping a run of repeated UNCLOSED openers linear, not O(n²).
     if let Some(name) = block_begin(content) {
-        let key = name.to_ascii_lowercase();
-        if no_block_end.contains(&key) {
-            return false;
-        }
-        if find_block_end(lines, i, &name).is_some() {
-            return true;
-        }
-        no_block_end.insert(key);
-        return false;
+        // The indexed `find_block_end` carries the per-name "no closer ahead" memo itself.
+        return find_block_end(end_idxs, lines, no_block_end, i, &name).is_some();
     }
     if let Some((ch, _)) = fence_marker(content) {
         if no_close_fence.contains(&ch) {
@@ -884,14 +873,31 @@ fn block_begin(s: &str) -> Option<String> {
     }
 }
 
-fn find_block_end(lines: &[Line], from: usize, name: &str) -> Option<usize> {
+/// First line after `from` whose trimmed start is `#+END_<name>` (prefix match — mldoc-
+/// exact, so trailing junk after the name still closes), via the sparse `#+END_` index +
+/// a per-name "absent from here on" memo. A run of unclosed / `#+END_`-mismatched openers
+/// stays linear (audit R2-P4) instead of re-scanning to EOF per opener. Shared by the main
+/// loop (step 6) and the headline block-opener split.
+fn find_block_end(
+    end_idxs: &[usize],
+    lines: &[Line],
+    no_block_end: &mut std::collections::HashSet<String>,
+    from: usize,
+    name: &str,
+) -> Option<usize> {
+    let key = name.to_ascii_lowercase();
+    if no_block_end.contains(&key) {
+        return None;
+    }
     let needle = format!("#+END_{}", name);
-    for (off, l) in lines[from + 1..].iter().enumerate() {
-        let t = l.text.trim_start();
+    let start = end_idxs.partition_point(|&x| x <= from);
+    for &idx in &end_idxs[start..] {
+        let t = lines[idx].text.trim_start();
         if t.get(..needle.len()).is_some_and(|p| p.eq_ignore_ascii_case(&needle)) {
-            return Some(from + 1 + off);
+            return Some(idx);
         }
     }
+    no_block_end.insert(key);
     None
 }
 

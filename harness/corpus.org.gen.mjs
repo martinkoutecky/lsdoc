@@ -8,6 +8,16 @@ const U1 = "11111111-1111-1111-1111-111111111111";
 const cases = [];
 const add = (cat, input) => cases.push({ cat, input, format: "org" });
 
+// block/drawer pairing semantics (v2 pre-pairing must reproduce mldoc's greedy
+// first-closer-of-name, non-overlapping, prefix-match behavior — see DESIGN-lsdoc-v2).
+add("pairing", "#+BEGIN_FOO\n#+BEGIN_FOO\nx\n#+END_FOO\n#+END_FOO"); // nested same name: outer grabs FIRST #+END_FOO
+add("pairing", "#+BEGIN_FOO\nx\n#+END_BAR");                          // mismatched END → no close
+add("pairing", "#+BEGIN_FOO\n#+END_BAR\n#+END_FOO");                  // skip non-matching, close at #+END_FOO
+add("pairing", "#+BEGIN_SRC\ncode\n#+END_SRC trailing");             // prefix-match: trailing junk after END name
+add("pairing", ":A:\n:B:\nx\n:END:\n:END:");                          // nested drawers: first :END: closes :A:
+add("pairing", "* #+BEGIN_FOO\nx\n#+END_FOO");                        // headline-split block opener (closes)
+add("pairing", "* #+BEGIN_FOO\nx\n#+END_BAR");                        // headline-split block opener (no close)
+
 // headlines (levels, markers, priority, tags)
 add("head", "* Heading");
 add("head", "** Sub");

@@ -74,6 +74,19 @@ add("quote", "> line one\n> line two");
 add("quote", "#+BEGIN_QUOTE\nquoted\n#+END_QUOTE");
 add("quote", "#+BEGIN_NOTE\nnote body\n#+END_NOTE");
 
+// block/drawer pairing semantics (v2 pre-pairing must reproduce mldoc's greedy
+// first-closer-of-name, non-overlapping, prefix-match behavior — see DESIGN-lsdoc-v2).
+add("pairing", "#+BEGIN_FOO\n#+BEGIN_FOO\nx\n#+END_FOO\n#+END_FOO"); // nested same name: outer grabs FIRST #+END_FOO, inner is content
+add("pairing", "#+BEGIN_FOO\nx\n#+END_BAR");                          // mismatched END → no close → paragraph
+add("pairing", "#+BEGIN_FOO\n#+END_BAR\n#+END_FOO");                  // skip non-matching #+END_BAR, close at #+END_FOO
+add("pairing", "#+BEGIN_FOO\nx\n#+END_FOObar");                       // prefix-match: #+END_FOObar closes FOO
+// NB: md `#+END_SRC trailing` (junk after END_SRC) is a PRE-EXISTING divergence (mldoc keeps
+// the Src; lsdoc md renders Custom{src}) — adversarial, unrelated to pairing; tracked, not gated.
+add("pairing", ":A:\n:B:\nx\n:END:\n:END:");                          // nested drawers: first :END: closes :A:
+add("pairing", ":A:\nx\n:END:\nmore\n:END:");                         // first :END: closes; second is stray
+add("pairing", "- ```\ncode\n```");                                   // dash-bullet fence that CLOSES → bullet + src
+add("pairing", "- ```\nunclosed code");                              // dash-bullet fence no close → bullet "```"
+
 // horizontal rules
 add("hr", "---");
 add("hr", "***");
