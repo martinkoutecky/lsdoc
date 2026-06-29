@@ -191,10 +191,19 @@ pub(crate) fn org_lex(s: &str) -> Vec<Token> {
             b'\\' => {
                 // ALL of `\`-handling is ctx-gated (hard-break / latex / entity all hang off
                 // `ctx.entity`, then escape) — so defer the whole thing: emit `Punct(\)` and
-                // let the resolver run the ctx-aware `backslash()` on the raw bytes.
+                // let the resolver run the ctx-aware `backslash()` on the raw bytes. Emit the
+                // immediately-following char as its OWN single-char token so a `\X` escape's
+                // extent aligns with a token boundary (no straddle) and the run after it is a
+                // fresh dispatch point (e.g. `\,http://…` → fresh bare-url). The resolver's
+                // `resync` skips whatever bytes the backslash consumed.
                 flush!();
                 toks.push(Token { off: i, kind: Kind::Punct(b'\\') });
                 i += 1;
+                if i < n && b[i] != b'\n' && b[i] != b'\r' {
+                    let w = char_len(b[i]);
+                    toks.push(Token { off: i, kind: Kind::Text(s[i..i + w].to_string()) });
+                    i += w;
+                }
             }
             _ if is_marker(c) => {
                 // ONE `Delim{ch,1}` token per marker BYTE — Org emphasis is byte-position based
@@ -249,14 +258,40 @@ fn flush(out: &mut Vec<Inline>, pending: &mut String) {
 /// script; the remaining specials (`Punct`/`LatexBs`) still render literally (refined by the
 /// leaf / bracket sub-steps). `last_plain_char` mirrors mldoc `push_plain`: updated on EVERY
 /// plain append and PERSISTS across nodes/flush (an emphasis node does NOT reset it).
-#[allow(unused_assignments)] // last_plain_char is running state; the final write may be unread
+#[allow(unused_assignments)] // last_plain_char / fresh are running state; final writes may be unread
 fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
     let bb = s.as_bytes();
     let mut out: Vec<Inline> = Vec::new();
     let mut pending = String::new();
     let mut last_plain_char: Option<u8> = None;
-    // no_closer[class][k-1]: a failed opener of (marker,k) never re-scans (mldoc bail).
     let mut no_closer = [[false; 2]; 5];
+
+    // Bracket-pairing maps (shared with md; computed once when `[` is present) + monotone
+    // closer cursors (the v1 `seq_present`/`has_rbracket`/`next_real_dbl`/`next_crlf` floors,
+    // expressed as forward cursors — keep the gated `[`×n / `{{ `×n / `(( `×n runs linear).
+    let has_brk = bb.contains(&b'[');
+    let nested_close = if has_brk {
+        crate::inline::build_nested_close(s)
+    } else {
+        std::collections::HashMap::new()
+    };
+    let hiccup_close = if has_brk {
+        crate::inline::build_hiccup_close(s)
+    } else {
+        std::collections::HashMap::new()
+    };
+    let real_dbl = if has_brk { crate::inline::build_real_dbl(s) } else { Vec::new() };
+    let mut real_dbl_cur = 0usize;
+    let mut crlf = first_crlf(bb, 0);
+    let mut rbracket = first_byte(bb, 0, b']');
+    let mut sq_rb_lb = first_seq(bb, b']', b'[', 0); // ][
+    let mut sq_rr = first_seq(bb, b')', b')', 0); // ))
+    let mut sq_rbrace = first_seq(bb, b'}', b'}', 0); // }}
+    let mut sq_lt_sl = first_seq(bb, b'<', b'/', 0); // </
+    // `fresh` = a dispatch point (mldoc `plain_run` stops at PLAIN_DELIMS `\ _ ^ [ * / + $ #`
+    // + ws/eol). The SWALLOW openers `~ = < { (` fire only when fresh; mid-plain-run they are
+    // absorbed as literal text.
+    let mut fresh = true;
 
     macro_rules! append {
         ($seg:expr) => {{
@@ -270,8 +305,17 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
     macro_rules! push_byte {
         ($c:expr) => {{
             let c: u8 = $c;
-            pending.push(c as char); // markers / deferred specials are ASCII
+            pending.push(c as char);
             last_plain_char = Some(c);
+        }};
+    }
+    /// monotone: advance `$cur` to the first `$a$b`-seq at/after `$off`, return presence.
+    macro_rules! present {
+        ($cur:expr, $a:expr, $b:expr, $off:expr) => {{
+            if $off > $cur {
+                $cur = first_seq(bb, $a, $b, $off);
+            }
+            $cur < bb.len()
         }};
     }
 
@@ -279,8 +323,32 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
     while t < toks.len() {
         let off = toks[t].off;
         match &toks[t].kind {
-            Kind::Text(txt) => append!(txt.as_str()),
-            Kind::Escape(x) => append!(x.as_str()),
+            Kind::Text(txt) => {
+                // default arm: keyword timestamp (S/C/D…) then bare URL at a fresh ordinary run.
+                let txt = txt.clone();
+                // org Text is all-ws or all-ordinary (ws is lexed separately).
+                let is_ws = txt.bytes().all(|b| b == b' ' || b == b'\t');
+                if fresh && !is_ws {
+                    let leaf = (if ctx.timestamps && matches!(bb[off], b'S' | b'C' | b'D' | b's' | b'c' | b'd') {
+                        crate::inline::parse_keyword_timestamp(s, off)
+                    } else {
+                        None
+                    })
+                    .or_else(|| if ctx.urls { crate::inline::parse_bare_url(s, off) } else { None });
+                    if let Some((end, node)) = leaf {
+                        flush(&mut out, &mut pending);
+                        out.push(node);
+                        t = resync_straddle(s, toks, t, end, &mut pending, &mut last_plain_char, &mut fresh);
+                        continue;
+                    }
+                }
+                append!(&txt);
+                fresh = is_ws;
+            }
+            Kind::Escape(x) => {
+                append!(x.as_str());
+                fresh = false;
+            }
             Kind::Newline(c) => {
                 if ctx.breaks {
                     flush(&mut out, &mut pending);
@@ -288,10 +356,12 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 } else {
                     append!(if *c == b'\n' { "\n" } else { "\r" });
                 }
+                fresh = true;
             }
             Kind::Leaf(node) => {
                 flush(&mut out, &mut pending);
                 out.push(node.clone());
+                fresh = true;
             }
             Kind::Delim { ch, .. } => {
                 let ch = *ch;
@@ -309,6 +379,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 ) {
                     flush(&mut out, &mut pending);
                     out.push(node);
+                    fresh = true;
                     t = resync(toks, t, end);
                     continue;
                 }
@@ -316,13 +387,14 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                     if let Some((node, end)) = try_script(s, bb, off, ch) {
                         flush(&mut out, &mut pending);
                         out.push(node);
+                        fresh = true;
                         t = resync(toks, t, end);
                         continue;
                     }
                 }
-                push_byte!(ch);
+                push_byte!(ch); // plain_one; marker is a PLAIN_DELIM → fresh
+                fresh = true;
             }
-            // `\`-dispatch (ctx-aware backslash: hard-break / latex / entity / escape).
             Kind::Punct(b'\\') => {
                 let (bs, end) = org_backslash_at(s, bb, off, ctx);
                 match bs {
@@ -337,14 +409,100 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                         pending.push_str(&text);
                     }
                 }
-                t = resync_straddle(s, toks, t, end, &mut pending, &mut last_plain_char);
+                t = resync_straddle(s, toks, t, end, &mut pending, &mut last_plain_char, &mut fresh);
                 continue;
             }
-            // Deferred specials — literal for now (leaf / bracket sub-steps refine).
-            Kind::Punct(c) => push_byte!(*c),
+            Kind::Punct(c) => {
+                let c = *c;
+                // PLAIN_DELIMS `# $ [` always dispatch; SWALLOW `~ = < { (` only when fresh.
+                let mut hit: Option<usize> = None;
+                match c {
+                    b'#' if ctx.tags => {
+                        let (e, children) = crate::inline::parse_tag_name(s, off + 1, false);
+                        if e > off + 1 && !children.is_empty() {
+                            flush(&mut out, &mut pending);
+                            out.push(Inline::Tag { children });
+                            hit = Some(e);
+                        }
+                    }
+                    b'$' if ctx.latex => {
+                        if let Some((node, e)) = try_latex_dollar_at(s, bb, off) {
+                            flush(&mut out, &mut pending);
+                            out.push(node);
+                            hit = Some(e);
+                        }
+                    }
+                    b'[' if ctx.links => {
+                        if rbracket < off {
+                            rbracket = first_byte(bb, off, b']');
+                        }
+                        if rbracket < bb.len() {
+                            let rb_lb = present!(sq_rb_lb, b']', b'[', off);
+                            if let Some((node, e)) = try_bracket_at(
+                                s, bb, off, ctx, &hiccup_close, &nested_close, &real_dbl,
+                                &mut real_dbl_cur, &mut crlf, rb_lb,
+                            ) {
+                                flush(&mut out, &mut pending);
+                                out.push(node);
+                                hit = Some(e);
+                            }
+                        }
+                    }
+                    b'~' if ctx.code && fresh => {
+                        if let Some((node, e)) = try_code_verbatim_at(s, bb, off, b'~') {
+                            flush(&mut out, &mut pending);
+                            out.push(node);
+                            hit = Some(e);
+                        }
+                    }
+                    b'=' if ctx.code && fresh => {
+                        if let Some((node, e)) = try_code_verbatim_at(s, bb, off, b'=') {
+                            flush(&mut out, &mut pending);
+                            out.push(node);
+                            hit = Some(e);
+                        }
+                    }
+                    b'<' if ctx.angle && fresh => {
+                        let html_closer = present!(sq_lt_sl, b'<', b'/', off);
+                        if let Some((node, e)) = try_target_angle_at(s, bb, off, ctx, html_closer) {
+                            flush(&mut out, &mut pending);
+                            out.push(node);
+                            hit = Some(e);
+                        }
+                    }
+                    b'{' if ctx.macros && fresh => {
+                        if present!(sq_rbrace, b'}', b'}', off) {
+                            if let Some((node, e)) = try_macro_at(s, bb, off) {
+                                flush(&mut out, &mut pending);
+                                out.push(node);
+                                hit = Some(e);
+                            }
+                        }
+                    }
+                    b'(' if ctx.block_refs && fresh => {
+                        if present!(sq_rr, b')', b')', off) {
+                            if let Some((node, e)) = try_block_ref_at(s, bb, off) {
+                                flush(&mut out, &mut pending);
+                                out.push(node);
+                                hit = Some(e);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                if let Some(e) = hit {
+                    t = resync_straddle(s, toks, t, e, &mut pending, &mut last_plain_char, &mut fresh);
+                    continue;
+                }
+                // not consumed: plain. `# $ [` are PLAIN_DELIMS (fresh); the swallow bytes
+                // and non-openers (`] ) } > !` …) are absorbed mid-run (not fresh).
+                push_byte!(c);
+                fresh = matches!(c, b'#' | b'$' | b'[');
+            }
             Kind::LatexBs(c) => {
                 push_byte!(b'\\');
                 push_byte!(*c);
+                fresh = false;
             }
         }
         t += 1;
@@ -582,6 +740,7 @@ fn org_backslash_at(s: &str, bb: &[u8], i: usize, ctx: Ctx) -> (Bs, usize) {
 /// entity that consumed into the following ordinary run): advance past `end`, and if it lands
 /// strictly inside a token, push that token's plain tail `s[end..tok_end]` raw (Org never
 /// unescapes; the straddled token is always ordinary Text).
+#[allow(clippy::too_many_arguments)]
 fn resync_straddle(
     s: &str,
     toks: &[Token],
@@ -589,6 +748,7 @@ fn resync_straddle(
     end: usize,
     pending: &mut String,
     last_plain_char: &mut Option<u8>,
+    fresh: &mut bool,
 ) -> usize {
     let n = s.len();
     let tok_end = |i: usize| if i + 1 < toks.len() { toks[i + 1].off } else { n };
@@ -596,14 +756,405 @@ fn resync_straddle(
         t += 1;
     }
     if t < toks.len() && toks[t].off < end {
+        // straddle: a plain tail (entity/escape consumed into the following ordinary run).
         let tail = &s[end..tok_end(t)];
         if let Some(b) = tail.bytes().next_back() {
             *last_plain_char = Some(b);
         }
+        *fresh = !tail.is_empty() && tail.bytes().all(|b| b == b' ' || b == b'\t');
         pending.push_str(tail);
         t += 1;
+    } else {
+        // clean construct end → fresh dispatch point.
+        *fresh = true;
     }
     t
+}
+
+// ---- leaf / bracket constructs (reimplemented from the v1 `OrgScanner` methods, byte-based;
+// shared free predicates reused from `crate::inline` / `crate::org`) -----------------------
+
+/// `$ … $` (Inline) / `$$ … $$` (Displayed) — v1 `try_latex_dollar`.
+fn try_latex_dollar_at(s: &str, bb: &[u8], i: usize) -> Option<(Inline, usize)> {
+    let n = bb.len();
+    let after = *bb.get(i + 1)?;
+    if after == b'$' {
+        let body_start = i + 2;
+        let end = crate::inline::find_sub_line(bb, body_start, b"$$")?;
+        return Some((Inline::Latex { mode: "Displayed".to_string(), body: s[body_start..end].to_string() }, end + 2));
+    }
+    if after == b' ' {
+        return None;
+    }
+    let body_start = i + 1;
+    let mut j = body_start;
+    while j < n && bb[j] != b'$' && bb[j] != b'\n' && bb[j] != b'\r' {
+        j += 1;
+    }
+    if j >= n || bb[j] != b'$' {
+        return None;
+    }
+    if matches!(bb[j - 1], b' ' | b'(' | b'[' | b'{') {
+        return None;
+    }
+    Some((Inline::Latex { mode: "Inline".to_string(), body: s[body_start..j].to_string() }, j + 1))
+}
+
+/// `~ … ~` Code / `= … = ` Verbatim (non-empty, no marker / eol inside) — v1 try_code/verbatim.
+fn try_code_verbatim_at(s: &str, bb: &[u8], i: usize, marker: u8) -> Option<(Inline, usize)> {
+    let n = bb.len();
+    let start = i + 1;
+    let mut j = start;
+    while j < n && bb[j] != marker && bb[j] != b'\n' && bb[j] != b'\r' {
+        j += 1;
+    }
+    if j > start && j < n && bb[j] == marker {
+        let body = s[start..j].to_string();
+        let node = if marker == b'~' {
+            Inline::Code { text: body }
+        } else {
+            Inline::Verbatim { text: body }
+        };
+        Some((node, j + 1))
+    } else {
+        None
+    }
+}
+
+/// `<<target>>` then `<…>` angle (autolink → timestamp → inline-html → email) — v1
+/// try_target + try_angle. `html_closer` = a `</` exists ahead.
+fn try_target_angle_at(s: &str, bb: &[u8], i: usize, ctx: Ctx, html_closer: bool) -> Option<(Inline, usize)> {
+    let n = bb.len();
+    if s[i..].starts_with("<<") {
+        let inner_start = i + 2;
+        let mut j = inner_start;
+        while j < n {
+            let c = bb[j];
+            if c == b'<' || c == b'>' || c == b'\n' || c == b'\r' {
+                break;
+            }
+            j += char_len(c);
+        }
+        if j > inner_start && j + 1 < n && bb[j] == b'>' && bb[j + 1] == b'>' {
+            return Some((Inline::Target { text: s[inner_start..j].to_string() }, j + 2));
+        }
+    }
+    if let Some((end, node)) = crate::org::parse_org_autolink(s, i) {
+        return Some((node, end));
+    }
+    if ctx.timestamps {
+        if let Some((end, node)) = crate::inline::parse_angle_timestamp(s, i) {
+            return Some((node, end));
+        }
+    }
+    if let Some((end, text)) = crate::inline::parse_inline_html_cached(s, i, html_closer) {
+        return Some((Inline::InlineHtml { text }, end));
+    }
+    if let Some((end, node)) = crate::inline::parse_email_autolink(s, i) {
+        return Some((node, end));
+    }
+    None
+}
+
+/// `{{ … }}` / `{{{ … }}}` macro — v1 try_macro (caller guarantees a `}}` exists ahead).
+fn try_macro_at(s: &str, bb: &[u8], i: usize) -> Option<(Inline, usize)> {
+    let n = bb.len();
+    if !s[i..].starts_with("{{") {
+        return None;
+    }
+    let candidates: &[(&str, &str)] = if s[i..].starts_with("{{{") {
+        &[("{{{", "}}}"), ("{{", "}}")]
+    } else {
+        &[("{{", "}}")]
+    };
+    for &(open, close) in candidates {
+        let inner_start = i + open.len();
+        let mut j = inner_start;
+        while j < n && bb[j] != b'}' && bb[j] != b'\n' && bb[j] != b'\r' {
+            j += 1;
+        }
+        if j == inner_start || !s[j..].starts_with(close) {
+            continue;
+        }
+        if let Some((name, args)) = crate::inline::parse_macro(&s[inner_start..j]) {
+            return Some((Inline::Macro { name, args }, j + close.len()));
+        }
+    }
+    None
+}
+
+/// `(( … ))` block ref — v1 try_block_ref (caller guarantees a `))` exists ahead).
+fn try_block_ref_at(s: &str, bb: &[u8], i: usize) -> Option<(Inline, usize)> {
+    let n = bb.len();
+    if !s[i..].starts_with("((") {
+        return None;
+    }
+    let inner_start = i + 2;
+    let mut j = inner_start;
+    while j < n && bb[j] != b')' && bb[j] != b'\n' && bb[j] != b'\r' {
+        j += 1;
+    }
+    if j == inner_start {
+        return None;
+    }
+    if j + 1 < n && bb[j] == b')' && bb[j + 1] == b')' {
+        let inner = s[inner_start..j].to_string();
+        let full = s[i..j + 2].to_string();
+        return Some((
+            Inline::Link {
+                url: crate::projection::Url::BlockRef { v: inner },
+                label: vec![],
+                full,
+                image: false,
+                metadata: String::new(),
+                title: None,
+            },
+            j + 2,
+        ));
+    }
+    None
+}
+
+/// `[` bracket dispatch — v1 try_bracket: hiccup → org_link_1 → nested → org_link_2 (page-ref)
+/// → inactive timestamp → footnote. Maps + cursors mirror md's `[[…]]` linearity devices.
+#[allow(clippy::too_many_arguments)]
+fn try_bracket_at(
+    s: &str,
+    bb: &[u8],
+    off: usize,
+    ctx: Ctx,
+    hiccup_close: &std::collections::HashMap<usize, usize>,
+    nested_close: &std::collections::HashMap<usize, usize>,
+    real_dbl: &[usize],
+    real_dbl_cur: &mut usize,
+    crlf: &mut usize,
+    rb_lb_present: bool,
+) -> Option<(Inline, usize)> {
+    if ctx.hiccup && bb.get(off + 1) == Some(&b':') && crate::inline::hiccup_head_ok(s, off) {
+        if let Some(&end) = hiccup_close.get(&off) {
+            return Some((Inline::Hiccup { v: s[off..end].to_string() }, end));
+        }
+    }
+    if s[off..].starts_with("[[") {
+        if rb_lb_present {
+            if let Some((end, node)) = org_link_1_at(s, bb, off) {
+                return Some((node, end));
+            }
+        }
+        if nested_close.contains_key(&off) {
+            if let Some((end, content)) = crate::inline::parse_nested_link(s, off) {
+                return Some((Inline::NestedLink { content }, end));
+            }
+        }
+        while real_dbl.get(*real_dbl_cur).is_some_and(|&p| p < off + 2) {
+            *real_dbl_cur += 1;
+        }
+        if let Some(&d) = real_dbl.get(*real_dbl_cur) {
+            if off > *crlf {
+                *crlf = first_crlf(bb, off);
+            }
+            if d > off + 2 && *crlf > d {
+                if let Some((end, node)) = org_link_2_at(s, bb, off) {
+                    return Some((node, end));
+                }
+            }
+        }
+    }
+    if ctx.timestamps {
+        if let Some((end, node)) = org_inactive_ts_at(s, bb, off) {
+            return Some((node, end));
+        }
+    }
+    if ctx.footnotes {
+        if let Some((end, name)) = org_footnote_at(s, off) {
+            return Some((Inline::Fnref { name }, end));
+        }
+    }
+    None
+}
+
+/// `[[url][label]]` — v1 org_link_1.
+fn org_link_1_at(s: &str, bb: &[u8], at: usize) -> Option<(usize, Inline)> {
+    let n = bb.len();
+    let url_start = at + 2;
+    let mut j = url_start;
+    while j < n {
+        let c = bb[j];
+        if c == b'\n' || c == b'\r' {
+            return None;
+        }
+        if c == b'\\' && j + 1 < n {
+            j += 1 + char_len(bb[j + 1]);
+            continue;
+        }
+        if c == b']' {
+            break;
+        }
+        j += char_len(c);
+    }
+    if !s[j..].starts_with("][") {
+        return None;
+    }
+    let url_text = s[url_start..j].to_string();
+    let label_start = j + 2;
+    let close = find_org_label_end(bb, label_start)?;
+    let label_text = s[label_start..close].to_string();
+    let mut end = close + 2;
+    let metadata = read_metadata(s, bb, &mut end);
+    let url = crate::org::classify_org_link_1(&url_text, &label_text);
+    let label = parse_ctx(&label_text, Ctx::label());
+    let label_first = match label.first() {
+        Some(Inline::Plain { text }) => text.clone(),
+        _ => String::new(),
+    };
+    let full = format!("[[{}][{}]]{}", url_text, label_first, metadata);
+    Some((end, Inline::Link { url, label, full, image: false, metadata, title: None }))
+}
+
+/// `[[url]]` — v1 org_link_2 (single `]` allowed, non-empty, no eol).
+fn org_link_2_at(s: &str, bb: &[u8], at: usize) -> Option<(usize, Inline)> {
+    let n = bb.len();
+    let name_start = at + 2;
+    let mut j = name_start;
+    while j < n {
+        let c = bb[j];
+        if c == b'\n' || c == b'\r' {
+            return None;
+        }
+        if c == b'\\' && j + 1 < n {
+            j += 1 + char_len(bb[j + 1]);
+            continue;
+        }
+        if c == b']' {
+            if j + 1 < n && bb[j + 1] == b']' {
+                break;
+            }
+            j += 1;
+            continue;
+        }
+        j += char_len(c);
+    }
+    if j + 1 >= n || bb[j] != b']' || bb[j + 1] != b']' || j == name_start {
+        return None;
+    }
+    let name = s[name_start..j].to_string();
+    let url = crate::org::classify_org_link_2(&name);
+    let full = format!("[[{}]]", name);
+    let label = match &url {
+        crate::projection::Url::PageRef { .. } => vec![],
+        _ => vec![Inline::Plain { text: name.clone() }],
+    };
+    Some((j + 2, Inline::Link { url, label, full, image: false, metadata: String::new(), title: None }))
+}
+
+/// Closing `]]` of an org-link label, balancing single `[ ]` pairs — v1 find_org_label_end.
+fn find_org_label_end(bb: &[u8], start: usize) -> Option<usize> {
+    let n = bb.len();
+    let mut j = start;
+    let mut depth: i32 = 0;
+    while j < n {
+        let c = bb[j];
+        if c == b'\n' || c == b'\r' {
+            return None;
+        }
+        if c == b'\\' && j + 1 < n {
+            j += 1 + char_len(bb[j + 1]);
+            continue;
+        }
+        if c == b']' {
+            if depth == 0 {
+                if j + 1 < n && bb[j + 1] == b']' {
+                    return Some(j);
+                }
+                return None;
+            }
+            depth -= 1;
+            j += 1;
+            continue;
+        }
+        if c == b'[' {
+            depth += 1;
+            j += 1;
+            continue;
+        }
+        j += char_len(c);
+    }
+    None
+}
+
+/// Optional `{ … }` metadata after a link; advances `end` and returns it (incl. braces) or "".
+fn read_metadata(s: &str, bb: &[u8], end: &mut usize) -> String {
+    if bb.get(*end) == Some(&b'{') {
+        if let Some(close) = crate::inline::find_sub_line(bb, *end + 1, b"}") {
+            let meta = s[*end..close + 1].to_string();
+            *end = close + 1;
+            return meta;
+        }
+    }
+    String::new()
+}
+
+/// `[date]` / `[date]--[date]` inactive timestamp — v1 org_inactive_timestamp.
+fn org_inactive_ts_at(s: &str, bb: &[u8], i: usize) -> Option<(usize, Inline)> {
+    if !bb.get(i + 1).is_some_and(|c| c.is_ascii_digit() || c.is_ascii_whitespace()) {
+        return None;
+    }
+    let (end1, ts1) = crate::inline::parse_bracket_date(s, i, b'[', b']')?;
+    if s[end1..].starts_with("--") {
+        if let Some((end2, ts2)) = crate::inline::parse_bracket_date(s, end1 + 2, b'[', b']') {
+            let val = serde_json::json!({ "start": ts1, "stop": ts2 });
+            return Some((end2, Inline::Timestamp { ts: "Range".to_string(), date: val }));
+        }
+    }
+    Some((end1, Inline::Timestamp { ts: "Date".to_string(), date: ts1 }))
+}
+
+/// `[fn:name]` / `[fn:name:def]` / `[fn::def]` → name — v1 org_footnote_ref.
+fn org_footnote_at(s: &str, i: usize) -> Option<(usize, String)> {
+    let rest = s[i..].strip_prefix("[fn:")?;
+    let rb = rest.as_bytes();
+    let mut j = 0;
+    while j < rb.len() && rb[j] != b':' && rb[j] != b']' && rb[j] != b'\n' && rb[j] != b'\r' {
+        j += 1;
+    }
+    let name = rest[..j].to_string();
+    let after = &rest[j..];
+    let close = after.find(']')?;
+    if after[..close].contains('\n') || after[..close].contains('\r') {
+        return None;
+    }
+    Some((i + 4 + j + close + 1, name))
+}
+
+/// First byte `c` at/after `from`, else `bb.len()` (monotone-cursor helper).
+fn first_byte(bb: &[u8], from: usize, c: u8) -> usize {
+    let mut p = from;
+    while p < bb.len() && bb[p] != c {
+        p += 1;
+    }
+    p
+}
+
+/// First `a b` 2-byte sequence at/after `from`, else `bb.len()` (monotone).
+fn first_seq(bb: &[u8], a: u8, b: u8, from: usize) -> usize {
+    let mut p = from;
+    while p + 1 < bb.len() && !(bb[p] == a && bb[p + 1] == b) {
+        p += 1;
+    }
+    if p + 1 < bb.len() {
+        p
+    } else {
+        bb.len()
+    }
+}
+
+/// First `\n`/`\r` at/after `from`, else `bb.len()` (page-ref eol boundary).
+fn first_crlf(bb: &[u8], from: usize) -> usize {
+    let mut p = from;
+    while p < bb.len() && bb[p] != b'\n' && bb[p] != b'\r' {
+        p += 1;
+    }
+    p
 }
 
 #[cfg(test)]
@@ -691,5 +1242,21 @@ mod tests {
         }
         rec(&alpha, &mut buf, 0, &mut diffs);
         assert_eq!(diffs, 0, "{diffs} divergences");
+    }
+
+    /// M6 leaves: every Org leaf / bracket family + the swallow/fresh interactions.
+    #[test]
+    fn org_v2_matches_v1_m6_leaves() {
+        const TOKENS: &[&str] = &[
+            "a", "b", " ", "\n", "x", "word", ".", ",",
+            "*b*", "/i/", "_u_", "^^h^^", "_{s}", "^{s}",
+            "#tag", "$x$", "$$d$$", "~code~", "=verb=", "<<tg>>",
+            "{{m}}", "{{{q}}}", "((11111111-1111-1111-1111-111111111111))",
+            "[[Foo]]", "[[u][l]]", "[:div ]", "[fn:1]", "[2024-01-01 Mon]",
+            "<https://z.io>", "<a@b.com>", "<2026-06-20 Sat>", "<div>", "</div>",
+            "SCHEDULED: <2004-12-25 Sat>", "http://x.com/a", "\\,", "\\Delta", "\\(e\\)",
+            "~", "=", "<", "{", "(", "[", "]", ")", "}", ">", "!",
+        ];
+        assert_eq!(diff_count(TOKENS, 600_000, 0x10F6), 0);
     }
 }

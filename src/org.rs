@@ -2610,7 +2610,7 @@ fn run_len(b: &[u8], pos: usize, c: u8) -> usize {
 
 /// `<scheme:rest>` autolink (mldoc `quick_link`): scheme letters/digits, `:`, optional
 /// `//`, then non-space rest; ANY `:` makes it a link (so `<a:b>` works).
-fn parse_org_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
+pub(crate) fn parse_org_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
     let b = s.as_bytes();
     let n = b.len();
     if b.get(at) != Some(&b'<') {
@@ -2654,7 +2654,7 @@ fn parse_org_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
 /// Classify an `[[url][label]]` destination (mldoc `org_link_1`): `file:` → File;
 /// empty label → Search; `proto:link` (single colon, strip leading `//`) → Complex;
 /// else Search.
-fn classify_org_link_1(url_text: &str, label_text: &str) -> Url {
+pub(crate) fn classify_org_link_1(url_text: &str, label_text: &str) -> Url {
     if url_text.len() > 5 && url_text.starts_with("file:") {
         return Url::File { v: url_text.to_string() };
     }
@@ -2676,7 +2676,7 @@ fn classify_org_link_1(url_text: &str, label_text: &str) -> Url {
 
 /// Classify a `[[url]]` destination (mldoc `org_link_2`): `file:` → File;
 /// `proto://link` → Complex; else Page_ref.
-fn classify_org_link_2(name: &str) -> Url {
+pub(crate) fn classify_org_link_2(name: &str) -> Url {
     if name.len() > 5 && name.starts_with("file:") {
         return Url::File { v: name.to_string() };
     }
