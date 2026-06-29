@@ -206,6 +206,12 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         // R2-P5: hiccup `[:div `×n + a single trailing `]` defeated the rbracket caches.
         ("md_hiccup_present", false, 25_000, |n| "[:div ".repeat(n) + "]"),
         ("org_hiccup_present", true, 25_000, |n| "[:div ".repeat(n) + "]"),
+        // Nested-emphasis reparse guard (design-review concern): content is re-scanned on a
+        // shrinking substring. mldoc's first-valid-closer pairs the NEAREST closer, so nesting
+        // depth is bounded (~5 distinct markers) → this is O(n), measured ≈2×/doubling. The
+        // probe locks that in so the lexer/resolver rewrite can't reintroduce O(n²) here.
+        ("md_emph_alt", false, 25_000, |n| "*_".repeat(n) + "x" + &"_*".repeat(n)),
+        ("org_emph_alt", true, 25_000, |n| "*/".repeat(n) + "x" + &"/*".repeat(n)),
     ]
 }
 
