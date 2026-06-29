@@ -1621,6 +1621,14 @@ struct OrgScanner<'a> {
     /// Empty unless `ctx.hiccup` and the text contains a `[`. Replaces the per-opener
     /// balanced re-scan so an inline `[:tag `… run is linear — see `build_hiccup_close`.
     hiccup_close: std::collections::HashMap<usize, usize>,
+    /// `[[`…`]]` balance map (escape-free) — gates nested-link (shared with md).
+    nested_close: std::collections::HashMap<usize, usize>,
+    /// Sorted escape-aware real-`]]` positions — `org_link_2` (page-ref) closer index,
+    /// consumed via `real_dbl_cur`. Both empty unless the text contains a `[`.
+    real_dbl: Vec<usize>,
+    real_dbl_cur: usize,
+    /// Monotone cache of the next `\n`/`\r` at/after `self.i` (page-ref eol boundary).
+    crlf_pos: Option<usize>,
 }
 
 impl<'a> OrgScanner<'a> {
@@ -1643,6 +1651,42 @@ impl<'a> OrgScanner<'a> {
             } else {
                 std::collections::HashMap::new()
             },
+            nested_close: if s.as_bytes().contains(&b'[') {
+                crate::inline::build_nested_close(s)
+            } else {
+                std::collections::HashMap::new()
+            },
+            real_dbl: if s.as_bytes().contains(&b'[') {
+                crate::inline::build_real_dbl(s)
+            } else {
+                Vec::new()
+            },
+            real_dbl_cur: 0,
+            crlf_pos: None,
+        }
+    }
+
+    /// First escape-aware real `]]` at/after `from` (monotone cursor; `from` is
+    /// non-decreasing across dispatches because `self.i` only advances).
+    fn next_real_dbl(&mut self, from: usize) -> Option<usize> {
+        while self.real_dbl.get(self.real_dbl_cur).is_some_and(|&p| p < from) {
+            self.real_dbl_cur += 1;
+        }
+        self.real_dbl.get(self.real_dbl_cur).copied()
+    }
+
+    /// First `\n`/`\r` at/after `self.i`, or `self.n` if none (page-ref eol boundary).
+    fn next_crlf(&mut self) -> usize {
+        match self.crlf_pos {
+            Some(p) if self.i <= p => p,
+            _ => {
+                let mut p = self.i;
+                while p < self.n && self.b[p] != b'\n' && self.b[p] != b'\r' {
+                    p += 1;
+                }
+                self.crlf_pos = Some(p);
+                p
+            }
         }
     }
 
@@ -2271,16 +2315,23 @@ impl<'a> OrgScanner<'a> {
                     return true;
                 }
             }
-            if self.seq_present(*b"]]") {
+            // nested-link gated by the escape-free balance map; org page-ref `[[name]]`
+            // closer-driven by the escape-aware real-`]]` index + next-eol — neither
+            // fail-scans per opener (kills `org_pageref_nl`).
+            if self.nested_close.contains_key(&self.i) {
                 if let Some((end, content)) = parse_nested_link(self.s, self.i) {
                     self.push(Inline::NestedLink { content });
                     self.i = end;
                     return true;
                 }
-                if let Some((end, node)) = self.org_link_2() {
-                    self.push(node);
-                    self.i = end;
-                    return true;
+            }
+            if let Some(d) = self.next_real_dbl(self.i + 2) {
+                if d > self.i + 2 && self.next_crlf() > d {
+                    if let Some((end, node)) = self.org_link_2() {
+                        self.push(node);
+                        self.i = end;
+                        return true;
+                    }
                 }
             }
         }
