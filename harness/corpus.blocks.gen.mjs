@@ -321,6 +321,15 @@ add("c7-hiccup", "[:div]\n\n# h");                 // absorb then heading
 add("c7-hiccup", "* [:div]x");                     // list item content [Hiccup, Para x]
 add("c7-hiccup", "* a [:div] b");                  // list item inline hiccup
 
+// fence/container STRADDLE: a ``` inside a callout/drawer body must NOT pair with a ```
+// outside it (the v0.1.3 global-pair_fences bug: `quote, paragraph` instead of `quote, src`).
+// On-demand context-aware fence pairing (the block rewrite) fixes this.
+add("fence-straddle", "#+BEGIN_QUOTE\n```\n#+END_QUOTE\n```\nx\n```");   // quote, src
+add("fence-straddle", ":LOGBOOK:\n```\n:END:\n```\ny\n```");            // drawer, src
+add("fence-straddle", "#+BEGIN_NOTE\n```\n#+END_NOTE\n```\nz\n```");    // custom callout, src
+add("fence-straddle", "```\n#+BEGIN_QUOTE\n```\n#+END_QUOTE");          // src(body has #+BEGIN), then para
+add("fence-straddle", "#+BEGIN_QUOTE\n```\n```\n#+END_QUOTE\n```\nx\n```"); // quote[src], then src
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

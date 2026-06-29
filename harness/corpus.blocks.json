@@ -1218,5 +1218,30 @@
   "id": "b243",
   "cat": "c7-hiccup",
   "input": "* a [:div] b"
+ },
+ {
+  "id": "b244",
+  "cat": "fence-straddle",
+  "input": "#+BEGIN_QUOTE\n```\n#+END_QUOTE\n```\nx\n```"
+ },
+ {
+  "id": "b245",
+  "cat": "fence-straddle",
+  "input": ":LOGBOOK:\n```\n:END:\n```\ny\n```"
+ },
+ {
+  "id": "b246",
+  "cat": "fence-straddle",
+  "input": "#+BEGIN_NOTE\n```\n#+END_NOTE\n```\nz\n```"
+ },
+ {
+  "id": "b247",
+  "cat": "fence-straddle",
+  "input": "```\n#+BEGIN_QUOTE\n```\n#+END_QUOTE"
+ },
+ {
+  "id": "b248",
+  "cat": "fence-straddle",
+  "input": "#+BEGIN_QUOTE\n```\n```\n#+END_QUOTE\n```\nx\n```"
  }
 ]

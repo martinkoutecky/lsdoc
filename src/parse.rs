@@ -6,9 +6,12 @@
 //! is `block-struct` (kind/level/nesting/properties), which ignores inline content
 //! and spans.
 //!
-//! Complexity: O(n). Each line is classified in O(line length); fenced code
-//! regions are pre-paired in a single forward pass (see `pair_fences`) so an
-//! unclosed/￼adversarial run of ``` markers can't trigger O(n²) re-scanning.
+//! Complexity: O(n·log n). Each line is classified in O(line length); container
+//! closers (fences, `#+END_…`, `:END:`) are found ON-DEMAND at the dispatch point
+//! via per-construct sorted closer-line indexes (`partition_point` ⇒ O(log n), never
+//! an EOF re-scan), so an unclosed/adversarial run of openers can't trigger O(n²).
+//! On-demand finding is also context-aware: a fence/closer inside a callout or drawer
+//! body (which the main loop jumps past) can never pair with one outside it.
 //!
 //! mldoc quirks replicated (see DECISIONS.md / the block probe):
 //! - only `-` bullets become `Bullet` (mldoc `Heading{unordered}`); `*`/`+` and
@@ -43,7 +46,6 @@ pub fn parse(input: &str) -> Vec<Block> {
     // `[:tag …]` needs a closing `]`, so a line whose `[:` begins at/after this is skipped
     // O(1) — keeping a run of unclosed `[:` block lines linear (see step 11d').
     let last_rbracket = input.rfind(']');
-    let fences = pair_fences(&lines); // open-line-idx -> (close-line-idx, lang)
     // Sparse, sorted closer-line INDEXES so a callout/drawer/dash-fence opener finds
     // its matching closer by binary-searching only candidate lines, never an EOF
     // re-scan per opener (kills the O(n²) class — audit R2-P4/P6). Exact mldoc
@@ -79,28 +81,35 @@ pub fn parse(input: &str) -> Vec<Block> {
         let line_start = lines[i].start;
         let line_end = lines[i].end;
 
-        // 1. fenced code (Src) — pre-paired, so this is the open line.
-        if let Some((close, lang)) = fences.get(&i) {
-            flush_para(&mut out, &mut para, input);
-            let code = if *close > i + 1 {
-                input[lines[i + 1].start..lines[*close - 1].end].to_string()
-            } else {
-                String::new()
-            };
-            i = *close + 1;
-            // mldoc's Src swallows trailing blank lines (so they don't become a
-            // leading break on the following paragraph). Spans are not compared.
-            let mut end = lines[*close].end;
-            while i < lines.len() && lines[i].text.is_empty() {
-                end = lines[i].end;
-                i += 1;
+        // 1. fenced code (Src) — ON-DEMAND, context-aware. A fence-marker line the main
+        // loop REACHES is an opener at THIS level (callout/drawer/latex bodies are jumped
+        // past, so a reached fence is never body content). Its closer = the first
+        // same-char whole-line fence marker after it (`find_matching_fence`). This is
+        // context-correct, unlike a global greedy pre-pass which would pair a fence
+        // *inside* a callout/drawer body with one *outside* it (the straddle bug:
+        // `#+BEGIN_QUOTE\n```\n#+END_QUOTE\n```\nx\n``` ` is `quote, src`, not `quote, para`).
+        // An unclosed fence falls through to paragraph.
+        if let Some((c, mend)) = fence_marker(t) {
+            if let Some(close) = find_matching_fence(&fence_line_idxs, i, c) {
+                flush_para(&mut out, &mut para, input);
+                let lang = fence_lang(&t[mend..]);
+                let code = if close > i + 1 {
+                    input[lines[i + 1].start..lines[close - 1].end].to_string()
+                } else {
+                    String::new()
+                };
+                i = close + 1;
+                // mldoc's Src swallows trailing blank lines (so they don't become a
+                // leading break on the following paragraph). Spans are not compared.
+                let mut end = lines[close].end;
+                while i < lines.len() && lines[i].text.is_empty() {
+                    end = lines[i].end;
+                    i += 1;
+                }
+                out.push(Block::Src { lang, code, span: Some(Span(line_start, end)) });
+                continue;
             }
-            out.push(Block::Src {
-                lang: lang.clone(),
-                code,
-                span: Some(Span(line_start, end)),
-            });
-            continue;
+            // unclosed fence → fall through (treat as paragraph text).
         }
 
         // 2. callout #+BEGIN_X … #+END_X
@@ -761,31 +770,6 @@ fn split_lines(input: &str) -> Vec<Line<'_>> {
     lines
 }
 
-/// Greedy left-to-right pairing of fenced code markers in one pass → O(n).
-/// Returns open-line-idx -> (close-line-idx, language). Unpaired markers are not
-/// fences (so an unclosed fence falls through to paragraph text).
-fn pair_fences(lines: &[Line]) -> HashMap<usize, (usize, String)> {
-    let mut out = HashMap::new();
-    let mut open: Option<(usize, u8)> = None;
-    for (idx, l) in lines.iter().enumerate() {
-        if let Some((c, _len)) = fence_marker(l.text) {
-            match open {
-                None => open = Some((idx, c)),
-                Some((oidx, oc)) => {
-                    if c == oc {
-                        let (_, mend) = fence_marker(lines[oidx].text).unwrap();
-                        let lang = fence_lang(&lines[oidx].text[mend..]);
-                        out.insert(oidx, (idx, lang));
-                        open = None;
-                    }
-                    // different marker while open → it's code content, ignore.
-                }
-            }
-        }
-    }
-    out
-}
-
 /// Language of a fence from its info string (the text after the ``` run): mldoc's
 /// `language` is the FIRST whitespace-delimited token (`clj :results` → `clj`, the
 /// `:results` is a separate `options` field we don't model).
@@ -793,9 +777,11 @@ fn fence_lang(info: &str) -> String {
     info.split_whitespace().next().unwrap_or("").to_string()
 }
 
-/// First fence-marker line of char `fchar` after `from`, via the precomputed per-char
-/// sorted index (binary search ⇒ O(log n), never an EOF re-scan). Used for a fence opened
-/// *on a `-` bullet line* (whose opener isn't seen by `pair_fences`).
+/// First whole-line fence-marker of char `fchar` strictly after `from`, via the
+/// per-char sorted index (`partition_point` ⇒ O(log n), never an EOF re-scan). The
+/// single closer-finder for BOTH a top-level fence opener (step 1) and one opened on a
+/// `-` bullet line (step 5a): on-demand at the dispatch point, so it is context-aware
+/// (it can never pair across a callout/drawer body the main loop already jumped past).
 fn find_matching_fence(
     fence_line_idxs: &HashMap<u8, Vec<usize>>,
     from: usize,
