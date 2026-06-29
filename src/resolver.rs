@@ -24,16 +24,51 @@ pub(crate) struct Ctx {
     pub hiccup: bool,
     pub footnotes: bool,
     pub images: bool,
+    pub latex: bool,
+    pub tags: bool,
+    pub macros: bool,
+    pub block_refs: bool,
+    pub urls: bool,
+    pub timestamps: bool,
+    pub autolinks: bool,
+    pub html: bool,
 }
 
 impl Ctx {
     pub(crate) fn top() -> Ctx {
-        Ctx { breaks: true, hiccup: true, footnotes: true, images: true }
+        Ctx {
+            breaks: true,
+            hiccup: true,
+            footnotes: true,
+            images: true,
+            latex: true,
+            tags: true,
+            macros: true,
+            block_refs: true,
+            urls: true,
+            timestamps: true,
+            autolinks: true,
+            html: true,
+        }
     }
     /// Restricted emphasis-content context (mldoc `aux_nested_emphasis`): breaks become
-    /// literal; tags/macros/latex/images/hiccup/footnotes/… off; links/code/emphasis on.
+    /// literal; tags/macros/latex/images/hiccup/footnotes/block-refs off; links/code/
+    /// emphasis on.
     fn emph() -> Ctx {
-        Ctx { breaks: false, hiccup: false, footnotes: false, images: false }
+        Ctx {
+            breaks: false,
+            hiccup: false,
+            footnotes: false,
+            images: false,
+            latex: false,
+            tags: false,
+            macros: false,
+            block_refs: false,
+            urls: false,
+            timestamps: false,
+            autolinks: false,
+            html: false,
+        }
     }
 }
 
@@ -98,6 +133,11 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
     let mut lbp_cur = 0usize;
     let mut crlf = first_crlf(bb, 0);
     let mut rparen = first_byte(bb, 0, b')');
+    // monotone next-`</` (inline-html name-keyed closer floor: a `<tag>`×n run stays linear).
+    let mut lt_slash = first_seq(bb, b'<', b'/', 0);
+    // monotone next-`\)` / `\]` (latex-backslash closer floors: a `\(`×n run stays linear).
+    let mut bs_paren = first_seq(bb, b'\\', b')', 0);
+    let mut bs_brack = first_seq(bb, b'\\', b']', 0);
 
     // `fresh` = at a fresh dispatch point (BOL, or after ws / a marker-delim / a construct /
     // a Break). A SWALLOW opener (`! ( { <`) tries its construct only when `fresh`; mid-plain-
@@ -173,13 +213,87 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 }
             }
             match end {
-                Some(e) => t = resync(toks, t, e),
+                Some(e) => t = resync(s, toks, t, e, &mut pending, &mut fresh),
                 None => {
                     pending.push('[');
                     t += 1;
+                    fresh = true; // `[` is a marker-delim → fresh point
                 }
             }
-            fresh = true; // `[` is a marker-delim; a construct end is also a fresh point
+            continue;
+        }
+
+        // `$` latex / `#` tag — marker-delim openers: a single literal char on failure.
+        let md_open = match &toks[t].kind {
+            Kind::Punct(c @ (b'$' | b'#')) => Some(*c),
+            _ => None,
+        };
+        if let Some(c) = md_open {
+            let off = toks[t].off;
+            let mut end = None;
+            if c == b'$' && ctx.latex {
+                if let Some((node, e)) = crate::inline::parse_latex_dollar_at(s, off) {
+                    flush(&mut out, &mut pending);
+                    out.push(node);
+                    end = Some(e);
+                }
+            } else if c == b'#' && ctx.tags {
+                let (e, children) = crate::inline::parse_tag_name(s, off + 1, true);
+                if e > off + 1 && !children.is_empty() {
+                    flush(&mut out, &mut pending);
+                    out.push(Inline::Tag { children });
+                    end = Some(e);
+                }
+            }
+            match end {
+                Some(e) => t = resync(s, toks, t, e, &mut pending, &mut fresh),
+                None => {
+                    pending.push(c as char);
+                    t += 1;
+                    fresh = true; // `$`/`#` are marker-delims → fresh point
+                }
+            }
+            continue;
+        }
+
+        // `\(` / `\[` latex-backslash (ctx-dependent): a Latex span when `ctx.latex` and a
+        // `\)`/`\]` closer exists ahead, else an escape (the `(`/`[` literal). The monotone
+        // closer floor keeps a `\(`×n run linear.
+        let latex_bs = match &toks[t].kind {
+            Kind::LatexBs(c) => Some(*c),
+            _ => None,
+        };
+        if let Some(c) = latex_bs {
+            let off = toks[t].off;
+            let mut end = None;
+            if ctx.latex {
+                let closer = if c == b'(' {
+                    if off > bs_paren {
+                        bs_paren = first_seq(bb, b'\\', b')', off);
+                    }
+                    bs_paren < bb.len()
+                } else {
+                    if off > bs_brack {
+                        bs_brack = first_seq(bb, b'\\', b']', off);
+                    }
+                    bs_brack < bb.len()
+                };
+                if closer {
+                    if let Some((node, e)) = crate::inline::parse_latex_backslash_at(s, off) {
+                        flush(&mut out, &mut pending);
+                        out.push(node);
+                        end = Some(e);
+                    }
+                }
+            }
+            match end {
+                Some(e) => t = resync(s, toks, t, e, &mut pending, &mut fresh),
+                None => {
+                    pending.push(c as char); // escape: drop `\`, keep `(`/`[`
+                    t += 1;
+                    fresh = true;
+                }
+            }
             continue;
         }
 
@@ -193,15 +307,27 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
         };
         if let Some(c) = swallow {
             let off = toks[t].off;
-            // Opener construct, only at a fresh dispatch point (M2b: `!` image; M3: `( { <`).
-            if fresh && c == b'!' && ctx.images && bb.get(off + 1) == Some(&b'[') {
-                if let Some((node, e)) =
-                    try_md_link(s, bb, off + 1, true, &lbp, &mut lbp_cur, &mut crlf, &mut rparen)
-                {
+            // Opener construct, only at a fresh dispatch point. `!` image, `{` macro, `(`
+            // block-ref (M3); `<` angle constructs land in M3b. `] ) } >` never open.
+            if fresh {
+                let opened = match c {
+                    b'!' if ctx.images && bb.get(off + 1) == Some(&b'[') => {
+                        try_md_link(s, bb, off + 1, true, &lbp, &mut lbp_cur, &mut crlf, &mut rparen)
+                    }
+                    b'{' if ctx.macros => crate::inline::parse_macro_at(s, off),
+                    b'(' if ctx.block_refs => crate::inline::parse_block_ref_at(s, off),
+                    b'<' if ctx.autolinks || ctx.timestamps || ctx.html => {
+                        if off > lt_slash {
+                            lt_slash = first_seq(bb, b'<', b'/', off);
+                        }
+                        try_angle(s, off, ctx, lt_slash < bb.len())
+                    }
+                    _ => None,
+                };
+                if let Some((node, e)) = opened {
                     flush(&mut out, &mut pending);
                     out.push(node);
-                    t = resync(toks, t, e);
-                    fresh = true;
+                    t = resync(s, toks, t, e, &mut pending, &mut fresh);
                     continue;
                 }
             }
@@ -209,6 +335,34 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
             // a following swallow byte won't be re-dispatched.
             pending.push(c as char);
             fresh = false;
+            t += 1;
+            continue;
+        }
+
+        // Text — at a fresh dispatch point try the no-opener leaves (keyword timestamp then
+        // bare URL), exactly where mldoc's default arm does; otherwise plain.
+        if let Kind::Text(_) = &toks[t].kind {
+            let off = toks[t].off;
+            if fresh {
+                let leaf = (if ctx.timestamps {
+                    crate::inline::parse_keyword_timestamp(s, off)
+                } else {
+                    None
+                })
+                .or_else(|| if ctx.urls { crate::inline::parse_bare_url(s, off) } else { None });
+                if let Some((e, node)) = leaf {
+                    flush(&mut out, &mut pending);
+                    out.push(node);
+                    t = resync(s, toks, t, e, &mut pending, &mut fresh);
+                    continue;
+                }
+            }
+            let txt = match &toks[t].kind {
+                Kind::Text(x) => x,
+                _ => unreachable!(),
+            };
+            pending.push_str(txt);
+            fresh = trailing_ws(txt) > 0;
             t += 1;
             continue;
         }
@@ -244,12 +398,19 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                     out.push(node.clone());
                     fresh = true;
                 }
+                // resolved escape / lone `\` / unknown entity letters — the position right
+                // after is a fresh dispatch point in mldoc.
+                Kind::Escape(x) => {
+                    pending.push_str(x);
+                    fresh = true;
+                }
                 // `$`/`#` (M3 markers) render literally for now; they are marker-delims → fresh.
                 Kind::Punct(c) => {
                     pending.push(*c as char);
                     fresh = true;
                 }
-                Kind::Delim { .. } => unreachable!(),
+                // Text/Delim/LatexBs are handled by dedicated blocks above.
+                Kind::Text(_) | Kind::Delim { .. } | Kind::LatexBs(_) => unreachable!(),
             }
             t += 1;
             continue;
@@ -378,11 +539,39 @@ fn first_crlf(bb: &[u8], from: usize) -> usize {
     p
 }
 
-/// After consuming a construct's byte extent `[_, end)`, advance the token cursor to the
-/// first token at/after `end` (the leftmost-greedy resync — interior tokens are discarded).
-fn resync(toks: &[Token], mut t: usize, end: usize) -> usize {
-    while t < toks.len() && toks[t].off < end {
+/// After consuming a construct's byte extent `[_, end)`, advance the token cursor past it
+/// (leftmost-greedy resync — interior tokens discarded). Most constructs end at a clean
+/// token boundary; tag / bare-url end mid-Text (at a ws / tag-delim), so when `end` lands
+/// strictly inside a straddling Text token, re-lex its tail `s[end..token_end]` (re-resolving
+/// escapes) into `pending`. (`end` never lands inside a Punct/Delim/Leaf token.)
+fn resync(
+    s: &str,
+    toks: &[Token],
+    mut t: usize,
+    end: usize,
+    pending: &mut String,
+    fresh: &mut bool,
+) -> usize {
+    let n = s.len();
+    let tok_end = |i: usize| if i + 1 < toks.len() { toks[i + 1].off } else { n };
+    while t < toks.len() && tok_end(t) <= end {
         t += 1;
+    }
+    if t < toks.len() && toks[t].off < end {
+        // mid-Text tail (tag / bare-url end): re-lex it and carry its trailing-ws into `fresh`.
+        let mut tail = String::new();
+        for tk in lex(&s[end..tok_end(t)]) {
+            match tk.kind {
+                Kind::Text(x) | Kind::Escape(x) => tail.push_str(&x),
+                _ => {}
+            }
+        }
+        *fresh = trailing_ws(&tail) > 0;
+        pending.push_str(&tail);
+        t += 1;
+    } else {
+        // clean construct end → fresh dispatch point.
+        *fresh = true;
     }
     t
 }
@@ -394,6 +583,33 @@ fn is_swallow_byte(c: u8) -> bool {
     matches!(c, b'!' | b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b']')
 }
 
+/// `<…>` angle dispatch (mldoc try_angle order): autolink → timestamp → email → inline-html.
+/// `html_closer` says whether a `</` exists ahead (so the name-keyed closer scan can be
+/// skipped — the by-construction floor that keeps a `<tag>`×n run linear).
+fn try_angle(s: &str, at: usize, ctx: Ctx, html_closer: bool) -> Option<(Inline, usize)> {
+    if ctx.autolinks {
+        if let Some((e, node)) = crate::inline::parse_autolink(s, at) {
+            return Some((node, e));
+        }
+    }
+    if ctx.timestamps {
+        if let Some((e, node)) = crate::inline::parse_angle_timestamp(s, at) {
+            return Some((node, e));
+        }
+    }
+    if ctx.autolinks {
+        if let Some((e, node)) = crate::inline::parse_email_autolink(s, at) {
+            return Some((node, e));
+        }
+    }
+    if ctx.html {
+        if let Some((e, text)) = crate::inline::parse_inline_html_cached(s, at, html_closer) {
+            return Some((Inline::InlineHtml { text }, e));
+        }
+    }
+    None
+}
+
 /// First byte `c` at/after `from`, or `bb.len()` if none (monotone-cursor helper).
 fn first_byte(bb: &[u8], from: usize, c: u8) -> usize {
     let mut p = from;
@@ -401,6 +617,19 @@ fn first_byte(bb: &[u8], from: usize, c: u8) -> usize {
         p += 1;
     }
     p
+}
+
+/// First position of the 2-byte sequence `a b` at/after `from`, or `bb.len()` (monotone).
+fn first_seq(bb: &[u8], a: u8, b: u8, from: usize) -> usize {
+    let mut p = from;
+    while p + 1 < bb.len() && !(bb[p] == a && bb[p + 1] == b) {
+        p += 1;
+    }
+    if p + 1 < bb.len() {
+        p
+    } else {
+        bb.len()
+    }
 }
 
 /// Sorted positions of the 2-byte sequence `a b` in `bb` (e.g. `](` for markdown links).
@@ -527,6 +756,53 @@ mod tests {
             "[[Foo]]", "[[a[[b]]c]]", "[", "]", "[[", "]]", "!", "*", "**", "_", "`co`",
         ];
         assert_eq!(diff_count(TOKENS, 500_000, 0x9F_3C_05), 0);
+    }
+
+    /// M3a: `$` latex / `#` tag / `{{ }}` macro / `(( ))` block-ref + earlier families.
+    /// NO `<` (angle) / `\(` (latex-backslash) / bare-url — those are M3b.
+    #[test]
+    fn v2_matches_v1_m3a_leaves() {
+        const TOKENS: &[&str] = &[
+            "a", "b", " ", "\n", "word", "x",
+            "$x$", "$$y$$", "$e=mc^2$", "$ a$", "$",
+            "#tag", "#a.b", "#[[a b]]", "#", "c#s",
+            "{{x}}", "{{embed [[Foo]]}}", "{{{x}}}", "{{",
+            "((11111111-1111-1111-1111-111111111111))", "((x))", "((",
+            "[a](b)", "[[Foo]]", "[:div ]", "[^1]", "!", "*", "**", "_", "~~", "`co`",
+        ];
+        assert_eq!(diff_count(TOKENS, 500_000, 0x71_2E_8A), 0);
+    }
+
+    /// M3b: latex-backslash `\(`/`\[` (whole spans) + angle `<…>` (autolink/email/timestamp/
+    /// html). KNOWN-DEFERRED (review Finding #3, escape-locality): a STANDALONE escape `\X`
+    /// abutting a tag/url/latex-closer is pre-resolved into an `Escape` token by the lexer,
+    /// but mldoc interprets `\` construct-locally (raw inside a tag, the latex closer for
+    /// `\]`). That conflict is a contrived `\`-adjacency the realistic corpus never produces;
+    /// it's audited at M4 against the node gate (and fixed there if real). So no standalone
+    /// escapes / bare-urls here.
+    #[test]
+    fn v2_matches_v1_m3b_latex_angle() {
+        const TOKENS: &[&str] = &[
+            "a", "b", " ", "\n", "word", "x",
+            "\\(e=mc^2\\)", "\\[x\\]",
+            "<https://z.io>", "<a@b.com>", "<2026-06-20 Sat>", "<div>", "</div>", "<x", ">",
+            "$x$", "#tag", "{{x}}", "((x))", "[a](b)", "[[Foo]]", "[:div ]", "*", "**", "`co`",
+        ];
+        assert_eq!(diff_count(TOKENS, 500_000, 0xB4_D2_17), 0);
+    }
+
+    /// M3c: bare-url + keyword-timestamp (the no-opener leaves) — WITHOUT backslash escapes
+    /// (see the M3b note on the contrived bare-url-ending-in-`\` straddle).
+    #[test]
+    fn v2_matches_v1_m3c_bareurl() {
+        const TOKENS: &[&str] = &[
+            "a", "b", " ", "\n", "word", "x", "see ", "(",
+            "http://x.com/a", "https://y.org/p", "ftp://h", "z://q", "x.com",
+            "SCHEDULED: <2004-12-25 Sat>", "DEADLINE: ", "CLOSED: <2026-06-26 Fri>",
+            "<2026-06-26 Fri>--<2026-06-27 Sat>", "<https://z.io>",
+            "$x$", "#tag", "{{x}}", "((x))", "[a](b)", "[[Foo]]", "*", "`co`",
+        ];
+        assert_eq!(diff_count(TOKENS, 500_000, 0x3D_8C_44), 0);
     }
 
     /// Exhaustive small enumeration: every short string over {`*`,`_`,`a`,space} — covers

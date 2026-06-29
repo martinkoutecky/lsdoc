@@ -35,10 +35,18 @@ pub(crate) enum Kind {
     Newline(u8),
     /// A fully-resolved self-contained leaf (Code, Entity) — passes straight through.
     Leaf(Inline),
+    /// A resolved escape `\X` (the literal char(s), backslash dropped) / lone `\` / an
+    /// unknown `\letters` entity (the bare letters). A SEPARATE token (not merged into Text)
+    /// because the position right after it is a FRESH dispatch point in mldoc.
+    Escape(String),
     /// An emphasis delimiter run: `len` copies of `ch` (`* _ ~ ^ =`). All flanking / empty-
     /// content / `_`-gate validity is evaluated per-pattern by the resolver against the raw
     /// bytes (it needs the char after the *k* opener markers, not the whole run).
     Delim { ch: u8, len: usize },
+    /// A latex-backslash opener `\(` / `\[` (the byte is `(` or `[`). CTX-dependent: the
+    /// resolver makes a Latex span when `ctx.latex` + a closer exists, else an escape (the
+    /// `(`/`[` literal, backslash dropped). Deferred here because the lexer is ctx-free.
+    LatexBs(u8),
     /// A single special byte deferred to a later milestone's resolver logic (`$ [ ] ( ) { }
     /// < > # !`). M0/M1 render it as its literal char; M2/M3 reclassify into bracket/leaf.
     Punct(u8),
@@ -100,13 +108,16 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
                 i += 1;
             }
             b' ' | b'\t' => {
-                // whitespace run → text. Hard-break (>=2 trailing spaces before a `\n`) is
-                // decided by the resolver, since it's gated by `ctx.breaks`.
+                // whitespace run → its OWN Text token (not merged into ordinary text), so
+                // construct ends at a ws align with a token boundary and the position right
+                // after ws is a fresh dispatch point (bare-url / keyword-timestamp detection).
+                // Hard-break (>=2 trailing spaces before a `\n`) is decided by the resolver.
+                flush!();
                 let start = i;
                 while i < n && is_ws(b[i]) {
                     i += 1;
                 }
-                push_pending!(start, &s[start..i]);
+                toks.push(Token { off: start, kind: Kind::Text(s[start..i].to_string()) });
             }
             b'\\' => lex_backslash(s, &mut i, &mut pending, &mut pending_off, &mut toks),
             b'`' => {
@@ -168,12 +179,15 @@ fn lex_backslash(
     let b = s.as_bytes();
     let n = b.len();
     let at = *i;
-    let set_off = |pending: &str, pending_off: &mut usize| {
-        if pending.is_empty() {
-            *pending_off = at;
-        }
-    };
     match b.get(at + 1).copied() {
+        Some(ch @ (b'(' | b'[')) => {
+            // `\(` / `\[` — defer to the resolver (latex vs escape is ctx-dependent).
+            if !pending.is_empty() {
+                toks.push(Token { off: *pending_off, kind: Kind::Text(std::mem::take(pending)) });
+            }
+            toks.push(Token { off: at, kind: Kind::LatexBs(ch) });
+            *i = at + 2;
+        }
         Some(ch) if ch.is_ascii_alphabetic() => {
             // entity `\letters` (+ optional `{}`): known name → Entity, else bare letters.
             let start = at + 1;
@@ -206,26 +220,35 @@ fn lex_backslash(
                     });
                 }
                 None => {
-                    set_off(pending, pending_off);
-                    pending.push_str(name);
+                    // unknown entity → the bare letters, as a fresh-making Escape token.
+                    flush_into(pending, pending_off, toks);
+                    toks.push(Token { off: at, kind: Kind::Escape(name.to_string()) });
                 }
             }
             *i = j;
         }
         Some(ch) if is_escape_char(ch) => {
-            // escape: drop the backslash, keep the punctuation literally.
+            // escape: drop the backslash, keep the punctuation literally (Escape token).
             let w = char_len(ch);
-            set_off(pending, pending_off);
-            pending.push_str(&s[at + 1..at + 1 + w]);
+            flush_into(pending, pending_off, toks);
+            toks.push(Token { off: at, kind: Kind::Escape(s[at + 1..at + 1 + w].to_string()) });
             *i = at + 1 + w;
         }
         _ => {
-            // lone backslash (before digit / space / eol / EOF): kept.
-            set_off(pending, pending_off);
-            pending.push('\\');
+            // lone backslash (before digit / space / eol / EOF): kept (Escape token).
+            flush_into(pending, pending_off, toks);
+            toks.push(Token { off: at, kind: Kind::Escape("\\".to_string()) });
             *i = at + 1;
         }
     }
+}
+
+/// Flush the lexer's pending text run into a `Text` token (if non-empty).
+fn flush_into(pending: &mut String, pending_off: &mut usize, toks: &mut Vec<Token>) {
+    if !pending.is_empty() {
+        toks.push(Token { off: *pending_off, kind: Kind::Text(std::mem::take(pending)) });
+    }
+    let _ = pending_off;
 }
 
 /// `` `…` `` (single) / ``` ``…`` ``` (double-backtick) code span → (Code node, end). The

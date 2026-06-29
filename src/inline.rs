@@ -2469,6 +2469,117 @@ pub(crate) fn build_real_dbl(s: &str) -> Vec<usize> {
     out
 }
 
+// ---- resolver (v0.2) leaf entry points ------------------------------------
+// These mirror the v1 Scanner methods as free fns returning (node, end), WITHOUT the
+// `seq_present` absence cache — the resolver's `fresh` flag keeps no-closer runs linear
+// (only the first opener of a run scans). Behavior is otherwise identical to v1.
+
+/// `\( … \)` (Inline) / `\[ … \]` (Displayed) latex span.
+pub(crate) fn parse_latex_backslash_at(s: &str, at: usize) -> Option<(Inline, usize)> {
+    let b = s.as_bytes();
+    let (close, mode): (&str, &str) = match b.get(at + 1).copied()? {
+        b'(' => ("\\)", "Inline"),
+        b'[' => ("\\]", "Displayed"),
+        _ => return None,
+    };
+    let body_start = at + 2;
+    let end = find_sub(b, body_start, close.as_bytes())?;
+    Some((
+        Inline::Latex { mode: mode.to_string(), body: s[body_start..end].to_string() },
+        end + 2,
+    ))
+}
+
+/// `$$ … $$` (Displayed) / `$ … $` (Inline) latex span (no `$`/newline in the body; the
+/// inline form can't start with a space nor end with ` ( [ {`).
+pub(crate) fn parse_latex_dollar_at(s: &str, at: usize) -> Option<(Inline, usize)> {
+    let b = s.as_bytes();
+    let n = b.len();
+    let after = *b.get(at + 1)?;
+    if after == b'$' {
+        let body_start = at + 2;
+        let end = find_sub_line(b, body_start, b"$$")?;
+        return Some((
+            Inline::Latex { mode: "Displayed".to_string(), body: s[body_start..end].to_string() },
+            end + 2,
+        ));
+    }
+    if after == b' ' {
+        return None;
+    }
+    let body_start = at + 1;
+    let mut j = body_start;
+    while j < n && b[j] != b'$' && b[j] != b'\n' && b[j] != b'\r' {
+        j += 1;
+    }
+    if j >= n || b[j] != b'$' {
+        return None;
+    }
+    if matches!(b[j - 1], b' ' | b'(' | b'[' | b'{') {
+        return None;
+    }
+    Some((
+        Inline::Latex { mode: "Inline".to_string(), body: s[body_start..j].to_string() },
+        j + 1,
+    ))
+}
+
+/// `(( … ))` block ref (inner has no `)`/newline; value unescaped, `full` raw).
+pub(crate) fn parse_block_ref_at(s: &str, at: usize) -> Option<(Inline, usize)> {
+    let b = s.as_bytes();
+    let n = b.len();
+    if !s[at..].starts_with("((") {
+        return None;
+    }
+    let inner_start = at + 2;
+    let mut j = inner_start;
+    while j < n && b[j] != b')' && b[j] != b'\n' && b[j] != b'\r' {
+        j += 1;
+    }
+    if j == inner_start || j + 1 >= n || b[j] != b')' || b[j + 1] != b')' {
+        return None;
+    }
+    Some((
+        Inline::Link {
+            url: Url::BlockRef { v: unescape(&s[inner_start..j]) },
+            label: vec![],
+            full: s[at..j + 2].to_string(),
+            image: false,
+            metadata: String::new(),
+            title: None,
+        },
+        j + 2,
+    ))
+}
+
+/// `{{{ … }}}` / `{{ … }}` macro (triple tried first); args raw via `parse_macro`.
+pub(crate) fn parse_macro_at(s: &str, at: usize) -> Option<(Inline, usize)> {
+    if !s[at..].starts_with("{{") {
+        return None;
+    }
+    let b = s.as_bytes();
+    let n = b.len();
+    let candidates: &[(&str, &str)] = if s[at..].starts_with("{{{") {
+        &[("{{{", "}}}"), ("{{", "}}")]
+    } else {
+        &[("{{", "}}")]
+    };
+    for &(open, close) in candidates {
+        let inner_start = at + open.len();
+        let mut j = inner_start;
+        while j < n && b[j] != b'}' && b[j] != b'\n' && b[j] != b'\r' {
+            j += 1;
+        }
+        if j == inner_start || !s[j..].starts_with(close) {
+            continue;
+        }
+        if let Some((name, args)) = parse_macro(&s[inner_start..j]) {
+            return Some((Inline::Macro { name, args }, j + close.len()));
+        }
+    }
+    None
+}
+
 pub(crate) fn parse_hiccup(s: &str, at: usize) -> Option<usize> {
     if !hiccup_head_ok(s, at) {
         return None;
