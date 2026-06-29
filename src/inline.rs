@@ -126,10 +126,10 @@ struct Scanner<'a> {
     /// window only shrinks). A markdown link needs a closing `)`; with none ahead the
     /// `[…](` link parser bails O(1), keeping `[`×m + `](` linear instead of O(n³).
     rparen_absent: bool,
-    /// Likewise for `]`: a hiccup `[:tag …]` needs a closing `]`, so when none remains
-    /// the hiccup parser bails O(1), keeping a run of unmatched `[:` (`[:div `×m, no
-    /// `]`) linear instead of O(n²).
-    rbracket_absent: bool,
+    /// Hiccup `[:`…`]` vectors, pre-paired in one pass (opener-`[` → just-past-`]`).
+    /// Empty unless `ctx.hiccup` and the text contains a `[`. Replaces the per-opener
+    /// balanced re-scan (and the old `]`-absence cache) — see [`build_hiccup_close`].
+    hiccup_close: HashMap<usize, usize>,
 }
 
 // ---- byte classes ---------------------------------------------------------
@@ -167,6 +167,12 @@ pub(crate) fn is_underscore_delim(c: u8) -> bool {
 
 impl<'a> Scanner<'a> {
     fn new(s: &'a str, ctx: Ctx) -> Scanner<'a> {
+        // Pre-pair hiccup vectors once (only when they can occur: top-level ctx + a `[`).
+        let hiccup_close = if ctx.hiccup && s.as_bytes().contains(&b'[') {
+            build_hiccup_close(s)
+        } else {
+            HashMap::new()
+        };
         Scanner {
             s,
             b: s.as_bytes(),
@@ -179,7 +185,7 @@ impl<'a> Scanner<'a> {
             absent: std::collections::HashSet::new(),
             present: HashMap::new(),
             rparen_absent: false,
-            rbracket_absent: false,
+            hiccup_close,
         }
     }
 
@@ -218,20 +224,6 @@ impl<'a> Scanner<'a> {
             true
         } else {
             self.rparen_absent = true;
-            false
-        }
-    }
-
-    /// Is there a `]` at/after `self.i`? A hiccup `[:tag …]` requires a closing `]`, so
-    /// when none remains the hiccup parser bails O(1). Absence is monotone.
-    fn rbracket_present(&mut self) -> bool {
-        if self.rbracket_absent {
-            return false;
-        }
-        if memchr(self.b, self.i, b']') {
-            true
-        } else {
-            self.rbracket_absent = true;
             false
         }
     }
@@ -860,10 +852,11 @@ impl<'a> Scanner<'a> {
 
     fn try_bracket(&mut self) -> bool {
         // inline Clojure-hiccup `[:tag …]` (top inline level only — not in the emphasis
-        // re-parse). Needs a closing `]`; the monotone absence cache keeps a run of
-        // unmatched `[:` (`[:div `×m, no `]`) linear instead of O(n²).
-        if self.ctx.hiccup && self.b.get(self.i + 1) == Some(&b':') && self.rbracket_present() {
-            if let Some(end) = parse_hiccup(self.s, self.i) {
+        // re-parse). The `[:`…`]` pairing is precomputed (`hiccup_close`), so this is an
+        // O(1) head-check + map lookup — a run of unmatched `[:` (`[:div `×m) is linear.
+        if self.ctx.hiccup && self.b.get(self.i + 1) == Some(&b':') && hiccup_head_ok(self.s, self.i)
+        {
+            if let Some(&end) = self.hiccup_close.get(&self.i) {
                 let v = self.s[self.i..end].to_string();
                 self.push(Inline::Hiccup { v });
                 self.i = end;
@@ -2259,26 +2252,83 @@ fn is_hiccup_tag(name: &str) -> bool {
 ///      `{ }` are literal (NOT balanced). Reaching EOF unbalanced — including an
 ///      unterminated string — → `None`.
 /// Linear in the captured length.
-pub(crate) fn parse_hiccup(s: &str, at: usize) -> Option<usize> {
+/// Steps (1)+(2) of hiccup recognition — element-name allowlist + keyword boundary —
+/// in O(1)+name, with NO balanced scan. Split out so the inline scanner can pair
+/// `[:`…`]` once up front (`build_hiccup_close`) and then validate each opener's head
+/// against the precomputed close, instead of re-scanning to the closer per opener.
+pub(crate) fn hiccup_head_ok(s: &str, at: usize) -> bool {
     let b = s.as_bytes();
     let n = b.len();
     if b.get(at) != Some(&b'[') || b.get(at + 1) != Some(&b':') {
-        return None;
+        return false;
     }
-    // (1) element name = maximal [A-Za-z0-9]+ after `[:`.
+    // (1) element name = maximal [A-Za-z0-9]+ after `[:`, lowercase ∈ HICCUP_TAGS.
     let name_start = at + 2;
     let mut j = name_start;
     while j < n && b[j].is_ascii_alphanumeric() {
         j += 1;
     }
     if j == name_start || !is_hiccup_tag(&s[name_start..j]) {
+        return false;
+    }
+    // (2) keyword boundary: `]`, space, tab, `.` or `#` (CSS-selector start / end).
+    matches!(b.get(j), Some(b']') | Some(b' ') | Some(b'\t') | Some(b'.') | Some(b'#'))
+}
+
+/// Pair EVERY `[:`…`]` hiccup vector in `s` in one linear pass (a delimiter stack: a
+/// `[:` pushes, a `]` pops, a `"…"` string is opaque while inside a vector). Returns a
+/// map opener-`[`-byte → index-just-past-the-matching-`]`. This is the structural
+/// replacement for the per-opener balanced re-scan (and the `rbracket` absence cache):
+/// the inline dispatch does an amortized-O(1) lookup instead, so a run of `[:tag `…
+/// (the `hiccup_present` pathology) is linear by construction, not O(n²). The balance
+/// counts every `[:` regardless of tag validity (tag-validity is applied separately at
+/// lookup via [`hiccup_head_ok`]) — matching `parse_hiccup`'s depth scan exactly.
+pub(crate) fn build_hiccup_close(s: &str) -> HashMap<usize, usize> {
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut close = HashMap::new();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut p = 0;
+    while p < n {
+        match b[p] {
+            b'[' if p + 1 < n && b[p + 1] == b':' => {
+                stack.push(p);
+                p += 2;
+            }
+            b']' => {
+                if let Some(o) = stack.pop() {
+                    close.insert(o, p + 1);
+                }
+                p += 1;
+            }
+            b'"' if !stack.is_empty() => {
+                // inside a vector a "…" string is opaque (a `]` in it can't close); `\`
+                // escapes the next char. An unterminated string consumes to EOF, leaving
+                // openers unmatched — exactly `parse_hiccup`'s `None`.
+                p += 1;
+                while p < n {
+                    match b[p] {
+                        b'\\' => p += 1 + if p + 1 < n { char_len(b[p + 1]) } else { 0 },
+                        b'"' => {
+                            p += 1;
+                            break;
+                        }
+                        c => p += char_len(c),
+                    }
+                }
+            }
+            c => p += char_len(c),
+        }
+    }
+    close
+}
+
+pub(crate) fn parse_hiccup(s: &str, at: usize) -> Option<usize> {
+    if !hiccup_head_ok(s, at) {
         return None;
     }
-    // (2) keyword boundary.
-    match b.get(j) {
-        Some(b']') | Some(b' ') | Some(b'\t') | Some(b'.') | Some(b'#') => {}
-        _ => return None,
-    }
+    let b = s.as_bytes();
+    let n = b.len();
     // (3) string-aware, `[:`-nested balanced capture from the outer `[`.
     let mut depth: i32 = 0;
     let mut p = at;

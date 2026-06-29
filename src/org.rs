@@ -1612,6 +1612,15 @@ struct OrgScanner<'a> {
     /// window only shrinks) — keeps `[[[[…`-style runs linear (no bracket construct
     /// can match without a `]`).
     rbracket_absent: bool,
+    /// A known `]` position at/after the last query. `self.i` only advances, so a cached
+    /// `p >= self.i` is still ahead — found in O(1) instead of re-scanning to it every
+    /// call (the present-`]` analogue of `rbracket_absent`; without it a run of `[`
+    /// before a trailing `]` re-scans O(n) per opener → O(n²)).
+    rbracket_pos: Option<usize>,
+    /// Hiccup `[:`…`]` vectors, pre-paired in one pass (opener-`[` → just-past-`]`).
+    /// Empty unless `ctx.hiccup` and the text contains a `[`. Replaces the per-opener
+    /// balanced re-scan so an inline `[:tag `… run is linear — see `build_hiccup_close`.
+    hiccup_close: std::collections::HashMap<usize, usize>,
 }
 
 impl<'a> OrgScanner<'a> {
@@ -1628,6 +1637,12 @@ impl<'a> OrgScanner<'a> {
             no_closer: std::collections::HashMap::new(),
             absent: std::collections::HashSet::new(),
             rbracket_absent: false,
+            rbracket_pos: None,
+            hiccup_close: if ctx.hiccup && s.as_bytes().contains(&b'[') {
+                crate::inline::build_hiccup_close(s)
+            } else {
+                std::collections::HashMap::new()
+            },
         }
     }
 
@@ -1656,16 +1671,27 @@ impl<'a> OrgScanner<'a> {
         self.pending.push_str(seg);
     }
 
-    /// Is there any `]` at/after `self.i`? Caches absence (monotone).
+    /// Is there any `]` at/after `self.i`? Caches BOTH a presence position and absence
+    /// (both monotone, since `self.i` only advances), so neither a `[`-run before a far
+    /// `]` nor a `]`-free tail re-scans to EOF per opener.
     fn has_rbracket(&mut self) -> bool {
         if self.rbracket_absent {
             return false;
         }
-        if self.b[self.i..].contains(&b']') {
-            true
-        } else {
-            self.rbracket_absent = true;
-            false
+        if let Some(p) = self.rbracket_pos {
+            if p >= self.i {
+                return true;
+            }
+        }
+        match find_sub(self.b, self.i, b"]") {
+            Some(p) => {
+                self.rbracket_pos = Some(p);
+                true
+            }
+            None => {
+                self.rbracket_absent = true;
+                false
+            }
         }
     }
 
@@ -2222,9 +2248,13 @@ impl<'a> OrgScanner<'a> {
             return false;
         }
         // inline Clojure-hiccup `[:tag …]` (top inline level only — not in the emphasis /
-        // label / script re-parse).
-        if self.ctx.hiccup && self.b.get(self.i + 1) == Some(&b':') {
-            if let Some(end) = crate::inline::parse_hiccup(self.s, self.i) {
+        // label / script re-parse). The `[:`…`]` pairing is precomputed (`hiccup_close`),
+        // so this is an O(1) head-check + lookup — a run of `[:tag `… stays linear.
+        if self.ctx.hiccup
+            && self.b.get(self.i + 1) == Some(&b':')
+            && crate::inline::hiccup_head_ok(self.s, self.i)
+        {
+            if let Some(&end) = self.hiccup_close.get(&self.i) {
                 let v = self.s[self.i..end].to_string();
                 self.push(Inline::Hiccup { v });
                 self.i = end;
@@ -2400,6 +2430,18 @@ impl<'a> OrgScanner<'a> {
     }
 
     fn org_inactive_timestamp(&self) -> Option<(usize, Inline)> {
+        // Fast reject (byte-exact): an inactive timestamp `[…]` parses only if its inner,
+        // after optional leading whitespace, begins with the date's `YYYY` digits. If the
+        // char right after `[` is neither a digit nor whitespace, the first whitespace
+        // token starts with a non-digit and `parse_date_inner` is GUARANTEED to fail — so
+        // skip the to-`]` scan. Keeps a `[:tag `… run (non-dates) linear instead of O(n²).
+        if !self
+            .b
+            .get(self.i + 1)
+            .is_some_and(|c| c.is_ascii_digit() || c.is_ascii_whitespace())
+        {
+            return None;
+        }
         let (end1, ts1) = parse_bracket_date(self.s, self.i, b'[', b']')?;
         if self.s[end1..].starts_with("--") {
             if let Some((end2, ts2)) = parse_bracket_date(self.s, end1 + 2, b'[', b']') {
