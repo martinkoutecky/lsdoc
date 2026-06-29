@@ -73,8 +73,69 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
     // emphasis linearity device; NOT a CommonMark backward openers_bottom).
     let mut no_closer = [[false; 3]; 5];
 
+    // Bracket-pairing disciplines (KEPT — Goal 3): nested-link escape-FREE balance, page-ref
+    // escape-AWARE real `]]`. Computed once; consulted by the [[…]] dispatch in O(1). `crlf`
+    // is the monotone next-`\n`/`\r` (page-ref eol boundary).
+    let has_brk = bb.contains(&b'[');
+    let nested_close = if has_brk {
+        crate::inline::build_nested_close(s)
+    } else {
+        std::collections::HashMap::new()
+    };
+    let real_dbl = if has_brk { crate::inline::build_real_dbl(s) } else { Vec::new() };
+    let mut real_dbl_cur = 0usize;
+    let mut crlf = first_crlf(bb, 0);
+
     let mut t = 0usize;
     while t < toks.len() {
+        // `[[…]]` dispatch (M2a): nested-link then page-ref, leftmost-greedy with byte-offset
+        // resync. Other `[` uses (md-link / hiccup / footnote) land in M2b — for now a `[`
+        // that doesn't open a `[[…]]` renders literally.
+        if matches!(toks[t].kind, Kind::Punct(b'[')) {
+            let off = toks[t].off;
+            let mut consumed = false;
+            if s[off..].starts_with("[[") {
+                if nested_close.contains_key(&off) {
+                    if let Some((end, content)) = crate::inline::parse_nested_link(s, off) {
+                        flush(&mut out, &mut pending);
+                        out.push(Inline::NestedLink { content });
+                        t = resync(toks, t, end);
+                        consumed = true;
+                    }
+                }
+                if !consumed {
+                    while real_dbl.get(real_dbl_cur).is_some_and(|&p| p < off + 2) {
+                        real_dbl_cur += 1;
+                    }
+                    if let Some(&d) = real_dbl.get(real_dbl_cur) {
+                        if off > crlf {
+                            crlf = first_crlf(bb, off);
+                        }
+                        if d > off + 2 && crlf > d {
+                            if let Some((end, name, full)) = crate::inline::parse_page_ref(s, off) {
+                                flush(&mut out, &mut pending);
+                                out.push(Inline::Link {
+                                    url: crate::projection::Url::PageRef { v: name },
+                                    label: vec![],
+                                    full,
+                                    image: false,
+                                    metadata: String::new(),
+                                    title: None,
+                                });
+                                t = resync(toks, t, end);
+                                consumed = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if !consumed {
+                pending.push('[');
+                t += 1;
+            }
+            continue;
+        }
+
         // Non-delimiter tokens pass straight through.
         if !matches!(toks[t].kind, Kind::Delim { .. }) {
             match &toks[t].kind {
@@ -219,6 +280,24 @@ fn trailing_ws(s: &str) -> usize {
     s.bytes().rev().take_while(|&b| b == b' ' || b == b'\t').count()
 }
 
+/// First `\n`/`\r` byte at/after `from`, or `bb.len()` (page-ref eol boundary).
+fn first_crlf(bb: &[u8], from: usize) -> usize {
+    let mut p = from;
+    while p < bb.len() && bb[p] != b'\n' && bb[p] != b'\r' {
+        p += 1;
+    }
+    p
+}
+
+/// After consuming a construct's byte extent `[_, end)`, advance the token cursor to the
+/// first token at/after `end` (the leftmost-greedy resync — interior tokens are discarded).
+fn resync(toks: &[Token], mut t: usize, end: usize) -> usize {
+    while t < toks.len() && toks[t].off < end {
+        t += 1;
+    }
+    t
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +350,19 @@ mod tests {
             "*a*", "_b_", "**c**", "`co`", "\\*", "\\_",
         ];
         assert_eq!(diff_count(TOKENS, 500_000, 0xE3_4F_19), 0);
+    }
+
+    /// M2a `[[…]]`: page-ref + nested-link (with the dual escape disciplines) + core +
+    /// emphasis. NO `](`/`[:`/`[^` yet (those are M2b) — so no md-link/hiccup/footnote.
+    #[test]
+    fn v2_matches_v1_m2a_dblbracket() {
+        // NOTE: no `\[`/`\]`/`\(`/`$` — those are latex (M3), not escapes, at top level.
+        const TOKENS: &[&str] = &[
+            "a", "b", " ", "\n", "word", "x",
+            "[[", "]]", "[", "]", "[[Foo]]", "[[a b]]", "[[a[[b]]c]]", "[[x]",
+            "\\]", "\\!", "*", "**", "_", "~~", "`co`",
+        ];
+        assert_eq!(diff_count(TOKENS, 500_000, 0x5A_2B_71), 0);
     }
 
     /// Exhaustive small enumeration: every short string over {`*`,`_`,`a`,space} — covers
