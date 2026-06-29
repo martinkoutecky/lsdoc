@@ -50,6 +50,10 @@ fn org_linear_cases(n: usize) -> Vec<(&'static str, String)> {
         ("o_drawer_open", ":a:\nx\n".repeat(n / 8)), // P5: no :END:
         ("o_inline_html", "<tag>".repeat(n / 5)),    // P8: no </tag>
         ("o_inline_latex", "\\(".repeat(n / 2)),     // P9: no \)
+        // C7 hiccup (org): unclosed-opener run + consecutive block hiccups, both linear.
+        ("o_hiccup_open", "[:div ".repeat(n / 6)),
+        ("o_hiccup_blocks", "[:a]".repeat(n / 4)),
+        ("o_hiccup_inline", "x [:a] ".repeat(n / 7)),
     ]
 }
 
@@ -81,6 +85,13 @@ fn linear_cases(n: usize) -> Vec<(&'static str, String)> {
         ("md_dash_fence", "- ``` \n".repeat(n / 6)),      // P7: unclosed dash-bullet fence
         ("md_inline_html", "<tag>".repeat(n / 5)),        // P8: no </tag>
         ("md_inline_latex", "\\(".repeat(n / 2)),         // P9: no \)
+        // C7 hiccup: a run of UNCLOSED `[:tag ` (no `]` anywhere) must bail O(1) per
+        // occurrence via the `]`-absence cache (block) / `rbracket_present` (inline).
+        ("md_hiccup_open", "[:div ".repeat(n / 6)),
+        // consecutive whole-line block hiccups: the in-place remainder split keeps this
+        // linear (no per-hiccup re-precomputation / recursion).
+        ("md_hiccup_blocks", "[:a]".repeat(n / 4)),
+        ("md_hiccup_inline", "x [:a] ".repeat(n / 7)),    // inline hiccups in a paragraph
     ]
 }
 

@@ -269,6 +269,45 @@ add("c5-eol", "line1\r\nline2\r\n");               // both lines + trailing brea
 add("c5-eol", "- a\r\n- b");                       // bullets across CRLF
 add("c5-eol", "# H\r\n");                          // heading with CRLF terminator
 
+// C7 — block-level Clojure-hiccup `[:tag …]` (md). A whole-line hiccup → Hiccup block;
+// the remainder past the `]` re-enters block parsing at BOL; other constructs shield it.
+add("c7-hiccup", "[:div]");                        // whole line → Hiccup block
+add("c7-hiccup", "[:span]");
+add("c7-hiccup", "[:foo]");                        // not a tag → Paragraph
+add("c7-hiccup", "  [:div]");                      // leading ws absorbed → Hiccup
+add("c7-hiccup", "\t[:div]");                      // leading tab → Hiccup
+add("c7-hiccup", "    [:div]");                    // 4 spaces still → Hiccup (no CM code)
+add("c7-hiccup", "[:div]x");                       // Hiccup + Paragraph "x"
+add("c7-hiccup", "[:div] x");                      // Hiccup + Paragraph " x"
+add("c7-hiccup", "[:div]# h");                     // Hiccup + Heading "h" (remainder at BOL)
+add("c7-hiccup", "[:div]- x");                     // Hiccup + Bullet "x"
+add("c7-hiccup", "[:div]* x");                     // Hiccup + List
+add("c7-hiccup", "[:div]> q");                     // Hiccup + Quote
+add("c7-hiccup", "[:div]key:: v");                 // Hiccup + Properties
+add("c7-hiccup", "[:div][:span]");                 // two Hiccup blocks
+add("c7-hiccup", "[:div][:span]x");                // Hiccup, Hiccup, Paragraph
+add("c7-hiccup", "[:div]\nmore");                  // Hiccup + Paragraph "more"
+add("c7-hiccup", "[:div]\n: def");                 // Hiccup + Paragraph (NOT def-list)
+add("c7-hiccup", "[:div [:span\n]]");              // multi-line balanced capture → one Hiccup
+add("c7-hiccup", "[:div\n]");                      // newline after name → Paragraph (gate fail)
+add("c7-hiccup", "foo\n[:div]\nbar");              // Para, Hiccup, Para (breaks paragraph)
+add("c7-hiccup", "foo\nbar\n[:div]");              // Para[foo,bar], Hiccup
+add("c7-hiccup", "```\n[:div]\n```");              // fenced → Src (hiccup shielded)
+add("c7-hiccup", "#+BEGIN_QUOTE\n[:div]\n#+END_QUOTE"); // Quote[Hiccup] via recursive parse
+add("c7-hiccup", "> [:div]");                      // Quote[Hiccup] (quote body)
+add("c7-hiccup", "> a\n> [:div]");                 // Quote[Para a, Hiccup]
+add("c7-hiccup", "> [:div]\n> b");                 // Quote[Hiccup, Para b]
+add("c7-hiccup", "> [:div]x");                     // Quote[Hiccup, Para x]
+add("c7-hiccup", "- [:div]");                      // Bullet (hiccup is the title, inline)
+add("c7-hiccup", "* [:div]");                      // List (item content → Hiccup block)
+add("c7-hiccup", "[:div]\n\nx");                   // hiccup absorbs blank line → Para[x]
+add("c7-hiccup", "[:div]\n\n\nx");                 // absorbs multiple blank lines
+add("c7-hiccup", "[:div]x\n\ny");                  // same-line remainder keeps the blank
+add("c7-hiccup", "[:div]\n  \nx");                 // whitespace-only line NOT absorbed
+add("c7-hiccup", "[:div]\n\n# h");                 // absorb then heading
+add("c7-hiccup", "* [:div]x");                     // list item content [Hiccup, Para x]
+add("c7-hiccup", "* a [:div] b");                  // list item inline hiccup
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

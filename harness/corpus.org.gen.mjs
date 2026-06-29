@@ -398,6 +398,31 @@ add("c6prop", `:PROPERTIES:\n:a: [[x][y]]\n:END:`);        // NO ref (was false 
 add("c6prop", `:PROPERTIES:\n:a: [[Foo]]\n:END:`);         // ref Foo
 add("c6prop", `:PROPERTIES:\n:tags: [[A]], [[B]]\n:END:`); // refs A, B
 
+// C7 — Clojure-hiccup `[:tag …]` (org). Block at BOL & inline; allowlist; remainder;
+// recognized inside list-item content too.
+add("c7hiccup", "[:div]");                   // whole line → Hiccup block
+add("c7hiccup", "[:foo]");                   // not a tag → Paragraph
+add("c7hiccup", "x [:div] y");               // inline Hiccup
+add("c7hiccup", "x [:foo] y");               // not a tag → plain
+add("c7hiccup", "[:div]x");                  // Hiccup + Paragraph x
+add("c7hiccup", "[:div][:span]");            // two Hiccups
+add("c7hiccup", "[:DIV]");                   // case-insensitive → Hiccup
+add("c7hiccup", 'x [:div "a]b"] y');         // string-protected `]`
+add("c7hiccup", "[:div [:span]]");           // nested
+add("c7hiccup", "/[:div]/");                 // inside emphasis → NOT hiccup (plain)
+add("c7hiccup", "* [:div]");                 // headline → bullet (inline hiccup title)
+add("c7hiccup", "- [:div]");                 // list → item content (Hiccup block)
+add("c7hiccup", "- a\n  [:div]");            // item content [Para a, Hiccup]
+add("c7hiccup", "> [:div]");                 // Quote[Hiccup]
+add("c7hiccup", "#+BEGIN_SRC\n[:div]\n#+END_SRC"); // Src (shielded)
+add("c7hiccup", ": [:div]");                 // verbatim Example (shielded)
+add("c7hiccup", "[:div]\n\nx");              // hiccup absorbs blank line → Para[x]
+add("c7hiccup", "[:div]\n  \nx");            // whitespace-only line NOT absorbed
+add("c7hiccup", "> a\n> [:div]");            // Quote[Para a (no break), Hiccup]
+add("c7hiccup", "> a\n> b\n> [:div]");       // Quote[Para a,b, Hiccup]
+add("c7hiccup", "> a\n> [:div]\n> c");       // Quote[Para a, Hiccup, Para c]
+add("c7hiccup", "- [:div]x");                // item content [Hiccup, Para x]
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

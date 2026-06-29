@@ -184,6 +184,15 @@ pub enum Block {
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },
+    /// Block-level Clojure-hiccup vector `[:tag …]` occupying a whole line (mldoc
+    /// `Hiccup`). `v` is the RAW bracket text verbatim (mldoc does NOT parse the
+    /// children); a renderer treats it opaquely. See `AST.md`.
+    #[serde(rename = "hiccup")]
+    Hiccup {
+        v: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -333,6 +342,10 @@ pub enum Inline {
         ascii: String,
         unicode: String,
     },
+    /// Inline Clojure-hiccup vector `[:tag …]` mixed with text (mldoc `Inline_Hiccup`).
+    /// `v` is the RAW bracket text verbatim (children unparsed). See `AST.md`.
+    #[serde(rename = "hiccup")]
+    Hiccup { v: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

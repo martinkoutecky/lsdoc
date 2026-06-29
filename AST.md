@@ -47,6 +47,7 @@ Markdown and Org produce the **same** AST.
 | `hr` | — | `span` | horizontal rule |
 | `table` | `header: Inline[][] \| null`, `rows: Inline[][][]` | `span` | table. **No column alignment** (see Notes) |
 | `footnote_def` | `name: string`, `inline: Inline[]` | `span` | `[^id]: body` / org `[fn:id] body` |
+| `hiccup` | `v: string` | `span` | block-level Clojure-hiccup vector `[:tag …]` occupying a whole line (mldoc `Hiccup`). `v` = the RAW bracket text verbatim (children NOT parsed). md + org |
 
 `marker` = task marker (`TODO`/`DOING`/`DONE`/…). `priority` = org `[#A]` → `"A"`.
 `htags` = org headline `:tag1:tag2:`.
@@ -88,6 +89,7 @@ Markdown and Org produce the **same** AST.
 | `inline_html` | `text: string` | inline raw HTML `<span>…` (org `@@html:` etc.) |
 | `email` | `text: Value` | `<a@b.com>` autolink; `text` opaque (see below) |
 | `entity` | `name, latex, html, ascii, unicode: string`, `latex_mathp: bool` | LaTeX entity `\Delta` → resolved record (see `src/entities.rs`) |
+| `hiccup` | `v: string` | inline Clojure-hiccup vector `[:tag …]` mixed with text (mldoc `Inline_Hiccup`). `v` = the RAW bracket text verbatim (children NOT parsed) |
 
 ### Link (`k:"link"`) — the render-critical fields
 
@@ -145,8 +147,13 @@ as opaque for display.
 - **Table column alignment is not available.** mldoc 1.5.7 discards it (`col_groups` is just
   the column count); Logseq does not render aligned tables, so neither does this AST. If you
   need it, it must be re-derived from the source separator row — it is not in the AST.
-- **`@@hiccup:…@@`** (Logseq HTML-export hiccup) is rendered as plain text — there is no
-  `hiccup` inline variant (never user-authored; absent from real graphs).
+- **Clojure-hiccup `[:tag …]`** (mldoc `Hiccup` / `Inline_Hiccup`) IS carried — as the
+  `hiccup` block + inline variants above. `v` is the raw bracket text verbatim (mldoc does
+  NOT parse the children, so a renderer treats it opaquely; no refs are extracted from it).
+  Recognition matches mldoc exactly: `[:` + an HTML-element name from mldoc's 110-tag
+  allowlist (case-insensitive) + a keyword boundary (`]`/space/tab/`.`/`#`) + a string-aware,
+  `[:`-nested balanced `]`. A whole-line vector → a `hiccup` block (the remainder past the
+  `]` re-enters block parsing); a vector mixed with text → an inline `hiccup`.
 - **No inline spans.** Block `span` (byte `[start,end]`) is present but excluded from the
   render contract; inline nodes have none. Source-rewriting features (media-resize, checkbox
   toggle) operate on the block's raw text, not the AST.

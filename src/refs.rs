@@ -83,7 +83,10 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>, org: b
         | Block::Drawer { .. }
         | Block::Directive { .. }
         | Block::Comment { .. }
-        | Block::Example { .. } => {}
+        | Block::Example { .. }
+        // Hiccup payload is the raw unparsed bracket text — mldoc extracts no refs from
+        // it (the `[[…]]` inside `[:div [[Foo]]]` is not a ref).
+        | Block::Hiccup { .. } => {}
     }
 }
 

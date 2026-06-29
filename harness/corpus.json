@@ -848,5 +848,135 @@
   "id": "c169",
   "cat": "render",
   "input": "text ![i](a.png) and [l](b) end"
+ },
+ {
+  "id": "c170",
+  "cat": "hiccup",
+  "input": "x [:div] y"
+ },
+ {
+  "id": "c171",
+  "cat": "hiccup",
+  "input": "x [:span] y"
+ },
+ {
+  "id": "c172",
+  "cat": "hiccup",
+  "input": "a [:a] b"
+ },
+ {
+  "id": "c173",
+  "cat": "hiccup",
+  "input": "a [:h1] b"
+ },
+ {
+  "id": "c174",
+  "cat": "hiccup",
+  "input": "a [:foo] b"
+ },
+ {
+  "id": "c175",
+  "cat": "hiccup",
+  "input": "a [:aa] b"
+ },
+ {
+  "id": "c176",
+  "cat": "hiccup",
+  "input": "a [:svg] b"
+ },
+ {
+  "id": "c177",
+  "cat": "hiccup",
+  "input": "a [:h7] b"
+ },
+ {
+  "id": "c178",
+  "cat": "hiccup",
+  "input": "a [:div2] b"
+ },
+ {
+  "id": "c179",
+  "cat": "hiccup",
+  "input": "a [:DIV] b"
+ },
+ {
+  "id": "c180",
+  "cat": "hiccup",
+  "input": "a [:Section] b"
+ },
+ {
+  "id": "c181",
+  "cat": "hiccup",
+  "input": "x [:div.cls] y"
+ },
+ {
+  "id": "c182",
+  "cat": "hiccup",
+  "input": "x [:div#id] y"
+ },
+ {
+  "id": "c183",
+  "cat": "hiccup",
+  "input": "x [:div{:a 1}] y"
+ },
+ {
+  "id": "c184",
+  "cat": "hiccup",
+  "input": "x [:div-x] y"
+ },
+ {
+  "id": "c185",
+  "cat": "hiccup",
+  "input": "x [:div \"a]b\"] y"
+ },
+ {
+  "id": "c186",
+  "cat": "hiccup",
+  "input": "x [:div \"a\\\"]b\"] y"
+ },
+ {
+  "id": "c187",
+  "cat": "hiccup",
+  "input": "x [:div [:span]] y"
+ },
+ {
+  "id": "c188",
+  "cat": "hiccup",
+  "input": "x [:div [x]] y"
+ },
+ {
+  "id": "c189",
+  "cat": "hiccup",
+  "input": "x [:div {:a]}] y"
+ },
+ {
+  "id": "c190",
+  "cat": "hiccup",
+  "input": "x [:div.cls {:a 1} \"hi\" [:span \"y\"]] y"
+ },
+ {
+  "id": "c191",
+  "cat": "hiccup",
+  "input": "x [:div y"
+ },
+ {
+  "id": "c192",
+  "cat": "hiccup",
+  "input": "x [:div [:span] y"
+ },
+ {
+  "id": "c193",
+  "cat": "hiccup",
+  "input": "x [:div \"abc] y"
+ },
+ {
+  "id": "c194",
+  "cat": "hiccup",
+  "input": "x[:div]"
+ },
+ {
+  "id": "c195",
+  "cat": "hiccup",
+  "input": "[:div]x and [:span]"
  }
 ]

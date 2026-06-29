@@ -1768,5 +1768,137 @@
   "cat": "c6prop",
   "input": ":PROPERTIES:\n:tags: [[A]], [[B]]\n:END:",
   "format": "org"
+ },
+ {
+  "id": "o295",
+  "cat": "c7hiccup",
+  "input": "[:div]",
+  "format": "org"
+ },
+ {
+  "id": "o296",
+  "cat": "c7hiccup",
+  "input": "[:foo]",
+  "format": "org"
+ },
+ {
+  "id": "o297",
+  "cat": "c7hiccup",
+  "input": "x [:div] y",
+  "format": "org"
+ },
+ {
+  "id": "o298",
+  "cat": "c7hiccup",
+  "input": "x [:foo] y",
+  "format": "org"
+ },
+ {
+  "id": "o299",
+  "cat": "c7hiccup",
+  "input": "[:div]x",
+  "format": "org"
+ },
+ {
+  "id": "o300",
+  "cat": "c7hiccup",
+  "input": "[:div][:span]",
+  "format": "org"
+ },
+ {
+  "id": "o301",
+  "cat": "c7hiccup",
+  "input": "[:DIV]",
+  "format": "org"
+ },
+ {
+  "id": "o302",
+  "cat": "c7hiccup",
+  "input": "x [:div \"a]b\"] y",
+  "format": "org"
+ },
+ {
+  "id": "o303",
+  "cat": "c7hiccup",
+  "input": "[:div [:span]]",
+  "format": "org"
+ },
+ {
+  "id": "o304",
+  "cat": "c7hiccup",
+  "input": "/[:div]/",
+  "format": "org"
+ },
+ {
+  "id": "o305",
+  "cat": "c7hiccup",
+  "input": "* [:div]",
+  "format": "org"
+ },
+ {
+  "id": "o306",
+  "cat": "c7hiccup",
+  "input": "- [:div]",
+  "format": "org"
+ },
+ {
+  "id": "o307",
+  "cat": "c7hiccup",
+  "input": "- a\n  [:div]",
+  "format": "org"
+ },
+ {
+  "id": "o308",
+  "cat": "c7hiccup",
+  "input": "> [:div]",
+  "format": "org"
+ },
+ {
+  "id": "o309",
+  "cat": "c7hiccup",
+  "input": "#+BEGIN_SRC\n[:div]\n#+END_SRC",
+  "format": "org"
+ },
+ {
+  "id": "o310",
+  "cat": "c7hiccup",
+  "input": ": [:div]",
+  "format": "org"
+ },
+ {
+  "id": "o311",
+  "cat": "c7hiccup",
+  "input": "[:div]\n\nx",
+  "format": "org"
+ },
+ {
+  "id": "o312",
+  "cat": "c7hiccup",
+  "input": "[:div]\n  \nx",
+  "format": "org"
+ },
+ {
+  "id": "o313",
+  "cat": "c7hiccup",
+  "input": "> a\n> [:div]",
+  "format": "org"
+ },
+ {
+  "id": "o314",
+  "cat": "c7hiccup",
+  "input": "> a\n> b\n> [:div]",
+  "format": "org"
+ },
+ {
+  "id": "o315",
+  "cat": "c7hiccup",
+  "input": "> a\n> [:div]\n> c",
+  "format": "org"
+ },
+ {
+  "id": "o316",
+  "cat": "c7hiccup",
+  "input": "- [:div]x",
+  "format": "org"
  }
 ]

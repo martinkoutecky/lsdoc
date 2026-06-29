@@ -152,6 +152,10 @@ export function normNode(node) {
     case "Example":
       // org `#+BEGIN_EXAMPLE … #+END_EXAMPLE` -> ["Example", [lines…]]
       return { kind: "example", code: (node[1] ?? []).join("") };
+    case "Hiccup":
+      // block-level Clojure-hiccup `[:tag …]`: `v` is the RAW bracket text verbatim
+      // (mldoc does not parse the children). Mirrors lsdoc's `Block::Hiccup { v }`.
+      return { kind: "hiccup", v: node[1] };
     case "Drawer":
       // Content treated as opaque (logbook/clock metadata — not indexed/rendered);
       // compare on name only. See DECISIONS.md.

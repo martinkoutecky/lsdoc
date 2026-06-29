@@ -870,3 +870,23 @@ separately). C2–C6 fixed here, each probed against the oracle and matched exac
   "x][y"); `:a: [[Foo]]` still → Foo. (`refs.rs`/`lib.rs` signature threading.)
 
 C7 (hiccup) is handled separately — see below.
+
+## C7 — Clojure-hiccup `[:tag …]` (the corrected finding)
+
+The audit's C7 premise (`@@hiccup:@@`) was WRONG. Probing mldoc showed the real construct is the
+Clojure-hiccup vector `[:tag …]` (mldoc `Hiccup` block / `Inline_Hiccup`), both md and org. Now
+implemented to exact mldoc parity:
+- **Payload = raw bracket text verbatim** (mldoc does NOT parse the children) → carried as
+  `Block::Hiccup { v }` + `Inline::Hiccup { v }` (two new additive AST variants — the contract
+  growth of the audit batch; Tine must render them, opaquely; no refs extracted).
+- **Recognition:** `[:` + an HTML-element name from mldoc's **110-tag allowlist** (case-insensitive,
+  derived from mldoc's compiled source array + cross-checked against the oracle; e.g. div/a/span/p/
+  h1 in, svg/path/math/aa/word out) + a keyword boundary (`]`/space/tab/`.`/`#`) + a string-aware,
+  `[:`-nested balanced `]`. Whole-line vector → `hiccup` block (remainder past `]` re-enters block
+  parsing); mixed with text → inline `hiccup`. Unterminated string / no balanced `]` → plain.
+- **Linear:** a `last_rbracket` (block) + monotone `rbracket_present` cache (inline) so an unmatched
+  `[:` doesn't rescan to EOF (same discipline as the P1 perf fix). Verified linear in the perf gate.
+- **Verified by parent:** held-out allowlist matrix (127 cases incl. ~50 tags never spot-probed +
+  negatives + capture/nesting/`"]"`-in-string/unclosed/block-vs-inline) all match mldoc; gate
+  1018/1018 0-diff; fuzz md 1.39% / org 3.80% (no regression — a too-broad recognizer was the risk);
+  a dedicated hiccup-heavy adversarial fuzz (30k md + 30k org) showed 0 hiccup/placement diffs.

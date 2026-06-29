@@ -56,6 +56,9 @@ struct Ctx {
     breaks: bool,
     html: bool,
     autolinks: bool,
+    /// Inline Clojure-hiccup `[:tag …]` — ON only at the top inline level; mldoc does
+    /// NOT recognize it in the emphasis re-parse (`*[:div]*` → emphasis over Plain).
+    hiccup: bool,
 }
 
 impl Ctx {
@@ -72,6 +75,7 @@ impl Ctx {
             breaks: true,
             html: true,
             autolinks: true,
+            hiccup: true,
         }
     }
     /// Restricted context for emphasis content: only emphasis, links, sub/sup, code,
@@ -93,6 +97,7 @@ impl Ctx {
             breaks: false,
             html: false,
             autolinks: false,
+            hiccup: false,
         }
     }
 }
@@ -121,6 +126,10 @@ struct Scanner<'a> {
     /// window only shrinks). A markdown link needs a closing `)`; with none ahead the
     /// `[…](` link parser bails O(1), keeping `[`×m + `](` linear instead of O(n³).
     rparen_absent: bool,
+    /// Likewise for `]`: a hiccup `[:tag …]` needs a closing `]`, so when none remains
+    /// the hiccup parser bails O(1), keeping a run of unmatched `[:` (`[:div `×m, no
+    /// `]`) linear instead of O(n²).
+    rbracket_absent: bool,
 }
 
 // ---- byte classes ---------------------------------------------------------
@@ -170,6 +179,7 @@ impl<'a> Scanner<'a> {
             absent: std::collections::HashSet::new(),
             present: HashMap::new(),
             rparen_absent: false,
+            rbracket_absent: false,
         }
     }
 
@@ -208,6 +218,20 @@ impl<'a> Scanner<'a> {
             true
         } else {
             self.rparen_absent = true;
+            false
+        }
+    }
+
+    /// Is there a `]` at/after `self.i`? A hiccup `[:tag …]` requires a closing `]`, so
+    /// when none remains the hiccup parser bails O(1). Absence is monotone.
+    fn rbracket_present(&mut self) -> bool {
+        if self.rbracket_absent {
+            return false;
+        }
+        if memchr(self.b, self.i, b']') {
+            true
+        } else {
+            self.rbracket_absent = true;
             false
         }
     }
@@ -835,6 +859,17 @@ impl<'a> Scanner<'a> {
     // ---- bracket: footnote / nested-link / page-ref / markdown link -------
 
     fn try_bracket(&mut self) -> bool {
+        // inline Clojure-hiccup `[:tag …]` (top inline level only — not in the emphasis
+        // re-parse). Needs a closing `]`; the monotone absence cache keeps a run of
+        // unmatched `[:` (`[:div `×m, no `]`) linear instead of O(n²).
+        if self.ctx.hiccup && self.b.get(self.i + 1) == Some(&b':') && self.rbracket_present() {
+            if let Some(end) = parse_hiccup(self.s, self.i) {
+                let v = self.s[self.i..end].to_string();
+                self.push(Inline::Hiccup { v });
+                self.i = end;
+                return true;
+            }
+        }
         // footnote `[^id]`
         if self.ctx.footnotes && self.b.get(self.i + 1) == Some(&b'^') {
             if let Some((end, name)) = parse_footnote_ref(self.s, self.i) {
@@ -2174,6 +2209,117 @@ pub(crate) fn unescape(s: &str) -> String {
     out
 }
 
+// ---- hiccup ---------------------------------------------------------------
+
+/// mldoc's Clojure-hiccup HTML-element allowlist (110 names, lowercase, **byte-sorted**
+/// for binary search). A `[:name …]` vector is a `Hiccup` (block) / `Inline_Hiccup`
+/// (inline) iff `name` (case-insensitively) is one of these. Derived from mldoc 1.5.7's
+/// source tag set (`Qz`) and cross-checked against the live oracle (every name in / every
+/// HTML5 element not listed out). Keep sorted — `is_hiccup_tag` binary-searches it.
+static HICCUP_TAGS: &[&str] = &[
+    "a", "abbr", "address", "area", "article", "aside", "audio", "b", "base", "bdi", "bdo",
+    "blockquote", "body", "br", "button", "canvas", "caption", "cite", "code", "col", "colgroup", "data",
+    "datalist", "dd", "del", "details", "dfn", "div", "dl", "dt", "em", "embed", "fieldset",
+    "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "head",
+    "header", "hr", "html", "i", "iframe", "img", "input", "ins", "kbd", "keygen", "label",
+    "legend", "li", "link", "main", "map", "mark", "meta", "meter", "nav", "noscript", "object",
+    "ol", "optgroup", "option", "output", "p", "param", "pre", "progress", "q", "rb", "rp",
+    "rt", "rtc", "ruby", "s", "samp", "script", "section", "select", "small", "source", "span",
+    "strong", "style", "sub", "summary", "sup", "table", "tbody", "td", "template", "textarea", "tfoot",
+    "th", "thead", "time", "title", "tr", "track", "u", "ul", "var", "video", "wbr",
+];
+
+/// Case-insensitive membership test against `HICCUP_TAGS`. `name` is ASCII alphanumeric
+/// (the only thing the caller passes), so a lowercased fixed buffer + binary search is
+/// allocation-free. The longest allowed tag is 10 bytes (`blockquote`/`figcaption`).
+fn is_hiccup_tag(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.len() > 10 {
+        return false;
+    }
+    let mut buf = [0u8; 10];
+    for (k, &c) in bytes.iter().enumerate() {
+        buf[k] = c.to_ascii_lowercase();
+    }
+    let lower = &buf[..bytes.len()];
+    HICCUP_TAGS.binary_search_by(|t| t.as_bytes().cmp(lower)).is_ok()
+}
+
+/// Recognize + capture a Clojure-hiccup vector `[:tag …]` starting at byte `at` (which
+/// must be the `[`). Returns the byte index just past the matching `]` (so the captured
+/// raw text is `s[at..end]`), or `None` if it isn't a hiccup. Rules verified vs mldoc
+/// 1.5.7:
+///   1. `[:` then a non-empty `[A-Za-z0-9]+` element name whose lowercase ∈ `HICCUP_TAGS`;
+///   2. the char immediately after the name is the keyword boundary — one of
+///      `]`, space, tab, `.`, `#` (a CSS-selector start / separator). Anything else
+///      (`{ [ " ( , : / -` … or a newline) → NOT a hiccup;
+///   3. a string-aware, `[:`-nested balanced scan to the matching `]`: depth starts at 1
+///      on the outer `[`, a NESTED `[:` opens a level (+1), a `]` closes (−1, end at 0),
+///      a `"…"` string (with `\`-escapes) is skipped whole. A lone `[` (not `[:`) and any
+///      `{ }` are literal (NOT balanced). Reaching EOF unbalanced — including an
+///      unterminated string — → `None`.
+/// Linear in the captured length.
+pub(crate) fn parse_hiccup(s: &str, at: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    let n = b.len();
+    if b.get(at) != Some(&b'[') || b.get(at + 1) != Some(&b':') {
+        return None;
+    }
+    // (1) element name = maximal [A-Za-z0-9]+ after `[:`.
+    let name_start = at + 2;
+    let mut j = name_start;
+    while j < n && b[j].is_ascii_alphanumeric() {
+        j += 1;
+    }
+    if j == name_start || !is_hiccup_tag(&s[name_start..j]) {
+        return None;
+    }
+    // (2) keyword boundary.
+    match b.get(j) {
+        Some(b']') | Some(b' ') | Some(b'\t') | Some(b'.') | Some(b'#') => {}
+        _ => return None,
+    }
+    // (3) string-aware, `[:`-nested balanced capture from the outer `[`.
+    let mut depth: i32 = 0;
+    let mut p = at;
+    while p < n {
+        match b[p] {
+            b'[' if p + 1 < n && b[p + 1] == b':' => {
+                depth += 1;
+                p += 2;
+            }
+            b']' => {
+                depth -= 1;
+                p += 1;
+                if depth == 0 {
+                    return Some(p);
+                }
+            }
+            b'"' => {
+                // skip a "…" string; `\` escapes the next byte. Unterminated → fail.
+                p += 1;
+                let mut closed = false;
+                while p < n {
+                    match b[p] {
+                        b'\\' => p += 1 + if p + 1 < n { char_len(b[p + 1]) } else { 0 },
+                        b'"' => {
+                            p += 1;
+                            closed = true;
+                            break;
+                        }
+                        c => p += char_len(c),
+                    }
+                }
+                if !closed {
+                    return None;
+                }
+            }
+            c => p += char_len(c),
+        }
+    }
+    None
+}
+
 // ---- timestamps -----------------------------------------------------------
 
 /// `<YYYY-MM-DD WDAY [HH:MM]>` and ranges `<..>--<..>`. active = true (angle).
@@ -2350,6 +2496,7 @@ mod tests {
             Inline::Subscript { .. } => "sub".into(),
             Inline::Superscript { .. } => "sup".into(),
             Inline::Entity { unicode, .. } => format!("entity({unicode})"),
+            Inline::Hiccup { v } => format!("hiccup({v})"),
         }
     }
     fn url_kind(u: &Url) -> String {
@@ -2663,6 +2810,28 @@ mod tests {
         assert_eq!(kinds("$\\Delta$"), ["latex(Inline:\\Delta)"]);
         // case-sensitive table (AA vs aa are distinct entities).
         assert_eq!(kinds("\\AA"), ["entity(Å)"]);
+    }
+
+    #[test]
+    fn inline_hiccup() {
+        assert_eq!(kinds("x [:div] y"), ["plain(x )", "hiccup([:div])", "plain( y)"]);
+        assert_eq!(kinds("a [:a] b"), ["plain(a )", "hiccup([:a])", "plain( b)"]);
+        assert_eq!(kinds("a [:DIV] b"), ["plain(a )", "hiccup([:DIV])", "plain( b)"]);
+        assert_eq!(kinds("a [:foo] b"), ["plain(a [:foo] b)"]); // not an allowed tag
+        assert_eq!(kinds("a [:svg] b"), ["plain(a [:svg] b)"]);
+        assert_eq!(kinds("a [:div{:x 1}] b"), ["plain(a [:div{:x 1}] b)"]); // `{` not a boundary
+        assert_eq!(kinds(r#"[:div "a]b"]"#), [r#"hiccup([:div "a]b"])"#]); // string protects `]`
+        assert_eq!(kinds("[:div [:span]]"), ["hiccup([:div [:span]])"]);   // nested `[:`
+        assert_eq!(kinds("[:div [x]]"), ["hiccup([:div [x])", "plain(])"]); // lone `[` no nest
+        assert_eq!(kinds("[:div y"), ["plain([:div y)"]);                  // unclosed → plain
+        assert_eq!(kinds("[:div [:span] y"), ["plain([:div )", "hiccup([:span])", "plain( y)"]);
+        assert_eq!(kinds("*[:div]*"), ["em(Italic)"]); // NOT recognized in emphasis re-parse
+    }
+
+    #[test]
+    fn hiccup_runs_terminate() {
+        let _ = pi(&"[:div ".repeat(20000)); // unclosed openers, no `]` → linear
+        let _ = pi(&"[:a]".repeat(20000)); // many complete inline hiccups
     }
 
     #[test]

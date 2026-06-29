@@ -94,6 +94,9 @@ pub fn parse(input: &str) -> Vec<Block> {
 /// (`in_item = false`), matching mldoc's `block_content_parsers` for those.
 fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
     let mut lines = split_lines(input);
+    // Byte offset of the last `]` (None if none): a block-level hiccup `[:tag …]` needs a
+    // closing `]`, so a `[:` line starting at/after it is skipped O(1) (see step 13b).
+    let last_rbracket = input.rfind(']');
     let fences = pair_fences(&lines);
     // Name-independent "no closer anywhere ahead" floors: the LAST line index that
     // could close a `#+BEGIN_X` block (`#+END_` prefix) / a `:NAME:` drawer (`:END:`).
@@ -512,6 +515,57 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
             absorb = false;
             i += 1;
             continue;
+        }
+
+        // 13b. block-level Clojure-hiccup `[:tag …]` at BOL (after leading ws). Emitted at
+        // the document level AND inside list-item content (mldoc yields a `Hiccup` block in
+        // both). The string-aware balanced capture may span lines; the remainder past the
+        // `]` re-enters block parsing at BOL (`[:div]x` → [Hiccup, Paragraph x]).
+        {
+            let lw = leading_ws(t);
+            let rec = line_start + lw;
+            if last_rbracket.is_some_and(|last| rec <= last) && input[rec..].starts_with("[:") {
+                if let Some(cap_end) = crate::inline::parse_hiccup(input, rec) {
+                    // A preceding paragraph drops its trailing Break before a Hiccup inside
+                    // a blockquote body (mldoc: `> a\n> [:div]` → Quote[Para "a", Hiccup]),
+                    // but keeps it at the document level (`a\n[:div]` → Para[a, Break]).
+                    let trim = in_item || ORG_IN_QUOTE.with(|c| c.get());
+                    flush_para(&mut out, &mut para, input, trim);
+                    out.push(Block::Hiccup {
+                        v: input[rec..cap_end].to_string(),
+                        span: Some(Span(line_start, cap_end)),
+                    });
+                    absorb = false;
+                    // Resume after the `]`, absorbing consecutive eols (mldoc `<* optional
+                    // eols`: `[:div]\n\nx` → [Hiccup, Para "x"]). A same-line remainder
+                    // (`[:div]x`) keeps its following blanks (only `\n`/`\r` bytes skipped).
+                    let bytes = input.as_bytes();
+                    let mut resume = cap_end;
+                    while resume < bytes.len() && matches!(bytes[resume], b'\n' | b'\r') {
+                        resume += 1;
+                    }
+                    if resume >= bytes.len() {
+                        break; // captured to EOF (+ trailing eols)
+                    }
+                    let mut ri = i;
+                    while ri < lines.len() && lines[ri].end <= resume {
+                        ri += 1;
+                    }
+                    if ri >= lines.len() {
+                        break; // defensive (resume < len ⇒ unreachable)
+                    }
+                    if resume > lines[ri].start {
+                        let content_end = lines[ri].start + lines[ri].text.len();
+                        lines[ri] = Line {
+                            start: resume,
+                            end: lines[ri].end,
+                            text: &input[resume..content_end],
+                        };
+                    }
+                    i = ri;
+                    continue;
+                }
+            }
         }
 
         // 14. plain line → accumulate into the current paragraph.
@@ -1433,6 +1487,10 @@ struct Ctx {
     footnotes: bool,
     scripts: bool,
     links: bool,
+    /// Inline Clojure-hiccup `[:tag …]` — ON only at the top inline level (mldoc does NOT
+    /// recognize it in the emphasis / label / script re-parse, e.g. `/[:div]/` → emphasis
+    /// over Plain).
+    hiccup: bool,
 }
 
 impl Ctx {
@@ -1452,6 +1510,7 @@ impl Ctx {
             footnotes: true,
             scripts: true,
             links: true,
+            hiccup: true,
         }
     }
     /// Emphasis content / link-label re-parse (mldoc `nested_emphasis`): emphasis,
@@ -1472,6 +1531,7 @@ impl Ctx {
             footnotes: false,
             scripts: true,
             links: true,
+            hiccup: false,
         }
     }
     /// `[[url][label]]` label re-parse (mldoc `org_link_1`): emphasis, latex, entity,
@@ -1493,6 +1553,7 @@ impl Ctx {
             footnotes: false,
             scripts: true,
             links: false,
+            hiccup: false,
         }
     }
     /// Sub/superscript content (mldoc `gen_script`): emphasis, plain, ws, entity —
@@ -1513,6 +1574,7 @@ impl Ctx {
             footnotes: false,
             scripts: false,
             links: false,
+            hiccup: false,
         }
     }
 }
@@ -2153,6 +2215,16 @@ impl<'a> OrgScanner<'a> {
         if !self.has_rbracket() {
             return false;
         }
+        // inline Clojure-hiccup `[:tag …]` (top inline level only — not in the emphasis /
+        // label / script re-parse).
+        if self.ctx.hiccup && self.b.get(self.i + 1) == Some(&b':') {
+            if let Some(end) = crate::inline::parse_hiccup(self.s, self.i) {
+                let v = self.s[self.i..end].to_string();
+                self.push(Inline::Hiccup { v });
+                self.i = end;
+                return true;
+            }
+        }
         // org_link_1 `[[url][label]]` (needs `][`), then nested link / org_link_2
         // `[[url]]` (need `]]`). The seq guards keep `[[`-with-no-closer runs linear.
         if self.s[self.i..].starts_with("[[") {
@@ -2553,6 +2625,7 @@ mod tests {
             Inline::InlineHtml { text } => format!("html({text})"),
             Inline::Email { .. } => "email".into(),
             Inline::Entity { unicode, .. } => format!("entity({unicode})"),
+            Inline::Hiccup { v } => format!("hiccup({v})"),
         }
     }
     fn uk(u: &Url) -> String {
@@ -2603,6 +2676,7 @@ mod tests {
                 Block::Comment { .. } => "comment",
                 Block::Example { .. } => "example",
                 Block::LatexEnv { .. } => "latex_env",
+                Block::Hiccup { .. } => "hiccup",
             })
             .collect()
     }
@@ -2622,6 +2696,32 @@ mod tests {
             Block::Comment { text, .. } => assert_eq!(text, "x  "),
             _ => panic!("expected Comment"),
         }
+    }
+
+    #[test]
+    fn org_hiccup() {
+        // block-level (whole line) and not-a-tag.
+        assert_eq!(bkinds("[:div]"), ["hiccup"]);
+        assert_eq!(bkinds("[:foo]"), ["paragraph"]);
+        assert_eq!(bkinds("[:div]x"), ["hiccup", "paragraph"]);
+        assert_eq!(bkinds("[:div][:span]"), ["hiccup", "hiccup"]);
+        // shielded constructs win; recognized inside list-item content.
+        assert_eq!(bkinds("* [:div]"), ["bullet"]); // headline (inline-hiccup title)
+        assert_eq!(bkinds("#+BEGIN_SRC\n[:div]\n#+END_SRC"), ["src"]);
+        match &parse("- [:div]")[0] {
+            Block::List { items, .. } => assert!(matches!(items[0].content[0], Block::Hiccup { .. })),
+            _ => panic!("expected List"),
+        }
+        // inline: recognized at top level, NOT in emphasis re-parse.
+        assert_eq!(ks("x [:div] y"), ["plain(x )", "hiccup([:div])", "plain( y)"]);
+        assert_eq!(ks("x [:foo] y"), ["plain(x [:foo] y)"]);
+        assert_eq!(ks("/[:div]/"), ["em(Italic)"]); // emphasis content stays plain
+    }
+
+    #[test]
+    fn org_hiccup_runs_terminate() {
+        let _ = parse(&"[:div ".repeat(20000));
+        let _ = parse(&"[:a]".repeat(20000));
     }
 
     // ---- headlines --------------------------------------------------------

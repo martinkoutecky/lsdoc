@@ -209,6 +209,38 @@ add("render", "[a](u){:width 50}");               // metadata on a non-image lin
 add("render", "![a](x.png \"cap\"){:width 10}");   // image + title + metadata
 add("render", "text ![i](a.png) and [l](b) end"); // mixed image/link in a line
 
+// --- Clojure-hiccup `[:tag …]` (C7) — inline & boundary cases (md) ---
+// allowlist membership (the #1 correctness risk): in vs out.
+add("hiccup", "x [:div] y");                  // inline Hiccup between plain
+add("hiccup", "x [:span] y");
+add("hiccup", "a [:a] b");                    // single-letter allowed tag
+add("hiccup", "a [:h1] b");                   // digit in name (allowed)
+add("hiccup", "a [:foo] b");                  // NOT a tag → plain
+add("hiccup", "a [:aa] b");                   // NOT a tag → plain
+add("hiccup", "a [:svg] b");                  // NOT a tag → plain
+add("hiccup", "a [:h7] b");                   // NOT a tag → plain
+add("hiccup", "a [:div2] b");                 // alnum continues name → not a tag
+add("hiccup", "a [:DIV] b");                  // case-insensitive allowlist → Hiccup
+add("hiccup", "a [:Section] b");              // mixed case → Hiccup
+// gate boundary: char after the name.
+add("hiccup", "x [:div.cls] y");              // `.` selector
+add("hiccup", "x [:div#id] y");               // `#` selector
+add("hiccup", "x [:div{:a 1}] y");            // `{` immediately → NOT hiccup
+add("hiccup", "x [:div-x] y");                // `-` in name → NOT hiccup
+// balanced capture: strings, nesting, braces, escapes.
+add("hiccup", 'x [:div "a]b"] y');            // `]` inside a string is protected
+add("hiccup", 'x [:div "a\\"]b"] y');         // escaped quote inside string
+add("hiccup", "x [:div [:span]] y");          // nested `[:` increments depth
+add("hiccup", "x [:div [x]] y");              // lone `[` does NOT nest → stops at first `]`
+add("hiccup", "x [:div {:a]}] y");            // `{}` not balanced; first `]` closes
+add("hiccup", "x [:div.cls {:a 1} \"hi\" [:span \"y\"]] y"); // full hiccup
+// unclosed / fallback.
+add("hiccup", "x [:div y");                   // no `]` → plain
+add("hiccup", "x [:div [:span] y");           // outer unclosed, inner inline Hiccup
+add("hiccup", 'x [:div "abc] y');             // unterminated string → plain
+add("hiccup", "x[:div]");                     // hiccup not at BOL → inline
+add("hiccup", "[:div]x and [:span]");         // BOL handled by block gen; here mid-text
+
 // emit
 const out = cases.map((c, idx) => ({ id: `c${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));

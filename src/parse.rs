@@ -38,7 +38,11 @@ struct Line<'a> {
 }
 
 pub fn parse(input: &str) -> Vec<Block> {
-    let lines = split_lines(input);
+    let mut lines = split_lines(input);
+    // Byte offset of the last `]` in the whole input (None if none): a block-level hiccup
+    // `[:tag …]` needs a closing `]`, so a line whose `[:` begins at/after this is skipped
+    // O(1) — keeping a run of unclosed `[:` block lines linear (see step 11d').
+    let last_rbracket = input.rfind(']');
     let fences = pair_fences(&lines); // open-line-idx -> (close-line-idx, lang)
     // Name-independent "no closer anywhere ahead" floors (the LAST line index that
     // could close each unclosed-opener family). `find_callout_end`/`find_drawer_end`/
@@ -65,8 +69,12 @@ pub fn parse(input: &str) -> Vec<Block> {
     let mut i = 0;
 
     while i < lines.len() {
-        let line = &lines[i];
-        let t = line.text;
+        // Copy the line's fields out (a `&'a str` + two `usize`s, none borrowing the
+        // `lines` Vec) so the block-hiccup remainder split (step 11d') can REWRITE
+        // `lines[ri]` in place without a borrow conflict.
+        let t = lines[i].text;
+        let line_start = lines[i].start;
+        let line_end = lines[i].end;
 
         // 1. fenced code (Src) — pre-paired, so this is the open line.
         if let Some((close, lang)) = fences.get(&i) {
@@ -87,7 +95,7 @@ pub fn parse(input: &str) -> Vec<Block> {
             out.push(Block::Src {
                 lang: lang.clone(),
                 code,
-                span: Some(Span(line.start, end)),
+                span: Some(Span(line_start, end)),
             });
             continue;
         }
@@ -105,7 +113,7 @@ pub fn parse(input: &str) -> Vec<Block> {
                     String::new()
                 };
                 let children = parse(&inner);
-                let span = Some(Span(line.start, lines[close].end));
+                let span = Some(Span(line_start, lines[close].end));
                 if name.eq_ignore_ascii_case("QUOTE") {
                     out.push(Block::Quote { children, span });
                 } else {
@@ -118,12 +126,12 @@ pub fn parse(input: &str) -> Vec<Block> {
         }
 
         // 2b. LaTeX environment `\begin{X} … \end{X}` (mldoc Latex_env, before Block).
-        let line_content_end = line.start + t.len();
+        let line_content_end = line_start + t.len();
         if let Some((name, content, consumed_end)) =
-            crate::inline::parse_latex_env(input, line.start, line_content_end)
+            crate::inline::parse_latex_env(input, line_start, line_content_end)
         {
             flush_para(&mut out, &mut para, input);
-            out.push(Block::LatexEnv { name, content, span: Some(Span(line.start, consumed_end)) });
+            out.push(Block::LatexEnv { name, content, span: Some(Span(line_start, consumed_end)) });
             // resume at the first line starting at/after consumed_end (always > i).
             let mut ni = i + 1;
             while ni < lines.len() && lines[ni].start < consumed_end {
@@ -148,9 +156,9 @@ pub fn parse(input: &str) -> Vec<Block> {
                     marker,
                     priority,
                     htags: vec![],
-                    span: Some(Span(line.start, line.start + trail)),
+                    span: Some(Span(line_start, line_start + trail)),
                 });
-                para = Some((line.start + trail, line.end));
+                para = Some((line_start + trail, line_end));
                 i += 1;
                 continue;
             }
@@ -161,7 +169,7 @@ pub fn parse(input: &str) -> Vec<Block> {
                 marker,
                 priority,
                 htags: vec![],
-                span: Some(Span(line.start, line.end)),
+                span: Some(Span(line_start, line_end)),
             });
             i += 1;
             continue;
@@ -170,7 +178,7 @@ pub fn parse(input: &str) -> Vec<Block> {
         // 4. horizontal rule (before dash bullet / list)
         if is_hr(t) {
             flush_para(&mut out, &mut para, input);
-            out.push(Block::Hr { span: Some(Span(line.start, line.end)) });
+            out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
             i += 1;
             continue;
         }
@@ -185,7 +193,7 @@ pub fn parse(input: &str) -> Vec<Block> {
             let dw = leading_ws(t);
             let after = t[dw + 1..].trim_start(); // after '-' + spaces
             let (size, content) = atx_size(after); // heading `#{1,n}` size + the rest
-            let content_off = line.start + (t.len() - content.len());
+            let content_off = line_start + (t.len() - content.len());
             // emit the empty (title-less) bullet that precedes a split-off sibling block.
             macro_rules! empty_bullet {
                 () => {
@@ -196,7 +204,7 @@ pub fn parse(input: &str) -> Vec<Block> {
                         marker: None,
                         priority: None,
                         htags: vec![],
-                        span: Some(Span(line.start, content_off)),
+                        span: Some(Span(line_start, content_off)),
                     });
                 };
             }
@@ -264,7 +272,7 @@ pub fn parse(input: &str) -> Vec<Block> {
                 flush_para(&mut out, &mut para, input);
                 empty_bullet!();
                 let mut props = vec![kv];
-                let mut end = line.end;
+                let mut end = line_end;
                 i += 1;
                 while i < lines.len() {
                     if let Some(kv) = property(lines[i].text) {
@@ -284,7 +292,7 @@ pub fn parse(input: &str) -> Vec<Block> {
             if is_hr(content) {
                 flush_para(&mut out, &mut para, input);
                 empty_bullet!();
-                out.push(Block::Hr { span: Some(Span(content_off, line.end)) });
+                out.push(Block::Hr { span: Some(Span(content_off, line_end)) });
                 i += 1;
                 continue;
             }
@@ -292,7 +300,7 @@ pub fn parse(input: &str) -> Vec<Block> {
             if let Some(math) = displayed_math(content) {
                 flush_para(&mut out, &mut para, input);
                 empty_bullet!();
-                out.push(Block::DisplayedMath { text: math, span: Some(Span(content_off, line.end)) });
+                out.push(Block::DisplayedMath { text: math, span: Some(Span(content_off, line_end)) });
                 i += 1;
                 continue;
             }
@@ -300,13 +308,13 @@ pub fn parse(input: &str) -> Vec<Block> {
             if is_raw_html(content) {
                 flush_para(&mut out, &mut para, input);
                 empty_bullet!();
-                out.push(Block::RawHtml { text: content.to_string(), span: Some(Span(content_off, line.end)) });
+                out.push(Block::RawHtml { text: content.to_string(), span: Some(Span(content_off, line_end)) });
                 i += 1;
                 continue;
             }
             // (g) LaTeX environment opener `\begin{X} … \end{X}` (may span lines).
             if let Some((name, lc, consumed_end)) =
-                crate::inline::parse_latex_env(input, content_off, line.start + t.len())
+                crate::inline::parse_latex_env(input, content_off, line_start + t.len())
             {
                 flush_para(&mut out, &mut para, input);
                 empty_bullet!();
@@ -340,7 +348,7 @@ pub fn parse(input: &str) -> Vec<Block> {
                     out.push(Block::FootnoteDef {
                         name: fname,
                         inline: stub_inline(fbody),
-                        span: Some(Span(content_off, line.end)),
+                        span: Some(Span(content_off, line_end)),
                     });
                     i += 1;
                     continue;
@@ -363,9 +371,9 @@ pub fn parse(input: &str) -> Vec<Block> {
                     marker,
                     priority,
                     htags: vec![],
-                    span: Some(Span(line.start, line.start + trail)),
+                    span: Some(Span(line_start, line_start + trail)),
                 });
-                para = Some((line.start + trail, line.end));
+                para = Some((line_start + trail, line_end));
                 i += 1;
                 continue;
             }
@@ -376,7 +384,7 @@ pub fn parse(input: &str) -> Vec<Block> {
                 marker,
                 priority,
                 htags: vec![],
-                span: Some(Span(line.start, line.end)),
+                span: Some(Span(line_start, line_end)),
             });
             i += 1;
             continue;
@@ -388,7 +396,7 @@ pub fn parse(input: &str) -> Vec<Block> {
             out.push(Block::FootnoteDef {
                 name: fname,
                 inline: stub_inline(content),
-                span: Some(Span(line.start, line.end)),
+                span: Some(Span(line_start, line_end)),
             });
             i += 1;
             continue;
@@ -506,7 +514,7 @@ pub fn parse(input: &str) -> Vec<Block> {
             flush_para(&mut out, &mut para, input);
             out.push(Block::RawHtml {
                 text: t.to_string(),
-                span: Some(Span(line.start, line.end)),
+                span: Some(Span(line_start, line_end)),
             });
             i += 1;
             continue;
@@ -517,7 +525,7 @@ pub fn parse(input: &str) -> Vec<Block> {
             flush_para(&mut out, &mut para, input);
             out.push(Block::DisplayedMath {
                 text: math,
-                span: Some(Span(line.start, line.end)),
+                span: Some(Span(line_start, line_end)),
             });
             i += 1;
             continue;
@@ -532,7 +540,7 @@ pub fn parse(input: &str) -> Vec<Block> {
                 .and_then(|_| find_drawer_end(&lines, i))
             {
                 flush_para(&mut out, &mut para, input);
-                let span = Some(Span(line.start, lines[close].end));
+                let span = Some(Span(line_start, lines[close].end));
                 if name == "properties" {
                     let props = lines[i + 1..close]
                         .iter()
@@ -548,6 +556,57 @@ pub fn parse(input: &str) -> Vec<Block> {
             // no :END: → fall through to paragraph.
         }
 
+        // 11d'. block-level Clojure-hiccup `[:tag …]` at BOL (after leading ws). mldoc
+        // emits a `Hiccup` block when a line (no shielding construct claimed it) starts
+        // with a balanced hiccup vector; the balanced capture is string-aware and MAY
+        // span lines, and the remainder past the `]` re-enters block parsing at BOL
+        // (`[:div]x` → [Hiccup, Paragraph x]; `[:a][:b]` → two Hiccups). Tried before the
+        // def-list / paragraph fallbacks (a hiccup wins: `[:div]\n: def` → [Hiccup, Para]).
+        {
+            let lw = leading_ws(t);
+            let rec = line_start + lw;
+            if last_rbracket.is_some_and(|last| rec <= last) && input[rec..].starts_with("[:") {
+                if let Some(cap_end) = crate::inline::parse_hiccup(input, rec) {
+                    flush_para(&mut out, &mut para, input);
+                    out.push(Block::Hiccup {
+                        v: input[rec..cap_end].to_string(),
+                        span: Some(Span(line_start, cap_end)),
+                    });
+                    // Resume after the `]`, first absorbing consecutive eols (mldoc's
+                    // `<* optional eols`: `[:div]\n\nx` → [Hiccup, Para "x"], i.e. blank
+                    // lines after a whole-line hiccup are swallowed — but a same-line
+                    // remainder `[:div]x\n\ny` is NOT, so skip only `\n`/`\r` bytes).
+                    let bytes = input.as_bytes();
+                    let mut resume = cap_end;
+                    while resume < bytes.len() && matches!(bytes[resume], b'\n' | b'\r') {
+                        resume += 1;
+                    }
+                    if resume >= bytes.len() {
+                        break; // captured to EOF (+ trailing eols)
+                    }
+                    // Find the line containing `resume`; process it as-is when `resume` is
+                    // at its start, else rewrite it to the remainder slice.
+                    let mut ri = i;
+                    while ri < lines.len() && lines[ri].end <= resume {
+                        ri += 1;
+                    }
+                    if ri >= lines.len() {
+                        break; // defensive (resume < len ⇒ unreachable)
+                    }
+                    if resume > lines[ri].start {
+                        let content_end = lines[ri].start + lines[ri].text.len();
+                        lines[ri] = Line {
+                            start: resume,
+                            end: lines[ri].end,
+                            text: &input[resume..content_end],
+                        };
+                    }
+                    i = ri;
+                    continue;
+                }
+            }
+        }
+
         // 11d. markdown definition list (mldoc `lists0.ml` `md_definition`, the Lists
         // fallback, tried just above paragraph): a (would-be paragraph) term line
         // immediately followed by a `: <def>` line. mldoc pulls the term out of a
@@ -561,7 +620,7 @@ pub fn parse(input: &str) -> Vec<Block> {
             let (item, ni) = build_def_list(&lines, i);
             out.push(Block::List {
                 items: vec![item],
-                span: Some(Span(line.start, lines[ni - 1].end)),
+                span: Some(Span(line_start, lines[ni - 1].end)),
             });
             i = ni;
             continue;
@@ -569,8 +628,8 @@ pub fn parse(input: &str) -> Vec<Block> {
 
         // 12. plain line — accumulate into the current paragraph.
         para = Some(match para {
-            Some((s, _)) => (s, line.end),
-            None => (line.start, line.end),
+            Some((s, _)) => (s, line_end),
+            None => (line_start, line_end),
         });
         i += 1;
     }
@@ -827,6 +886,32 @@ fn dash_bullet_level(s: &str) -> Option<u32> {
     }
 }
 
+/// Build a markdown `*`/`+`/`N.` list item's content from its raw body. mldoc block-parses
+/// list-item content with a restricted set that recognizes block-Hiccups (`[:tag …]`) but
+/// not headings/etc.: a body beginning with one or more `[:tag …]` vectors yields those
+/// `Hiccup` blocks, then the remainder (if any) as one Paragraph; anything else is a single
+/// inline-parsed Paragraph (`* [:div]x` → [Hiccup, Para "x"]; `* a [:div] b` → [Para]).
+fn list_item_content(body: &str) -> Vec<Block> {
+    let mut pos = 0;
+    let mut blocks: Vec<Block> = Vec::new();
+    while body[pos..].starts_with("[:") {
+        match crate::inline::parse_hiccup(body, pos) {
+            Some(end) => {
+                blocks.push(Block::Hiccup { v: body[pos..end].to_string(), span: None });
+                pos = end;
+            }
+            None => break,
+        }
+    }
+    if blocks.is_empty() {
+        return vec![Block::Paragraph { inline: stub_inline(body), span: None }];
+    }
+    if pos < body.len() {
+        blocks.push(Block::Paragraph { inline: stub_inline(&body[pos..]), span: None });
+    }
+    blocks
+}
+
 fn list_item(s: &str) -> Option<ListItem> {
     let ws = leading_ws(s);
     let rest = &s[ws..];
@@ -843,13 +928,10 @@ fn list_item(s: &str) -> Option<ListItem> {
                 ordered: false,
                 number: None,
                 indent: ws as u32,
-                content: vec![Block::Paragraph {
-                    // `*`/`+`/`N.` list content is RAW after the marker+checkbox — mldoc
-                    // does NOT strip ATX `#`/task-markers here (unlike `-` bullets):
-                    // `* # h` → "# h", `* TODO x` → "TODO x".
-                    inline: stub_inline(body),
-                    span: None,
-                }],
+                // `*`/`+`/`N.` list content is RAW after the marker+checkbox — mldoc does
+                // NOT strip ATX `#`/task-markers here (unlike `-` bullets): `* # h` → "# h".
+                // It IS block-parsed for leading hiccups (`* [:div]` → item content [Hiccup]).
+                content: list_item_content(body),
                 items: vec![],
                 name: vec![],
                 checkbox,
@@ -873,10 +955,7 @@ fn list_item(s: &str) -> Option<ListItem> {
                         ordered: true,
                         number: Some(number),
                         indent: ws as u32,
-                        content: vec![Block::Paragraph {
-                            inline: stub_inline(body), // raw (no `#`/marker strip — mldoc)
-                            span: None,
-                        }],
+                        content: list_item_content(body), // raw + leading-hiccup blocks
                         items: vec![],
                         name: vec![],
                         checkbox,
@@ -977,38 +1056,89 @@ fn quote_line_content(s: &str, first: bool) -> Option<String> {
 }
 
 /// Parse a Markdown blockquote body (de-`>`'d content lines) into the inner block
-/// sequence. mldoc recognizes only Lists (`*`/`+`/`N.`) and Paragraphs inside a quote
-/// (no headings/tables). A paragraph run joins its lines with `keep_line_break` `Break`s
-/// and a trailing `Break` UNLESS it is immediately followed by a List (mldoc drops that
-/// break). C2.
+/// sequence. mldoc recognizes Lists (`*`/`+`/`N.`), block-Hiccups (`[:tag …]`) and
+/// Paragraphs inside a quote (no headings/tables). A paragraph run joins its lines with
+/// `keep_line_break` `Break`s and a trailing `Break` UNLESS it is immediately followed by
+/// a List or a Hiccup (mldoc drops that break). C2.
 fn parse_quote_body(lines: &[String]) -> Vec<Block> {
+    // Expand each (de-`>`'d, trim_start'd) body line into block-hiccup pieces + the text
+    // remainder: a `[:tag …]` at a body-line BOL becomes its own `Hiccup` (mldoc emits one
+    // inside a quote body too). A hiccup that starts mid-line (`a [:div]`) stays in the
+    // Text piece and is handled by the inline parser. Hiccups are captured WITHIN a single
+    // body line (a quote hiccup spanning `>` lines is not modeled — vanishingly rare).
+    enum Q {
+        Hic(String),
+        Text(String),
+    }
+    let mut items: Vec<Q> = Vec::new();
+    for s in lines {
+        let mut pos = 0;
+        while s[pos..].starts_with("[:") {
+            match crate::inline::parse_hiccup(s, pos) {
+                Some(end) => {
+                    items.push(Q::Hic(s[pos..end].to_string()));
+                    pos = end;
+                }
+                None => break,
+            }
+        }
+        if pos == 0 {
+            items.push(Q::Text(s.clone())); // whole line (no leading hiccup)
+        } else if pos < s.len() {
+            items.push(Q::Text(s[pos..].to_string())); // remainder after the hiccup(s)
+        }
+        // pos == s.len() with peeled hiccup(s): line fully consumed, no Text piece.
+    }
+
+    let list_at = |q: &Q| -> Option<ListItem> {
+        match q {
+            Q::Text(t) => list_item(t),
+            Q::Hic(_) => None,
+        }
+    };
     let mut out = Vec::new();
-    let n = lines.len();
+    let n = items.len();
     let mut i = 0;
     while i < n {
-        if list_item(&lines[i]).is_some() {
-            let mut items = Vec::new();
-            while i < n {
-                match list_item(&lines[i]) {
-                    Some(it) => {
-                        items.push(it);
-                        i += 1;
-                    }
-                    None => break,
-                }
-            }
-            out.push(Block::List { items: crate::projection::nest_items(items), span: None });
-        } else {
-            let start = i;
-            while i < n && list_item(&lines[i]).is_none() {
+        match &items[i] {
+            Q::Hic(v) => {
+                out.push(Block::Hiccup { v: v.clone(), span: None });
                 i += 1;
             }
-            let followed_by_list = i < n;
-            let mut text = lines[start..i].join("\n");
-            if !followed_by_list {
-                text.push('\n');
+            _ if list_at(&items[i]).is_some() => {
+                let mut litems = Vec::new();
+                while i < n {
+                    match list_at(&items[i]) {
+                        Some(it) => {
+                            litems.push(it);
+                            i += 1;
+                        }
+                        None => break,
+                    }
+                }
+                out.push(Block::List { items: crate::projection::nest_items(litems), span: None });
             }
-            out.push(Block::Paragraph { inline: stub_inline(&text), span: None });
+            _ => {
+                // paragraph run: consecutive non-list Text pieces.
+                let mut texts: Vec<&str> = Vec::new();
+                while i < n {
+                    match &items[i] {
+                        Q::Text(t) if list_item(t).is_none() => {
+                            texts.push(t.as_str());
+                            i += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                // a following List or Hiccup drops the paragraph's trailing Break (same
+                // rule mldoc applies before a List in the no-hiccup case).
+                let followed = i < n;
+                let mut text = texts.join("\n");
+                if !followed {
+                    text.push('\n');
+                }
+                out.push(Block::Paragraph { inline: stub_inline(&text), span: None });
+            }
         }
     }
     out
@@ -1221,6 +1351,7 @@ mod tests {
             Block::Comment { .. } => "comment",
             Block::Example { .. } => "example",
             Block::LatexEnv { .. } => "latex_env",
+            Block::Hiccup { .. } => "hiccup",
         }).collect()
     }
 
@@ -1247,6 +1378,41 @@ mod tests {
         // size + opener combine; but `[^id]:` after a `#` is an inline ref (no split).
         assert_eq!(kinds("- # ---"), ["bullet", "hr"]);
         assert_eq!(kinds("- # [^1]: b"), ["bullet"]);
+    }
+
+    #[test]
+    fn block_hiccup() {
+        // whole-line hiccup → Hiccup block; not-a-tag → paragraph.
+        assert_eq!(kinds("[:div]"), ["hiccup"]);
+        assert_eq!(kinds("  [:div]"), ["hiccup"]); // leading ws absorbed
+        assert_eq!(kinds("[:foo]"), ["paragraph"]);
+        // remainder past the `]` re-enters block parsing at BOL.
+        assert_eq!(kinds("[:div]x"), ["hiccup", "paragraph"]);
+        assert_eq!(kinds("[:div]# h"), ["hiccup", "heading"]);
+        assert_eq!(kinds("[:div]- x"), ["hiccup", "bullet"]);
+        assert_eq!(kinds("[:div][:span]"), ["hiccup", "hiccup"]);
+        assert_eq!(kinds("[:div]\n: def"), ["hiccup", "paragraph"]); // hiccup beats def-list
+        // shielded by a fenced code block / breaks a paragraph.
+        assert_eq!(kinds("```\n[:div]\n```"), ["src"]);
+        assert_eq!(kinds("foo\n[:div]\nbar"), ["paragraph", "hiccup", "paragraph"]);
+        // payload is the raw bracket text.
+        match &parse("[:div.cls {:a 1}]")[0] {
+            Block::Hiccup { v, .. } => assert_eq!(v, "[:div.cls {:a 1}]"),
+            _ => panic!("expected Hiccup"),
+        }
+        // list-item content is block-parsed for leading hiccups.
+        match &parse("* [:div]")[0] {
+            Block::List { items, .. } => {
+                assert!(matches!(items[0].content[0], Block::Hiccup { .. }));
+            }
+            _ => panic!("expected List"),
+        }
+    }
+
+    #[test]
+    fn block_hiccup_runs_terminate() {
+        let _ = parse(&"[:div ".repeat(20000)); // unclosed block-hiccup lines
+        let _ = parse(&"[:a]".repeat(20000)); // consecutive whole-line hiccups
     }
 
     #[test]
@@ -1363,7 +1529,8 @@ mod tests {
             | Block::DisplayedMath { span, .. } | Block::Drawer { span, .. }
             | Block::Directive { span, .. } | Block::Comment { span, .. }
             | Block::Example { span, .. }
-            | Block::LatexEnv { span, .. } => *span,
+            | Block::LatexEnv { span, .. }
+            | Block::Hiccup { span, .. } => *span,
         }
     }
 
