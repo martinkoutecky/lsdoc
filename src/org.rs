@@ -65,7 +65,7 @@ pub fn parse(input: &str) -> Vec<Block> {
 /// is recognised in both contexts. Quote/Custom children re-enter via `parse`
 /// (`in_item = false`), matching mldoc's `block_content_parsers` for those.
 fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
-    let lines = split_lines(input);
+    let mut lines = split_lines(input);
     let fences = pair_fences(&lines);
     let mut out: Vec<Block> = Vec::new();
     let mut para: Option<(usize, usize)> = None;
@@ -79,20 +79,30 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
     // suffix is identical). Skipping the collector for those lines keeps repeated
     // collapses linear instead of O(n²) re-scanning.
     let mut collapse_floor = 0usize;
+    // Memo for the headline block-opener split (see `headline_split_opener`): block-names /
+    // fence-chars already known to have NO closer ahead, so repeated unclosed `* #+BEGIN_X`
+    // / `* ```` headlines don't each re-scan to EOF.
+    let mut no_block_end: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut no_close_fence: std::collections::HashSet<u8> = std::collections::HashSet::new();
     let mut i = 0;
 
     while i < lines.len() {
+        // `t`/`line_start`/`line_end` are copied out (a `&'a str` + two `usize`s, none
+        // borrowing the `lines` Vec) so the headline block-opener split can REWRITE
+        // `lines[i]` in place (see step 3) without a borrow conflict.
         let line = &lines[i];
         let t = line.text;
+        let line_start = line.start;
+        let line_end = line.end;
 
         // blank line: extend an open paragraph, else swallow (if absorbing) or start one.
         if t.trim().is_empty() {
             if let Some((s, _)) = para {
-                para = Some((s, line.end));
+                para = Some((s, line_end));
             } else if absorb {
                 // swallowed by the preceding block.
             } else {
-                para = Some((line.start, line.end));
+                para = Some((line_start, line_end));
             }
             i += 1;
             continue;
@@ -101,7 +111,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
         // 1. directive `#+KEY: value` (KEY != BEGIN_…) — not a list-item content block.
         if let Some((name, value)) = directive(t).filter(|_| !in_item) {
             flush_para(&mut out, &mut para, input, in_item);
-            out.push(Block::Directive { name, value, span: Some(Span(line.start, line.end)) });
+            out.push(Block::Directive { name, value, span: Some(Span(line_start, line_end)) });
             absorb = true;
             i += 1;
             continue;
@@ -115,7 +125,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
             flush_para(&mut out, &mut para, input, in_item);
             out.push(Block::Comment {
                 text: text.to_string(),
-                span: Some(Span(line.start, line.end)),
+                span: Some(Span(line_start, line_end)),
             });
             absorb = true;
             i += 1;
@@ -147,12 +157,12 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
                         }
                     }
                     let end = lines[j - 1].end;
-                    out.push(Block::Properties { props, span: Some(Span(line.start, end)) });
+                    out.push(Block::Properties { props, span: Some(Span(line_start, end)) });
                     absorb = folded;
                     i = j;
                     continue;
                 }
-                out.push(Block::Drawer { name, span: Some(Span(line.start, lines[close].end)) });
+                out.push(Block::Drawer { name, span: Some(Span(line_start, lines[close].end)) });
                 absorb = false;
                 i = close + 1;
                 continue;
@@ -161,8 +171,74 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
 
         // 3. headline `*{n} ` — not a list-item content block (stays a paragraph line).
         if let Some(level) = headline_level(t).filter(|_| !in_item) {
+            let stars = t.bytes().take_while(|&b| b == b'*').count();
+            let after = t[stars..].trim_start();
+            let (marker, priority, content) = split_markers(after);
+            // `content` is a (left-trimmed) suffix of the line, so its byte offset is
+            // recoverable from the lengths.
+            let content_off = line_start + (t.len() - content.len());
+
+            // SPLIT: the post-marker CONTENT begins a block-construct opener ⇒ emit an
+            // empty bullet (keeping level/marker/priority) and reparse CONTENT as the
+            // following block, exactly like mldoc's heading-title lookahead (heading0.ml).
+            if !content.is_empty()
+                && headline_split_opener(
+                    content,
+                    input,
+                    content_off,
+                    &lines,
+                    i,
+                    &mut no_block_end,
+                    &mut no_close_fence,
+                )
+            {
+                flush_para(&mut out, &mut para, input, in_item);
+                out.push(Block::Bullet {
+                    level,
+                    size: None,
+                    inline: vec![],
+                    marker,
+                    priority,
+                    htags: vec![],
+                    span: Some(Span(line_start, content_off)),
+                });
+                // Markdown ``` / ~~~ fence → Src: `pair_fences` was computed on the
+                // un-split lines (the `* ```` line isn't a fence opener there), so the
+                // CLOSING fence is located locally. The predicate only lets a fence reach
+                // here when it CLOSES, so `find_close_fence` is `Some`; the `if` is a
+                // belt-and-braces guard (an unclosed fence stays the heading title and
+                // never enters this branch).
+                if let Some((fchar, frun)) = fence_marker(content) {
+                    if let Some(close) = find_close_fence(&lines, i, fchar) {
+                        let code = if close > i + 1 {
+                            input[lines[i + 1].start..lines[close - 1].end].to_string()
+                        } else {
+                            String::new()
+                        };
+                        let lang = content[frun..].trim().to_string();
+                        out.push(Block::Src {
+                            lang,
+                            code,
+                            span: Some(Span(content_off, lines[close].end)),
+                        });
+                        absorb = true;
+                        i = close + 1;
+                        continue;
+                    }
+                }
+                // Generic reparse: REWRITE this line to its CONTENT slice and re-enter the
+                // loop WITHOUT advancing `i`, so the column-0 block parsers (and their
+                // multi-line consumption of the following real lines) handle it exactly as
+                // mldoc does. Terminates: `content` begins a non-`*` opener, so the headline
+                // branch can't re-fire on it and every other branch advances `i`.
+                lines[i] = Line { start: content_off, end: line_end, text: content };
+                absorb = false;
+                continue;
+            }
+
             flush_para(&mut out, &mut para, input, in_item);
-            let (marker, priority, inline, htags) = headline_parts(t);
+            let mut inline = parse_inline_org_top(content);
+            let htags = extract_htags(&mut inline);
             let empty_title = inline.is_empty() && htags.is_empty();
             out.push(Block::Bullet {
                 level,
@@ -171,18 +247,17 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
                 marker,
                 priority,
                 htags,
-                span: Some(Span(line.start, line.end)),
+                span: Some(Span(line_start, line_end)),
             });
             absorb = false;
             // mldoc quirk: an EMPTY-title headline that still has trailing whitespace
             // (`*** `, `* TODO `) emits the empty bullet, then the leftover whitespace
             // begins a fresh paragraph that absorbs the following lines (`* \nx` →
-            // Bullet + Paragraph[" ", Break, "x"]). A *block-construct* remainder
-            // (`* :x`/`* #+K:v`/`* | a |`) is left as documented adversarial noise.
+            // Bullet + Paragraph[" ", Break, "x"]).
             if empty_title {
                 let content_len = t.trim_end_matches([' ', '\t']).len();
                 if content_len < t.len() {
-                    para = Some((line.start + content_len, line.end));
+                    para = Some((line_start + content_len, line_end));
                 }
             }
             i += 1;
@@ -202,12 +277,12 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
         }
 
         // 4b. LaTeX environment `\begin{X} … \end{X}` (mldoc Latex_env, before Block).
-        let line_content_end = line.start + t.len();
+        let line_content_end = line_start + t.len();
         if let Some((name, content, consumed_end)) =
-            crate::inline::parse_latex_env(input, line.start, line_content_end)
+            crate::inline::parse_latex_env(input, line_start, line_content_end)
         {
             flush_para(&mut out, &mut para, input, in_item);
-            out.push(Block::LatexEnv { name, content, span: Some(Span(line.start, consumed_end)) });
+            out.push(Block::LatexEnv { name, content, span: Some(Span(line_start, consumed_end)) });
             absorb = false;
             let mut ni = i + 1;
             while ni < lines.len() && lines[ni].start < consumed_end {
@@ -225,7 +300,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
             } else {
                 String::new()
             };
-            out.push(Block::Src { lang: lang.clone(), code, span: Some(Span(line.start, lines[*close].end)) });
+            out.push(Block::Src { lang: lang.clone(), code, span: Some(Span(line_start, lines[*close].end)) });
             absorb = true;
             i = *close + 1;
             continue;
@@ -236,7 +311,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
             if let Some(close) = find_block_end(&lines, i, &name) {
                 flush_para(&mut out, &mut para, input, in_item);
                 let inner = block_code(&lines[i + 1..close]);
-                let span = Some(Span(line.start, lines[close].end));
+                let span = Some(Span(line_start, lines[close].end));
                 let lname = name.to_ascii_lowercase();
                 match lname.as_str() {
                     "src" => {
@@ -299,7 +374,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
         // 9. block-level displayed math `$$ … $$`.
         if let Some(math) = displayed_math(t) {
             flush_para(&mut out, &mut para, input, in_item);
-            out.push(Block::DisplayedMath { text: math, span: Some(Span(line.start, line.end)) });
+            out.push(Block::DisplayedMath { text: math, span: Some(Span(line_start, line_end)) });
             absorb = false;
             i += 1;
             continue;
@@ -308,7 +383,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
         // 10. raw HTML (single line, complete element).
         if is_raw_html(t) {
             flush_para(&mut out, &mut para, input, in_item);
-            out.push(Block::RawHtml { text: t.to_string(), span: Some(Span(line.start, line.end)) });
+            out.push(Block::RawHtml { text: t.to_string(), span: Some(Span(line_start, line_end)) });
             absorb = false;
             i += 1;
             continue;
@@ -323,7 +398,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
         if let Some((name, content)) = footnote_def(t).filter(|_| !in_item) {
             flush_para(&mut out, &mut para, input, in_item);
             // First body line: mldoc `line = take_till1 is_eol` drops a CRLF `\r`.
-            let mut body = strip_cr_eol(content, line_has_nl(input, line)).to_string();
+            let mut body = strip_cr_eol(content, line_has_nl(input, &lines[i])).to_string();
             let mut j = i + 1;
             while let Some(next) = lines.get(j) {
                 match footnote_cont(next.text, line_has_nl(input, next)) {
@@ -338,7 +413,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
             out.push(Block::FootnoteDef {
                 name,
                 inline: parse_inline_org_top(&body),
-                span: Some(Span(line.start, lines[j - 1].end)),
+                span: Some(Span(line_start, lines[j - 1].end)),
             });
             absorb = true;
             i = j;
@@ -378,7 +453,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
         // 13. horizontal rule (exactly 5 dashes).
         if is_org_hr(t) {
             flush_para(&mut out, &mut para, input, in_item);
-            out.push(Block::Hr { span: Some(Span(line.start, line.end)) });
+            out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
             absorb = false;
             i += 1;
             continue;
@@ -386,8 +461,8 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
 
         // 14. plain line → accumulate into the current paragraph.
         para = Some(match para {
-            Some((s, _)) => (s, line.end),
-            None => (line.start, line.end),
+            Some((s, _)) => (s, line_end),
+            None => (line_start, line_end),
         });
         absorb = false;
         i += 1;
@@ -522,14 +597,80 @@ fn headline_level(s: &str) -> Option<u32> {
     }
 }
 
-/// Returns (marker, priority, title inlines, htags) for a headline line.
-fn headline_parts(t: &str) -> (Option<String>, Option<String>, Vec<Inline>, Vec<String>) {
-    let stars = t.bytes().take_while(|&b| b == b'*').count();
-    let after = t[stars..].trim_start();
-    let (marker, priority, title_text) = split_markers(after);
-    let mut inline = parse_inline_org_top(title_text);
-    let htags = extract_htags(&mut inline);
-    (marker, priority, inline, htags)
+/// Does an org headline whose post-marker CONTENT is `content` (a non-empty,
+/// left-trimmed suffix of the headline line at byte `content_off` in `input`, the line
+/// being `lines[i]`) split into `[empty bullet, block]`? True iff reparsing CONTENT (+
+/// the following lines) as a column-0 block yields a *real block* — i.e. anything other
+/// than the Paragraph / Comment / List / Heading fallbacks that mldoc keeps as (or after)
+/// the heading title. Mirrors mldoc's Org heading-title lookahead (heading0.ml).
+///
+/// Single-line / always-terminating openers (`#+KEY:` directive, any `:`-line → Drawer
+/// or Example, `| … |` table, `\begin{}` latex env — which consumes to EOF when unclosed,
+/// `> ` quote, `$$…$$`, complete `<tag>…</tag>` html, valid `[fn:n] body`, `-----` hr)
+/// always produce their block, so they split unconditionally. A `#+BEGIN_X` block or a
+/// markdown ```/~~~ fence only becomes a block when it CLOSES; an unclosed one reparses
+/// as a Paragraph, so mldoc keeps it as the title (`* #+BEGIN_SRC\nx` → Heading titled
+/// `#+BEGIN_SRC`) — hence the explicit `find_block_end`/`find_close_fence` gate. Comment
+/// (`# x`), list (`- `/`+ `/`N. `) and nested-headline content match none of these.
+fn headline_split_opener(
+    content: &str,
+    input: &str,
+    content_off: usize,
+    lines: &[Line],
+    i: usize,
+    no_block_end: &mut std::collections::HashSet<String>,
+    no_close_fence: &mut std::collections::HashSet<u8>,
+) -> bool {
+    if directive(content).is_some()
+        || is_verbatim_line(content)
+        || is_table_row(content)
+        || crate::inline::parse_latex_env(input, content_off, content_off + content.len()).is_some()
+        || quote_opens(content)
+        || displayed_math(content).is_some()
+        || is_raw_html(content)
+        || footnote_def(content).is_some()
+        || is_org_hr(content)
+    {
+        return true;
+    }
+    // A `#+BEGIN_X` block / ```|~~~ fence only splits when it CLOSES. Memoise the "no
+    // closer ahead" verdict per block-name / fence-char: `find_block_end`/`find_close_fence`
+    // search `lines[i+1..]`, so once one returns None at line `i` it is None for every later
+    // line (the suffix only shrinks). Each distinct name/char then costs at most ONE full
+    // scan — keeping a run of repeated UNCLOSED openers linear, not O(n²).
+    if let Some(name) = block_begin(content) {
+        let key = name.to_ascii_lowercase();
+        if no_block_end.contains(&key) {
+            return false;
+        }
+        if find_block_end(lines, i, &name).is_some() {
+            return true;
+        }
+        no_block_end.insert(key);
+        return false;
+    }
+    if let Some((ch, _)) = fence_marker(content) {
+        if no_close_fence.contains(&ch) {
+            return false;
+        }
+        if find_close_fence(lines, i, ch).is_some() {
+            return true;
+        }
+        no_close_fence.insert(ch);
+        return false;
+    }
+    false
+}
+
+/// Find the closing fence (a `fence_marker` line of the same char) for a fence opener
+/// that lives in the CONTENT of the headline at line `from` (so `pair_fences`, computed
+/// on the un-split lines, never saw it). Mirrors `pair_fences`: the first same-char fence
+/// after `from` closes it (different-char fences are ignored).
+fn find_close_fence(lines: &[Line], from: usize, fchar: u8) -> Option<usize> {
+    lines[from + 1..]
+        .iter()
+        .position(|l| fence_marker(l.text).map(|(c, _)| c) == Some(fchar))
+        .map(|off| from + 1 + off)
 }
 
 /// Strip a leading task marker (followed by a space) and priority `[#X]`.
@@ -2398,6 +2539,85 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    // ---- headline block-opener split (mldoc heading-title lookahead) -------
+
+    #[test]
+    fn headline_split_openers() {
+        // a headline whose post-marker CONTENT is a block construct splits into
+        // [empty bullet, <block>] — the org analog of the md `-` bullet-opener split.
+        assert_eq!(bkinds("* #+TITLE: x"), ["bullet", "directive"]);
+        assert_eq!(bkinds("* :PROPERTIES:\n:a: b\n:END:"), ["bullet", "properties"]);
+        assert_eq!(bkinds("* :LOGBOOK:\nx\n:END:"), ["bullet", "drawer"]);
+        assert_eq!(bkinds("* :NAME:"), ["bullet", "example"]); // bare drawer → verbatim
+        assert_eq!(bkinds("* : text"), ["bullet", "example"]);
+        assert_eq!(bkinds("* #+BEGIN_SRC\ncode\n#+END_SRC"), ["bullet", "src"]);
+        assert_eq!(bkinds("* #+BEGIN_QUOTE\nq\n#+END_QUOTE"), ["bullet", "quote"]);
+        assert_eq!(bkinds("* #+BEGIN_FOO\nf\n#+END_FOO"), ["bullet", "custom"]);
+        assert_eq!(bkinds("* | a | b |"), ["bullet", "table"]);
+        assert_eq!(bkinds("* | a | b |\n| c | d |"), ["bullet", "table"]);
+        assert_eq!(bkinds("* > quote"), ["bullet", "quote"]);
+        assert_eq!(bkinds("* $$x$$"), ["bullet", "displayed_math"]);
+        assert_eq!(bkinds("* <div>x</div>"), ["bullet", "raw_html"]);
+        assert_eq!(bkinds("* [fn:1] body"), ["bullet", "footnote_def"]);
+        assert_eq!(bkinds("* -----"), ["bullet", "hr"]);
+        assert_eq!(bkinds("* \\begin{x}\ny\n\\end{x}"), ["bullet", "latex_env"]);
+        assert_eq!(bkinds("* \\begin{x}"), ["bullet", "latex_env"]); // latex consumes to EOF
+        assert_eq!(bkinds("* ```\ncode\n```"), ["bullet", "src"]); // markdown fence
+        assert_eq!(bkinds("* ~~~\nx\n~~~"), ["bullet", "src"]);
+    }
+
+    #[test]
+    fn headline_split_keeps_marker_priority_level_empty_title() {
+        // the empty bullet KEEPS level/marker/priority but has an empty title + no htags.
+        match &parse("*** TODO [#A] #+TITLE: x")[0] {
+            Block::Bullet { level, marker, priority, inline, htags, .. } => {
+                assert_eq!(*level, 3);
+                assert_eq!(marker.as_deref(), Some("TODO"));
+                assert_eq!(priority.as_deref(), Some("A"));
+                assert!(inline.is_empty());
+                assert!(htags.is_empty());
+            }
+            _ => panic!("expected empty Bullet"),
+        }
+        // trailing `:tag:` folds into the directive value (no htags on the bullet).
+        match &parse("* #+TITLE: x :a:b:")[1] {
+            Block::Directive { name, value, .. } => {
+                assert_eq!(name, "TITLE");
+                assert_eq!(value, "x :a:b:");
+            }
+            _ => panic!("expected Directive"),
+        }
+    }
+
+    #[test]
+    fn headline_split_non_splitters() {
+        // comment / list / nested headline / plain / tag / bare-marker content stays a
+        // single (non-split) headline.
+        assert_eq!(bkinds("* # comment"), ["bullet"]);
+        assert_eq!(bkinds("* TODO task"), ["bullet"]);
+        assert_eq!(bkinds("* #tag x"), ["bullet"]);
+        assert_eq!(bkinds("* - item"), ["bullet"]);
+        assert_eq!(bkinds("* 1. item"), ["bullet"]);
+        assert_eq!(bkinds("* ** x"), ["bullet"]);
+        assert_eq!(bkinds("* plain title"), ["bullet"]);
+        // an UNCLOSED #+BEGIN / fence is NOT a block ⇒ stays the heading title.
+        assert_eq!(bkinds("* #+BEGIN_SRC\ncode"), ["bullet", "paragraph"]);
+        assert_eq!(bkinds("* ```\nx"), ["bullet", "paragraph"]);
+        // a short/invalid footnote body is an inline ref, not a definition.
+        assert_eq!(bkinds("* [fn:1] a"), ["bullet"]);
+        // bare empty headline (no split, existing behavior).
+        assert_eq!(bkinds("*"), ["bullet"]);
+    }
+
+    #[test]
+    fn headline_split_following_blocks() {
+        // the split block absorbs following blanks / continues paragraphs like a col-0
+        // block, and adjacent headlines are unaffected.
+        assert_eq!(bkinds("* #+TITLE: x\n\ny"), ["bullet", "directive", "paragraph"]);
+        assert_eq!(bkinds("* #+TITLE: x\n* Second"), ["bullet", "directive", "bullet"]);
+        assert_eq!(bkinds("* :PROPERTIES:\n:a: b\n:END:\n#+FOO: bar"), ["bullet", "properties"]);
     }
 
     // ---- emphasis ---------------------------------------------------------

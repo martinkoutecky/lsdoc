@@ -312,6 +312,52 @@ add("comment", "- a\n  # c");                       // Comment is in-item conten
 add("comment", "[fn:1] body\n# c");                 // footnote def + Comment (terminates)
 add("comment", "[fn:1] body\n  # x");               // was the indented-# footnote residual
 
+// (10) headline block-opener split (mldoc heading0.ml title lookahead): a headline
+// whose post-marker CONTENT begins a block construct splits into [empty bullet, block]
+// (the org analog of the md `-` bullet-opener split). The empty bullet KEEPS
+// level/marker/priority, with an empty title and no htags. The 12 real-graph
+// divergences were all `* #+TITLE: x` namespace pages (blockgate.mjs).
+add("hlsplit", "* #+TITLE: x");                     // → [bullet, directive]
+add("hlsplit", "* #+FOO:bar");                      // directive, no space after colon
+add("hlsplit", "* #+KEY:");                         // directive, empty value
+add("hlsplit", "** #+TITLE: x");                    // level-2 empty bullet
+add("hlsplit", "*** #+TITLE: x");                   // level-3 empty bullet
+add("hlsplit", "* TODO #+TITLE: x");                // empty bullet KEEPS marker TODO
+add("hlsplit", "* TODO [#A] #+TITLE: x");           // KEEPS marker + priority
+add("hlsplit", "* [#A] #+TITLE: x");                // KEEPS priority only
+add("hlsplit", "* #+TITLE: x :a:b:");               // no htags — tags fold into the value
+add("hlsplit", "* :PROPERTIES:\n:a: b\n:END:");     // → [bullet, properties]
+add("hlsplit", "* :PROPERTIES:\n:a: b\n:END:\n#+FOO: bar"); // property folds directive
+add("hlsplit", "* :LOGBOOK:\nx\n:END:");            // → [bullet, drawer]
+add("hlsplit", "* :NAME:");                         // bare drawer → [bullet, example]
+add("hlsplit", "* : text");                         // verbatim `:`-line → [bullet, example]
+add("hlsplit", "* #+BEGIN_SRC\ncode\n#+END_SRC");   // → [bullet, src]
+add("hlsplit", "* #+BEGIN_SRC js\ncode\n#+END_SRC");
+add("hlsplit", "* #+BEGIN_QUOTE\nq\n#+END_QUOTE");  // → [bullet, quote]
+add("hlsplit", "* #+BEGIN_FOO\nf\n#+END_FOO");      // → [bullet, custom]
+add("hlsplit", "* | a | b |");                      // → [bullet, table]
+add("hlsplit", "* | a | b |\n| c | d |");           // multi-row table
+add("hlsplit", "* > quote");                        // md blockquote → [bullet, quote]
+add("hlsplit", "* $$x$$");                          // → [bullet, displayed_math]
+add("hlsplit", "* <div>x</div>");                   // → [bullet, raw_html]
+add("hlsplit", "* [fn:1] body");                    // → [bullet, footnote_def]
+add("hlsplit", "* -----");                          // org hr → [bullet, hr]
+add("hlsplit", "* \\begin{x}\ny\n\\end{x}");        // → [bullet, latex_env]
+add("hlsplit", "* \\begin{x}");                     // latex env consumes to EOF (splits)
+add("hlsplit", "* ```\ncode\n```");                 // markdown fence → [bullet, src]
+add("hlsplit", "* ~~~\nx\n~~~");                     // tilde fence → [bullet, src]
+add("hlsplit", "* #+TITLE: x\n\ny");                // directive absorbs blank, then para
+add("hlsplit", "* #+TITLE: x\n* Second");           // adjacent headline unaffected
+// NON-splitters: content stays the heading title.
+add("hlsplit", "* # comment");                      // comment is NOT a split
+add("hlsplit", "* TODO task");                      // bare marker
+add("hlsplit", "* #tag x");                         // a tag is not a directive
+add("hlsplit", "* - item");                         // a list is not a split
+add("hlsplit", "* ** x");                           // nested-headline content
+add("hlsplit", "* #+BEGIN_SRC\ncode");              // UNCLOSED block ⇒ title, no split
+add("hlsplit", "* ```\nx");                         // UNCLOSED fence ⇒ title, no split
+add("hlsplit", "* [fn:1] a");                       // 1-byte footnote body ⇒ inline ref
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

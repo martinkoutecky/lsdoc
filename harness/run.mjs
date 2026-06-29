@@ -64,4 +64,7 @@ run("cargo", ["run", "-q", "--bin", "lsdoc-parse", "--",
   { cwd: repo, env: cargoEnv });
 // 4. compare (gates: non-zero exit on any divergence)
 const cmp = run("node", [join(__dir, "compare.mjs")], { allowFail: true });
-process.exit(cmp.status ?? 0);
+// 5. real-block-body gate (Tine feeds lsdoc per-block, re-bulleted): runs over the
+//    machine-specific block-raws.json exports if present, else skips. See FOR-TINE.md.
+const bg = run("node", [join(__dir, "blockgate.mjs")], { allowFail: true });
+process.exit((cmp.status ?? 0) || (bg.status ?? 0));

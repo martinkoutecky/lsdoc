@@ -1384,5 +1384,239 @@
   "cat": "comment",
   "input": "[fn:1] body\n  # x",
   "format": "org"
+ },
+ {
+  "id": "o231",
+  "cat": "hlsplit",
+  "input": "* #+TITLE: x",
+  "format": "org"
+ },
+ {
+  "id": "o232",
+  "cat": "hlsplit",
+  "input": "* #+FOO:bar",
+  "format": "org"
+ },
+ {
+  "id": "o233",
+  "cat": "hlsplit",
+  "input": "* #+KEY:",
+  "format": "org"
+ },
+ {
+  "id": "o234",
+  "cat": "hlsplit",
+  "input": "** #+TITLE: x",
+  "format": "org"
+ },
+ {
+  "id": "o235",
+  "cat": "hlsplit",
+  "input": "*** #+TITLE: x",
+  "format": "org"
+ },
+ {
+  "id": "o236",
+  "cat": "hlsplit",
+  "input": "* TODO #+TITLE: x",
+  "format": "org"
+ },
+ {
+  "id": "o237",
+  "cat": "hlsplit",
+  "input": "* TODO [#A] #+TITLE: x",
+  "format": "org"
+ },
+ {
+  "id": "o238",
+  "cat": "hlsplit",
+  "input": "* [#A] #+TITLE: x",
+  "format": "org"
+ },
+ {
+  "id": "o239",
+  "cat": "hlsplit",
+  "input": "* #+TITLE: x :a:b:",
+  "format": "org"
+ },
+ {
+  "id": "o240",
+  "cat": "hlsplit",
+  "input": "* :PROPERTIES:\n:a: b\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o241",
+  "cat": "hlsplit",
+  "input": "* :PROPERTIES:\n:a: b\n:END:\n#+FOO: bar",
+  "format": "org"
+ },
+ {
+  "id": "o242",
+  "cat": "hlsplit",
+  "input": "* :LOGBOOK:\nx\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o243",
+  "cat": "hlsplit",
+  "input": "* :NAME:",
+  "format": "org"
+ },
+ {
+  "id": "o244",
+  "cat": "hlsplit",
+  "input": "* : text",
+  "format": "org"
+ },
+ {
+  "id": "o245",
+  "cat": "hlsplit",
+  "input": "* #+BEGIN_SRC\ncode\n#+END_SRC",
+  "format": "org"
+ },
+ {
+  "id": "o246",
+  "cat": "hlsplit",
+  "input": "* #+BEGIN_SRC js\ncode\n#+END_SRC",
+  "format": "org"
+ },
+ {
+  "id": "o247",
+  "cat": "hlsplit",
+  "input": "* #+BEGIN_QUOTE\nq\n#+END_QUOTE",
+  "format": "org"
+ },
+ {
+  "id": "o248",
+  "cat": "hlsplit",
+  "input": "* #+BEGIN_FOO\nf\n#+END_FOO",
+  "format": "org"
+ },
+ {
+  "id": "o249",
+  "cat": "hlsplit",
+  "input": "* | a | b |",
+  "format": "org"
+ },
+ {
+  "id": "o250",
+  "cat": "hlsplit",
+  "input": "* | a | b |\n| c | d |",
+  "format": "org"
+ },
+ {
+  "id": "o251",
+  "cat": "hlsplit",
+  "input": "* > quote",
+  "format": "org"
+ },
+ {
+  "id": "o252",
+  "cat": "hlsplit",
+  "input": "* $$x$$",
+  "format": "org"
+ },
+ {
+  "id": "o253",
+  "cat": "hlsplit",
+  "input": "* <div>x</div>",
+  "format": "org"
+ },
+ {
+  "id": "o254",
+  "cat": "hlsplit",
+  "input": "* [fn:1] body",
+  "format": "org"
+ },
+ {
+  "id": "o255",
+  "cat": "hlsplit",
+  "input": "* -----",
+  "format": "org"
+ },
+ {
+  "id": "o256",
+  "cat": "hlsplit",
+  "input": "* \\begin{x}\ny\n\\end{x}",
+  "format": "org"
+ },
+ {
+  "id": "o257",
+  "cat": "hlsplit",
+  "input": "* \\begin{x}",
+  "format": "org"
+ },
+ {
+  "id": "o258",
+  "cat": "hlsplit",
+  "input": "* ```\ncode\n```",
+  "format": "org"
+ },
+ {
+  "id": "o259",
+  "cat": "hlsplit",
+  "input": "* ~~~\nx\n~~~",
+  "format": "org"
+ },
+ {
+  "id": "o260",
+  "cat": "hlsplit",
+  "input": "* #+TITLE: x\n\ny",
+  "format": "org"
+ },
+ {
+  "id": "o261",
+  "cat": "hlsplit",
+  "input": "* #+TITLE: x\n* Second",
+  "format": "org"
+ },
+ {
+  "id": "o262",
+  "cat": "hlsplit",
+  "input": "* # comment",
+  "format": "org"
+ },
+ {
+  "id": "o263",
+  "cat": "hlsplit",
+  "input": "* TODO task",
+  "format": "org"
+ },
+ {
+  "id": "o264",
+  "cat": "hlsplit",
+  "input": "* #tag x",
+  "format": "org"
+ },
+ {
+  "id": "o265",
+  "cat": "hlsplit",
+  "input": "* - item",
+  "format": "org"
+ },
+ {
+  "id": "o266",
+  "cat": "hlsplit",
+  "input": "* ** x",
+  "format": "org"
+ },
+ {
+  "id": "o267",
+  "cat": "hlsplit",
+  "input": "* #+BEGIN_SRC\ncode",
+  "format": "org"
+ },
+ {
+  "id": "o268",
+  "cat": "hlsplit",
+  "input": "* ```\nx",
+  "format": "org"
+ },
+ {
+  "id": "o269",
+  "cat": "hlsplit",
+  "input": "* [fn:1] a",
+  "format": "org"
  }
 ]

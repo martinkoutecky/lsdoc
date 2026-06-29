@@ -779,3 +779,33 @@ needs something non-minimal) — the bias-mitigated default is "reachable until 
 (realistic) periodically; a JUMP above the fragment-windowing baseline = a new reachable bug.
 It is NOT yet a hard 0-gate (the file-window fragment model has an irreducible artifact floor);
 mutating real block bodies would make it one.
+
+## Org headline block-opener split (the org analog of the md bullet-opener split)
+
+Found by `harness/blockgate.mjs` — the real-block-body gate built on Tine's `block-raws.json`
+export (each real block's `raw`, re-bulleted `* {raw}` the OG way; the most realistic gate,
+now wired into `run.mjs`, skips if the machine-specific exports are absent). It caught 12 real
+divergences, all org `* #+TITLE: x` (namespace pages whose first block is a directive).
+
+An org headline `*{n} [marker] [#P] CONTENT` whose CONTENT (after the stars + task-marker +
+priority) begins a block construct now splits into `[Bullet{level, marker, priority, empty
+title, no htags}, <block>]` — matching mldoc's heading0 title-lookahead. **Always-split**
+openers (probe-verified): directive `#+KEY:`, `:`-line (drawer/property/example), table,
+`\begin{}` latex-env, `> ` quote, `$$…$$`, `[fn:n] body`, `-----` hr, and raw-html (via
+`is_raw_html`). **Split only when they CLOSE**: `#+BEGIN_X` blocks and ```/~~~ fences (an
+unclosed one stays the title — `* #+BEGIN_SRC\nx` → Heading titled `#+BEGIN_SRC` + Paragraph).
+**Non-splitters**: `# comment`, `#tag x`, plain, bare marker, lists, nested `** x`.
+Implementation reuses the main loop (rewrite `lines[i]` to the CONTENT slice, re-enter without
+advancing — no re-implemented parsers, no new AST variants). A monotone "no closer ahead" memo
+keeps repeated unclosed `* #+BEGIN_X`/`* ``` ` headlines **linear** (was O(n²), 45s→0.27s at
+100k lines). Verified: blockgate 12→0, gate 815→854/854 (+39 `o###` cases), 67→71 tests, org
+fuzz 1943→1618 (improved), md unchanged, perf/stack pass.
+
+**Tracked pre-existing residual — org raw-html block rule.** mldoc's col-0 raw-html rule is a
+quirky tag list (`<b>`/`<p>`/`<custom>`/`<br/>`/unclosed → Paragraph; `<div>`/`<span>`/`<em>`/
+`<h1>`/`<section>`/`<script>` → Raw_Html). lsdoc's `is_raw_html` is broader (accepts inline tags
+like `<b>`), so col-0 `<b>x</b>` → raw_html (mldoc: Paragraph) and, since the headline split
+delegates to `is_raw_html`, `* <b>x</b>` → `[bullet, raw_html]` (mldoc: Plain title). This is a
+PRE-EXISTING `is_raw_html` mismatch (the split correctly reuses it — `* <div>x</div>` now splits
+*correctly*); it is NOT in real content (blockgate 0). Matching mldoc's exact html-tag allowlist
+is bug-for-bug on a rare quirk — deferred; fixing `is_raw_html` fixes col-0 and the split together.
