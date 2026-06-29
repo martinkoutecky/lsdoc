@@ -130,6 +130,15 @@ struct Scanner<'a> {
     /// Empty unless `ctx.hiccup` and the text contains a `[`. Replaces the per-opener
     /// balanced re-scan (and the old `]`-absence cache) — see [`build_hiccup_close`].
     hiccup_close: HashMap<usize, usize>,
+    /// `[[`…`]]` balance map (escape-free, `match_brackets`-equivalent) — gates
+    /// nested-link so an unbalanced `[[`-run can't level-scan to EOF per opener.
+    nested_close: HashMap<usize, usize>,
+    /// Sorted escape-aware real-`]]` positions — page-ref's closer index, consumed
+    /// monotonically via `real_dbl_cur`. Both empty unless the text contains a `[`.
+    real_dbl: Vec<usize>,
+    real_dbl_cur: usize,
+    /// Monotone cache of the next `\n`/`\r` at/after `self.i` (page-ref eol boundary).
+    crlf_pos: Option<usize>,
 }
 
 // ---- byte classes ---------------------------------------------------------
@@ -167,11 +176,17 @@ pub(crate) fn is_underscore_delim(c: u8) -> bool {
 
 impl<'a> Scanner<'a> {
     fn new(s: &'a str, ctx: Ctx) -> Scanner<'a> {
-        // Pre-pair hiccup vectors once (only when they can occur: top-level ctx + a `[`).
-        let hiccup_close = if ctx.hiccup && s.as_bytes().contains(&b'[') {
+        // Pre-pair the bracket families once, in linear passes (only when a `[` occurs).
+        let has_bracket = s.as_bytes().contains(&b'[');
+        let hiccup_close = if ctx.hiccup && has_bracket {
             build_hiccup_close(s)
         } else {
             HashMap::new()
+        };
+        let (nested_close, real_dbl) = if has_bracket {
+            (build_nested_close(s), build_real_dbl(s))
+        } else {
+            (HashMap::new(), Vec::new())
         };
         Scanner {
             s,
@@ -186,6 +201,35 @@ impl<'a> Scanner<'a> {
             present: HashMap::new(),
             rparen_absent: false,
             hiccup_close,
+            nested_close,
+            real_dbl,
+            real_dbl_cur: 0,
+            crlf_pos: None,
+        }
+    }
+
+    /// First escape-aware real `]]` at/after `from` (monotone cursor; `from` is
+    /// non-decreasing across dispatches because `self.i` only advances).
+    fn next_real_dbl(&mut self, from: usize) -> Option<usize> {
+        while self.real_dbl.get(self.real_dbl_cur).is_some_and(|&p| p < from) {
+            self.real_dbl_cur += 1;
+        }
+        self.real_dbl.get(self.real_dbl_cur).copied()
+    }
+
+    /// First `\n`/`\r` at/after `self.i`, or `self.n` if none (page-ref eol boundary).
+    /// Monotone-cached: recomputed only when `self.i` advances past the cached position.
+    fn next_crlf(&mut self) -> usize {
+        match self.crlf_pos {
+            Some(p) if self.i <= p => p,
+            _ => {
+                let mut p = self.i;
+                while p < self.n && self.b[p] != b'\n' && self.b[p] != b'\r' {
+                    p += 1;
+                }
+                self.crlf_pos = Some(p);
+                p
+            }
         }
     }
 
@@ -876,26 +920,34 @@ impl<'a> Scanner<'a> {
         if !self.seq_present(*b"]]") && !self.seq_present(*b"](") {
             return false;
         }
-        // nested link `[[ ... [[..]] ... ]]` / page ref `[[name]]` — both need a `]]`
-        // closer; skip (and their to-EOF scans) when none is ahead (`[`×m runs).
-        if self.seq_present(*b"]]") && self.s[self.i..].starts_with("[[") {
-            if let Some((end, content)) = parse_nested_link(self.s, self.i) {
-                self.push(Inline::NestedLink { content });
-                self.i = end;
-                return true;
+        // nested link `[[ … [[…]] … ]]` then page ref `[[name]]` (mldoc order). Both are
+        // closer-driven by a precomputed structure, so neither fail-scans per opener:
+        //  - nested-link only when the escape-free balance map pairs this `[[`;
+        //  - page-ref when the first escape-aware real `]]` (`d`) precedes the next eol
+        //    and the name is non-empty — exactly `parse_page_ref`'s success condition.
+        if self.s[self.i..].starts_with("[[") {
+            if self.nested_close.contains_key(&self.i) {
+                if let Some((end, content)) = parse_nested_link(self.s, self.i) {
+                    self.push(Inline::NestedLink { content });
+                    self.i = end;
+                    return true;
+                }
             }
-            // page ref `[[name]]`
-            if let Some((end, name, full)) = parse_page_ref(self.s, self.i) {
-                self.push(Inline::Link {
-                    url: Url::PageRef { v: name },
-                    label: vec![],
-                    full,
-                    image: false,
-                    metadata: String::new(),
-                    title: None,
-                });
-                self.i = end;
-                return true;
+            if let Some(d) = self.next_real_dbl(self.i + 2) {
+                if d > self.i + 2 && self.next_crlf() > d {
+                    if let Some((end, name, full)) = parse_page_ref(self.s, self.i) {
+                        self.push(Inline::Link {
+                            url: Url::PageRef { v: name },
+                            label: vec![],
+                            full,
+                            image: false,
+                            metadata: String::new(),
+                            title: None,
+                        });
+                        self.i = end;
+                        return true;
+                    }
+                }
             }
         }
         // markdown link `[label](url)` — needs a `)` closer; bail O(1) when none ahead
@@ -2321,6 +2373,65 @@ pub(crate) fn build_hiccup_close(s: &str) -> HashMap<usize, usize> {
         }
     }
     close
+}
+
+/// Pair `[[`…`]]` the way `match_brackets` (nested-link) balances them — a delimiter
+/// stack: `[[` pushes, `]]` pops, a `\n` clears the stack (mldoc returns `None` across a
+/// newline). Returns opener-`[[`-byte → index-just-past-the-matching-`]]`. Escape-FREE,
+/// because `match_brackets` does not treat `\` specially. Gating nested-link on this map
+/// means an unbalanced `[[`-run can't trigger a to-EOF level-scan per opener.
+pub(crate) fn build_nested_close(s: &str) -> HashMap<usize, usize> {
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut close = HashMap::new();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut p = 0;
+    while p < n {
+        match b[p] {
+            b'\n' => {
+                stack.clear();
+                p += 1;
+            }
+            b'[' if p + 1 < n && b[p + 1] == b'[' => {
+                stack.push(p);
+                p += 2;
+            }
+            b']' if p + 1 < n && b[p + 1] == b']' => {
+                if let Some(o) = stack.pop() {
+                    close.insert(o, p + 2);
+                }
+                p += 2;
+            }
+            c => p += char_len(c),
+        }
+    }
+    close
+}
+
+/// Sorted positions of escape-aware "real" `]]` — a `]` reached at an UNescaped position
+/// whose next byte is also `]`. These are the closers `parse_page_ref` actually breaks on
+/// (a `\` consumes the next byte, so `\]]` has no real `]]`; a single `]` is content). One
+/// left-to-right pass tracking escape (globally consistent because the scanner dispatches
+/// `[[` only at unescaped positions, matching the per-opener name scan's fresh start).
+/// Page-ref then closes at the next real `]]` in O(1) amortized via a monotone cursor,
+/// never fail-scanning to the eol per opener.
+pub(crate) fn build_real_dbl(s: &str) -> Vec<usize> {
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut out = Vec::new();
+    let mut p = 0;
+    while p < n {
+        let c = b[p];
+        if c == b'\\' && p + 1 < n {
+            p += 2; // `\` escapes the next byte (both consumed), as in parse_page_ref
+        } else if c == b']' && p + 1 < n && b[p + 1] == b']' {
+            out.push(p);
+            p += 1; // a later opener could still see `]]` starting one byte on (`]]]`)
+        } else {
+            p += char_len(c);
+        }
+    }
+    out
 }
 
 pub(crate) fn parse_hiccup(s: &str, at: usize) -> Option<usize> {
