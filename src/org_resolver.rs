@@ -249,6 +249,7 @@ fn flush(out: &mut Vec<Inline>, pending: &mut String) {
 /// script; the remaining specials (`Punct`/`LatexBs`) still render literally (refined by the
 /// leaf / bracket sub-steps). `last_plain_char` mirrors mldoc `push_plain`: updated on EVERY
 /// plain append and PERSISTS across nodes/flush (an emphasis node does NOT reset it).
+#[allow(unused_assignments)] // last_plain_char is running state; the final write may be unread
 fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
     let bb = s.as_bytes();
     let mut out: Vec<Inline> = Vec::new();
