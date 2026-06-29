@@ -191,19 +191,12 @@ pub(crate) fn org_lex(s: &str) -> Vec<Token> {
             b'\\' => {
                 // ALL of `\`-handling is ctx-gated (hard-break / latex / entity all hang off
                 // `ctx.entity`, then escape) — so defer the whole thing: emit `Punct(\)` and
-                // let the resolver run the ctx-aware `backslash()` on the raw bytes. Emit the
-                // immediately-following char as its OWN single-char token so a `\X` escape's
-                // extent aligns with a token boundary (no straddle) and the run after it is a
-                // fresh dispatch point (e.g. `\,http://…` → fresh bare-url). The resolver's
-                // `resync` skips whatever bytes the backslash consumed.
+                // let the resolver run the ctx-aware `backslash()` on the raw bytes. (A `\X`
+                // consumed mid-Text straddle is handled by `resync_straddle`; a `\#` inside a
+                // tag leaves the `#` as its own `Punct` for a fresh tag dispatch.)
                 flush!();
                 toks.push(Token { off: i, kind: Kind::Punct(b'\\') });
                 i += 1;
-                if i < n && b[i] != b'\n' && b[i] != b'\r' {
-                    let w = char_len(b[i]);
-                    toks.push(Token { off: i, kind: Kind::Text(s[i..i + w].to_string()) });
-                    i += w;
-                }
             }
             _ if is_marker(c) => {
                 // ONE `Delim{ch,1}` token per marker BYTE — Org emphasis is byte-position based
@@ -338,7 +331,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                     if let Some((end, node)) = leaf {
                         flush(&mut out, &mut pending);
                         out.push(node);
-                        t = resync_straddle(s, toks, t, end, &mut pending, &mut last_plain_char, &mut fresh);
+                        t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, ctx);
                         continue;
                     }
                 }
@@ -409,7 +402,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                         pending.push_str(&text);
                     }
                 }
-                t = resync_straddle(s, toks, t, end, &mut pending, &mut last_plain_char, &mut fresh);
+                t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, ctx);
                 continue;
             }
             Kind::Punct(c) => {
@@ -491,7 +484,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                     _ => {}
                 }
                 if let Some(e) = hit {
-                    t = resync_straddle(s, toks, t, e, &mut pending, &mut last_plain_char, &mut fresh);
+                    t = resync_straddle(s, toks, t, e, &mut out, &mut pending, &mut last_plain_char, &mut fresh, ctx);
                     continue;
                 }
                 // not consumed: plain. `# $ [` are PLAIN_DELIMS (fresh); the swallow bytes
@@ -746,9 +739,11 @@ fn resync_straddle(
     toks: &[Token],
     mut t: usize,
     end: usize,
+    out: &mut Vec<Inline>,
     pending: &mut String,
     last_plain_char: &mut Option<u8>,
     fresh: &mut bool,
+    ctx: Ctx,
 ) -> usize {
     let n = s.len();
     let tok_end = |i: usize| if i + 1 < toks.len() { toks[i + 1].off } else { n };
@@ -756,7 +751,18 @@ fn resync_straddle(
         t += 1;
     }
     if t < toks.len() && toks[t].off < end {
-        // straddle: a plain tail (entity/escape consumed into the following ordinary run).
+        // straddle: an entity/escape consumed into the following ordinary Text run. The tail
+        // is `end`'s fresh dispatch point — if it LEADS a no-opener construct (keyword-ts /
+        // bare-url), re-resolve the remainder from `end`; else push the plain tail raw.
+        let leads = (ctx.timestamps
+            && matches!(s.as_bytes()[end], b'S' | b'C' | b'D' | b's' | b'c' | b'd')
+            && crate::inline::parse_keyword_timestamp(s, end).is_some())
+            || (ctx.urls && crate::inline::parse_bare_url(s, end).is_some());
+        if leads {
+            flush(out, pending);
+            out.extend(parse_ctx(&s[end..], ctx));
+            return toks.len(); // recursion handled the remainder
+        }
         let tail = &s[end..tok_end(t)];
         if let Some(b) = tail.bytes().next_back() {
             *last_plain_char = Some(b);
@@ -1241,6 +1247,63 @@ mod tests {
             }
         }
         rec(&alpha, &mut buf, 0, &mut diffs);
+        assert_eq!(diffs, 0, "{diffs} divergences");
+    }
+
+    /// Diagnostic: the inline-relevant subset of the node-fuzz `TOKENS_ORG`, to surface any
+    /// remaining v2-vs-v1 org divergences the curated alphabets missed.
+    #[test]
+    #[ignore = "diagnostic; run explicitly"]
+    fn org_v2_matches_v1_nodefuzz() {
+        const TOKENS: &[&str] = &[
+            "* ", "** ", "*** ", "*", "/", "_", "+", "~", "=", "^", "^^", "[[", "]]", "][",
+            "[[target]]", "[[t][l]]", "[fn:1]", "<2026-06-26 Fri>", "[2026-06-20 Sat]",
+            "SCHEDULED: ", "DEADLINE: ", "[#A] ", ":tag1:tag2:", "\\", "a", "b", " ", "  ", "\n",
+            "café", "中文", "😀", ".", "/", "_x", "^y", "word",
+        ];
+        let n = diff_count(TOKENS, 200_000, 0x7A03);
+        assert_eq!(n, 0, "{n} divergences");
+    }
+
+    /// Diagnostic: full `parse_org_to_projection` v1-vs-v2 over the COMPLETE node-fuzz
+    /// `TOKENS_ORG` (block + inline), to find block-body inline divergences.
+    #[test]
+    #[ignore = "diagnostic; run explicitly"]
+    fn org_v2_block_projection() {
+        const TOKENS: &[&str] = &[
+            "* ", "** ", "*** ", "*", "/", "_", "+", "~", "=", "^", "^^", "[[", "]]", "][",
+            "[[target]]", "[[t][l]]", "[fn:1]", "<2026-06-26 Fri>", "[2026-06-20 Sat]",
+            "#+TITLE: ", "#+BEGIN_SRC ", "#+END_SRC", "#+BEGIN_QUOTE", "#+END_QUOTE", "#+NAME: ",
+            ":PROPERTIES:", ":key: value", ":END:", "SCHEDULED: ", "DEADLINE: ", "TODO ",
+            "DONE ", "[#A] ", ":tag1:tag2:", "- ", "+ ", "1. ", "| a | b |", "\\", "a", "b",
+            " ", "  ", "\n", "café", "中文", "😀", ".", "/", "_x", "^y", "word",
+        ];
+        let mut diffs = 0;
+        let mut state = 0x5151u64 | 1;
+        let mut rng = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..150_000 {
+            let len = (rng() % 7) as usize;
+            let mut s = String::new();
+            for _ in 0..len {
+                s.push_str(TOKENS[(rng() as usize) % TOKENS.len()]);
+            }
+            std::env::remove_var("LSDOC_ORG_INLINE_V2");
+            let v1 = format!("{:?}", crate::parse_org_to_projection(&s));
+            std::env::set_var("LSDOC_ORG_INLINE_V2", "1");
+            let v2 = format!("{:?}", crate::parse_org_to_projection(&s));
+            if v1 != v2 {
+                if diffs < 10 {
+                    eprintln!("ORG BLK DIFF {s:?}\n   v1={v1}\n   v2={v2}\n");
+                }
+                diffs += 1;
+            }
+        }
+        std::env::remove_var("LSDOC_ORG_INLINE_V2");
         assert_eq!(diffs, 0, "{diffs} divergences");
     }
 

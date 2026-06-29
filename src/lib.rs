@@ -38,11 +38,12 @@ pub(crate) fn inline_v2_enabled() -> bool {
     std::env::var_os("LSDOC_INLINE_V1").is_none()
 }
 
-/// Org inline engine selector (M6, in progress). Routes the Org inline path through the v0.2
-/// `org_resolver` when `LSDOC_ORG_INLINE_V2` is set (the differential gate during the rewrite).
-/// Default = the v1 `org` scanner. (Flipped to v2 at the M6 cutover.)
+/// Org inline engine selector. **v2 (the `org_resolver`) is now the default** Org inline
+/// implementation (M6 cutover): byte-exact to mldoc over the node gate + org fuzz floor
+/// (356/1522). `LSDOC_ORG_INLINE_V1` forces the legacy `org` scanner, kept as the fast
+/// differential oracle (deleted at M11). Returns true (v2) where env is unavailable.
 pub(crate) fn org_inline_v2_enabled() -> bool {
-    std::env::var_os("LSDOC_ORG_INLINE_V2").is_some()
+    std::env::var_os("LSDOC_ORG_INLINE_V1").is_none()
 }
 
 /// The render contract: the stable, `serde`-serializable AST. **This IS lsdoc's AST**

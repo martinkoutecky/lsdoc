@@ -288,7 +288,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
             }
 
             flush_para(&mut out, &mut para, input, in_item);
-            let mut inline = parse_inline_org_top(content);
+            let mut inline = org_inline(content);
             let htags = extract_htags(&mut inline);
             let empty_title = inline.is_empty() && htags.is_empty();
             out.push(Block::Bullet {
@@ -467,7 +467,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
             }
             out.push(Block::FootnoteDef {
                 name,
-                inline: parse_inline_org_top(&body),
+                inline: org_inline(&body),
                 span: Some(Span(line_start, lines[j - 1].end)),
             });
             absorb = true;
@@ -591,7 +591,7 @@ fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &s
             }
         }
         out.push(Block::Paragraph {
-            inline: parse_inline_org_top(&input[s..e]),
+            inline: org_inline(&input[s..e]),
             span: Some(Span(s, e)),
         });
     }
@@ -1055,7 +1055,7 @@ fn build_org_quote(body: String, span: Option<Span>) -> Block {
             // avoid a deep recursive walk/serialize/drop of the result, which would
             // SIGABRT. Real / fuzz inputs never reach this.
             break vec![Block::Paragraph {
-                inline: parse_inline_org_top(trimmed),
+                inline: org_inline(trimmed),
                 span,
             }];
         }
@@ -1448,7 +1448,7 @@ fn build_table(rows: &[Line], start: usize, end: usize) -> Block {
         let t = s.trim();
         let t = t.strip_prefix('|').unwrap_or(t);
         let t = t.strip_suffix('|').unwrap_or(t);
-        t.split('|').map(|c| parse_inline_org_top(c.trim())).collect()
+        t.split('|').map(|c| org_inline(c.trim())).collect()
     };
     // Org separator line: between the outer pipes only `-`, `+`, `|`, `:`, space.
     let is_sep = |s: &str| -> bool {
@@ -1587,6 +1587,17 @@ impl Ctx {
 
 pub fn parse_inline_org_top(text: &str) -> Vec<Inline> {
     parse_inline_org(text, Ctx::top())
+}
+
+/// Block-body inline seam: routes through the v0.2 `org_resolver` when `LSDOC_ORG_INLINE_V2`
+/// is set, else the v1 scanner. (`parse_inline_org_top` stays pinned to v1 — it is the
+/// differential oracle the `org_resolver` tests diff against.)
+pub(crate) fn org_inline(text: &str) -> Vec<Inline> {
+    if crate::org_inline_v2_enabled() {
+        crate::org_resolver::parse_inline_org(text)
+    } else {
+        parse_inline_org_top(text)
+    }
 }
 
 fn parse_inline_org(text: &str, ctx: Ctx) -> Vec<Inline> {
