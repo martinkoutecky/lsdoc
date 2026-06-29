@@ -217,6 +217,31 @@ impl<'a> Scanner<'a> {
         self.real_dbl.get(self.real_dbl_cur).copied()
     }
 
+    /// Position of the next `](` at/after `self.i` (monotone via the presence cache), or
+    /// None. A markdown link's label–url junction; used with `next_crlf` to bail O(1)
+    /// when no `](` precedes the next eol (the label can't cross a newline).
+    fn next_lbrak_paren(&mut self) -> Option<usize> {
+        let needle = *b"](";
+        if self.absent.contains(&needle) {
+            return None;
+        }
+        if let Some(&p) = self.present.get(&needle) {
+            if p >= self.i {
+                return Some(p);
+            }
+        }
+        match find_sub(self.b, self.i, &needle) {
+            Some(p) => {
+                self.present.insert(needle, p);
+                Some(p)
+            }
+            None => {
+                self.absent.insert(needle);
+                None
+            }
+        }
+    }
+
     /// First `\n`/`\r` at/after `self.i`, or `self.n` if none (page-ref eol boundary).
     /// Monotone-cached: recomputed only when `self.i` advances past the cached position.
     fn next_crlf(&mut self) -> usize {
@@ -950,13 +975,17 @@ impl<'a> Scanner<'a> {
                 }
             }
         }
-        // markdown link `[label](url)` — needs a `)` closer; bail O(1) when none ahead
-        // so `[`×m + `](` (no `)`) doesn't re-walk the label run per `[` (was O(n³)).
-        if self.rparen_present() {
-            if let Some(link) = self.parse_markdown_link(self.i, false) {
-                self.push(link.node);
-                self.i = link.end;
-                return true;
+        // markdown link `[label](url)` — the `](` junction must precede the next eol (the
+        // label can't cross a newline) and a `)` must close it. The eol floor makes
+        // `[`×m + `\n` + `](…)` reject O(1) instead of re-walking the label per `[`
+        // (was O(n³)); `rparen_present` still bails `[`×m + `](` with no `)`.
+        if let Some(rb) = self.next_lbrak_paren() {
+            if rb < self.next_crlf() && self.rparen_present() {
+                if let Some(link) = self.parse_markdown_link(self.i, false) {
+                    self.push(link.node);
+                    self.i = link.end;
+                    return true;
+                }
             }
         }
         false
