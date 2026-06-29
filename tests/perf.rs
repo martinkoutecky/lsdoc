@@ -167,6 +167,68 @@ fn assert_linear_org(n: usize, budget_ms: u128) {
     }
 }
 
+/// Time a single parse in microseconds (release-only signal; debug is noisy).
+fn time_us(input: &str, is_org: bool) -> u128 {
+    let t = Instant::now();
+    if is_org {
+        parse_org(input);
+    } else {
+        parse(input);
+    }
+    t.elapsed().as_micros()
+}
+
+/// Round-2 audit class: a closer/END that exists "elsewhere" (a later line, a different
+/// block name) defeated v1's per-construct caches/floors, re-enabling O(n²)/O(n³). These
+/// generators are NOT in `linear_cases` because v1's budget test would hang on them at
+/// 100k. Each carries its OWN base size: the cubic uses a SMALL base so a regression fails
+/// *cleanly* (ratio check) instead of hanging; the quadratics use a large base for signal.
+/// (name, is_org, base_n, build(n) -> input)
+fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
+    vec![
+        // R2-P1: `[`×m + a markdown link tail on a LATER line → was O(n³). Small base.
+        ("md_link_nl", false, 1500, |n| format!("{}\n](x)", "[".repeat(n))),
+        // R2-P2: `[`×m + `]]` on a later line → O(n²) (md + org).
+        ("md_pageref_nl", false, 25_000, |n| format!("{}\n]]", "[".repeat(n))),
+        ("org_pageref_nl", true, 25_000, |n| format!("{}\n]]", "[".repeat(n))),
+        // R2-P3: org inline present-closer — macro `{{`, block-ref `((` (later closer).
+        ("md_macro_closer", false, 25_000, |n| "{{x ".repeat(n) + "}}"),
+        ("org_macro_closer", true, 25_000, |n| "{{x ".repeat(n) + "}}"),
+        ("md_blockref_closer", false, 25_000, |n| "((x ".repeat(n) + "))"),
+        ("org_blockref_closer", true, 25_000, |n| "((x ".repeat(n) + "))"),
+        // R2-P4: name-independent floor defeated by ONE non-matching `#+END_BAR` (md + org).
+        ("md_block_mismatch", false, 25_000, |n| {
+            "#+BEGIN_FOO\n".repeat(n) + "#+END_BAR\n"
+        }),
+        ("org_block_mismatch", true, 25_000, |n| {
+            "#+BEGIN_FOO\n".repeat(n) + "#+END_BAR\n"
+        }),
+        // R2-P5: hiccup `[:div `×n + a single trailing `]` defeated the rbracket caches.
+        ("md_hiccup_present", false, 25_000, |n| "[:div ".repeat(n) + "]"),
+        ("org_hiccup_present", true, 25_000, |n| "[:div ".repeat(n) + "]"),
+    ]
+}
+
+/// Assert each round-2 generator scales ~linearly: time(2n)/time(n) must be < CAP. O(n) ⇒
+/// ~2×, O(n²) ⇒ ~4×, O(n³) ⇒ ~8×, so CAP=3.0 catches the bad classes with margin for noise.
+/// FLOOR_US keeps genuinely-fast (linear) cases from false-failing on sub-ms jitter.
+fn assert_linear_scaling() {
+    const CAP: f64 = 3.0;
+    const FLOOR_US: f64 = 20_000.0; // 20ms — below this a ratio is just measurement noise
+    for (name, is_org, base, build) in scaling_pairs() {
+        let tn = time_us(&build(base), is_org) as f64;
+        let t2n = time_us(&build(2 * base), is_org) as f64;
+        let ratio = t2n / tn.max(FLOOR_US);
+        assert!(
+            ratio < CAP,
+            "scaling '{name}': n={base} {:.0}ms → 2n {:.0}ms = {ratio:.1}× (expected ≈2×; \
+             >{CAP}× ⇒ O(n²)/O(n³) — the optimistic-scan class returned)",
+            tn / 1000.0,
+            t2n / 1000.0,
+        );
+    }
+}
+
 #[test]
 fn perf_smoke() {
     // Fast enough for the default loop; a catastrophic regression still blows the
@@ -189,4 +251,14 @@ fn pathological_inputs_stay_linear_heavy() {
 fn deep_nesting_does_not_overflow_the_stack_heavy() {
     assert_no_overflow(200_000);
     assert_no_overflow_org(200_000);
+}
+
+/// The structural guarantee v1's point-caches lacked: every round-1 + round-2 pathological
+/// generator must scale ~linearly (ratio < 3×), so the optimistic-scan O(n²)/O(n³) class can
+/// never silently return. This FAILS on pre-v2 code (the round-2 findings are still
+/// super-linear) and is the acceptance gate the scanner redesign drives to green.
+#[test]
+#[ignore = "linear-scaling gate; run with: cargo test --release -- --ignored"]
+fn pathological_inputs_scale_linearly_heavy() {
+    assert_linear_scaling();
 }
