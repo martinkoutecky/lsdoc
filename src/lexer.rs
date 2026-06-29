@@ -29,29 +29,34 @@ pub(crate) struct Token {
 pub(crate) enum Kind {
     /// Literal text run; escapes already resolved into it (top-level md-escape semantics).
     Text(String),
-    /// A bare `\n` or `\r` (the resolver emits `Break` when `ctx.breaks`, else literal).
+    /// A bare `\n` or `\r`. The resolver decides `Break` / `HardBreak` / literal — hard-break
+    /// detection (`>=2` trailing spaces before a `\n`) is CTX-DEPENDENT (off in emphasis
+    /// content), so it lives in the resolver, not here.
     Newline(u8),
-    /// `>=2` spaces/tabs immediately before a `\n`.
-    HardBreak,
     /// A fully-resolved self-contained leaf (Code, Entity) — passes straight through.
     Leaf(Inline),
-    /// A single special byte deferred to a later milestone's resolver logic. M0 renders it
-    /// as its literal char; M1+ reclassify these (`* _ ~ ^ = $ [ ] ( ) { } < > # !`) into
-    /// delimiter/bracket handling.
+    /// An emphasis delimiter run: `len` copies of `ch` (`* _ ~ ^ =`). All flanking / empty-
+    /// content / `_`-gate validity is evaluated per-pattern by the resolver against the raw
+    /// bytes (it needs the char after the *k* opener markers, not the whole run).
+    Delim { ch: u8, len: usize },
+    /// A single special byte deferred to a later milestone's resolver logic (`$ [ ] ( ) { }
+    /// < > # !`). M0/M1 render it as its literal char; M2/M3 reclassify into bracket/leaf.
     Punct(u8),
 }
 
-/// Is `c` a byte the lexer must treat specially (stops a plain run)? Backslash and backtick
-/// are handled by dedicated arms; the rest become deferred `Punct` tokens for now.
+/// Emphasis delimiter markers (grouped into `Delim` runs).
+#[inline]
+fn is_marker(c: u8) -> bool {
+    matches!(c, b'*' | b'_' | b'~' | b'^' | b'=')
+}
+
+/// Is `c` a byte the lexer must treat specially (stops a plain run)? Backslash, backtick and
+/// markers have dedicated handling; the rest become deferred `Punct` tokens for now.
 #[inline]
 fn is_special(c: u8) -> bool {
-    matches!(
-        c,
-        b'\\' | b'`'
-            | b'*' | b'_' | b'~' | b'^' | b'='
-            | b'$' | b'[' | b']' | b'(' | b')' | b'{' | b'}'
-            | b'<' | b'>' | b'#' | b'!'
-    )
+    matches!(c, b'\\' | b'`')
+        || is_marker(c)
+        || matches!(c, b'$' | b'[' | b']' | b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b'#' | b'!')
 }
 
 /// mldoc `md_escape_chars`: every ASCII punctuation char.
@@ -95,17 +100,8 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
                 i += 1;
             }
             b' ' | b'\t' => {
-                // hard break: >=2 spaces/tabs immediately before a '\n'.
-                let mut j = i;
-                while j < n && (b[j] == b' ' || b[j] == b'\t') {
-                    j += 1;
-                }
-                if j - i >= 2 && j < n && b[j] == b'\n' {
-                    flush!();
-                    toks.push(Token { off: i, kind: Kind::HardBreak });
-                    i = j + 1;
-                    continue;
-                }
+                // whitespace run → text. Hard-break (>=2 trailing spaces before a `\n`) is
+                // decided by the resolver, since it's gated by `ctx.breaks`.
                 let start = i;
                 while i < n && is_ws(b[i]) {
                     i += 1;
@@ -123,9 +119,18 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
                     i += 1;
                 }
             }
+            _ if is_marker(c) => {
+                // group a run of the same emphasis marker into one Delim token.
+                flush!();
+                let mut j = i;
+                while j < n && b[j] == c {
+                    j += 1;
+                }
+                toks.push(Token { off: i, kind: Kind::Delim { ch: c, len: j - i } });
+                i = j;
+            }
             _ if is_special(c) => {
-                // deferred special byte (markers / brackets / $ / # / !) — M0 keeps it as a
-                // single Punct token (rendered literally); M1+ reclassify.
+                // deferred special byte (brackets / $ / # / !) — render literally for now.
                 flush!();
                 toks.push(Token { off: i, kind: Kind::Punct(c) });
                 i += 1;
