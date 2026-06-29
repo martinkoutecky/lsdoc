@@ -203,6 +203,72 @@ add("edge", "   ");
 add("edge", "\n\n");
 add("edge", "<div>raw html</div>");
 
+// C2 — markdown blockquote marker-line rules (audit C2): `>`+`- `/`# `/`id:: ` is a
+// plain Paragraph (NOT an empty quote — was silent content loss); `>`+`*`/`+`/`N.` is a
+// Quote containing a List. Multi-line + nested + break-before-list edges included.
+const QU = "550e8400-e29b-41d4-a716-446655440000";
+add("c2-quote", "> - x");                          // → Paragraph "> - x"
+add("c2-quote", "> # x");                          // → Paragraph "> # x"
+add("c2-quote", "> #");                            // bare # → Paragraph
+add("c2-quote", "> - ");                           // → Paragraph "> - "
+add("c2-quote", "> id:: b");                       // id:: trigger → Paragraph
+add("c2-quote", "> key:: b");                      // non-id property → Quote
+add("c2-quote", "> * x");                          // → Quote[List]
+add("c2-quote", "> + x");                          // → Quote[List]
+add("c2-quote", "> 1. x");                         // → Quote[List ordered]
+add("c2-quote", "> 12. x");                        // multi-digit ordered
+add("c2-quote", "> 1) x");                         // `1)` not a list marker → Quote[para]
+add("c2-quote", "> a");                            // plain → Quote[Paragraph]
+add("c2-quote", "> #x");                           // `#x` tag (no space) → Quote
+add("c2-quote", "> ## x");                         // `##` (not single) → Quote[para "## x"]
+add("c2-quote", "> -x");                           // `-x` (no space) → Quote[para]
+add("c2-quote", ">");                              // lone > → Paragraph
+add("c2-quote", "> ");                             // > + ws → Paragraph
+add("c2-quote", `> - ((${QU}))`);                  // marker line keeps the block ref
+add("c2-quote", `> ((${QU}))`);                    // quote keeps the block ref
+add("c2-quote", "> [[Foo]]");                      // quote keeps the page ref
+add("c2-quote", "> * [[Foo]]");                    // Quote[List] with page ref
+add("c2-quote", "> a\n> - b");                     // Quote then Paragraph "> - b"
+add("c2-quote", "> - a\n> b");                     // Paragraph then Quote
+add("c2-quote", "> a\n> - b\n> c");                // Quote, Paragraph, Quote
+add("c2-quote", "> * a\n> * b");                   // Quote[List a,b]
+add("c2-quote", "> a\n> * b");                     // Quote[Para a (no trailing break), List]
+add("c2-quote", "> * a\n> b");                     // Quote[List, Para b]
+add("c2-quote", "> * a\n> ## b");                  // Quote[List, Para "## b"]
+add("c2-quote", "> a\n> b");                       // Quote[Para a,break,b,break]
+add("c2-quote", "> a\n>\n> b");                    // lone > continues (blank break)
+add("c2-quote", "> a\nb");                         // lazy continuation
+add("c2-quote", "> a\n- b");                       // lazy `- ` stops the quote
+add("c2-quote", "> a\n* b");                       // lazy `* ` absorbed → List in quote
+add("c2-quote", "> a\nid:: b");                    // lazy id:: → property after quote
+add("c2-quote", "> > x");                          // nested > flattens (strip both)
+add("c2-quote", "> > - x");                        // nested trigger → Paragraph
+add("c2-quote", "> a\n> b\n> * c");                // Para run [a,b] (no trailing break)+List
+add("c2-quote", "> a\n> * b\n> c");                // Para, List, Para
+add("c2-quote", "> * ");                           // empty list marker → Quote[Para "* "]
+
+// C3 — markdown table over-detection (audit C3): a table row must (after trimming) start
+// AND end with `|`; a bare leading `|` is a Paragraph (and emits no phantom refs).
+add("c3-table", "|a");                             // → Paragraph (not Table)
+add("c3-table", "| a | b");                        // → Paragraph (not Table)
+add("c3-table", `|((${QU}))x`);                    // → Paragraph, NO false block ref
+add("c3-table", "|a|");                            // → Table (control)
+add("c3-table", "|a|b|");                          // → Table (control)
+add("c3-table", "  |a|b|  ");                      // trimmed → Table
+add("c3-table", "a|b");                            // → Paragraph (control)
+add("c3-table", "|a|\n|b");                        // Table (header) + Paragraph "|b"
+add("c3-table", "|a|\n|b|");                       // Table with a body row
+
+// C5 — CRLF / lone-CR line endings (audit C5): `\r\n` is one terminator (and `\r`, `\n`
+// each yield a Break); a trailing `\r` never leaks into block content.
+add("c5-eol", "# A\r\nB");                         // heading "A" + paragraph "B"
+add("c5-eol", "a\rb");                             // [a, Break, b]
+add("c5-eol", "a\r\nb");                           // [a, Break, Break, b]
+add("c5-eol", "a\r");                              // [a, Break]
+add("c5-eol", "line1\r\nline2\r\n");               // both lines + trailing breaks
+add("c5-eol", "- a\r\n- b");                       // bullets across CRLF
+add("c5-eol", "# H\r\n");                          // heading with CRLF terminator
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

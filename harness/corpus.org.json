@@ -1630,5 +1630,143 @@
   "cat": "hlsplit",
   "input": "* [fn:1] a",
   "format": "org"
+ },
+ {
+  "id": "o272",
+  "cat": "c2q",
+  "input": "> - x",
+  "format": "org"
+ },
+ {
+  "id": "o273",
+  "cat": "c2q",
+  "input": "> # x",
+  "format": "org"
+ },
+ {
+  "id": "o274",
+  "cat": "c2q",
+  "input": "> a",
+  "format": "org"
+ },
+ {
+  "id": "o275",
+  "cat": "c2q",
+  "input": "> * x",
+  "format": "org"
+ },
+ {
+  "id": "o276",
+  "cat": "c2q",
+  "input": "> ** x",
+  "format": "org"
+ },
+ {
+  "id": "o277",
+  "cat": "c2q",
+  "input": "> + x",
+  "format": "org"
+ },
+ {
+  "id": "o278",
+  "cat": "c2q",
+  "input": "> 1. x",
+  "format": "org"
+ },
+ {
+  "id": "o279",
+  "cat": "c2q",
+  "input": "> a\n> b",
+  "format": "org"
+ },
+ {
+  "id": "o280",
+  "cat": "c2q",
+  "input": "> - ((11111111-1111-1111-1111-111111111111))",
+  "format": "org"
+ },
+ {
+  "id": "o281",
+  "cat": "c2q",
+  "input": "#+BEGIN_QUOTE\n* x\n#+END_QUOTE",
+  "format": "org"
+ },
+ {
+  "id": "o282",
+  "cat": "c2q",
+  "input": "#+BEGIN_QUOTE\n** y\n#+END_QUOTE",
+  "format": "org"
+ },
+ {
+  "id": "o283",
+  "cat": "c4tag",
+  "input": "#ab\\|",
+  "format": "org"
+ },
+ {
+  "id": "o284",
+  "cat": "c4tag",
+  "input": "#tag\\=x",
+  "format": "org"
+ },
+ {
+  "id": "o285",
+  "cat": "c4tag",
+  "input": "#tag\\+x",
+  "format": "org"
+ },
+ {
+  "id": "o286",
+  "cat": "c4tag",
+  "input": "#a\\b",
+  "format": "org"
+ },
+ {
+  "id": "o287",
+  "cat": "c5eol",
+  "input": "# A\r\nB",
+  "format": "org"
+ },
+ {
+  "id": "o288",
+  "cat": "c5eol",
+  "input": "a\rb",
+  "format": "org"
+ },
+ {
+  "id": "o289",
+  "cat": "c5eol",
+  "input": "a\r\nb",
+  "format": "org"
+ },
+ {
+  "id": "o290",
+  "cat": "c5eol",
+  "input": "a\r",
+  "format": "org"
+ },
+ {
+  "id": "o291",
+  "cat": "c5eol",
+  "input": "* H\r\nbody",
+  "format": "org"
+ },
+ {
+  "id": "o292",
+  "cat": "c6prop",
+  "input": ":PROPERTIES:\n:a: [[x][y]]\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o293",
+  "cat": "c6prop",
+  "input": ":PROPERTIES:\n:a: [[Foo]]\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o294",
+  "cat": "c6prop",
+  "input": ":PROPERTIES:\n:tags: [[A]], [[B]]\n:END:",
+  "format": "org"
  }
 ]

@@ -845,3 +845,28 @@ nested ≥2 deep AND spanning lines *within one block* (`>>a\n>>b`) differs from
 `Break` on an intermediate paragraph. `>a\n>b`, `>>x`, `> > x` all match; the old code diverged on
 all `>>`. Unreachable in real Logseq (org uses `#+BEGIN_QUOTE`; blocks stored separately). Matching
 mldoc's exact Break placement in nested multi-line quote recursion is deep mldoc-internals — deferred.
+
+## Correctness fixes — 5 audit-found defects (C2–C6)
+
+The 2×2 audit's correctness dimension found 6 data-safety/correctness defects (C1 panic fixed
+separately). C2–C6 fixed here, each probed against the oracle and matched exactly; gate grew
+856→934/934 (0-diff) with regression cases; org fuzz improved 4.04%→3.82%.
+
+- **C2 — blockquote marker-line content loss:** `> -`/`> #`/`> id::` → plain Paragraph (not a
+  quote); `> *`/`> +`/`> N.` → Quote-with-List; plain → Quote-with-Paragraph (with mldoc's
+  break-before-list + nested-`>` rules). lsdoc previously made an empty-bodied quote (silent text
+  loss + dropped refs). Fixed in `parse.rs` (md) + an org-headline-suppression in quote bodies
+  (`org.rs`, also fixing a latent `#+BEGIN_QUOTE` headline bug).
+- **C3 — md table over-detection:** a table row now requires the trimmed line to start AND end
+  with `|` (like org's `is_table_row`); `|a`/`| a | b` → Paragraph (were false Tables + phantom refs).
+- **C4 — org tag unescape:** `parse_tag_name` gained an `unescape_plain` flag so ORG tags keep
+  backslashes literal (`#ab\|` → `ab\|`, matching mldoc + org.rs's own documented invariant); md
+  unchanged.
+- **C5 — CRLF / lone-CR (foundational):** `split_lines` (both parsers) now break on `\r\n`, lone
+  `\r`, and `\n`; the inline scanners treat `\r` as an EOL `Break`. `# A\r\nB` → heading "A" + para;
+  `a\rb` → [a, Break, b]. (Was: `\r` kept literally in content — affects all CRLF/Windows content.)
+- **C6 — property-value false ref:** `extract_refs` now takes the `format` and re-parses property
+  values with the matching inline parser, so org `:a: [[x][y]]` yields NO ref (was a false page-ref
+  "x][y"); `:a: [[Foo]]` still → Foo. (`refs.rs`/`lib.rs` signature threading.)
+
+C7 (hiccup) is handled separately — see below.

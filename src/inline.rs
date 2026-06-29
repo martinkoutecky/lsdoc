@@ -127,11 +127,13 @@ struct Scanner<'a> {
 
 #[inline]
 pub(crate) fn is_ws(c: u8) -> bool {
-    c == b' ' || c == b'\t' || c == b'\r'
+    // `\r` is an EOL (handled as `Break`, like `\n`), NOT whitespace — so a whitespace
+    // run stops at `\r` and lets the break dispatch fire (C5: CRLF / lone-CR endings).
+    c == b' ' || c == b'\t'
 }
 #[inline]
 pub(crate) fn is_ws_or_nl(c: u8) -> bool {
-    is_ws(c) || c == b'\n'
+    is_ws(c) || c == b'\n' || c == b'\r'
 }
 /// `plain` delimiters in mldoc (`markdown_plain_delims`, minus whitespace which we
 /// test separately). A plain run stops at these (and at whitespace / newline).
@@ -248,15 +250,17 @@ impl<'a> Scanner<'a> {
     fn step(&mut self) {
         let c = self.b[self.i];
         match c {
-            b'\n' => {
+            b'\n' | b'\r' => {
+                // mldoc treats `\r` and `\n` each as an eol → `Break` (C5). When breaks
+                // are off (emphasis re-parse) the eol stays literal plain text.
                 if self.ctx.breaks {
                     self.push(Inline::Break);
                 } else {
-                    self.push_plain("\n");
+                    self.push_plain(if c == b'\n' { "\n" } else { "\r" });
                 }
                 self.i += 1;
             }
-            b' ' | b'\t' | b'\r' => self.whitespace(),
+            b' ' | b'\t' => self.whitespace(),
             b'#' if self.ctx.tags => {
                 if !self.try_tag() {
                     self.push_plain("#");
@@ -750,7 +754,7 @@ impl<'a> Scanner<'a> {
         // self.i at '#'. Parse the tag name (mldoc Hash_tag.hashtag_name), splitting
         // into Plain runs and page-ref children.
         let name_start = self.i + 1;
-        let (end, children) = parse_tag_name(self.s, name_start);
+        let (end, children) = parse_tag_name(self.s, name_start, true); // md: unescape
         if end == name_start || children.is_empty() {
             return false;
         }
@@ -1160,7 +1164,9 @@ const TAG_STOP: &[u8] = &[b'#', b',', b'!', b'?', b'\'', b'"', b':'];
 
 /// Parse a tag name starting at `start` (just after '#'). Returns (end_index,
 /// children) where children are Plain runs and page-ref Links (mldoc Hash_tag).
-pub(crate) fn parse_tag_name(s: &str, start: usize) -> (usize, Vec<Inline>) {
+/// `unescape_plain`: Markdown unescapes the plain runs (`#ab\|` → `ab|`); Org keeps
+/// backslashes literal (`#ab\|` → `ab\|`), matching its no-unescape invariant (C4).
+pub(crate) fn parse_tag_name(s: &str, start: usize, unescape_plain: bool) -> (usize, Vec<Inline>) {
     let b = s.as_bytes();
     let n = b.len();
     let mut i = start;
@@ -1168,9 +1174,9 @@ pub(crate) fn parse_tag_name(s: &str, start: usize) -> (usize, Vec<Inline>) {
     let mut plain = String::new();
     let flush = |plain: &mut String, children: &mut Vec<Inline>| {
         if !plain.is_empty() {
-            children.push(Inline::Plain {
-                text: unescape(&std::mem::take(plain)),
-            });
+            let raw = std::mem::take(plain);
+            let text = if unescape_plain { unescape(&raw) } else { raw };
+            children.push(Inline::Plain { text });
         }
     };
     loop {

@@ -363,6 +363,41 @@ add("hlsplit", "* #+BEGIN_SRC\ncode");              // UNCLOSED block ⇒ title,
 add("hlsplit", "* ```\nx");                         // UNCLOSED fence ⇒ title, no split
 add("hlsplit", "* [fn:1] a");                       // 1-byte footnote body ⇒ inline ref
 
+// C2 — Org blockquote marker-line rules (audit C2): `>`+`- `/`# `/`id:: ` is a plain
+// Paragraph; `>`+plain is a Quote[Paragraph]; `*` is NOT a headline inside a quote body
+// (mldoc emits a Paragraph), while `-`/`+`/`N.` lists ARE parsed. Same for `#+BEGIN_QUOTE`.
+add("c2q", "> - x");                               // → Paragraph "> - x"
+add("c2q", "> # x");                               // → Paragraph "> # x"
+add("c2q", "> a");                                 // → Quote[Paragraph]
+add("c2q", "> * x");                               // → Quote[Paragraph "* x"] (NOT a headline)
+add("c2q", "> ** x");                              // → Quote[Paragraph "** x"]
+add("c2q", "> + x");                               // → Quote[List]
+add("c2q", "> 1. x");                              // → Quote[List ordered]
+add("c2q", "> a\n> b");                            // → Quote[Para a,break,b,break]
+add("c2q", `> - ((${U1}))`);                       // marker line → Paragraph keeps the ref
+add("c2q", "#+BEGIN_QUOTE\n* x\n#+END_QUOTE");     // headline suppressed → Paragraph "* x"
+add("c2q", "#+BEGIN_QUOTE\n** y\n#+END_QUOTE");    // → Paragraph "** y"
+
+// C4 — Org tags are NOT markdown-unescaped (audit C4): `#ab\|` keeps the backslash
+// (tag/ref `ab\|`), matching Org's no-unescape invariant (md DOES unescape).
+add("c4tag", "#ab\\|");                            // tag "ab\\|" (backslash kept)
+add("c4tag", "#tag\\=x");                          // tag "tag\\=x"
+add("c4tag", "#tag\\+x");                          // tag "tag\\+x"
+add("c4tag", "#a\\b");                             // `\\`+letter kept by both (control)
+
+// C5 — CRLF / lone-CR line endings (audit C5), Org side.
+add("c5eol", "# A\r\nB");                          // `# A` is an Org comment + paragraph "B"
+add("c5eol", "a\rb");                              // [a, Break, b]
+add("c5eol", "a\r\nb");                            // [a, Break, Break, b]
+add("c5eol", "a\r");                               // [a, Break]
+add("c5eol", "* H\r\nbody");                       // headline across CRLF
+
+// C6 — Org property-value refs use the ORG inline parser (audit C6): a malformed
+// `[[x][y]]` value yields NO ref (Org Search link), while `[[Foo]]` yields ref Foo.
+add("c6prop", `:PROPERTIES:\n:a: [[x][y]]\n:END:`);        // NO ref (was false ref "x][y")
+add("c6prop", `:PROPERTIES:\n:a: [[Foo]]\n:END:`);         // ref Foo
+add("c6prop", `:PROPERTIES:\n:tags: [[A]], [[B]]\n:END:`); // refs A, B
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

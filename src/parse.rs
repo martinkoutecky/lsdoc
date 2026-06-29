@@ -234,24 +234,22 @@ pub fn parse(input: &str) -> Vec<Block> {
             if quote_opens(content) {
                 flush_para(&mut out, &mut para, input);
                 empty_bullet!();
-                let mut body = String::new();
+                let mut body_lines: Vec<String> = Vec::new();
                 if let Some(c) = quote_line_content(content, true) {
-                    body.push_str(&c);
-                    body.push('\n');
+                    body_lines.push(c);
                 }
                 i += 1;
                 while i < lines.len() {
                     match quote_line_content(lines[i].text, false) {
                         Some(c) => {
-                            body.push_str(&c);
-                            body.push('\n');
+                            body_lines.push(c);
                             i += 1;
                         }
                         None => break,
                     }
                 }
                 out.push(Block::Quote {
-                    children: vec![Block::Paragraph { inline: stub_inline(&body), span: None }],
+                    children: parse_quote_body(&body_lines),
                     span: Some(Span(content_off, lines[i - 1].end)),
                 });
                 continue;
@@ -320,13 +318,13 @@ pub fn parse(input: &str) -> Vec<Block> {
                 i = ni;
                 continue;
             }
-            // (h) table opener `| … |` (consumes following `|` lines).
-            if content.trim_start().starts_with('|') {
+            // (h) table opener `| … |` (consumes following table-row lines).
+            if md_table_row(content) {
                 flush_para(&mut out, &mut para, input);
                 empty_bullet!();
                 let mut texts: Vec<&str> = vec![content];
                 i += 1;
-                while i < lines.len() && lines[i].text.trim_start().starts_with('|') {
+                while i < lines.len() && md_table_row(lines[i].text) {
                     texts.push(lines[i].text);
                     i += 1;
                 }
@@ -396,11 +394,11 @@ pub fn parse(input: &str) -> Vec<Block> {
             continue;
         }
 
-        // 7. table (group of consecutive `|` lines)
-        if t.trim_start().starts_with('|') {
+        // 7. table (group of consecutive table-row lines)
+        if md_table_row(t) {
             flush_para(&mut out, &mut para, input);
             let start = i;
-            while i < lines.len() && lines[i].text.trim_start().starts_with('|') {
+            while i < lines.len() && md_table_row(lines[i].text) {
                 i += 1;
             }
             out.push(build_table(&lines[start..i], lines[start].start, lines[i - 1].end));
@@ -480,29 +478,24 @@ pub fn parse(input: &str) -> Vec<Block> {
         if quote_opens(t) {
             flush_para(&mut out, &mut para, input);
             let start = i;
-            let mut body = String::new();
+            let mut body_lines: Vec<String> = Vec::new();
             // first line: strip the opening `>` then process its remainder like a
             // continuation (mldoc consumes one `>` then runs lines_while on the rest).
             if let Some(c) = quote_line_content(lines[i].text, true) {
-                body.push_str(&c);
-                body.push('\n');
+                body_lines.push(c);
             }
             i += 1;
             while i < lines.len() {
                 match quote_line_content(lines[i].text, false) {
                     Some(c) => {
-                        body.push_str(&c);
-                        body.push('\n');
+                        body_lines.push(c);
                         i += 1;
                     }
                     None => break,
                 }
             }
             out.push(Block::Quote {
-                children: vec![Block::Paragraph {
-                    inline: stub_inline(&body),
-                    span: None,
-                }],
+                children: parse_quote_body(&body_lines),
                 span: Some(Span(lines[start].start, lines[i - 1].end)),
             });
             continue;
@@ -675,6 +668,12 @@ fn split_checkbox(s: &str) -> (Option<bool>, &str) {
 }
 
 
+/// Split into lines on any of `\r\n`, lone `\n`, or lone `\r` (mldoc's `is_eol`
+/// treats `\r` and `\n` each as a line terminator; a CRLF is consumed as ONE
+/// terminator). The returned `text` excludes the terminator, so a trailing `\r` is
+/// never carried into block content. Paragraph bodies are re-extracted from the raw
+/// byte span, so the inline parser (which treats `\r` AND `\n` as `Break`) restores
+/// the per-eol break count (`a\r\nb` → [a, Break, Break, b]).
 fn split_lines(input: &str) -> Vec<Line<'_>> {
     let mut lines = Vec::new();
     let bytes = input.as_bytes();
@@ -683,11 +682,20 @@ fn split_lines(input: &str) -> Vec<Line<'_>> {
     while i < n {
         let start = i;
         let mut j = i;
-        while j < n && bytes[j] != b'\n' {
+        while j < n && bytes[j] != b'\n' && bytes[j] != b'\r' {
             j += 1;
         }
         let content_end = j;
-        let end = if j < n { j + 1 } else { j };
+        let end = if j < n {
+            // consume the terminator: `\r\n` as a unit, else a lone `\r`/`\n`.
+            if bytes[j] == b'\r' && j + 1 < n && bytes[j + 1] == b'\n' {
+                j + 2
+            } else {
+                j + 1
+            }
+        } else {
+            j
+        };
         lines.push(Line { start, end, text: &input[start..content_end] });
         i = end;
     }
@@ -880,13 +888,45 @@ fn list_item(s: &str) -> Option<ListItem> {
     None
 }
 
-/// Does this line OPEN a blockquote? mldoc requires non-whitespace after the `>`
-/// (a lone `>` or `> ` with nothing after is a paragraph).
-fn quote_opens(s: &str) -> bool {
-    match s.trim_start().strip_prefix('>') {
-        Some(rest) => !rest.trim().is_empty(),
-        None => false,
+/// A post-`>` core that makes the WHOLE `>` line a plain Paragraph (mldoc does not open
+/// a blockquote for these): a lone `-`/`#` outline marker (`- x`/`# x`/bare `-`/`#`) or
+/// an `id::` property. NOTE `##`/`-x`/`* `/`+ `/`N.` are NOT triggers (those DO open a
+/// quote; `*`/`+`/`N.` then parse as a List inside it). C2.
+fn quote_para_trigger(core: &str) -> bool {
+    core == "#"
+        || core.starts_with("# ")
+        || core == "-"
+        || core.starts_with("- ")
+        || core.starts_with("id:: ")
+}
+
+/// Strip the leading `>` (and recursively any nested `>`) from a quote line, returning
+/// the de-`>`'d body content — or `None` when the line is a paragraph-trigger (so it is
+/// NOT a quote). A lone `>` (+ws) yields `Some("")` (an empty quote-body line). `t` must
+/// be already `trim_start`-ed and begin with `>`. mldoc strips nested `>` to a single
+/// flattened Quote, and a trigger after any number of `>` makes the whole line a
+/// Paragraph (`> > - x` → Paragraph). C2.
+fn quote_strip(t: &str) -> Option<String> {
+    let rest = &t[1..]; // drop the leading '>'
+    let core = rest.trim_start();
+    if core.is_empty() {
+        return Some(String::new());
     }
+    if quote_para_trigger(core) {
+        return None;
+    }
+    if core.starts_with('>') {
+        return quote_strip(core);
+    }
+    Some(core.to_string())
+}
+
+/// Does this line OPEN a blockquote? A `>` line opens one unless its post-`>` core is
+/// empty (lone `>`/`> ` → Paragraph) or a paragraph-trigger (`- `/`# `/`id:: ` → the
+/// whole line is a Paragraph, NOT an empty quote). C2.
+fn quote_opens(s: &str) -> bool {
+    let t = s.trim_start();
+    t.starts_with('>') && matches!(quote_strip(t), Some(c) if !c.is_empty())
 }
 
 fn property(s: &str) -> Option<(String, String)> {
@@ -922,24 +962,56 @@ fn footnote_def(s: &str) -> Option<(String, &str)> {
 /// (no `>`, empty after ws) or a line that opens a new block (`- `/`# `/`id:: ` or a
 /// bare `-`/`#`). A line that is just `>`(+ws) yields `Some("")` (an empty quote line).
 fn quote_line_content(s: &str, first: bool) -> Option<String> {
-    let t = s.trim_start();
-    let had_gt = t.starts_with('>');
-    let rest = if had_gt { t[1..].trim_start() } else { t };
     let _ = first; // first vs continuation differ only in that the first always has `>`
-    if rest.is_empty() {
-        // `>`(+ws) → empty quote line (continue); a truly blank line → stop.
-        return if had_gt { Some(String::new()) } else { None };
+    let t = s.trim_start();
+    if t.starts_with('>') {
+        return quote_strip(t);
     }
-    // a continuation line that starts a new block ends the quote.
-    if rest.starts_with("- ")
-        || rest.starts_with("# ")
-        || rest.starts_with("id:: ")
-        || rest == "-"
-        || rest == "#"
-    {
+    // lazy continuation (no `>`): a blank line, or a line that starts a new block
+    // (`- `/`# `/`id:: `/bare `-`/`#`), ends the quote. `*`/`+`/`N.` markers are NOT
+    // breakers — they are absorbed and parsed as a List inside the quote body.
+    if t.is_empty() || quote_para_trigger(t) {
         return None;
     }
-    Some(rest.to_string())
+    Some(t.to_string())
+}
+
+/// Parse a Markdown blockquote body (de-`>`'d content lines) into the inner block
+/// sequence. mldoc recognizes only Lists (`*`/`+`/`N.`) and Paragraphs inside a quote
+/// (no headings/tables). A paragraph run joins its lines with `keep_line_break` `Break`s
+/// and a trailing `Break` UNLESS it is immediately followed by a List (mldoc drops that
+/// break). C2.
+fn parse_quote_body(lines: &[String]) -> Vec<Block> {
+    let mut out = Vec::new();
+    let n = lines.len();
+    let mut i = 0;
+    while i < n {
+        if list_item(&lines[i]).is_some() {
+            let mut items = Vec::new();
+            while i < n {
+                match list_item(&lines[i]) {
+                    Some(it) => {
+                        items.push(it);
+                        i += 1;
+                    }
+                    None => break,
+                }
+            }
+            out.push(Block::List { items: crate::projection::nest_items(items), span: None });
+        } else {
+            let start = i;
+            while i < n && list_item(&lines[i]).is_none() {
+                i += 1;
+            }
+            let followed_by_list = i < n;
+            let mut text = lines[start..i].join("\n");
+            if !followed_by_list {
+                text.push('\n');
+            }
+            out.push(Block::Paragraph { inline: stub_inline(&text), span: None });
+        }
+    }
+    out
 }
 
 /// `#+name: value` org directive line, folded into an adjacent markdown property
@@ -1572,6 +1644,14 @@ mod tests {
             let _ = parse(s);
         }
     }
+}
+
+/// A Markdown table row: after trimming, starts AND ends with `|` (≥2 bytes). mldoc
+/// (and org's `is_table_row`) require BOTH ends — a bare leading `|` (`|a`, `| a | b`)
+/// is a Paragraph, not a Table (C3: prevents table over-detection + phantom refs).
+fn md_table_row(s: &str) -> bool {
+    let t = s.trim();
+    t.len() >= 2 && t.starts_with('|') && t.ends_with('|')
 }
 
 fn build_table(rows: &[Line], start: usize, end: usize) -> Block {

@@ -50,6 +50,20 @@ std::thread_local! {
     /// Current Org blockquote nesting depth across recursive `parse` of multi-line quote
     /// bodies (see `build_org_quote`); bounds pathological deep `>` so it can't SIGABRT.
     static ORG_QUOTE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Are we re-parsing the BODY of a blockquote (`>` or `#+BEGIN_QUOTE`)? Inside a
+    /// quote mldoc does NOT recognize Org headlines (`* x` → Paragraph, not Heading), so
+    /// headline detection is suppressed while this is set. C2.
+    static ORG_IN_QUOTE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Re-parse `inner` as the body of a blockquote with headline detection suppressed
+/// (mldoc treats `* x` inside a quote as a Paragraph). Restores the previous flag, so
+/// nested quotes stay suppressed. C2.
+fn parse_quote_inner(inner: &str) -> Vec<Block> {
+    let prev = ORG_IN_QUOTE.with(|c| c.replace(true));
+    let r = parse(inner);
+    ORG_IN_QUOTE.with(|c| c.set(prev));
+    r
 }
 
 const MARKERS: &[&str] = &[
@@ -200,8 +214,11 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
             }
         }
 
-        // 3. headline `*{n} ` — not a list-item content block (stays a paragraph line).
-        if let Some(level) = headline_level(t).filter(|_| !in_item) {
+        // 3. headline `*{n} ` — not a list-item content block (stays a paragraph line),
+        // and NOT inside a blockquote body (mldoc: `* x` in a quote is a Paragraph). C2.
+        if let Some(level) =
+            headline_level(t).filter(|_| !in_item && !ORG_IN_QUOTE.with(|c| c.get()))
+        {
             let stars = t.bytes().take_while(|&b| b == b'*').count();
             let after = t[stars..].trim_start();
             let (marker, priority, content) = split_markers(after);
@@ -353,7 +370,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
                         out.push(Block::Src { lang, code: inner, span });
                     }
                     "example" => out.push(Block::Example { code: inner, span }),
-                    "quote" => out.push(Block::Quote { children: parse(&inner), span }),
+                    "quote" => out.push(Block::Quote { children: parse_quote_inner(&inner), span }),
                     _ => out.push(Block::Custom { name: lname, children: parse(&inner), span }),
                 }
                 absorb = true;
@@ -529,6 +546,10 @@ fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &s
     }
 }
 
+/// Split into lines on any of `\r\n`, lone `\n`, or lone `\r` (mldoc `is_eol` treats
+/// `\r` and `\n` each as a terminator; CRLF is consumed as ONE). The `text` excludes
+/// the terminator, so no trailing `\r` reaches block content; paragraph bodies are
+/// re-extracted from the raw span and the inline parser restores per-eol breaks.
 fn split_lines(input: &str) -> Vec<Line<'_>> {
     let mut lines = Vec::new();
     let bytes = input.as_bytes();
@@ -537,11 +558,19 @@ fn split_lines(input: &str) -> Vec<Line<'_>> {
     while i < n {
         let start = i;
         let mut j = i;
-        while j < n && bytes[j] != b'\n' {
+        while j < n && bytes[j] != b'\n' && bytes[j] != b'\r' {
             j += 1;
         }
         let content_end = j;
-        let end = if j < n { j + 1 } else { j };
+        let end = if j < n {
+            if bytes[j] == b'\r' && j + 1 < n && bytes[j + 1] == b'\n' {
+                j + 2
+            } else {
+                j + 1
+            }
+        } else {
+            j
+        };
         lines.push(Line { start, end, text: &input[start..content_end] });
         i = end;
     }
@@ -994,7 +1023,9 @@ fn build_org_quote(body: String, span: Option<Span>) -> Block {
 /// `>` line inside it re-enters `build_org_quote` already aware of how deep we are.
 fn parse_nested_quote_body(body: &str, depth: usize) -> Vec<Block> {
     let prev = ORG_QUOTE_DEPTH.with(|c| c.replace(depth));
+    let prev_q = ORG_IN_QUOTE.with(|c| c.replace(true)); // suppress headlines (C2)
     let r = parse(body);
+    ORG_IN_QUOTE.with(|c| c.set(prev_q));
     ORG_QUOTE_DEPTH.with(|c| c.set(prev));
     r
 }
@@ -1598,15 +1629,16 @@ impl<'a> OrgScanner<'a> {
     fn step(&mut self) {
         let c = self.b[self.i];
         match c {
-            b'\n' => {
+            b'\n' | b'\r' => {
+                // mldoc treats `\r` and `\n` each as an eol → `Break` (C5).
                 if self.ctx.breaks {
                     self.push(Inline::Break);
                 } else {
-                    self.push_plain("\n");
+                    self.push_plain(if c == b'\n' { "\n" } else { "\r" });
                 }
                 self.i += 1;
             }
-            b' ' | b'\t' | b'\r' => self.whitespace(),
+            b' ' | b'\t' => self.whitespace(),
             b'#' if self.ctx.tags => {
                 if !self.try_tag() {
                     self.push_plain("#");
@@ -2044,7 +2076,8 @@ impl<'a> OrgScanner<'a> {
 
     fn try_tag(&mut self) -> bool {
         let name_start = self.i + 1;
-        let (end, children) = crate::inline::parse_tag_name(self.s, name_start);
+        // org keeps backslashes literal (no unescape) — C4.
+        let (end, children) = crate::inline::parse_tag_name(self.s, name_start, false);
         if end == name_start || children.is_empty() {
             return false;
         }
@@ -2820,7 +2853,7 @@ mod tests {
         assert_eq!(ks("[[exam:ple]]"), ["link(page:exam:ple)"]); // no // ⇒ page ref
         assert_eq!(ks("[[a[[b]]c]]"), ["nested([[a[[b]]c]])"]);
         // page ref produces a ref; labelled link does not over-extract
-        let r = crate::refs::extract_refs(&parse("[[target]] and [[b][c]]"));
+        let r = crate::refs::extract_refs(&parse("[[target]] and [[b][c]]"), "org");
         assert_eq!(r.page, vec!["target".to_string()]);
     }
 

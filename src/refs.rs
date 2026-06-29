@@ -10,11 +10,12 @@
 
 use crate::projection::{Block, Inline, ListItem, Refs, Url};
 
-pub fn extract_refs(blocks: &[Block]) -> Refs {
+pub fn extract_refs(blocks: &[Block], format: &str) -> Refs {
+    let org = format == "org";
     let mut page = Vec::new();
     let mut block = Vec::new();
     for b in blocks {
-        walk_block(b, &mut page, &mut block);
+        walk_block(b, &mut page, &mut block, org);
     }
     page.sort();
     page.dedup();
@@ -23,7 +24,7 @@ pub fn extract_refs(blocks: &[Block]) -> Refs {
     Refs { page, block }
 }
 
-fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>) {
+fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>, org: bool) {
     match b {
         Block::Paragraph { inline, .. }
         | Block::Heading { inline, .. }
@@ -31,12 +32,12 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>) {
         | Block::FootnoteDef { inline, .. } => walk_inlines(inline, page, block),
         Block::Quote { children, .. } | Block::Custom { children, .. } => {
             for c in children {
-                walk_block(c, page, block);
+                walk_block(c, page, block, org);
             }
         }
         Block::List { items, .. } => {
             for it in items {
-                walk_list_item(it, page, block);
+                walk_list_item(it, page, block, org);
             }
         }
         Block::Table { header, rows, .. } => {
@@ -63,7 +64,14 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>) {
                 if vt.is_empty() || (vt.starts_with('"') && vt.ends_with('"')) {
                     continue;
                 }
-                let inl = crate::inline::parse_inline(v);
+                // Re-parse with the FORMAT's inline parser: mldoc parses the property
+                // value's inline list per format, and the two differ (e.g. org `[[x][y]]`
+                // → Search link [no ref]; md `[[x][y]]` → Page_ref "x][y"). C6.
+                let inl = if org {
+                    crate::org::parse_inline_org_top(v)
+                } else {
+                    crate::inline::parse_inline(v)
+                };
                 walk_inlines(&inl, page, block);
             }
         }
@@ -82,13 +90,13 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>) {
 /// Walk a list item's def-list term `name`, its block content, and (recursively) its
 /// nested child items — mirroring the oracle's generic deep walk over the AST (which
 /// recurses into every `name`/`content`/`items` field). See `harness/lib/refs.mjs`.
-fn walk_list_item(it: &ListItem, page: &mut Vec<String>, block: &mut Vec<String>) {
+fn walk_list_item(it: &ListItem, page: &mut Vec<String>, block: &mut Vec<String>, org: bool) {
     walk_inlines(&it.name, page, block);
     for c in &it.content {
-        walk_block(c, page, block);
+        walk_block(c, page, block, org);
     }
     for sub in &it.items {
-        walk_list_item(sub, page, block);
+        walk_list_item(sub, page, block, org);
     }
 }
 

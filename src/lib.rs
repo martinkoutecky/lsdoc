@@ -67,7 +67,7 @@ pub fn refs(input: &str, format: &str) -> ast::Refs {
 /// Parse Markdown into the full [`ast::Projection`] (`{ blocks, refs }`).
 pub fn parse_to_projection(input: &str) -> Projection {
     let blocks = parse::parse(input);
-    let refs = refs::extract_refs(&blocks);
+    let refs = refs::extract_refs(&blocks, "md");
     Projection { blocks, refs }
 }
 
@@ -75,7 +75,7 @@ pub fn parse_to_projection(input: &str) -> Projection {
 /// format-agnostic once built).
 pub fn parse_org_to_projection(input: &str) -> Projection {
     let blocks = org::parse(input);
-    let refs = refs::extract_refs(&blocks);
+    let refs = refs::extract_refs(&blocks, "org");
     Projection { blocks, refs }
 }
 
