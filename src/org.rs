@@ -97,21 +97,27 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
     // Byte offset of the last `]` (None if none): a block-level hiccup `[:tag …]` needs a
     // closing `]`, so a `[:` line starting at/after it is skipped O(1) (see step 13b).
     let last_rbracket = input.rfind(']');
-    let fences = pair_fences(&lines);
-    // Sparse, sorted closer-line INDEXES so a `#+BEGIN_X` block / `:NAME:` drawer opener
-    // finds its matching closer by binary-searching only candidate lines, never an EOF
-    // re-scan per opener (kills the O(n²) class — audit R2-P4/P6). Exact mldoc semantics:
-    // the first matching closer line after the opener. Computed on the original lines; the
-    // headline-split rewrite never creates an `#+END_`/`:END:` line (none is a block
-    // OPENER), so the indexes stay valid through the rewrite + re-enter.
+    // Sparse, sorted closer-line INDEXES so a `#+BEGIN_X` block / `:NAME:` drawer / fence
+    // opener finds its matching closer ON-DEMAND at the dispatch point (binary-searching
+    // only candidate lines, never an EOF re-scan per opener — kills the O(n²) class, audit
+    // R2-P4/P6). Exact mldoc semantics: the first matching closer line after the opener.
+    // On-demand finding is also context-aware — a closer inside a block/drawer body (which
+    // the loop jumps past) can never pair with an opener outside it (the fence-straddle
+    // bug). Computed on the original lines; the headline-split rewrite never creates an
+    // `#+END_`/`:END:`/fence OPENER line, so the indexes stay valid through it + re-enter.
     let mut end_idxs: Vec<usize> = Vec::new(); // `#+END_…` lines (block closers)
     let mut drawer_end_idxs: Vec<usize> = Vec::new(); // `:END:` lines (drawer closers)
+    let mut fence_line_idxs: std::collections::HashMap<u8, Vec<usize>> =
+        std::collections::HashMap::new(); // per-char whole-line ```/~~~ marker lines
     for (idx, l) in lines.iter().enumerate() {
         if l.text.trim_start().get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
             end_idxs.push(idx);
         }
         if l.text.trim().eq_ignore_ascii_case(":END:") {
             drawer_end_idxs.push(idx);
+        }
+        if let Some((c, _)) = fence_marker(l.text) {
+            fence_line_idxs.entry(c).or_default().push(idx);
         }
     }
     let mut out: Vec<Block> = Vec::new();
@@ -126,11 +132,11 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
     // suffix is identical). Skipping the collector for those lines keeps repeated
     // collapses linear instead of O(n²) re-scanning.
     let mut collapse_floor = 0usize;
-    // Memo for the headline block-opener split (see `headline_split_opener`): block-names /
-    // fence-chars already known to have NO closer ahead, so repeated unclosed `* #+BEGIN_X`
-    // / `* ```` headlines don't each re-scan to EOF.
+    // Memo for the headline block-opener split (see `headline_split_opener`): block-names
+    // already known to have NO `#+END_` ahead, so repeated unclosed `* #+BEGIN_X` headlines
+    // don't each re-scan to EOF. (Fences need no such memo — `find_matching_fence` is an
+    // O(log n) indexed lookup, not a re-scan.)
     let mut no_block_end: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut no_close_fence: std::collections::HashSet<u8> = std::collections::HashSet::new();
     let mut i = 0;
 
     while i < lines.len() {
@@ -240,7 +246,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
                     i,
                     &end_idxs,
                     &mut no_block_end,
-                    &mut no_close_fence,
+                    &fence_line_idxs,
                 )
             {
                 flush_para(&mut out, &mut para, input, in_item);
@@ -253,14 +259,14 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
                     htags: vec![],
                     span: Some(Span(line_start, content_off)),
                 });
-                // Markdown ``` / ~~~ fence → Src: `pair_fences` was computed on the
-                // un-split lines (the `* ```` line isn't a fence opener there), so the
-                // CLOSING fence is located locally. The predicate only lets a fence reach
-                // here when it CLOSES, so `find_close_fence` is `Some`; the `if` is a
+                // Markdown ``` / ~~~ fence → Src: the `* ```` headline line is not itself a
+                // whole-line fence marker (so it isn't in `fence_line_idxs`); its closer is
+                // the first same-char whole-line fence after it. The predicate only lets a
+                // fence reach here when it CLOSES, so this is `Some`; the `if` is a
                 // belt-and-braces guard (an unclosed fence stays the heading title and
                 // never enters this branch).
                 if let Some((fchar, frun)) = fence_marker(content) {
-                    if let Some(close) = find_close_fence(&lines, i, fchar) {
+                    if let Some(close) = find_matching_fence(&fence_line_idxs, i, fchar) {
                         let code = if close > i + 1 {
                             input[lines[i + 1].start..lines[close - 1].end].to_string()
                         } else {
@@ -343,18 +349,25 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
             continue;
         }
 
-        // 5. fenced code block (```/~~~) — markdown fences work in Org too.
-        if let Some((close, lang)) = fences.get(&i) {
-            flush_para(&mut out, &mut para, input, in_item);
-            let code = if *close > i + 1 {
-                input[lines[i + 1].start..lines[*close - 1].end].to_string()
-            } else {
-                String::new()
-            };
-            out.push(Block::Src { lang: lang.clone(), code, span: Some(Span(line_start, lines[*close].end)) });
-            absorb = true;
-            i = *close + 1;
-            continue;
+        // 5. fenced code block (```/~~~) — markdown fences work in Org too. ON-DEMAND
+        // (context-aware): a fence-marker line the loop reaches is a top-level opener
+        // (block/drawer bodies are jumped past), so its closer = the first same-char
+        // whole-line fence after it — it can never pair across a body boundary the way the
+        // old global `pair_fences` pre-pass did (the fence-straddle bug).
+        if let Some((c, mend)) = fence_marker(t) {
+            if let Some(close) = find_matching_fence(&fence_line_idxs, i, c) {
+                flush_para(&mut out, &mut para, input, in_item);
+                let code = if close > i + 1 {
+                    input[lines[i + 1].start..lines[close - 1].end].to_string()
+                } else {
+                    String::new()
+                };
+                let lang = t[mend..].trim().to_string();
+                out.push(Block::Src { lang, code, span: Some(Span(line_start, lines[close].end)) });
+                absorb = true;
+                i = close + 1;
+                continue;
+            }
         }
 
         // 6. `#+BEGIN_X` … `#+END_X` block
@@ -738,7 +751,7 @@ fn headline_split_opener(
     i: usize,
     end_idxs: &[usize],
     no_block_end: &mut std::collections::HashSet<String>,
-    no_close_fence: &mut std::collections::HashSet<u8>,
+    fence_line_idxs: &std::collections::HashMap<u8, Vec<usize>>,
 ) -> bool {
     if directive(content).is_some()
         || is_verbatim_line(content)
@@ -752,37 +765,31 @@ fn headline_split_opener(
     {
         return true;
     }
-    // A `#+BEGIN_X` block / ```|~~~ fence only splits when it CLOSES. Memoise the "no
-    // closer ahead" verdict per block-name / fence-char: `find_block_end`/`find_close_fence`
-    // search `lines[i+1..]`, so once one returns None at line `i` it is None for every later
-    // line (the suffix only shrinks). Each distinct name/char then costs at most ONE full
-    // scan — keeping a run of repeated UNCLOSED openers linear, not O(n²).
+    // A `#+BEGIN_X` block / ```|~~~ fence only splits when it CLOSES. The block-name search
+    // (`find_block_end`) scans `lines[i+1..]`, so it carries a per-name "no `#+END_` ahead"
+    // memo to keep a run of repeated UNCLOSED openers linear (not O(n²)). The fence search is
+    // the indexed `find_matching_fence` (O(log n)), which needs no such memo.
     if let Some(name) = block_begin(content) {
-        // The indexed `find_block_end` carries the per-name "no closer ahead" memo itself.
         return find_block_end(end_idxs, lines, no_block_end, i, &name).is_some();
     }
     if let Some((ch, _)) = fence_marker(content) {
-        if no_close_fence.contains(&ch) {
-            return false;
-        }
-        if find_close_fence(lines, i, ch).is_some() {
-            return true;
-        }
-        no_close_fence.insert(ch);
-        return false;
+        return find_matching_fence(fence_line_idxs, i, ch).is_some();
     }
     false
 }
 
-/// Find the closing fence (a `fence_marker` line of the same char) for a fence opener
-/// that lives in the CONTENT of the headline at line `from` (so `pair_fences`, computed
-/// on the un-split lines, never saw it). Mirrors `pair_fences`: the first same-char fence
-/// after `from` closes it (different-char fences are ignored).
-fn find_close_fence(lines: &[Line], from: usize, fchar: u8) -> Option<usize> {
-    lines[from + 1..]
-        .iter()
-        .position(|l| fence_marker(l.text).map(|(c, _)| c) == Some(fchar))
-        .map(|off| from + 1 + off)
+/// First whole-line fence-marker of char `fchar` strictly after `from`, via the per-char
+/// sorted index (`partition_point` ⇒ O(log n), never an EOF re-scan). The single
+/// closer-finder for BOTH a top-level fence opener (step 5) and one in headline content
+/// (step 3, e.g. `* ```` — not itself an index entry). On-demand at the dispatch point, so
+/// it is context-aware (it never pairs across a block/drawer body the loop already jumped).
+fn find_matching_fence(
+    fence_line_idxs: &std::collections::HashMap<u8, Vec<usize>>,
+    from: usize,
+    fchar: u8,
+) -> Option<usize> {
+    let v = fence_line_idxs.get(&fchar)?;
+    v.get(v.partition_point(|&x| x <= from)).copied()
 }
 
 /// Strip a leading task marker (followed by a space) and priority `[#X]`.
@@ -945,27 +952,6 @@ fn fence_marker(s: &str) -> Option<(u8, usize)> {
         k += 1;
     }
     if k - ws >= 3 { Some((c, k)) } else { None }
-}
-
-fn pair_fences(lines: &[Line]) -> std::collections::HashMap<usize, (usize, String)> {
-    let mut out = std::collections::HashMap::new();
-    let mut open: Option<(usize, u8)> = None;
-    for (idx, l) in lines.iter().enumerate() {
-        if let Some((c, _)) = fence_marker(l.text) {
-            match open {
-                None => open = Some((idx, c)),
-                Some((oidx, oc)) => {
-                    if c == oc {
-                        let (_, mend) = fence_marker(lines[oidx].text).unwrap();
-                        let lang = lines[oidx].text[mend..].trim().to_string();
-                        out.insert(oidx, (idx, lang));
-                        open = None;
-                    }
-                }
-            }
-        }
-    }
-    out
 }
 
 /// A line that is part of an Org fixed-width block: starts (after optional ws) with a

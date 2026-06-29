@@ -1942,5 +1942,17 @@
   "cat": "c7hiccup",
   "input": "- [:div]x",
   "format": "org"
+ },
+ {
+  "id": "o324",
+  "cat": "fence-straddle",
+  "input": "#+BEGIN_QUOTE\n```\n#+END_QUOTE\n```\nx\n```",
+  "format": "org"
+ },
+ {
+  "id": "o325",
+  "cat": "fence-straddle",
+  "input": ":LOGBOOK:\n```\n:END:\n```\ny\n```",
+  "format": "org"
  }
 ]

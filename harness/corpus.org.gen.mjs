@@ -433,6 +433,12 @@ add("c7hiccup", "> a\n> b\n> [:div]");       // Quote[Para a,b, Hiccup]
 add("c7hiccup", "> a\n> [:div]\n> c");       // Quote[Para a, Hiccup, Para c]
 add("c7hiccup", "- [:div]x");                // item content [Hiccup, Para x]
 
+// fence/container STRADDLE (org): a ``` inside a #+BEGIN_X / :drawer: body must NOT pair
+// with a ``` outside it (the old global-pair_fences `quote, paragraph` bug; should be
+// `quote, src`). Context-aware on-demand fence pairing fixes it.
+add("fence-straddle", "#+BEGIN_QUOTE\n```\n#+END_QUOTE\n```\nx\n```");  // quote, src
+add("fence-straddle", ":LOGBOOK:\n```\n:END:\n```\ny\n```");           // drawer, src
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));
