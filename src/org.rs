@@ -22,7 +22,7 @@
 
 use crate::inline::{
     char_len, find_sub, find_sub_line, is_underscore_delim, is_ws, is_ws_or_nl, parse_angle_timestamp,
-    parse_bare_url, parse_bracket_date, parse_email_autolink, parse_inline_html,
+    parse_bare_url, parse_bracket_date, parse_email_autolink, parse_inline_html_cached,
     parse_keyword_timestamp, parse_macro, parse_nested_link,
 };
 use crate::projection::{Block, Inline, ListItem, Span, Url};
@@ -38,6 +38,20 @@ struct Line<'a> {
 }
 
 /// Org task markers (mldoc `Heading0.marker`), stripped from a headline title.
+/// Max nested-`Quote` depth (whether the `>`s sit on one line or recurse across lines).
+/// mldoc itself stack-overflows on deep `>` (it errors out ≈1000 `>`), so no comparable
+/// output exists to match past a modest depth; this cap only bounds the recursive
+/// build/ref-walk/serialize/drop of pathological `>`×N input so it can't SIGABRT — kept
+/// low enough that even a debug build survives on a 1 MiB stack. Far above any real /
+/// corpus / fuzz-reachable nesting (a handful of `>`), so it never affects real output.
+const QUOTE_NEST_CAP: usize = 64;
+
+std::thread_local! {
+    /// Current Org blockquote nesting depth across recursive `parse` of multi-line quote
+    /// bodies (see `build_org_quote`); bounds pathological deep `>` so it can't SIGABRT.
+    static ORG_QUOTE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 const MARKERS: &[&str] = &[
     "TODO",
     "DOING",
@@ -67,6 +81,20 @@ pub fn parse(input: &str) -> Vec<Block> {
 fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
     let mut lines = split_lines(input);
     let fences = pair_fences(&lines);
+    // Name-independent "no closer anywhere ahead" floors: the LAST line index that
+    // could close a `#+BEGIN_X` block (`#+END_` prefix) / a `:NAME:` drawer (`:END:`).
+    // `find_block_end`/`find_drawer_end` scan `lines[i+1..]`, so when no such line
+    // exists past `i` they can be skipped in O(1) — keeping a run of UNCLOSED openers
+    // (incl. unique names like `#+BEGIN_B0,B1,…`) linear instead of O(n²). These are
+    // computed on the original lines; the headline-split rewrite never creates an
+    // `#+END_`/`:END:` line (none is a block OPENER), so the floors stay valid.
+    let last_block_end =
+        lines.iter().rposition(|l| {
+            let t = l.text.trim_start();
+            t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_"))
+        });
+    let last_drawer_end =
+        lines.iter().rposition(|l| l.text.trim().eq_ignore_ascii_case(":END:"));
     let mut out: Vec<Block> = Vec::new();
     let mut para: Option<(usize, usize)> = None;
     // After an "absorbing" block (Directive/Comment/Block/Footnote) mldoc's
@@ -135,7 +163,10 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
         // 2. drawer `:PROPERTIES:`/`:NAME:` … `:END:` — not a list-item content block
         // (inside an item a `:`-line is verbatim/Example via step 7 instead).
         if let Some(name) = drawer_begin(t).filter(|_| !in_item) {
-            if let Some(close) = find_drawer_end(&lines, i) {
+            if let Some(close) = last_drawer_end
+                .filter(|&e| e > i)
+                .and_then(|_| find_drawer_end(&lines, i))
+            {
                 flush_para(&mut out, &mut para, input, in_item);
                 if name == "properties" {
                     let mut props: Vec<(String, String)> = lines[i + 1..close]
@@ -308,7 +339,10 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
 
         // 6. `#+BEGIN_X` … `#+END_X` block
         if let Some(name) = block_begin(t) {
-            if let Some(close) = find_block_end(&lines, i, &name) {
+            if let Some(close) = last_block_end
+                .filter(|&e| e > i)
+                .and_then(|_| find_block_end(&lines, i, &name))
+            {
                 flush_para(&mut out, &mut para, input, in_item);
                 let inner = block_code(&lines[i + 1..close]);
                 let span = Some(Span(line_start, lines[close].end));
@@ -344,14 +378,16 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
         }
 
         // 8. markdown blockquote (`>` …) — also recognised in Org.
-        if quote_opens(t) {
+        if let Some(first_content) = quote_first_line(t) {
             flush_para(&mut out, &mut para, input, in_item);
             let start = i;
+            // First line: mldoc strips up to TWO leading `>` (enter the quote, then the
+            // remainder is itself a body line that drops one more `>`); continuation
+            // lines drop one. The de-`>`'d body is then re-parsed (a leading `>` body
+            // line ⇒ a nested quote), so N leading `>` nest ⌈N/2⌉ Quotes.
             let mut body = String::new();
-            if let Some(c) = quote_line_content(lines[i].text) {
-                body.push_str(&c);
-                body.push('\n');
-            }
+            body.push_str(&first_content);
+            body.push('\n');
             i += 1;
             while i < lines.len() {
                 match quote_line_content(lines[i].text) {
@@ -363,10 +399,12 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
                     None => break,
                 }
             }
-            out.push(Block::Quote {
-                children: parse(&body),
-                span: Some(Span(lines[start].start, lines[i - 1].end)),
-            });
+            // Build the (possibly nested) Quote. A body that is a SINGLE line which
+            // itself opens a quote is peeled ITERATIVELY (so `>`×d on one line can't
+            // stack-overflow via recursive `parse`); other bodies parse normally
+            // (mldoc's recursion, shallow for real multi-line quotes).
+            let span = Some(Span(lines[start].start, lines[i - 1].end));
+            out.push(build_org_quote(body, span));
             absorb = true;
             continue;
         }
@@ -858,12 +896,41 @@ fn verbatim_content(s: &str) -> &str {
 }
 
 fn quote_opens(s: &str) -> bool {
-    match s.trim_start().strip_prefix('>') {
-        Some(rest) => !rest.trim().is_empty(),
-        None => false,
-    }
+    quote_first_line(s).is_some()
 }
 
+/// A de-`>`'d line content that ENDS an Org blockquote run (it starts a new block:
+/// list / heading / `id::`). On the FIRST line such content also makes mldoc reject
+/// the quote outright (→ Paragraph), not just stop the run.
+fn quote_line_breaker(s: &str) -> bool {
+    s.starts_with("- ")
+        || s.starts_with("# ")
+        || s.starts_with("id:: ")
+        || s == "-"
+        || s == "#"
+}
+
+/// First line of an Org blockquote. mldoc enters the quote by stripping one leading `>`
+/// (+ws); the remainder is itself a body line that drops one MORE `>` (+ws) — i.e. up
+/// to TWO `>` on the opener (so N leading `>` ultimately nest ⌈N/2⌉ Quotes). The quote
+/// OPENS only if the result is non-empty and does not start a block construct (a
+/// list/heading/`id::` marker makes mldoc reject the quote entirely, leaving the raw
+/// line a Paragraph). Returns the first body-line content, else None.
+fn quote_first_line(s: &str) -> Option<String> {
+    let r1 = s.trim_start().strip_prefix('>')?.trim_start();
+    let content = match r1.strip_prefix('>') {
+        Some(r2) => r2.trim_start(),
+        None => r1,
+    };
+    if content.is_empty() || quote_line_breaker(content) {
+        return None;
+    }
+    Some(content.to_string())
+}
+
+/// One CONTINUATION line of an Org blockquote body (mldoc strips ONE `>` + ws, lazy:
+/// a non-`>` line still continues). Returns None to STOP the run (blank line, or a line
+/// that — after stripping one `>` — starts a new block construct).
 fn quote_line_content(s: &str) -> Option<String> {
     let t = s.trim_start();
     let had_gt = t.starts_with('>');
@@ -871,15 +938,65 @@ fn quote_line_content(s: &str) -> Option<String> {
     if rest.is_empty() {
         return if had_gt { Some(String::new()) } else { None };
     }
-    if rest.starts_with("- ")
-        || rest.starts_with("# ")
-        || rest.starts_with("id:: ")
-        || rest == "-"
-        || rest == "#"
-    {
+    if quote_line_breaker(rest) {
         return None;
     }
     Some(rest.to_string())
+}
+
+/// Build a (possibly nested) Org Quote from an already de-`>`'d body. When the body is
+/// a SINGLE line that itself opens a quote, peel levels ITERATIVELY — so `>`×d on one
+/// line nests ⌈d/2⌉ Quotes WITHOUT recursing `parse` (no stack overflow). Other bodies
+/// parse normally (mldoc's recursion, shallow for real multi-line quotes; any deep
+/// single-line quote nested inside is again caught by this peel).
+fn build_org_quote(body: String, span: Option<Span>) -> Block {
+    // `base` = how deeply we are ALREADY nested (across recursive `parse` of multi-line
+    // quote bodies). Combined with the single-line peel below, this bounds TOTAL nesting
+    // at `QUOTE_NEST_CAP` regardless of how the `>`s are split across lines.
+    let base = ORG_QUOTE_DEPTH.with(|c| c.get());
+    let mut depth = 1usize;
+    let mut cur = body;
+    // The innermost children. Filled either by peeling out (then `parse`d once) or by
+    // hitting the depth cap (then the remaining text is emitted as a plain Paragraph).
+    let children = loop {
+        let trimmed = cur.strip_suffix('\n').unwrap_or(&cur);
+        if base + depth >= QUOTE_NEST_CAP {
+            // Beyond this depth mldoc itself stack-overflows (no comparable output
+            // exists), so stop nesting and keep the rest as one Paragraph — purely to
+            // avoid a deep recursive walk/serialize/drop of the result, which would
+            // SIGABRT. Real / fuzz inputs never reach this.
+            break vec![Block::Paragraph {
+                inline: parse_inline_org_top(trimmed),
+                span,
+            }];
+        }
+        if trimmed.contains('\n') {
+            // Multi-line body: parse normally (mldoc's recursion), but tracking depth so
+            // a deep `>` first line that re-enters here stays bounded.
+            break parse_nested_quote_body(&cur, base + depth);
+        }
+        match quote_first_line(trimmed) {
+            Some(inner) => {
+                cur = inner + "\n";
+                depth += 1;
+            }
+            None => break parse_nested_quote_body(&cur, base + depth),
+        }
+    };
+    let mut block = Block::Quote { children, span };
+    for _ in 1..depth {
+        block = Block::Quote { children: vec![block], span };
+    }
+    block
+}
+
+/// Parse a multi-line blockquote body, recording the current nesting depth so a deep
+/// `>` line inside it re-enters `build_org_quote` already aware of how deep we are.
+fn parse_nested_quote_body(body: &str, depth: usize) -> Vec<Block> {
+    let prev = ORG_QUOTE_DEPTH.with(|c| c.replace(depth));
+    let r = parse(body);
+    ORG_QUOTE_DEPTH.with(|c| c.set(prev));
+    r
 }
 
 fn displayed_math(s: &str) -> Option<String> {
@@ -1676,6 +1793,12 @@ impl<'a> OrgScanner<'a> {
             b'[' => ("\\]", "Displayed"),
             _ => return None,
         };
+        // No closer ahead (monotone absence cache) ⇒ bail O(1), keeping runs of
+        // unclosed `\(` / `\[` linear instead of re-scanning to EOF each time.
+        let close_bytes: [u8; 2] = [close.as_bytes()[0], close.as_bytes()[1]];
+        if !self.seq_present(close_bytes) {
+            return None;
+        }
         let body_start = self.i + 2;
         let end = find_sub(self.b, body_start, close.as_bytes())?;
         let body = self.s[body_start..end].to_string();
@@ -2234,7 +2357,8 @@ impl<'a> OrgScanner<'a> {
                 return true;
             }
         }
-        if let Some((end, text)) = parse_inline_html(self.s, self.i) {
+        let closer = self.seq_present(*b"</");
+        if let Some((end, text)) = parse_inline_html_cached(self.s, self.i, closer) {
             self.push(Inline::InlineHtml { text });
             self.i = end;
             return true;

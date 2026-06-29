@@ -809,3 +809,39 @@ delegates to `is_raw_html`, `* <b>x</b>` → `[bullet, raw_html]` (mldoc: Plain 
 PRE-EXISTING `is_raw_html` mismatch (the split correctly reuses it — `* <div>x</div>` now splits
 *correctly*); it is NOT in real content (blockgate 0). Matching mldoc's exact html-tag allowlist
 is bug-for-bug on a rare quirk — deferred; fixing `is_raw_html` fixes col-0 and the split together.
+
+## Performance hardening — 9 audit-found defects fixed (SPEC §4)
+
+A 2×2 audit (correctness+perf × Opus subagent+Codex) measured 9 super-linear / stack-overflow
+input classes the `tests/perf.rs` gate missed. All fixed as PERF-ONLY changes (output byte-
+identical — `run.mjs`/`blockgate` stayed 0-diff, fuzz counts unchanged), each re-measured linear
+by the parent before commit; all 9 generators added to `tests/perf.rs`.
+
+- **P1 (was O(n³)):** md `[`×m+`](` — the `[`-fail branch + bracket sub-parsers (`parse_label`/
+  `parse_page_ref`/`match_single_brackets`) re-scanned to EOF per inner `[`. Fixed via the Scanner
+  absence cache (now caches presence positions + a `)`-absence cache; bracket sub-parsers
+  short-circuit O(1) when the needed closer is absent). 2k 8931ms → 100k 23ms.
+- **P2 (was stack-overflow→SIGABRT):** org `>`×d — the `>` quote handler recursed `parse(&body)`
+  per `>`. Rewritten iterative with `QUOTE_NEST_CAP=64` + a recursion guard; nesting corrected to
+  mldoc (⌈N/2⌉ Quotes, reject-to-paragraph on block-marker bodies — fixed a latent bug). 200k → 12ms,
+  no abort.
+- **P3–P7 (were O(n²)):** the "scan-to-EOF-per-opener, no memo" family — org+md `#+BEGIN` no end,
+  org+md `:drawer:` no `:END:`, md dash-bullet unclosed fence. Fixed with **name-INDEPENDENT**
+  "no closer anywhere ahead" floors (`last_block_end`/`last_callout_end`/`last_drawer_end`/
+  `last_fence_line`) — a name-keyed memo alone failed on unique names (`#+BEGIN_B0,B1,…`, verified).
+  40k 12217ms → 100k ~490ms (and unique-name variant linear too).
+- **P8/P9 (were O(n²)):** inline `<tag>` no-close and inline `\(`/`\[` no-close — same absence-cache
+  extension. 20k 2842ms → 100k 144ms; 20k 391ms → 100k 15ms.
+
+**My C1-commit mistake, corrected here:** the C1 panic fix added an over-eager corpus case
+`#+begin_中:` which hits mldoc's `#+key:value` Property_Drawer fallback (a *documented* adversarial
+residual — `#+begin…:` with a colon + no `#+END`; real blocks have no colon), making the gate
+856/857. The perf audit's "byte-identical" check surfaced it (I'd only tailed the blockgate output
+and missed it). The case is removed; the panic regression stays covered by `#+END_中:`. Gate back to
+0-diff (856/856).
+
+**Tracked residual (P2 rewrite, exotic, not gate/fuzz-visible, not real content):** a blockquote
+nested ≥2 deep AND spanning lines *within one block* (`>>a\n>>b`) differs from mldoc by a trailing
+`Break` on an intermediate paragraph. `>a\n>b`, `>>x`, `> > x` all match; the old code diverged on
+all `>>`. Unreachable in real Logseq (org uses `#+BEGIN_QUOTE`; blocks stored separately). Matching
+mldoc's exact Break placement in nested multi-line quote recursion is deep mldoc-internals — deferred.

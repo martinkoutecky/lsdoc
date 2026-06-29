@@ -40,6 +40,25 @@ struct Line<'a> {
 pub fn parse(input: &str) -> Vec<Block> {
     let lines = split_lines(input);
     let fences = pair_fences(&lines); // open-line-idx -> (close-line-idx, lang)
+    // Name-independent "no closer anywhere ahead" floors (the LAST line index that
+    // could close each unclosed-opener family). `find_callout_end`/`find_drawer_end`/
+    // `find_matching_fence` scan `lines[i+1..]`, so when no candidate closer line
+    // exists past `i` they are skipped in O(1) — keeping a run of UNCLOSED openers
+    // (callouts, drawers, dash-bullet fences) linear instead of O(n²).
+    let last_callout_end = lines.iter().rposition(|l| {
+        let t = l.text.trim_start();
+        t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_"))
+    });
+    let last_drawer_end =
+        lines.iter().rposition(|l| l.text.trim().eq_ignore_ascii_case(":END:"));
+    // Per-fence-char last marker-line index (a dash-bullet fence's closer is the next
+    // same-char fence marker line — see `find_matching_fence`).
+    let mut last_fence_line: HashMap<u8, usize> = HashMap::new();
+    for (idx, l) in lines.iter().enumerate() {
+        if let Some((c, _)) = fence_marker(l.text) {
+            last_fence_line.insert(c, idx);
+        }
+    }
 
     let mut out: Vec<Block> = Vec::new();
     let mut para: Option<(usize, usize)> = None;
@@ -75,7 +94,10 @@ pub fn parse(input: &str) -> Vec<Block> {
 
         // 2. callout #+BEGIN_X … #+END_X
         if let Some(name) = callout_begin(t) {
-            if let Some(close) = find_callout_end(&lines, i, &name) {
+            if let Some(close) = last_callout_end
+                .filter(|&e| e > i)
+                .and_then(|_| find_callout_end(&lines, i, &name))
+            {
                 flush_para(&mut out, &mut para, input);
                 let inner = if close > i + 1 {
                     input[lines[i + 1].start..lines[close - 1].end].to_string()
@@ -184,7 +206,11 @@ pub fn parse(input: &str) -> Vec<Block> {
                 // `content` is already leading-ws-stripped, so `fence_marker` matched at
                 // its very start (a true fence opener).
                 {
-                    if let Some(close) = find_matching_fence(&lines, i, fchar) {
+                    if let Some(close) = last_fence_line
+                        .get(&fchar)
+                        .filter(|&&e| e > i)
+                        .and_then(|_| find_matching_fence(&lines, i, fchar))
+                    {
                         flush_para(&mut out, &mut para, input);
                         empty_bullet!();
                         let lang = fence_lang(&content[frun..]);
@@ -508,7 +534,10 @@ pub fn parse(input: &str) -> Vec<Block> {
         // `:PROPERTIES:` drawer becomes a Property_Drawer even in Markdown (mldoc
         // drawer.ml), with `:key: value` lines parsed as properties.
         if let Some(name) = drawer_begin(t) {
-            if let Some(close) = find_drawer_end(&lines, i) {
+            if let Some(close) = last_drawer_end
+                .filter(|&e| e > i)
+                .and_then(|_| find_drawer_end(&lines, i))
+            {
                 flush_para(&mut out, &mut para, input);
                 let span = Some(Span(line.start, lines[close].end));
                 if name == "properties" {

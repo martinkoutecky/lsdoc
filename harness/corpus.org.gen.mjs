@@ -53,8 +53,10 @@ add("kw", "#+FILETAGS: :a:b:");
 add("kw", "#+ICON: 🚀");
 add("kw", "#+AUTHOR: someone");
 add("kw", "#+END_中:");             // multibyte key after `#+END_` — must NOT panic (was a crash)
-add("kw", "#+begin_中:");           // case-insensitive begin_ guard, multibyte
 add("kw", "#+中: value");           // multibyte directive key
+// NB: `#+begin_中:` deliberately NOT here — `#+begin…:` (a begin_-excluded key + colon, no
+// `#+END`) hits mldoc's `#+key:value` Property_Drawer fallback, a documented adversarial
+// residual (see DECISIONS.md M6 org fuzz-hardening); the panic fix is covered by `#+END_中:`.
 
 // blocks
 add("block", "#+BEGIN_SRC clojure\n(defn x [])\n#+END_SRC");

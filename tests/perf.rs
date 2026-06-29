@@ -38,6 +38,18 @@ fn org_linear_cases(n: usize) -> Vec<(&'static str, String)> {
         // Org footnote-definition body absorbing a long continuation-line run
         // (mldoc `footnote_definition = many1 l`): must be single-pass / linear.
         ("o_fn_fold", format!("[fn:1] body{}", "\ncont".repeat(n / 4))),
+        // Org unclosed-opener families (audit P3/P5/P8/P9): a run of openers with NO
+        // closer ahead must NOT re-scan to EOF per opener (was O(n²) / O(n³)).
+        ("o_block_open", "#+BEGIN_FOO\n".repeat(n / 4)), // P3: no #+END
+        // P3 with UNIQUE names — a name-keyed memo alone would still miss every time;
+        // the name-INDEPENDENT "no #+END ahead" floor keeps it linear.
+        (
+            "o_block_open_uniq",
+            (0..n / 4).map(|k| format!("#+BEGIN_B{k}\n")).collect(),
+        ),
+        ("o_drawer_open", ":a:\nx\n".repeat(n / 8)), // P5: no :END:
+        ("o_inline_html", "<tag>".repeat(n / 5)),    // P8: no </tag>
+        ("o_inline_latex", "\\(".repeat(n / 2)),     // P9: no \)
     ]
 }
 
@@ -60,6 +72,15 @@ fn linear_cases(n: usize) -> Vec<(&'static str, String)> {
         ("refs", "[[a]] ".repeat(n / 6)),
         ("mixed_delims", "a*b_c~`d[e(f".repeat(n / 11)),
         ("many_lines", "x\n".repeat(n / 2)),
+        // Markdown unclosed-opener families (audit P1/P4/P6/P7/P8/P9): a run of openers
+        // with NO closer ahead must not re-scan to EOF per opener.
+        ("md_link_bait", format!("{}](", "[".repeat(n))), // P1: `[`×m + `](` (was O(n³))
+        ("md_callout_open", "#+BEGIN_FOO\n".repeat(n / 4)), // P4: no #+END
+        ("md_drawer_open", ":a:\nx\n".repeat(n / 8)),     // P6: no :END:
+        ("md_drawer_consec", ":a:\n".repeat(n / 4)),      // P6: consecutive `:a:`
+        ("md_dash_fence", "- ``` \n".repeat(n / 6)),      // P7: unclosed dash-bullet fence
+        ("md_inline_html", "<tag>".repeat(n / 5)),        // P8: no </tag>
+        ("md_inline_latex", "\\(".repeat(n / 2)),         // P9: no \)
     ]
 }
 
@@ -100,6 +121,28 @@ fn assert_no_overflow(d: usize) {
         .expect("deep nesting overflowed a 1 MiB stack — parser is not bounded-depth");
 }
 
+/// Org-only deep inputs. A single line of `>`×d nests Org `Quote`s (md's quote path is
+/// flat); the handler must peel iteratively AND bound nesting depth so the parse, ref
+/// walk, and drop of the result can't overflow (audit P2: this aborted ~7.5k `>`).
+fn org_deep_cases(d: usize) -> Vec<String> {
+    vec![
+        format!("{}x", ">".repeat(d)),       // P2: `>`×d on ONE line
+        format!("x\n{}y", ">".repeat(d)),    // deep `>` line below a paragraph (recursion path)
+        format!("{}x\n> y", ">".repeat(d)),  // deep `>` first line + continuation (recursion path)
+        "> x\n".repeat(d / 10),              // wide (single quote, many body lines)
+    ]
+}
+
+fn assert_no_overflow_org(d: usize) {
+    let inputs = org_deep_cases(d);
+    std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(move || inputs.iter().for_each(|s| parse_org(s)))
+        .expect("spawn parse thread")
+        .join()
+        .expect("deep org `>` nesting overflowed a 1 MiB stack — quote handler not bounded");
+}
+
 fn assert_linear_org(n: usize, budget_ms: u128) {
     for (name, input) in &org_linear_cases(n) {
         let t = Instant::now();
@@ -120,6 +163,7 @@ fn perf_smoke() {
     assert_linear(20_000, 1500);
     assert_linear_org(20_000, 1500);
     assert_no_overflow(40_000);
+    assert_no_overflow_org(40_000);
 }
 
 #[test]
@@ -133,4 +177,5 @@ fn pathological_inputs_stay_linear_heavy() {
 #[ignore = "full-scale stack gate; run with: cargo test --release -- --ignored"]
 fn deep_nesting_does_not_overflow_the_stack_heavy() {
     assert_no_overflow(200_000);
+    assert_no_overflow_org(200_000);
 }

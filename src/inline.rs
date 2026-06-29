@@ -111,6 +111,16 @@ struct Scanner<'a> {
     /// monotone (the scan window only shrinks), so this makes runs of unmatched
     /// openers (`[[[[…`, `((((…`, `{{{{…`) linear instead of O(n²).
     absent: std::collections::HashSet<[u8; 2]>,
+    /// Cache: 2-byte sequences known PRESENT, mapped to an occurrence position. Since
+    /// `self.i` only advances, a cached position `p >= self.i` is still a valid hit, so
+    /// a *present-but-unmatched* closer (e.g. `](` at end of `[`×m + `](`) is found in
+    /// O(1) instead of re-scanning from `self.i` every call (the other half of the F1
+    /// cubic — absence was already cached, presence was not).
+    present: HashMap<[u8; 2], usize>,
+    /// Once `)` is absent from a position it is absent from every later one (the scan
+    /// window only shrinks). A markdown link needs a closing `)`; with none ahead the
+    /// `[…](` link parser bails O(1), keeping `[`×m + `](` linear instead of O(n³).
+    rparen_absent: bool,
 }
 
 // ---- byte classes ---------------------------------------------------------
@@ -156,19 +166,46 @@ impl<'a> Scanner<'a> {
             pending: String::new(),
             no_closer: HashMap::new(),
             absent: std::collections::HashSet::new(),
+            present: HashMap::new(),
+            rparen_absent: false,
         }
     }
 
-    /// Is the 2-byte sequence `needle` present at/after `self.i`? Caches absence so
-    /// a run of unmatched openers doesn't re-scan to EOF each time.
+    /// Is the 2-byte sequence `needle` present at/after `self.i`? Caches BOTH absence
+    /// (monotone: once absent, absent forever) and a presence position (a cached hit at
+    /// `p >= self.i` is still ahead), so neither a run of unmatched openers nor a single
+    /// present-but-unused closer triggers repeated to-EOF scans.
     fn seq_present(&mut self, needle: [u8; 2]) -> bool {
         if self.absent.contains(&needle) {
             return false;
         }
-        if find_sub(self.b, self.i, &needle).is_some() {
+        if let Some(&p) = self.present.get(&needle) {
+            if p >= self.i {
+                return true;
+            }
+        }
+        match find_sub(self.b, self.i, &needle) {
+            Some(p) => {
+                self.present.insert(needle, p);
+                true
+            }
+            None => {
+                self.absent.insert(needle);
+                false
+            }
+        }
+    }
+
+    /// Is there a `)` at/after `self.i`? A markdown link/image requires a closing `)`,
+    /// so when none remains the link parser can bail in O(1). Absence is monotone.
+    fn rparen_present(&mut self) -> bool {
+        if self.rparen_absent {
+            return false;
+        }
+        if memchr(self.b, self.i, b')') {
             true
         } else {
-            self.absent.insert(needle);
+            self.rparen_absent = true;
             false
         }
     }
@@ -398,6 +435,12 @@ impl<'a> Scanner<'a> {
             b'[' => ("\\]", "Displayed"),
             _ => return None,
         };
+        // No closer ahead (monotone absence cache) ⇒ no latex span; bail O(1) so a run
+        // of unclosed `\(` / `\[` stays linear instead of re-scanning to EOF each time.
+        let close_bytes: [u8; 2] = [close.as_bytes()[0], close.as_bytes()[1]];
+        if !self.seq_present(close_bytes) {
+            return None;
+        }
         let body_start = self.i + 2;
         let end = find_sub(self.b, body_start, close.as_bytes())?;
         let body = self.s[body_start..end].to_string();
@@ -801,8 +844,9 @@ impl<'a> Scanner<'a> {
         if !self.seq_present(*b"]]") && !self.seq_present(*b"](") {
             return false;
         }
-        // nested link `[[ ... [[..]] ... ]]`
-        if self.s[self.i..].starts_with("[[") {
+        // nested link `[[ ... [[..]] ... ]]` / page ref `[[name]]` — both need a `]]`
+        // closer; skip (and their to-EOF scans) when none is ahead (`[`×m runs).
+        if self.seq_present(*b"]]") && self.s[self.i..].starts_with("[[") {
             if let Some((end, content)) = parse_nested_link(self.s, self.i) {
                 self.push(Inline::NestedLink { content });
                 self.i = end;
@@ -822,18 +866,21 @@ impl<'a> Scanner<'a> {
                 return true;
             }
         }
-        // markdown link `[label](url)`
-        if let Some(link) = self.parse_markdown_link(self.i, false) {
-            self.push(link.node);
-            self.i = link.end;
-            return true;
+        // markdown link `[label](url)` — needs a `)` closer; bail O(1) when none ahead
+        // so `[`×m + `](` (no `)`) doesn't re-walk the label run per `[` (was O(n³)).
+        if self.rparen_present() {
+            if let Some(link) = self.parse_markdown_link(self.i, false) {
+                self.push(link.node);
+                self.i = link.end;
+                return true;
+            }
         }
         false
     }
 
     fn try_image(&mut self) -> bool {
         // `![label](url)` (image) — reuse the markdown link parser with a '!' prefix.
-        if !self.seq_present(*b"](") {
+        if !self.seq_present(*b"](") || !self.rparen_present() {
             return false;
         }
         if let Some(link) = self.parse_markdown_link(self.i + 1, true) {
@@ -874,7 +921,8 @@ impl<'a> Scanner<'a> {
             }
         }
         if self.ctx.html {
-            if let Some((end, text)) = parse_inline_html(self.s, self.i) {
+            let closer = self.seq_present(*b"</");
+            if let Some((end, text)) = parse_inline_html_cached(self.s, self.i, closer) {
                 self.push(Inline::InlineHtml { text });
                 self.i = end;
                 return true;
@@ -930,6 +978,12 @@ pub(crate) fn char_len(first: u8) -> usize {
 }
 
 /// First index of `needle` in `b[from..]`, or None. (No newline restriction.)
+/// Is byte `c` present at/after `from`?
+#[inline]
+pub(crate) fn memchr(b: &[u8], from: usize, c: u8) -> bool {
+    from < b.len() && b[from..].contains(&c)
+}
+
 pub(crate) fn find_sub(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || from > b.len() {
         return None;
@@ -1868,7 +1922,13 @@ pub(crate) fn parse_email_autolink(s: &str, at: usize) -> Option<(usize, Inline)
 /// Inline raw HTML `<tag ...> ... </tag>` (or self-contained). We capture the same
 /// extent mldoc's Raw_html does for inline: a single tag region. For paired tags we
 /// take up to the matching close; otherwise a single `<...>`.
-pub(crate) fn parse_inline_html(s: &str, at: usize) -> Option<(usize, String)> {
+/// Parse inline raw HTML `<tag …>…</tag>`. `closer_possible == false` asserts (from a caller's
+/// monotone absence cache) that no `</` exists at/after `at`, so the `</name>` search
+/// is skipped. Every closing tag begins with the literal bytes `</`, so when those are
+/// absent the closer scan can only fail — the result (the bare opening tag) is
+/// byte-identical to the full scan, just O(1). This keeps a run of unclosed `<tag>`s
+/// linear instead of O(n²) (each would otherwise re-scan to EOF for its closer).
+pub(crate) fn parse_inline_html_cached(s: &str, at: usize, closer_possible: bool) -> Option<(usize, String)> {
     let b = s.as_bytes();
     let n = b.len();
     if b.get(at) != Some(&b'<') {
@@ -1893,11 +1953,13 @@ pub(crate) fn parse_inline_html(s: &str, at: usize) -> Option<(usize, String)> {
     if self_closing {
         return Some((open_end + 1, s[at..open_end + 1].to_string()));
     }
-    // look for matching </name>
-    let close_tag = format!("</{}>", name);
-    if let Some(cidx) = find_ci(s, open_end + 1, &close_tag) {
-        let end = cidx + close_tag.len();
-        return Some((end, s[at..end].to_string()));
+    // look for matching </name> (skipped when no `</` exists ahead at all).
+    if closer_possible {
+        let close_tag = format!("</{}>", name);
+        if let Some(cidx) = find_ci(s, open_end + 1, &close_tag) {
+            let end = cidx + close_tag.len();
+            return Some((end, s[at..end].to_string()));
+        }
     }
     // no closer: just the opening tag
     Some((open_end + 1, s[at..open_end + 1].to_string()))
