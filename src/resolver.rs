@@ -14,21 +14,26 @@ use crate::inline::{is_underscore_delim, is_ws_or_nl};
 use crate::lexer::{lex, Kind, Token};
 use crate::projection::Inline;
 
-/// Active constructs (mirrors v1's `Ctx`; grows as families migrate).
+/// Active constructs (mirrors v1's `Ctx`; grows as families migrate). Page-ref / nested-link
+/// / md-link / code / emphasis / escapes are ALWAYS on (no flag); these gate the constructs
+/// mldoc's `Ctx::emph` disables.
 #[derive(Clone, Copy)]
 pub(crate) struct Ctx {
     /// Whether a `\n` is a `Break` node (true) or literal text (false — emphasis content).
     pub breaks: bool,
+    pub hiccup: bool,
+    pub footnotes: bool,
+    pub images: bool,
 }
 
 impl Ctx {
     pub(crate) fn top() -> Ctx {
-        Ctx { breaks: true }
+        Ctx { breaks: true, hiccup: true, footnotes: true, images: true }
     }
     /// Restricted emphasis-content context (mldoc `aux_nested_emphasis`): breaks become
-    /// literal; emphasis/links/code/escapes stay on (the latter handled as M2/M3 land).
+    /// literal; tags/macros/latex/images/hiccup/footnotes/… off; links/code/emphasis on.
     fn emph() -> Ctx {
-        Ctx { breaks: false }
+        Ctx { breaks: false, hiccup: false, footnotes: false, images: false }
     }
 }
 
@@ -82,28 +87,57 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
     } else {
         std::collections::HashMap::new()
     };
+    let hiccup_close = if has_brk {
+        crate::inline::build_hiccup_close(s)
+    } else {
+        std::collections::HashMap::new()
+    };
     let real_dbl = if has_brk { crate::inline::build_real_dbl(s) } else { Vec::new() };
+    let lbp = if has_brk { seq_positions(bb, b']', b'(') } else { Vec::new() };
     let mut real_dbl_cur = 0usize;
+    let mut lbp_cur = 0usize;
     let mut crlf = first_crlf(bb, 0);
+    let mut rparen = first_byte(bb, 0, b')');
 
+    // `fresh` = at a fresh dispatch point (BOL, or after ws / a marker-delim / a construct /
+    // a Break). A SWALLOW opener (`! ( { <`) tries its construct only when `fresh`; mid-plain-
+    // run (after ordinary non-ws text) it is swallowed as plain (mldoc `plain_run` semantics).
+    let mut fresh = true;
     let mut t = 0usize;
     while t < toks.len() {
-        // `[[…]]` dispatch (M2a): nested-link then page-ref, leftmost-greedy with byte-offset
-        // resync. Other `[` uses (md-link / hiccup / footnote) land in M2b — for now a `[`
-        // that doesn't open a `[[…]]` renders literally.
+        // `[` dispatch (M2a/M2b): mldoc's try_bracket order — hiccup `[:` → footnote `[^` →
+        // nested-link / page-ref `[[…]]` → markdown link `[…](…)`. Leftmost-greedy with
+        // byte-offset resync; the kept pairing disciplines + monotone floors keep it linear.
         if matches!(toks[t].kind, Kind::Punct(b'[')) {
             let off = toks[t].off;
-            let mut consumed = false;
-            if s[off..].starts_with("[[") {
+            let mut end = None;
+            // 1. inline hiccup `[:tag …]` (ctx-gated — off in emphasis content).
+            if ctx.hiccup && bb.get(off + 1) == Some(&b':') && crate::inline::hiccup_head_ok(s, off)
+            {
+                if let Some(&e) = hiccup_close.get(&off) {
+                    flush(&mut out, &mut pending);
+                    out.push(Inline::Hiccup { v: s[off..e].to_string() });
+                    end = Some(e);
+                }
+            }
+            // 2. footnote `[^id]` (ctx-gated).
+            if end.is_none() && ctx.footnotes && bb.get(off + 1) == Some(&b'^') {
+                if let Some((e, name)) = crate::inline::parse_footnote_ref(s, off) {
+                    flush(&mut out, &mut pending);
+                    out.push(Inline::Fnref { name });
+                    end = Some(e);
+                }
+            }
+            // 3. nested-link (escape-free balance) then page-ref (escape-aware first `]]`).
+            if end.is_none() && s[off..].starts_with("[[") {
                 if nested_close.contains_key(&off) {
-                    if let Some((end, content)) = crate::inline::parse_nested_link(s, off) {
+                    if let Some((e, content)) = crate::inline::parse_nested_link(s, off) {
                         flush(&mut out, &mut pending);
                         out.push(Inline::NestedLink { content });
-                        t = resync(toks, t, end);
-                        consumed = true;
+                        end = Some(e);
                     }
                 }
-                if !consumed {
+                if end.is_none() {
                     while real_dbl.get(real_dbl_cur).is_some_and(|&p| p < off + 2) {
                         real_dbl_cur += 1;
                     }
@@ -112,7 +146,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                             crlf = first_crlf(bb, off);
                         }
                         if d > off + 2 && crlf > d {
-                            if let Some((end, name, full)) = crate::inline::parse_page_ref(s, off) {
+                            if let Some((e, name, full)) = crate::inline::parse_page_ref(s, off) {
                                 flush(&mut out, &mut pending);
                                 out.push(Inline::Link {
                                     url: crate::projection::Url::PageRef { v: name },
@@ -122,24 +156,71 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                                     metadata: String::new(),
                                     title: None,
                                 });
-                                t = resync(toks, t, end);
-                                consumed = true;
+                                end = Some(e);
                             }
                         }
                     }
                 }
             }
-            if !consumed {
-                pending.push('[');
-                t += 1;
+            // 4. markdown link `[label](url)` — needs a `](` before the next eol and a `)`.
+            if end.is_none() {
+                if let Some((node, e)) =
+                    try_md_link(s, bb, off, false, &lbp, &mut lbp_cur, &mut crlf, &mut rparen)
+                {
+                    flush(&mut out, &mut pending);
+                    out.push(node);
+                    end = Some(e);
+                }
             }
+            match end {
+                Some(e) => t = resync(toks, t, e),
+                None => {
+                    pending.push('[');
+                    t += 1;
+                }
+            }
+            fresh = true; // `[` is a marker-delim; a construct end is also a fresh point
+            continue;
+        }
+
+        // Swallow bytes `! ( { < ] ) } >`: openers try their construct (M2b: `!` image;
+        // `( { <` land in M3), then ALL fall back to a plain_run that swallows following
+        // non-marker-delim bytes — so a following `!`/special isn't re-dispatched
+        // (`!![a](b)` → plain `![a](b)`; `]]![a](b)` → plain `]]!` + `[a](b)`).
+        let swallow = match &toks[t].kind {
+            Kind::Punct(c) if is_swallow_byte(*c) => Some(*c),
+            _ => None,
+        };
+        if let Some(c) = swallow {
+            let off = toks[t].off;
+            // Opener construct, only at a fresh dispatch point (M2b: `!` image; M3: `( { <`).
+            if fresh && c == b'!' && ctx.images && bb.get(off + 1) == Some(&b'[') {
+                if let Some((node, e)) =
+                    try_md_link(s, bb, off + 1, true, &lbp, &mut lbp_cur, &mut crlf, &mut rparen)
+                {
+                    flush(&mut out, &mut pending);
+                    out.push(node);
+                    t = resync(toks, t, e);
+                    fresh = true;
+                    continue;
+                }
+            }
+            // not consumed (failed opener, or mid-plain-run) → render as plain; now mid-run, so
+            // a following swallow byte won't be re-dispatched.
+            pending.push(c as char);
+            fresh = false;
+            t += 1;
             continue;
         }
 
         // Non-delimiter tokens pass straight through.
         if !matches!(toks[t].kind, Kind::Delim { .. }) {
             match &toks[t].kind {
-                Kind::Text(txt) => pending.push_str(txt),
+                Kind::Text(txt) => {
+                    pending.push_str(txt);
+                    // fresh again only if the run ends in whitespace.
+                    fresh = trailing_ws(txt) > 0;
+                }
                 Kind::Newline(c) => {
                     if ctx.breaks {
                         // hard break: `\n` (not `\r`) immediately preceded by >=2 spaces/tabs
@@ -156,12 +237,18 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                     } else {
                         pending.push(*c as char);
                     }
+                    fresh = true;
                 }
                 Kind::Leaf(node) => {
                     flush(&mut out, &mut pending);
                     out.push(node.clone());
+                    fresh = true;
                 }
-                Kind::Punct(c) => pending.push(*c as char),
+                // `$`/`#` (M3 markers) render literally for now; they are marker-delims → fresh.
+                Kind::Punct(c) => {
+                    pending.push(*c as char);
+                    fresh = true;
+                }
                 Kind::Delim { .. } => unreachable!(),
             }
             t += 1;
@@ -245,6 +332,8 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 t += 1;
             }
         }
+        // a marker run (matched emphasis or a literal marker char) is a marker-delim → fresh.
+        fresh = true;
     }
     flush(&mut out, &mut pending);
     out
@@ -296,6 +385,68 @@ fn resync(toks: &[Token], mut t: usize, end: usize) -> usize {
         t += 1;
     }
     t
+}
+
+/// Is `c` a SWALLOW byte — `mldoc` dispatches it but a failure runs `plain_run` (rather than
+/// emitting a single literal char like a marker-delim). Openers `! ( { <` and the closers
+/// `] ) } >` (which never open an inline construct at top level).
+fn is_swallow_byte(c: u8) -> bool {
+    matches!(c, b'!' | b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b']')
+}
+
+/// First byte `c` at/after `from`, or `bb.len()` if none (monotone-cursor helper).
+fn first_byte(bb: &[u8], from: usize, c: u8) -> usize {
+    let mut p = from;
+    while p < bb.len() && bb[p] != c {
+        p += 1;
+    }
+    p
+}
+
+/// Sorted positions of the 2-byte sequence `a b` in `bb` (e.g. `](` for markdown links).
+fn seq_positions(bb: &[u8], a: u8, b: u8) -> Vec<usize> {
+    let mut v = Vec::new();
+    let mut i = 0usize;
+    while i + 1 < bb.len() {
+        if bb[i] == a && bb[i + 1] == b {
+            v.push(i);
+        }
+        i += 1;
+    }
+    v
+}
+
+/// Markdown link / image at `at`: needs a `](` before the next eol (the label can't cross a
+/// newline) and a closing `)` ahead — the monotone floors that make a `[`×n run linear — then
+/// the v1 parser validates fully. `lbp`/`crlf`/`rparen` are monotone cursors (kept state).
+#[allow(clippy::too_many_arguments)]
+fn try_md_link(
+    s: &str,
+    bb: &[u8],
+    at: usize,
+    image: bool,
+    lbp: &[usize],
+    lbp_cur: &mut usize,
+    crlf: &mut usize,
+    rparen: &mut usize,
+) -> Option<(Inline, usize)> {
+    while lbp.get(*lbp_cur).is_some_and(|&p| p < at) {
+        *lbp_cur += 1;
+    }
+    let rb = *lbp.get(*lbp_cur)?;
+    if at > *crlf {
+        *crlf = first_crlf(bb, at);
+    }
+    if rb >= *crlf {
+        return None; // the `](` is not before the next eol
+    }
+    if at > *rparen {
+        *rparen = first_byte(bb, at, b')');
+    }
+    if *rparen >= bb.len() {
+        return None; // no closing `)` ahead
+    }
+    crate::inline::md_link(s, at, image)
 }
 
 #[cfg(test)]
@@ -363,6 +514,19 @@ mod tests {
             "\\]", "\\!", "*", "**", "_", "~~", "`co`",
         ];
         assert_eq!(diff_count(TOKENS, 500_000, 0x5A_2B_71), 0);
+    }
+
+    /// M2b: md-link / image / hiccup / footnote (the `[`+`!` family) + the M2a family + core.
+    /// NO bare `(`/`)`/`{`/`<`/`$`/`#` (block-ref/macro/latex/tag are M3) — only whole links.
+    #[test]
+    fn v2_matches_v1_m2b_brackets() {
+        const TOKENS: &[&str] = &[
+            "a", "b", " ", "\n", "word", "x",
+            "[a](b)", "[x](http://y)", "![a](b)", "[lab](u \"t\")", "[](e)",
+            "[:div ]", "[:span x]", "[:a]", "[:foo ]", "[^1]", "[^id]",
+            "[[Foo]]", "[[a[[b]]c]]", "[", "]", "[[", "]]", "!", "*", "**", "_", "`co`",
+        ];
+        assert_eq!(diff_count(TOKENS, 500_000, 0x9F_3C_05), 0);
     }
 
     /// Exhaustive small enumeration: every short string over {`*`,`_`,`a`,space} — covers

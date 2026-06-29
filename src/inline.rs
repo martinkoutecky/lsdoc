@@ -1470,7 +1470,7 @@ fn parse_macro_arg(s: &str, at: usize) -> Option<(String, usize)> {
 
 // ---- footnote ref ---------------------------------------------------------
 
-fn parse_footnote_ref(s: &str, at: usize) -> Option<(usize, String)> {
+pub(crate) fn parse_footnote_ref(s: &str, at: usize) -> Option<(usize, String)> {
     // `[^ id ]` : id non-empty, no ']' / whitespace.
     let b = s.as_bytes();
     let n = b.len();
@@ -1493,6 +1493,12 @@ fn parse_footnote_ref(s: &str, at: usize) -> Option<(usize, String)> {
 struct MdLink {
     node: Inline,
     end: usize,
+}
+
+/// Resolver (v0.2) entry: `[label](url)` / `![…](…)` → (node, end). Thin wrapper over the
+/// v1 `parse_md_link` so the resolver reuses its exact label/url/title/metadata semantics.
+pub(crate) fn md_link(s: &str, at: usize, image: bool) -> Option<(Inline, usize)> {
+    parse_md_link(s, at, image).map(|l| (l.node, l.end))
 }
 
 /// `[label](url)` markdown link/image starting at `at` (the '['). `image` controls
