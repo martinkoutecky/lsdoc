@@ -21,10 +21,19 @@
 
 pub(crate) mod entities;
 pub(crate) mod inline;
+pub(crate) mod lexer;
 pub(crate) mod org;
 pub(crate) mod parse;
 pub(crate) mod projection;
 pub(crate) mod refs;
+pub(crate) mod resolver;
+
+/// Dev seam: route the markdown inline path through the v0.2 lexer+resolver when
+/// `LSDOC_INLINE_V2` is set (the differential gate during the rewrite). Default = v1.
+/// Returns `false` where env is unavailable (e.g. wasm), keeping v1 in production.
+pub(crate) fn inline_v2_enabled() -> bool {
+    std::env::var_os("LSDOC_INLINE_V2").is_some()
+}
 
 /// The render contract: the stable, `serde`-serializable AST. **This IS lsdoc's AST**
 /// (the projection that was once described as "comparison-only" — that framing is
@@ -73,6 +82,8 @@ pub fn refs(input: &str, format: &str) -> ast::Refs {
 pub fn inline(input: &str, format: &str) -> Vec<ast::Inline> {
     if format == "org" {
         org::parse_inline_org_top(input)
+    } else if inline_v2_enabled() {
+        resolver::parse_inline(input)
     } else {
         inline::parse_inline(input)
     }
