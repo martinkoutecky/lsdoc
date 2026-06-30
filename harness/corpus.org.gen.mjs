@@ -445,6 +445,11 @@ add("fence-straddle", ":LOGBOOK:\n```\n:END:\n```\ny\n```");           // drawer
 // the body `:LOGBOOK:` and dropped the real drawer (`src, example` instead of `src, properties`).
 add("phantom-opener", "#+BEGIN_SRC org\n:LOGBOOK:\n#+END_SRC\n:PROPERTIES:\n:ID: abc\n:END:"); // src, properties
 
+// audit-r2 closer-finding divergences (confirmed vs mldoc Org):
+add("empty-name", "#+BEGIN_\n#+TITLE: x\n#+END_SRC");  // paragraph, directive, paragraph (empty name ≠ block)
+add("mixed-fence", "~~~\na\n```\nb");                  // src("a"), paragraph (either-char close)
+add("fence-lang", "~~~~\na\n~~~~");                     // src lang="~" (marker exactly 3 chars)
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

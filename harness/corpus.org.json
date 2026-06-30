@@ -1960,5 +1960,23 @@
   "cat": "phantom-opener",
   "input": "#+BEGIN_SRC org\n:LOGBOOK:\n#+END_SRC\n:PROPERTIES:\n:ID: abc\n:END:",
   "format": "org"
+ },
+ {
+  "id": "o327",
+  "cat": "empty-name",
+  "input": "#+BEGIN_\n#+TITLE: x\n#+END_SRC",
+  "format": "org"
+ },
+ {
+  "id": "o328",
+  "cat": "mixed-fence",
+  "input": "~~~\na\n```\nb",
+  "format": "org"
+ },
+ {
+  "id": "o329",
+  "cat": "fence-lang",
+  "input": "~~~~\na\n~~~~",
+  "format": "org"
  }
 ]

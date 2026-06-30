@@ -106,6 +106,22 @@ fn deep_cases(d: usize) -> Vec<String> {
         format!("{}x{}", "#[[".repeat(d), "]]".repeat(d)),
         "> x\n".repeat(d / 10),
         format!("{}x", "#+BEGIN_QUOTE\n".repeat(d / 20)),
+        // RECURSING nested callouts (distinct names that actually CLOSE → the body IS
+        // re-parsed, unlike the unclosed `#+BEGIN_QUOTE` run above). Without the
+        // BLOCK_NEST_CAP this recursed `d/20` frames deep and SIGABRT'd (~900 on 1 MiB);
+        // the cap bounds it.
+        {
+            let dd = d / 20;
+            let mut s = String::new();
+            for k in 0..dd {
+                s.push_str(&format!("#+BEGIN_a{k}\n"));
+            }
+            s.push_str("x\n");
+            for k in (0..dd).rev() {
+                s.push_str(&format!("#+END_a{k}\n"));
+            }
+            s
+        },
     ]
 }
 
@@ -242,7 +258,26 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         //  - a validly-closed callout with a LONG NAME (index build is O(name), lookup O(1)):
         ("md_callout_longname", false, 8_000, |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n))),
         ("org_callout_longname", true, 8_000, |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n))),
+        // DEEPLY-NESTED distinct callouts that close → recurse-on-body. mldoc is itself O(n²)
+        // here (and stack-overflows); `BLOCK_NEST_CAP` bounds the recursion to a constant, so
+        // lsdoc is O(cap·n)=O(n) (and panic-free). base > the cap (64) so the bound is active.
+        ("md_nested_callout", false, 2_000, |n| nested_callout(n)),
+        ("org_nested_callout", true, 2_000, |n| nested_callout(n)),
     ]
+}
+
+/// `#+BEGIN_a0 … #+BEGIN_a{n-1}` / `x` / `#+END_a{n-1} … #+END_a0` — n distinct-name callouts
+/// nested `n` deep that all close (so each body is re-parsed).
+fn nested_callout(n: usize) -> String {
+    let mut s = String::new();
+    for k in 0..n {
+        s.push_str(&format!("#+BEGIN_a{k:06}\n"));
+    }
+    s.push_str("x\n");
+    for k in (0..n).rev() {
+        s.push_str(&format!("#+END_a{k:06}\n"));
+    }
+    s
 }
 
 /// Assert each round-2 generator scales ~linearly. This NFS/shared box is too noisy for a

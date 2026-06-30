@@ -1253,5 +1253,35 @@
   "id": "b250",
   "cat": "phantom-opener",
   "input": "```\n:LOGBOOK:\n```\n:PROPERTIES:\n:ID: a\n:END:"
+ },
+ {
+  "id": "b251",
+  "cat": "empty-name",
+  "input": "#+BEGIN_\nkey:: val\n#+END_QUOTE"
+ },
+ {
+  "id": "b252",
+  "cat": "empty-name",
+  "input": "#+BEGIN_ QUOTE\nx\n#+END_QUOTE"
+ },
+ {
+  "id": "b253",
+  "cat": "mixed-fence",
+  "input": "~~~\na\n```\nb"
+ },
+ {
+  "id": "b254",
+  "cat": "mixed-fence",
+  "input": "```\na\n~~~~~ info\nb"
+ },
+ {
+  "id": "b255",
+  "cat": "fence-lang",
+  "input": "````js\na\n````"
+ },
+ {
+  "id": "b256",
+  "cat": "fence-lang",
+  "input": "~~~~\na\n~~~~"
  }
 ]

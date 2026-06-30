@@ -337,6 +337,18 @@ add("fence-straddle", "#+BEGIN_QUOTE\n```\n```\n#+END_QUOTE\n```\nx\n```"); // q
 add("phantom-opener", "```\n#+BEGIN_QUOTE\n```\n#+BEGIN_QUOTE\nx\n#+END_QUOTE");  // src, quote
 add("phantom-opener", "```\n:LOGBOOK:\n```\n:PROPERTIES:\n:ID: a\n:END:");        // src, properties
 
+// audit-r2 closer-finding divergences (all confirmed vs mldoc):
+// (1) empty-name `#+BEGIN_` (or leading-ws `#+BEGIN_ X`) is NOT a block — mldoc → paragraphs,
+//     NOT a phantom `custom name:""` block that swallows an intervening drawer.
+add("empty-name", "#+BEGIN_\nkey:: val\n#+END_QUOTE");   // paragraph, properties, paragraph
+add("empty-name", "#+BEGIN_ QUOTE\nx\n#+END_QUOTE");      // paragraph (leading-ws name)
+// (2) a fence closes on the first later 3+ run of EITHER char (length/info-agnostic), not same-char.
+add("mixed-fence", "~~~\na\n```\nb");                     // src("a"), paragraph
+add("mixed-fence", "```\na\n~~~~~ info\nb");              // src("a"), paragraph
+// (3) the fence marker is EXACTLY 3 chars; extra run chars belong to the lang/info.
+add("fence-lang", "````js\na\n````");                     // src lang="`js"
+add("fence-lang", "~~~~\na\n~~~~");                        // src lang="~"
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

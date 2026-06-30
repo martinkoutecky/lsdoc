@@ -41,7 +41,34 @@ struct Line<'a> {
     text: &'a str, // line content WITHOUT the trailing '\n'
 }
 
+/// Max callout/quote body recursion depth (mirrors org's `QUOTE_NEST_CAP`). A `#+BEGIN_X` body
+/// is re-parsed recursively (mldoc does the same — and is itself O(n²) AND stack-overflows on
+/// deeply-nested closing callouts), so an unbounded depth would SIGABRT and the recurse-on-body
+/// would be O(n²). Capping keeps it O(cap·n)=O(n) and panic-free. Realistic nesting is shallow,
+/// so this is byte-exact below the cap; past it (only adversarial input) mldoc has no defined
+/// output anyway. 64 = the same bound org uses for `>` quotes.
+const BLOCK_NEST_CAP: usize = 64;
+std::thread_local! {
+    static BLOCK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub fn parse(input: &str) -> Vec<Block> {
+    let depth = BLOCK_DEPTH.with(|c| c.get());
+    if depth >= BLOCK_NEST_CAP {
+        // recursion too deep — stop; one flat paragraph (can't SIGABRT). No byte-exact target.
+        return if input.is_empty() {
+            Vec::new()
+        } else {
+            vec![Block::Paragraph { inline: stub_inline(input), span: Some(Span(0, input.len())) }]
+        };
+    }
+    BLOCK_DEPTH.with(|c| c.set(depth + 1));
+    let out = parse_impl(input);
+    BLOCK_DEPTH.with(|c| c.set(depth));
+    out
+}
+
+fn parse_impl(input: &str) -> Vec<Block> {
     let mut lines = split_lines(input);
     // Byte offset of the last `]` in the whole input (None if none): a block-level hiccup
     // `[:tag …]` needs a closing `]`, so a line whose `[:` begins at/after this is skipped
@@ -53,7 +80,9 @@ pub fn parse(input: &str) -> Vec<Block> {
     // mldoc's own `take_until` is O(n²) on unclosed-opener runs. Drawers/fences keep their indexes.
     let mut end_trie = EndTrie::new();
     let mut drawer_end_idxs: Vec<usize> = Vec::new(); // `:END:` lines (drawer closers)
-    let mut fence_line_idxs: HashMap<u8, Vec<usize>> = HashMap::new(); // per-char fence lines
+    // ALL whole-line fence markers (` ``` `/`~~~`), ascending — mldoc closes a fence at the first
+    // later 3+ run of EITHER char (length/info-agnostic), so closing is char-AGNOSTIC: one list.
+    let mut fence_lines: Vec<usize> = Vec::new();
     for (idx, l) in lines.iter().enumerate() {
         let t = l.text.trim_start();
         if t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
@@ -62,14 +91,14 @@ pub fn parse(input: &str) -> Vec<Block> {
         if l.text.trim().eq_ignore_ascii_case(":END:") {
             drawer_end_idxs.push(idx);
         }
-        if let Some((c, _)) = fence_marker(l.text) {
-            fence_line_idxs.entry(c).or_default().push(idx);
+        if fence_marker(l.text).is_some() {
+            fence_lines.push(idx);
         }
     }
 
     let mut out: Vec<Block> = Vec::new();
     let mut para: Option<(usize, usize)> = None;
-    let mut fence_cursor: HashMap<u8, usize> = HashMap::new(); // monotone per-char fence cursor
+    let mut fence_cursor: usize = 0; // monotone cursor into `fence_lines`
     let mut i = 0;
 
     while i < lines.len() {
@@ -82,14 +111,14 @@ pub fn parse(input: &str) -> Vec<Block> {
 
         // 1. fenced code (Src) — ON-DEMAND, context-aware. A fence-marker line the main
         // loop REACHES is an opener at THIS level (callout/drawer/latex bodies are jumped
-        // past, so a reached fence is never body content). Its closer = the first
-        // same-char whole-line fence marker after it (`find_matching_fence`). This is
-        // context-correct, unlike a global greedy pre-pass which would pair a fence
-        // *inside* a callout/drawer body with one *outside* it (the straddle bug:
-        // `#+BEGIN_QUOTE\n```\n#+END_QUOTE\n```\nx\n``` ` is `quote, src`, not `quote, para`).
+        // past, so a reached fence is never body content). Its closer = the first whole-line
+        // fence marker after it of EITHER char (`find_matching_fence`; mldoc's close is
+        // char/length/info-agnostic). This is context-correct, unlike a global greedy pre-pass
+        // which would pair a fence *inside* a callout/drawer body with one *outside* it (the
+        // straddle bug: `#+BEGIN_QUOTE\n```\n#+END_QUOTE\n```\nx\n``` ` is `quote, src`).
         // An unclosed fence falls through to paragraph.
-        if let Some((c, mend)) = fence_marker(t) {
-            if let Some(close) = find_matching_fence(&fence_line_idxs, &mut fence_cursor, i, c) {
+        if let Some((_c, mend)) = fence_marker(t) {
+            if let Some(close) = find_matching_fence(&fence_lines, &mut fence_cursor, i) {
                 flush_para(&mut out, &mut para, input);
                 let lang = fence_lang(&t[mend..]);
                 let code = if close > i + 1 {
@@ -218,11 +247,11 @@ pub fn parse(input: &str) -> Vec<Block> {
             }
             // (a) fenced code opener on the bullet line — only splits if it CLOSES
             // (an unclosed `- ``` ` stays a normal bullet titled "```", per mldoc).
-            if let Some((fchar, frun)) = fence_marker(content) {
+            if let Some((_fchar, frun)) = fence_marker(content) {
                 // `content` is already leading-ws-stripped, so `fence_marker` matched at
                 // its very start (a true fence opener).
                 {
-                    if let Some(close) = find_matching_fence(&fence_line_idxs, &mut fence_cursor, i, fchar) {
+                    if let Some(close) = find_matching_fence(&fence_lines, &mut fence_cursor, i) {
                         flush_para(&mut out, &mut para, input);
                         empty_bullet!();
                         let lang = fence_lang(&content[frun..]);
@@ -769,25 +798,17 @@ fn fence_lang(info: &str) -> String {
     info.split_whitespace().next().unwrap_or("").to_string()
 }
 
-/// First whole-line fence-marker of char `fchar` strictly after `from`, via the per-char
-/// sorted index + a MONOTONE cursor (O(1) amortized, never an EOF re-scan). The single
-/// closer-finder for BOTH a top-level fence opener (step 1) and one opened on a
-/// `-` bullet line (step 5a): on-demand at the dispatch point, so it is context-aware
-/// (it can never pair across a callout/drawer body the main loop already jumped past).
-fn find_matching_fence(
-    fence_line_idxs: &HashMap<u8, Vec<usize>>,
-    cursor: &mut HashMap<u8, usize>,
-    from: usize,
-    fchar: u8,
-) -> Option<usize> {
-    let v = fence_line_idxs.get(&fchar)?;
-    // Monotone per-char cursor: the main loop reaches fence openers in increasing `from`, so
-    // the cursor only advances → O(1) amortized (O(n) total), not `partition_point`'s O(log n).
-    let cur = cursor.entry(fchar).or_insert(0);
-    while *cur < v.len() && v[*cur] <= from {
-        *cur += 1;
+/// First whole-line fence-marker (` ``` ` OR `~~~`, char-AGNOSTIC — mldoc closes a fence at the
+/// first later 3+ run of either char) strictly after `from`, via the ascending `fence_lines`
+/// list + a MONOTONE cursor (O(1) amortized, never an EOF re-scan). The single closer-finder for
+/// BOTH a top-level fence opener (step 1) and one opened on a `-` bullet line (step 5a):
+/// on-demand at the dispatch point, so it can't pair across a body the main loop jumped past.
+fn find_matching_fence(fence_lines: &[usize], cursor: &mut usize, from: usize) -> Option<usize> {
+    // the main loop reaches fence openers in increasing `from`, so the cursor only advances.
+    while *cursor < fence_lines.len() && fence_lines[*cursor] <= from {
+        *cursor += 1;
     }
-    v.get(*cur).copied()
+    fence_lines.get(*cursor).copied()
 }
 
 /// A code-fence marker line: 3+ ` or ~ after optional leading whitespace (Logseq
@@ -804,8 +825,11 @@ fn fence_marker(s: &str) -> Option<(u8, usize)> {
     while k < b.len() && b[k] == c {
         k += 1;
     }
+    // mldoc's fence marker is EXACTLY 3 chars: a 3+ run opens/closes, but only the first 3 are
+    // the marker — extra run chars (and the rest of the line) are the info/lang string. So the
+    // info begins at `ws + 3`, not past the whole run (`####js` → lang "`js", not "js").
     if k - ws >= 3 {
-        Some((c, k))
+        Some((c, ws + 3))
     } else {
         None
     }
@@ -1242,7 +1266,12 @@ fn callout_begin(s: &str) -> Option<String> {
     let t = s.trim_start();
     // `get(..8)` is char-boundary-safe (returns None on a multibyte split).
     if t.get(..8)?.eq_ignore_ascii_case("#+BEGIN_") {
-        Some(t[8..].split_whitespace().next().unwrap_or("").to_string())
+        // mldoc's block name is `take_while1(non-space)` IMMEDIATELY after `#+BEGIN_`: the name
+        // is the leading non-ws run, and an empty one (`#+BEGIN_`, or `#+BEGIN_ X` where ws
+        // leads) is NOT a block — a plain paragraph. (Do NOT `split_whitespace`-skip leading ws.)
+        let rest = &t[8..];
+        let n = rest.bytes().take_while(|&b| b != b' ' && b != b'\t').count();
+        (n > 0).then(|| rest[..n].to_string())
     } else {
         None
     }
