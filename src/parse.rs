@@ -35,24 +35,25 @@
 //! - consecutive non-block lines (incl. blank lines) coalesce into ONE paragraph.
 //! - unclosed fences and 4-space indents are paragraphs, not code.
 
+// The md (`parse.rs`) and org (`org.rs`) block loops are intentionally PARALLEL implementations
+// (different grammars); the leaf predicates + infrastructure they both use — `split_lines`,
+// `EndTrie`, fence/drawer lookups, the task-marker table, `Builder`, `BLOCK_NEST_CAP` — live once
+// in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
+use crate::block_common::{
+    displayed_math, drawer_property, find_drawer_end, find_matching_fence, is_raw_html, leading_ws,
+    para_ws_only, split_checkbox, split_lines, Builder, EndTrie, Line, BLOCK_NEST_CAP, MARKERS,
+};
 use crate::projection::{Block, Inline, ListItem, Span};
-use std::collections::HashMap;
 
-/// Depth guard for the ONE md re-dispatch (`build_md_quote`'s residual reparse). The F1/F5
-/// `>`-quote nesting makes a `>`-on-continuation open a child Quote re-dispatched through the
-/// driver; an adversarial increasing-`>`-per-line spine (O(d²) INPUT, fuzz-unreachable, where
-/// mldoc itself is O(n²)+stack-overflow) would otherwise recurse to depth = #lines and SIGABRT.
-/// Mirrors `org.rs`'s `BLOCK_NEST_CAP`: cap the residual recursion + degrade gracefully to a flat
-/// Paragraph. The cap is unreachable by any gated / realistic / fuzz input (deepest is depth ~3).
-const BLOCK_NEST_CAP: usize = 64;
+// Depth guard for the ONE md re-dispatch (`build_md_quote`'s residual reparse). The F1/F5
+// `>`-quote nesting makes a `>`-on-continuation open a child Quote re-dispatched through the
+// driver; an adversarial increasing-`>`-per-line spine (O(d²) INPUT, fuzz-unreachable, where
+// mldoc itself is O(n²)+stack-overflow) would otherwise recurse to depth = #lines and SIGABRT.
+// Counts that md re-dispatch depth; capped at the shared `block_common::BLOCK_NEST_CAP`, which
+// degrades gracefully to a flat Paragraph. Unreachable by any gated / realistic / fuzz input
+// (deepest is depth ~3).
 std::thread_local! {
     static MD_BLOCK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-struct Line<'a> {
-    start: usize, // byte offset of line start
-    end: usize,   // byte offset just past the trailing '\n' (or EOF)
-    text: &'a str, // line content WITHOUT the trailing '\n'
 }
 
 pub fn parse(input: &str) -> Vec<Block> {
@@ -71,21 +72,6 @@ pub fn parse(input: &str) -> Vec<Block> {
 enum Step {
     Next(usize),
     Open { close: usize, builder: Builder },
-}
-
-/// Captures a callout opener's identity so the driver can emit the right block once its
-/// body children are known (`Quote` for `#+BEGIN_QUOTE`, else `Custom{name}`).
-enum Builder {
-    Quote,
-    Custom(String),
-}
-impl Builder {
-    fn finish(self, children: Vec<Block>, span: Option<Span>) -> Block {
-        match self {
-            Builder::Quote => Block::Quote { children, span },
-            Builder::Custom(name) => Block::Custom { name, children, span },
-        }
-    }
 }
 
 /// One open container on the streaming driver's explicit stack. Only re-dispatched
@@ -1018,19 +1004,6 @@ fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &s
     }
 }
 
-/// Is the open paragraph entirely whitespace (spaces/tabs/eols)? Used by F4: an empty
-/// heading/bullet marker's trailing-whitespace paragraph is dropped when the immediately
-/// following line opens a `Block`/`Hr`/`Table` construct (mldoc's heading `ws *> title`
-/// lookahead consumes the trailing ws in that case).
-fn para_ws_only(para: &Option<(usize, usize)>, input: &str) -> bool {
-    match para {
-        Some((s, e)) => input.as_bytes()[*s..*e]
-            .iter()
-            .all(|&b| matches!(b, b' ' | b'\t' | b'\n' | b'\r')),
-        None => false,
-    }
-}
-
 /// F4/M3: a drop-trigger block follows an empty heading/bullet marker whose trailing-ws
 /// paragraph is open (`was_ws_drop == Some(boundary)`, where `boundary` is the marker line's
 /// end offset). Drop the marker's `" \n"` portion `[para.start, boundary)`; KEEP any intervening
@@ -1050,21 +1023,6 @@ fn stub_inline(s: &str) -> Vec<Inline> {
     // The real inline parser. Name kept for the existing call sites.
     crate::resolver::parse_inline(s)
 }
-
-/// mldoc heading/bullet task markers (`Heading0.marker`), stripped from the title.
-const MARKERS: &[&str] = &[
-    "TODO",
-    "DOING",
-    "WAITING",
-    "WAIT",
-    "DONE",
-    "CANCELED",
-    "CANCELLED",
-    "STARTED",
-    "IN-PROGRESS",
-    "NOW",
-    "LATER",
-];
 
 /// Title text of an ATX-ish bullet/heading content: strip a leading `#{1,n} ` run
 /// (mldoc parses a heading inside a bullet, e.g. `- ## X` → bullet titled `X`), then
@@ -1110,72 +1068,12 @@ fn split_markers(s: &str) -> (Option<String>, Option<String>, &str) {
     (marker, priority, s)
 }
 
-/// Split a leading list checkbox `[ ]` / `[x]` / `[X]` (+ following spaces) off `s`,
-/// returning (state, rest): `[ ]`→`Some(false)`, `[x]`/`[X]`→`Some(true)`, none→`(None, s)`.
-/// mldoc records this only for `*`/`+`/`N.` lists (lists0), NOT for `-` bullets (heading0).
-fn split_checkbox(s: &str) -> (Option<bool>, &str) {
-    if let Some(r) = s.strip_prefix("[ ]") {
-        (Some(false), r.trim_start())
-    } else if let Some(r) = s.strip_prefix("[x]").or_else(|| s.strip_prefix("[X]")) {
-        (Some(true), r.trim_start())
-    } else {
-        (None, s)
-    }
-}
-
-
-/// Split into lines on any of `\r\n`, lone `\n`, or lone `\r` (mldoc's `is_eol`
-/// treats `\r` and `\n` each as a line terminator; a CRLF is consumed as ONE
-/// terminator). The returned `text` excludes the terminator, so a trailing `\r` is
-/// never carried into block content. Paragraph bodies are re-extracted from the raw
-/// byte span, so the inline parser (which treats `\r` AND `\n` as `Break`) restores
-/// the per-eol break count (`a\r\nb` → [a, Break, Break, b]).
-fn split_lines(input: &str) -> Vec<Line<'_>> {
-    let mut lines = Vec::new();
-    let bytes = input.as_bytes();
-    let n = input.len();
-    let mut i = 0;
-    while i < n {
-        let start = i;
-        let mut j = i;
-        while j < n && bytes[j] != b'\n' && bytes[j] != b'\r' {
-            j += 1;
-        }
-        let content_end = j;
-        let end = if j < n {
-            // consume the terminator: `\r\n` as a unit, else a lone `\r`/`\n`.
-            if bytes[j] == b'\r' && j + 1 < n && bytes[j + 1] == b'\n' {
-                j + 2
-            } else {
-                j + 1
-            }
-        } else {
-            j
-        };
-        lines.push(Line { start, end, text: &input[start..content_end] });
-        i = end;
-    }
-    lines
-}
 
 /// Language of a fence from its info string (the text after the ``` run): mldoc's
 /// `language` is the FIRST whitespace-delimited token (`clj :results` → `clj`, the
 /// `:results` is a separate `options` field we don't model).
 fn fence_lang(info: &str) -> String {
     info.split_whitespace().next().unwrap_or("").to_string()
-}
-
-/// First whole-line fence-marker (` ``` ` OR `~~~`, char-AGNOSTIC — mldoc closes a fence at the
-/// first later 3+ run of either char) strictly after `from`, via the ascending `fence_lines`
-/// list + a MONOTONE cursor (O(1) amortized, never an EOF re-scan). The single closer-finder for
-/// BOTH a top-level fence opener (step 1) and one opened on a `-` bullet line (step 5a):
-/// on-demand at the dispatch point, so it can't pair across a body the main loop jumped past.
-fn find_matching_fence(fence_lines: &[usize], cursor: &mut usize, from: usize) -> Option<usize> {
-    // the main loop reaches fence openers in increasing `from`, so the cursor only advances.
-    while *cursor < fence_lines.len() && fence_lines[*cursor] <= from {
-        *cursor += 1;
-    }
-    fence_lines.get(*cursor).copied()
 }
 
 /// A code-fence marker line: 3+ ` or ~ after optional leading whitespace (Logseq
@@ -1242,10 +1140,6 @@ fn is_hr(s: &str) -> bool {
     }
     let c = t.as_bytes()[0];
     (c == b'-' || c == b'*' || c == b'_') && t.bytes().all(|b| b == c)
-}
-
-fn leading_ws(s: &str) -> usize {
-    s.bytes().take_while(|&b| b == b' ' || b == b'\t').count()
 }
 
 /// `(ws)- ` (or a lone `(ws)-` at end-of-line) ⇒ bullet of level `1 + ws` (each
@@ -1503,21 +1397,6 @@ fn directive_property(s: &str) -> Option<(String, String)> {
     Some((key.to_string(), value.to_string()))
 }
 
-/// One `:key: value` line of a `:PROPERTIES:` drawer (mldoc drawer.ml `property`):
-/// `:` key `:` value (key has no `:`/space). Returns None for non-property lines.
-fn drawer_property(s: &str) -> Option<(String, String)> {
-    let t = s.trim_start().strip_prefix(':')?;
-    let pos = t.find(':')?;
-    let key = &t[..pos];
-    if key.is_empty() || key.contains(' ') || key.contains('\t') || key.eq_ignore_ascii_case("end") {
-        return None;
-    }
-    // value = rest of line after the key's closing `:`, trimmed (drops a leading space
-    // and a trailing CR from CRLF inputs).
-    let value = t[pos + 1..].trim();
-    Some((key.to_string(), value.to_string()))
-}
-
 /// Does line `s` OPEN a markdown definition (a `: <def>` line)? mldoc
 /// `markdown_definition.ml`: `spaces *> ':' *> ws(≥1) *> term_definition` where the
 /// first `l` is `spaces *> satisfy(∉ ':' '#' eol) *> line(take_till1 eol)` — so after
@@ -1655,68 +1534,6 @@ fn raw_callout_block(
     (block, ni)
 }
 
-/// A trie over the (lowercased) names of `#+END_<name>` lines. Each node holds the line indexes
-/// of every `#+END_` line whose name PASSES THROUGH it (i.e. has the node's path as a prefix),
-/// in ascending line order. A callout opener named X then finds its closer — the first `#+END_`
-/// line after `from` whose name starts with X (mldoc's case-insensitive prefix match:
-/// `#+END_QUOTEX` closes `QUOTE`) — by walking X (O(|X|)) and `partition_point`-ing the node's
-/// index list. Build is O(Σ |name|) = O(n) and shares prefixes (so a single long name is O(name),
-/// not O(name²) like a per-prefix hashmap). This is O(n) over a parse level even on adversarial
-/// unclosed-opener runs — where mldoc's own `take_until` is O(n²) (measured: 4000 openers = 68s).
-#[derive(Default)]
-struct EndTrie {
-    kids: Vec<HashMap<u8, u32>>, // node → byte → child node
-    ends: Vec<Vec<usize>>,       // node → `#+END_` line indexes with this prefix (ascending)
-}
-impl EndTrie {
-    fn new() -> Self {
-        EndTrie { kids: vec![HashMap::new()], ends: vec![Vec::new()] }
-    }
-    /// Index `#+END_` line `idx` under the leading non-ws run of `suffix` (the text after
-    /// `#+END_`), lowercased. The empty prefix (root) matches any opener name (incl. `""`).
-    fn insert(&mut self, suffix: &str, idx: usize) {
-        let mut node = 0usize;
-        self.ends[node].push(idx);
-        for &b in suffix.as_bytes() {
-            if b == b' ' || b == b'\t' {
-                break;
-            }
-            let lb = b.to_ascii_lowercase();
-            node = match self.kids[node].get(&lb) {
-                Some(&c) => c as usize,
-                None => {
-                    let c = self.kids.len();
-                    self.kids.push(HashMap::new());
-                    self.ends.push(Vec::new());
-                    self.kids[node].insert(lb, c as u32);
-                    c
-                }
-            };
-            self.ends[node].push(idx);
-        }
-    }
-    /// First `#+END_` line after `from` whose name starts with `name` (case-insensitive), or
-    /// `None` (unclosed/mismatched — O(|name|), no EOF scan). Byte-exact to the old prefix scan.
-    fn find(&self, name: &str, from: usize) -> Option<usize> {
-        let mut node = 0usize;
-        for &b in name.as_bytes() {
-            node = *self.kids[node].get(&b.to_ascii_lowercase())? as usize;
-        }
-        let v = &self.ends[node];
-        v.get(v.partition_point(|&x| x <= from)).copied()
-    }
-}
-
-/// A line that is exactly `$$ … $$` (after trimming) ⇒ block-level displayed math.
-fn displayed_math(s: &str) -> Option<String> {
-    let t = s.trim();
-    if t.len() >= 4 {
-        t.strip_prefix("$$")?.strip_suffix("$$").map(str::to_string)
-    } else {
-        None
-    }
-}
-
 /// `:NAME:` (alone on a line, NAME != END) ⇒ opens a drawer.
 fn drawer_begin(s: &str) -> Option<String> {
     let inner = s.trim().strip_prefix(':')?.strip_suffix(':')?;
@@ -1728,38 +1545,6 @@ fn drawer_begin(s: &str) -> Option<String> {
     } else {
         None
     }
-}
-
-/// First `:END:` line after `from`, via the sparse `:END:` index (binary search ⇒ O(log n)).
-fn find_drawer_end(drawer_end_idxs: &[usize], from: usize) -> Option<usize> {
-    drawer_end_idxs.get(drawer_end_idxs.partition_point(|&x| x <= from)).copied()
-}
-
-fn is_raw_html(s: &str) -> bool {
-    // `<tag …>…</tag>` — a real HTML element, NOT an autolink `<https://…>` and NOT
-    // an incomplete tag. mldoc is strict: a bare `<div>` or `<note this>` is a
-    // paragraph; only a line with an opening tag AND a closing `</…>` is Raw_Html.
-    let t = s.trim_start();
-    let b = t.as_bytes();
-    if b.len() < 2 || b[0] != b'<' {
-        return false;
-    }
-    let mut k = 1;
-    if b[k] == b'/' {
-        k += 1;
-    }
-    let name_start = k;
-    while k < b.len() && (b[k].is_ascii_alphanumeric() || b[k] == b'-') {
-        k += 1;
-    }
-    if k == name_start || !b[name_start].is_ascii_alphabetic() {
-        return false;
-    }
-    if !matches!(b.get(k), Some(b'>' | b'/' | b' ' | b'\t')) {
-        return false;
-    }
-    // require a closing tag on the line (approximates mldoc's complete-element rule).
-    t.contains("</")
 }
 
 #[cfg(test)]

@@ -19,6 +19,14 @@
 //!   so verbatim/code/block-refs/autolinks/macros only fire at a run boundary.
 //! - Org does NOT unescape values (backslashes are kept literal).
 
+// The org (`org.rs`) and md (`parse.rs`) block loops are intentionally PARALLEL implementations
+// (different grammars); the leaf predicates + infrastructure they both use — `split_lines`,
+// `EndTrie`, fence/drawer lookups, the task-marker table, `Builder`, `BLOCK_NEST_CAP` — live once
+// in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
+use crate::block_common::{
+    displayed_math, drawer_property, find_drawer_end, find_matching_fence, is_raw_html, leading_ws,
+    para_ws_only, split_checkbox, split_lines, Builder, EndTrie, Line, BLOCK_NEST_CAP, MARKERS,
+};
 use crate::inline::{char_len, is_ws_or_nl};
 use crate::projection::{Block, Inline, ListItem, Span, Url};
 
@@ -26,45 +34,24 @@ use crate::projection::{Block, Inline, ListItem, Span, Url};
 // Block segmentation
 // ===========================================================================
 
-struct Line<'a> {
-    start: usize,
-    end: usize, // just past the trailing '\n' (or EOF)
-    text: &'a str,
-}
-
-/// Org task markers (mldoc `Heading0.marker`), stripped from a headline title.
-const MARKERS: &[&str] = &[
-    "TODO",
-    "DOING",
-    "WAITING",
-    "WAIT",
-    "DONE",
-    "CANCELED",
-    "CANCELLED",
-    "STARTED",
-    "IN-PROGRESS",
-    "NOW",
-    "LATER",
-];
-
-/// Graceful anti-SIGABRT guard on `streaming_reparse`'s residual NATIVE recursion. This is
-/// **NOT a parity cap**: every gated / fuzz-reachable / realistic Org shape parses UNCAPPED in
-/// O(n) — clean-window `#+BEGIN_X`/quote bodies are heap `Frame`s on the explicit stack, and
-/// the `>`-spine peels iteratively in `build_org_quote_streaming`; neither path ever touches
-/// this cap. It bounds ONLY the TWO fuzz-unreachable residual re-dispatches that
-/// `streaming_reparse` still resolves by native recursion:
-///   (a) the increasing-`>`-per-line shape (`>a\n>>b\n>>>c`…): a non-tail `>`-spine whose
-///       shallow residual re-enters the driver once per level — reaching depth d needs O(d²)
-///       input bytes, so the fuzz/corpus never gets there.
-///   (b) deeply-INDENTED / `\r\n`-terminated callout bodies: de-indented (or non-plain-`\n`),
-///       so NOT a clean line window ⇒ they take the `block_code` + `streaming_reparse`
-///       sub-recursion instead of a heap frame.
-/// Both are mldoc-O(n²)+stack-overflow shapes with no defined byte-target past a modest depth,
-/// and the recursive AST consumer (drop / project / serialize, ~6k deep on an 8 MiB stack)
-/// already bounds them regardless; this cap merely stops the PARSER from SIGABRT-ing first.
-/// 64 = far above any reachable nesting. (Kept deliberately — removing it for good is the
-/// deferred view-frame work the owner chose not to do here.)
-const BLOCK_NEST_CAP: usize = 64;
+// Graceful anti-SIGABRT guard on `streaming_reparse`'s residual NATIVE recursion. This is
+// **NOT a parity cap**: every gated / fuzz-reachable / realistic Org shape parses UNCAPPED in
+// O(n) — clean-window `#+BEGIN_X`/quote bodies are heap `Frame`s on the explicit stack, and
+// the `>`-spine peels iteratively in `build_org_quote_streaming`; neither path ever touches
+// this cap. It bounds ONLY the TWO fuzz-unreachable residual re-dispatches that
+// `streaming_reparse` still resolves by native recursion:
+//   (a) the increasing-`>`-per-line shape (`>a\n>>b\n>>>c`…): a non-tail `>`-spine whose
+//       shallow residual re-enters the driver once per level — reaching depth d needs O(d²)
+//       input bytes, so the fuzz/corpus never gets there.
+//   (b) deeply-INDENTED / `\r\n`-terminated callout bodies: de-indented (or non-plain-`\n`),
+//       so NOT a clean line window ⇒ they take the `block_code` + `streaming_reparse`
+//       sub-recursion instead of a heap frame.
+// Both are mldoc-O(n²)+stack-overflow shapes with no defined byte-target past a modest depth,
+// and the recursive AST consumer (drop / project / serialize, ~6k deep on an 8 MiB stack)
+// already bounds them regardless; this cap merely stops the PARSER from SIGABRT-ing first.
+// The shared cap `block_common::BLOCK_NEST_CAP` (= 64) is far above any reachable nesting.
+// (Kept deliberately — removing it for good is the deferred view-frame work the owner chose
+// not to do here.) This thread-local counts the residual Org re-dispatch depth against it.
 std::thread_local! {
     static BLOCK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -112,21 +99,6 @@ enum Step {
     /// Quote via `build_org_quote_streaming` (iterative `>`-peel — O(n) / O(depth) HEAP, NO
     /// cap), and resumes at `ni`.
     Quote { ni: usize, body: String, span: Option<Span> },
-}
-
-/// Captures a callout opener's identity so the driver emits the right block once its body
-/// children are known (`Quote` for `#+BEGIN_QUOTE`, else `Custom{name}`).
-enum Builder {
-    Quote,
-    Custom(String),
-}
-impl Builder {
-    fn finish(self, children: Vec<Block>, span: Option<Span>) -> Block {
-        match self {
-            Builder::Quote => Block::Quote { children, span },
-            Builder::Custom(name) => Block::Custom { name, children, span },
-        }
-    }
 }
 
 /// Does this freshly-finished block swallow a following blank line (mldoc's
@@ -889,54 +861,6 @@ fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &s
     }
 }
 
-/// Is the open paragraph entirely whitespace (spaces/tabs/eols)? F4: an empty `* ` headline
-/// marker's trailing-ws paragraph is dropped when the immediately following line opens a
-/// `Block`/`Hr`/`Table`/verbatim/`:`-drawer construct (mldoc's headline `ws *> title`
-/// lookahead consumes the trailing ws in that case).
-fn para_ws_only(para: &Option<(usize, usize)>, input: &str) -> bool {
-    match para {
-        Some((s, e)) => input.as_bytes()[*s..*e]
-            .iter()
-            .all(|&b| matches!(b, b' ' | b'\t' | b'\n' | b'\r')),
-        None => false,
-    }
-}
-
-/// Split into lines on any of `\r\n`, lone `\n`, or lone `\r` (mldoc `is_eol` treats
-/// `\r` and `\n` each as a terminator; CRLF is consumed as ONE). The `text` excludes
-/// the terminator, so no trailing `\r` reaches block content; paragraph bodies are
-/// re-extracted from the raw span and the inline parser restores per-eol breaks.
-fn split_lines(input: &str) -> Vec<Line<'_>> {
-    let mut lines = Vec::new();
-    let bytes = input.as_bytes();
-    let n = input.len();
-    let mut i = 0;
-    while i < n {
-        let start = i;
-        let mut j = i;
-        while j < n && bytes[j] != b'\n' && bytes[j] != b'\r' {
-            j += 1;
-        }
-        let content_end = j;
-        let end = if j < n {
-            if bytes[j] == b'\r' && j + 1 < n && bytes[j + 1] == b'\n' {
-                j + 2
-            } else {
-                j + 1
-            }
-        } else {
-            j
-        };
-        lines.push(Line { start, end, text: &input[start..content_end] });
-        i = end;
-    }
-    lines
-}
-
-fn leading_ws(s: &str) -> usize {
-    s.bytes().take_while(|&b| b == b' ' || b == b'\t').count()
-}
-
 // ---- directive ------------------------------------------------------------
 
 /// `#+KEY: value` where KEY is non-empty and not `BEGIN_…`. Returns (key, value).
@@ -987,23 +911,6 @@ fn drawer_begin(s: &str) -> Option<String> {
         return None;
     }
     Some(inner.to_ascii_lowercase())
-}
-
-/// First `:END:` line after `from`, via the sparse `:END:` index (binary search ⇒ O(log n)).
-fn find_drawer_end(drawer_end_idxs: &[usize], from: usize) -> Option<usize> {
-    drawer_end_idxs.get(drawer_end_idxs.partition_point(|&x| x <= from)).copied()
-}
-
-/// One `:key: value` line of a `:PROPERTIES:` drawer (mldoc drawer.ml `property`).
-fn drawer_property(s: &str) -> Option<(String, String)> {
-    let t = s.trim_start().strip_prefix(':')?;
-    let pos = t.find(':')?;
-    let key = &t[..pos];
-    if key.is_empty() || key.contains(' ') || key.contains('\t') || key.eq_ignore_ascii_case("end") {
-        return None;
-    }
-    let value = t[pos + 1..].trim();
-    Some((key.to_string(), value.to_string()))
 }
 
 // ---- headline -------------------------------------------------------------
@@ -1073,18 +980,6 @@ fn headline_split_opener(
         return find_matching_fence(fence_lines, fence_cursor, i).is_some_and(|c| c < hi);
     }
     false
-}
-
-/// First whole-line fence-marker (` ``` ` OR `~~~`, char-AGNOSTIC — mldoc closes at the first
-/// later 3+ run of either char) strictly after `from`, via the ascending `fence_lines` list + a
-/// MONOTONE cursor (O(1) amortized). Closer-finder for BOTH a top-level fence opener (step 5)
-/// and one in headline content (step 3, e.g. `* ```` — not itself a list entry). On-demand at
-/// the dispatch point, so it never pairs across a block/drawer body the loop already jumped.
-fn find_matching_fence(fence_lines: &[usize], cursor: &mut usize, from: usize) -> Option<usize> {
-    while *cursor < fence_lines.len() && fence_lines[*cursor] <= from {
-        *cursor += 1;
-    }
-    fence_lines.get(*cursor).copied()
 }
 
 /// Strip a leading task marker (followed by a space) and priority `[#X]`.
@@ -1176,53 +1071,6 @@ fn block_begin(s: &str) -> Option<String> {
         (n > 0).then(|| rest[..n].to_string())
     } else {
         None
-    }
-}
-
-/// A trie over the (lowercased) names of `#+END_<name>` lines — each node holds the line indexes
-/// of every `#+END_` line whose name has the node's path as a prefix (ascending). A `#+BEGIN_X`
-/// opener finds its closer (first `#+END_` line after `from` whose name starts with X — mldoc's
-/// prefix match, `#+END_QUOTEX` closes `QUOTE`) by walking X (O(|X|)) + `partition_point`. Build
-/// is O(Σ|name|) = O(n), prefixes SHARED (one long name is O(name), not O(name²)). O(n) total —
-/// where mldoc's `take_until` is O(n²) on unclosed-opener runs. Shared by the main loop (step 6)
-/// and the headline block-opener split.
-#[derive(Default)]
-struct EndTrie {
-    kids: Vec<std::collections::HashMap<u8, u32>>,
-    ends: Vec<Vec<usize>>,
-}
-impl EndTrie {
-    fn new() -> Self {
-        EndTrie { kids: vec![std::collections::HashMap::new()], ends: vec![Vec::new()] }
-    }
-    fn insert(&mut self, suffix: &str, idx: usize) {
-        let mut node = 0usize;
-        self.ends[node].push(idx);
-        for &b in suffix.as_bytes() {
-            if b == b' ' || b == b'\t' {
-                break;
-            }
-            let lb = b.to_ascii_lowercase();
-            node = match self.kids[node].get(&lb) {
-                Some(&c) => c as usize,
-                None => {
-                    let c = self.kids.len();
-                    self.kids.push(std::collections::HashMap::new());
-                    self.ends.push(Vec::new());
-                    self.kids[node].insert(lb, c as u32);
-                    c
-                }
-            };
-            self.ends[node].push(idx);
-        }
-    }
-    fn find(&self, name: &str, from: usize) -> Option<usize> {
-        let mut node = 0usize;
-        for &b in name.as_bytes() {
-            node = *self.kids[node].get(&b.to_ascii_lowercase())? as usize;
-        }
-        let v = &self.ends[node];
-        v.get(v.partition_point(|&x| x <= from)).copied()
     }
 }
 
@@ -1431,38 +1279,6 @@ fn build_org_quote_streaming(body: String, span: Option<Span>) -> Block {
         block = Block::Quote { children: vec![block], span };
     }
     block
-}
-
-fn displayed_math(s: &str) -> Option<String> {
-    let t = s.trim();
-    if t.len() >= 4 {
-        t.strip_prefix("$$")?.strip_suffix("$$").map(str::to_string)
-    } else {
-        None
-    }
-}
-
-fn is_raw_html(s: &str) -> bool {
-    let t = s.trim_start();
-    let b = t.as_bytes();
-    if b.len() < 2 || b[0] != b'<' {
-        return false;
-    }
-    let mut k = 1;
-    if b[k] == b'/' {
-        k += 1;
-    }
-    let name_start = k;
-    while k < b.len() && (b[k].is_ascii_alphanumeric() || b[k] == b'-') {
-        k += 1;
-    }
-    if k == name_start || !b[name_start].is_ascii_alphabetic() {
-        return false;
-    }
-    if !matches!(b.get(k), Some(b'>' | b'/' | b' ' | b'\t')) {
-        return false;
-    }
-    t.contains("</")
 }
 
 /// Org footnote definition `[fn:name] text`. Returns (name, content). Leading
@@ -1766,18 +1582,6 @@ fn collapse_resume(flat_indents: &[u32], p_indent: u32) -> usize {
                 cur_indent = flat_indents[j];
             }
         }
-    }
-}
-
-/// Split a leading list checkbox `[ ]`/`[x]`/`[X]` (+ following spaces) off `s`,
-/// returning (state, rest). See `parse::split_checkbox` (md sibling).
-fn split_checkbox(s: &str) -> (Option<bool>, &str) {
-    if let Some(r) = s.strip_prefix("[ ]") {
-        (Some(false), r.trim_start())
-    } else if let Some(r) = s.strip_prefix("[x]").or_else(|| s.strip_prefix("[X]")) {
-        (Some(true), r.trim_start())
-    } else {
-        (None, s)
     }
 }
 

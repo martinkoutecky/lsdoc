@@ -19,6 +19,7 @@
 //! map. The library depends only on `serde` + `serde_json`; the `bin/` driver and
 //! `harness/` oracle are not part of it.
 
+pub(crate) mod block_common;
 pub(crate) mod entities;
 pub(crate) mod inline;
 pub(crate) mod lexer;

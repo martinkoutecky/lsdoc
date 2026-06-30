@@ -1,0 +1,231 @@
+//! Shared block-layer leaf predicates + infrastructure for the two block drivers.
+//!
+//! `parse.rs` (Markdown) and `org.rs` (Org) are intentionally PARALLEL implementations —
+//! they encode genuinely different grammars (md `-`-bullets / def-lists / `>`-quotes /
+//! hiccup-in-list vs org headlines / verbatim `:`-lines / stateful list-collapse / `:tags:`),
+//! so their dispatch ladders and driver loops must NOT be merged. What they DO share is a set
+//! of byte-identical leaf predicates, data structures, and infrastructure (line splitting, the
+//! `#+END_` closer trie, fence/drawer index lookups, the task-marker table, the callout
+//! `Builder`, the residual-recursion depth cap). Those live here once, `pub(crate)`, and both
+//! drivers `use crate::block_common::…`. Each item below was verified byte-identical between the
+//! two drivers before being lifted (modulo a comment or a `std::` path); the format-specific
+//! near-twins (`fence_marker`, `split_markers`, `drawer_begin`, `flush_para`) stay per-file.
+
+use crate::projection::{Block, Span};
+use std::collections::HashMap;
+
+/// Anti-SIGABRT depth cap on the two block drivers' residual native recursion (md
+/// `build_md_quote`'s `>`-re-dispatch, org `streaming_reparse`). 64 is far above any reachable
+/// nesting (deepest gated/realistic/fuzz input is depth ~3); the input shapes that would exceed
+/// it are mldoc-O(n²)+stack-overflow shapes with no defined byte-target past a modest depth.
+/// Each driver keeps its OWN thread-local depth counter; only this constant is shared.
+pub(crate) const BLOCK_NEST_CAP: usize = 64;
+
+/// One source line: byte window `[start, end)` (end is just past the trailing terminator, or
+/// EOF) plus the content text WITHOUT the trailing `\n`/`\r\n`.
+pub(crate) struct Line<'a> {
+    pub(crate) start: usize, // byte offset of line start
+    pub(crate) end: usize,   // byte offset just past the trailing '\n' (or EOF)
+    pub(crate) text: &'a str, // line content WITHOUT the trailing '\n'
+}
+
+/// The Logseq task markers (mldoc `marker` set), matched as a leading whole word on a
+/// heading/bullet/headline title.
+pub(crate) const MARKERS: &[&str] = &[
+    "TODO",
+    "DOING",
+    "WAITING",
+    "WAIT",
+    "DONE",
+    "CANCELED",
+    "CANCELLED",
+    "STARTED",
+    "IN-PROGRESS",
+    "NOW",
+    "LATER",
+];
+
+/// Split `input` into lines, each carrying its byte window and terminator-stripped text.
+/// Terminators: `\r\n` consumed as a unit, else a lone `\r`/`\n`.
+pub(crate) fn split_lines(input: &str) -> Vec<Line<'_>> {
+    let mut lines = Vec::new();
+    let bytes = input.as_bytes();
+    let n = input.len();
+    let mut i = 0;
+    while i < n {
+        let start = i;
+        let mut j = i;
+        while j < n && bytes[j] != b'\n' && bytes[j] != b'\r' {
+            j += 1;
+        }
+        let content_end = j;
+        let end = if j < n {
+            // consume the terminator: `\r\n` as a unit, else a lone `\r`/`\n`.
+            if bytes[j] == b'\r' && j + 1 < n && bytes[j + 1] == b'\n' {
+                j + 2
+            } else {
+                j + 1
+            }
+        } else {
+            j
+        };
+        lines.push(Line { start, end, text: &input[start..content_end] });
+        i = end;
+    }
+    lines
+}
+
+/// Count of leading spaces/tabs in `s`.
+pub(crate) fn leading_ws(s: &str) -> usize {
+    s.bytes().take_while(|&b| b == b' ' || b == b'\t').count()
+}
+
+/// Is the open paragraph byte-window all whitespace (so it emits no Paragraph)?
+pub(crate) fn para_ws_only(para: &Option<(usize, usize)>, input: &str) -> bool {
+    match para {
+        Some((s, e)) => input.as_bytes()[*s..*e]
+            .iter()
+            .all(|&b| matches!(b, b' ' | b'\t' | b'\n' | b'\r')),
+        None => false,
+    }
+}
+
+/// Split a leading list/heading checkbox (`[ ]`/`[x]`/`[X]`) off `s`; returns the checked
+/// state (if any) and the trimmed remainder.
+pub(crate) fn split_checkbox(s: &str) -> (Option<bool>, &str) {
+    if let Some(r) = s.strip_prefix("[ ]") {
+        (Some(false), r.trim_start())
+    } else if let Some(r) = s.strip_prefix("[x]").or_else(|| s.strip_prefix("[X]")) {
+        (Some(true), r.trim_start())
+    } else {
+        (None, s)
+    }
+}
+
+/// Parse a drawer/property line `:KEY: value` → `(key, value)`. `None` for `:END:`, an empty
+/// key, or a key containing whitespace.
+pub(crate) fn drawer_property(s: &str) -> Option<(String, String)> {
+    let t = s.trim_start().strip_prefix(':')?;
+    let pos = t.find(':')?;
+    let key = &t[..pos];
+    if key.is_empty() || key.contains(' ') || key.contains('\t') || key.eq_ignore_ascii_case("end") {
+        return None;
+    }
+    // value = rest of line after the key's closing `:`, trimmed (drops a leading space
+    // and a trailing CR from CRLF inputs).
+    let value = t[pos + 1..].trim();
+    Some((key.to_string(), value.to_string()))
+}
+
+/// `$$…$$` displayed-math line → inner text, when the line is exactly a `$$`-delimited block.
+pub(crate) fn displayed_math(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.len() >= 4 {
+        t.strip_prefix("$$")?.strip_suffix("$$").map(str::to_string)
+    } else {
+        None
+    }
+}
+
+/// Is `s` a raw-HTML block line — `<tag …>…</tag>`, a real HTML element, NOT an autolink
+/// `<https://…>` and NOT an incomplete tag? mldoc is strict: a bare `<div>` or `<note this>`
+/// is a paragraph; only a line with an opening tag AND a closing `</…>` is Raw_Html.
+pub(crate) fn is_raw_html(s: &str) -> bool {
+    let t = s.trim_start();
+    let b = t.as_bytes();
+    if b.len() < 2 || b[0] != b'<' {
+        return false;
+    }
+    let mut k = 1;
+    if b[k] == b'/' {
+        k += 1;
+    }
+    let name_start = k;
+    while k < b.len() && (b[k].is_ascii_alphanumeric() || b[k] == b'-') {
+        k += 1;
+    }
+    if k == name_start || !b[name_start].is_ascii_alphabetic() {
+        return false;
+    }
+    if !matches!(b.get(k), Some(b'>' | b'/' | b' ' | b'\t')) {
+        return false;
+    }
+    // require a closing tag on the line (approximates mldoc's complete-element rule).
+    t.contains("</")
+}
+
+/// Next fence-marker line at/after `from`, advancing the monotone `cursor` (the drivers reach
+/// fence openers in increasing `from`, so the cursor only advances — O(1) amortized).
+pub(crate) fn find_matching_fence(fence_lines: &[usize], cursor: &mut usize, from: usize) -> Option<usize> {
+    // the main loop reaches fence openers in increasing `from`, so the cursor only advances.
+    while *cursor < fence_lines.len() && fence_lines[*cursor] <= from {
+        *cursor += 1;
+    }
+    fence_lines.get(*cursor).copied()
+}
+
+/// First `:END:` drawer-closer line strictly after `from`, via binary search (O(log n)).
+pub(crate) fn find_drawer_end(drawer_end_idxs: &[usize], from: usize) -> Option<usize> {
+    drawer_end_idxs.get(drawer_end_idxs.partition_point(|&x| x <= from)).copied()
+}
+
+/// A `#+END_<name>` closer trie: index every closer line under the lowercased leading run of
+/// its name, so the drivers find the first closer after a given line whose name prefix-matches
+/// an opener in O(|name|) with no EOF scan.
+pub(crate) struct EndTrie {
+    kids: Vec<HashMap<u8, u32>>, // node → byte → child node
+    ends: Vec<Vec<usize>>,       // node → `#+END_` line indexes with this prefix (ascending)
+}
+impl EndTrie {
+    pub(crate) fn new() -> Self {
+        EndTrie { kids: vec![HashMap::new()], ends: vec![Vec::new()] }
+    }
+    /// Index `#+END_` line `idx` under the leading non-ws run of `suffix` (the text after
+    /// `#+END_`), lowercased. The empty prefix (root) matches any opener name (incl. `""`).
+    pub(crate) fn insert(&mut self, suffix: &str, idx: usize) {
+        let mut node = 0usize;
+        self.ends[node].push(idx);
+        for &b in suffix.as_bytes() {
+            if b == b' ' || b == b'\t' {
+                break;
+            }
+            let lb = b.to_ascii_lowercase();
+            node = match self.kids[node].get(&lb) {
+                Some(&c) => c as usize,
+                None => {
+                    let c = self.kids.len();
+                    self.kids.push(HashMap::new());
+                    self.ends.push(Vec::new());
+                    self.kids[node].insert(lb, c as u32);
+                    c
+                }
+            };
+            self.ends[node].push(idx);
+        }
+    }
+    /// First `#+END_` line after `from` whose name starts with `name` (case-insensitive), or
+    /// `None` (unclosed/mismatched — O(|name|), no EOF scan). Byte-exact to the old prefix scan.
+    pub(crate) fn find(&self, name: &str, from: usize) -> Option<usize> {
+        let mut node = 0usize;
+        for &b in name.as_bytes() {
+            node = *self.kids[node].get(&b.to_ascii_lowercase())? as usize;
+        }
+        let v = &self.ends[node];
+        v.get(v.partition_point(|&x| x <= from)).copied()
+    }
+}
+
+/// A captured callout opener (`#+BEGIN_QUOTE` / `#+BEGIN_<custom>`): emitted as the right
+/// block once its body children are known.
+pub(crate) enum Builder {
+    Quote,
+    Custom(String),
+}
+impl Builder {
+    pub(crate) fn finish(self, children: Vec<Block>, span: Option<Span>) -> Block {
+        match self {
+            Builder::Quote => Block::Quote { children, span },
+            Builder::Custom(name) => Block::Custom { name, children, span },
+        }
+    }
+}
