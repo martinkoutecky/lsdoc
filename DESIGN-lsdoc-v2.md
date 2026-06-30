@@ -20,11 +20,16 @@ closer-presence floors (e.g. `bs_paren`/`bs_brack` so a `\(`×n run stays O(n)) 
 EOF re-scan per opener. Org adds a stateful backward gate (`last_plain_char`) and
 ctx-gated code/verbatim.
 
-**Block** (`parse.rs` / `org.rs`): `split_lines` → a single forward dispatch loop in
-mldoc's priority order (fence, callout, latex-env, heading, hr, bullet, footnote, table,
-property-drawer, list, quote, raw-html, math, drawer, hiccup, def-list, paragraph).
-Container bodies are RE-PARSED recursively (mldoc's `take_until` + recurse-on-body): the
-one O(n·depth) carve-out, depth-bounded by the 1 MiB-stack gate.
+**Block** (`parse.rs` / `org.rs`): `split_lines` → a SINGLE streaming pass over an explicit
+container-frame stack, dispatching each line in mldoc's priority order (fence, callout,
+latex-env, heading, hr, bullet, footnote, table, property-drawer, list, quote, raw-html,
+math, drawer, hiccup, def-list, paragraph). Each input line is classified **once**; a
+callout/quote body is a line **window** opened as a heap `Frame` (`Step::Open`), never copied
+or re-lexed. Outermost-first pairing falls out of a `closer < frame.hi` check; demotion of an
+inner opener whose closer lies outside the body needs no re-parse (it is re-classified in the
+same pass). **O(n) time, O(depth) HEAP** — no native recursion, no depth cap. (The old
+recurse-on-body — itself mldoc's O(n²) + stack-overflow — is gone; see
+[[lsdoc-architecture-redesign]].)
 
 ### Container pairing is O(n) by construction
 
@@ -53,10 +58,22 @@ The on-demand finders are O(n) by construction (no per-opener EOF scan):
   roles across container boundaries — a ` ``` ` inside a callout body paired with one outside
   it, `quote,paragraph` vs mldoc's `quote,src`; on-demand finding fixes that.)
 
-Recurse-on-body is the inherent O(n·depth) carve-out (mldoc re-parses callout/drawer/quote
-bodies; depth bounded by the 1 MiB-stack gate). Org wrinkle: the headline split rewrites a
-line (`* #+BEGIN_X` / `* :PROPERTIES:` → emit an empty bullet, then re-enter the content),
-so the close-gate runs on the rewritten content via the same on-demand finders.
+Inside a `Frame`, every closer-search is bounded by the frame's `hi` / `body_end` (a no-op
+at the top level where `hi == lines.len()`): fence/callout/drawer accept a closer only if
+`< hi`; the to-EOF forward-scanners (`parse_latex_env`, `parse_hiccup`) are clamped to
+`&input[..body_end]`. So a closer / `\end{}` / `]` / run-line belongs to THIS body, never the
+enclosing one — the streaming equivalent of the old recursion's body-slice bound.
+
+The `>`-quote nests via an iterative suffix-view peel (`build_org_quote_streaming`, encoding
+mldoc's opener-strips-2 / continuation-strips-1 asymmetry over `&str` views, no per-level
+copy), also uncapped. The ONE residual: `BLOCK_NEST_CAP` survives purely as a graceful
+anti-SIGABRT guard on two **fuzz-unreachable** re-dispatch shapes — an increasing-`>`-per-line
+quote (needs O(d²) input to reach depth d) and deeply-INDENTED / `\r\n` callout bodies — NOT a
+parity cap; mldoc is O(n²)+overflows there too, and the recursive AST *consumer* (drop /
+project / serialize, ~6k) caps that depth regardless. Org wrinkle: the headline split rewrites
+a line (`* #+BEGIN_X` / `* :PROPERTIES:` → emit an empty bullet, then re-enter the content via
+`Step::Next(i)` without advancing), so the close-gate runs on the rewritten content via the
+same `hi`-bounded finders.
 
 ## Performance gate
 
@@ -69,8 +86,8 @@ emphasis soup) is locked in here.
 
 ## What is NOT here (deliberate)
 
-An explicit `lex_lines → Vec<LineTok>` line-lexer phase: the block dispatch already
-classifies each line inline and the O(n) goal is met via the pairing pre-passes, so a
-separate line-token type would be a lateral clarity refactor of already-clean code with
-real parity risk and no perf/correctness gain. The pending-opener pre-passes + recursive
-dispatch ARE the two-phase structure (closer-precompute + line-driven block build).
+An explicit `lex_lines → Vec<LineTok>` line-lexer phase: the streaming dispatch already
+classifies each line inline (once), so a separate line-token type would be a lateral clarity
+refactor with real parity risk and no perf/correctness gain. The on-demand closer indexes
+(`EndTrie` / drawer / fence) + the streaming container-frame stack ARE the two-phase
+structure (closer-precompute + single-pass line-driven block build).

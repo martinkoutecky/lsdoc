@@ -151,14 +151,7 @@ struct Frame {
     open_span_start: usize,       // byte offset of the opener line start (for the span).
 }
 
-/// A re-parse of a TRANSFORMED body (de-indented callout / `>`-quote / list-item content)
-/// routed back into the streaming driver via `streaming_reparse`. Threaded through
-/// `dispatch_org_line` / `collect_list` as a function pointer (rather than calling
-/// `streaming_reparse` directly) so the shared per-line ladder stays decoupled from the
-/// driver; `streaming_reparse` is the sole value passed today (full param removal is M6).
-type ParseFn = fn(&str, Ctx) -> Vec<Block>;
-
-/// Re-parse a transformed body (the `ParseFn` the streaming driver threads): routes back into
+/// Re-parse a transformed body : routes back into
 /// `parse_org_streaming` with the child `ctx` carrying `in_quote` (no thread-local needed).
 /// For a callout / `>`-quote body it applies the `BLOCK_NEST_CAP` depth guard so the residual
 /// NATIVE recursion (deeply-INDENTED / `\r\n` callout bodies; the increasing-`>`-per-line
@@ -287,7 +280,6 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
                 &fence_lines,
                 last_rbracket,
                 input,
-                streaming_reparse,
             )
         };
         match step {
@@ -362,7 +354,7 @@ fn body_is_clean_window(nonstd_eol_lines: &[usize], lo: usize, hi: usize) -> boo
 /// is bounded by `hi` / `body_end` so a closer / `\end{}` / `]` / run-line BELONGS to this
 /// body, never the enclosing one; at the top level `hi == lines.len()` (`body_end ==
 /// input.len()`) so all bounds are no-ops. The `>`-quote and list-item sub-recursions
-/// re-enter via the threaded `parse_fn` (`streaming_reparse`). `ctx.in_item`/`ctx.in_quote`
+/// re-enter via `streaming_reparse`. `ctx.in_item`/`ctx.in_quote`
 /// gate the context-restricted constructs.
 #[allow(clippy::too_many_arguments)]
 fn dispatch_org_line<'a>(
@@ -380,7 +372,6 @@ fn dispatch_org_line<'a>(
     fence_lines: &[usize],
     last_rbracket: Option<usize>,
     input: &'a str,
-    parse_fn: ParseFn,
 ) -> Step {
     // Copy out the line fields (a `&'a str` + two `usize`s, none borrowing `lines`) so the
     // headline / hiccup splits can REWRITE `lines[i]`/`lines[ri]` in place (steps 3, 13b).
@@ -722,10 +713,10 @@ fn dispatch_org_line<'a>(
         return Step::Next(j);
     }
 
-    // 12. list — bounded by `hi`; routed via `parse_fn`. Disabled in list-item content;
-    // `collapse_floor` skips list-starts inside an already-collapsed region (linearity).
+    // 12. list — bounded by `hi`; item content re-parsed via `streaming_reparse`. Disabled in
+    // list-item content; `collapse_floor` skips list-starts inside an already-collapsed region.
     if !in_item && i >= *collapse_floor && list_marker(t).is_some() {
-        match collect_list(lines, i, hi, Ctx { in_item: true, in_quote: ctx.in_quote }, parse_fn) {
+        match collect_list(lines, i, hi, Ctx { in_item: true, in_quote: ctx.in_quote }) {
             Ok((block, next)) => {
                 flush_para(out, para, input, in_item);
                 out.push(block);
@@ -1555,7 +1546,7 @@ struct Collapse {
 
 /// Collect an Org list starting at line `start` (faithful port of mldoc lists0.ml).
 /// Each item folds its indented multi-line continuation (de-indented via `String.trim`,
-/// re-parsed with the list-item content parser via `parse_fn` + `in_item:true`); deeper
+/// re-parsed with the list-item content parser via `streaming_reparse` + `in_item:true`); deeper
 /// is-item lines become children via the flat sequence + `nest_items`.
 ///
 /// COLLAPSE: an indented continuation that is a list-item shape (`check_listitem`)
@@ -1569,13 +1560,12 @@ struct Collapse {
 /// `hi` bounds every line scan to THIS body (streaming: a list inside a callout window
 /// must not absorb the `#+END_…` closer — an INDENTED closer is `is_item`-false and would
 /// otherwise fold as content); at the top level `hi == lines.len()` (no-op there).
-/// `item_ctx`/`parse_fn` re-parse each item's content via the streaming driver (`in_item`).
+/// `item_ctx` + `streaming_reparse` re-parse each item's content via the streaming driver (`in_item`).
 fn collect_list(
     lines: &[Line],
     start: usize,
     hi: usize,
     item_ctx: Ctx,
-    parse_fn: ParseFn,
 ) -> Result<(Block, usize), Collapse> {
     let mut flat: Vec<ListItem> = Vec::new();
     let mut flat_lines: Vec<usize> = Vec::new();
@@ -1639,7 +1629,7 @@ fn collect_list(
             ordered: marker.ordered,
             number: marker.number,
             indent: cur_indent as u32,
-            content: parse_fn(&content_lines.join("\n"), item_ctx),
+            content: streaming_reparse(&content_lines.join("\n"), item_ctx),
             items: vec![],
             name: vec![],
             checkbox: marker.checkbox,

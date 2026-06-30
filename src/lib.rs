@@ -81,9 +81,9 @@ pub fn inline(input: &str, format: &str) -> Vec<ast::Inline> {
     }
 }
 
-/// Test/perf hook (NOT stable API): run the STREAMING Org block driver directly, without the
-/// `LSDOC_BLOCK_STREAMING` env seam. Used by `tests/perf.rs` to prove the streaming `>`-quote
-/// path is O(n) / bounded-depth without racing the env-gated `streaming_eq_org` differential.
+/// Test/perf hook (NOT stable API): the Org block parser returning the raw `Vec<Block>` (no
+/// projection). Used by `tests/perf.rs` to time the PARSER alone (typically `+ mem::forget`, so
+/// the recursive-AST consumer's drop doesn't pollute a deep-nesting / deep-`>` O(n) measure).
 #[doc(hidden)]
 pub fn __parse_org_streaming(input: &str) -> Vec<ast::Block> {
     org::parse_streaming_root(input)
