@@ -33,7 +33,7 @@
 //! - unclosed fences and 4-space indents are paragraphs, not code.
 
 use crate::projection::{Block, Inline, ListItem, Span};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 struct Line<'a> {
     start: usize, // byte offset of line start
@@ -47,16 +47,17 @@ pub fn parse(input: &str) -> Vec<Block> {
     // `[:tag …]` needs a closing `]`, so a line whose `[:` begins at/after this is skipped
     // O(1) — keeping a run of unclosed `[:` block lines linear (see step 11d').
     let last_rbracket = input.rfind(']');
-    // Sparse, sorted closer-line INDEXES so a callout/drawer/dash-fence opener finds
-    // its matching closer by binary-searching only candidate lines, never an EOF
-    // re-scan per opener (kills the O(n²) class — audit R2-P4/P6). Exact mldoc
-    // semantics preserved: the first matching closer line after the opener.
-    let mut end_idxs: Vec<usize> = Vec::new(); // `#+END_…` lines (callout closers)
+    // Callout closer index: a trie of `#+END_<name>` line names (see `EndTrie`). A `#+BEGIN_X`
+    // opener finds its closer by an O(|X|) trie walk (mldoc's prefix match: `#+END_QUOTEX` closes
+    // `QUOTE`), absent ⇒ O(1) — no EOF re-scan, no absence memo. O(n) build / O(n) total, where
+    // mldoc's own `take_until` is O(n²) on unclosed-opener runs. Drawers/fences keep their indexes.
+    let mut end_trie = EndTrie::new();
     let mut drawer_end_idxs: Vec<usize> = Vec::new(); // `:END:` lines (drawer closers)
     let mut fence_line_idxs: HashMap<u8, Vec<usize>> = HashMap::new(); // per-char fence lines
     for (idx, l) in lines.iter().enumerate() {
-        if l.text.trim_start().get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
-            end_idxs.push(idx);
+        let t = l.text.trim_start();
+        if t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
+            end_trie.insert(&t[6..], idx);
         }
         if l.text.trim().eq_ignore_ascii_case(":END:") {
             drawer_end_idxs.push(idx);
@@ -65,10 +66,6 @@ pub fn parse(input: &str) -> Vec<Block> {
             fence_line_idxs.entry(c).or_default().push(idx);
         }
     }
-    // Per-callout-NAME memo: once `#+END_<name>` is known absent from `i` onward it is
-    // absent for every later opener too (the suffix only shrinks) — O(1) re-check, so a
-    // run of same-name unclosed openers stays linear even with a stray non-matching `#+END_`.
-    let mut no_callout_end: HashSet<String> = HashSet::new();
 
     let mut out: Vec<Block> = Vec::new();
     let mut para: Option<(usize, usize)> = None;
@@ -116,9 +113,7 @@ pub fn parse(input: &str) -> Vec<Block> {
 
         // 2. callout #+BEGIN_X … #+END_X
         if let Some(name) = callout_begin(t) {
-            if let Some(close) =
-                find_callout_end(&end_idxs, &lines, &mut no_callout_end, i, &name)
-            {
+            if let Some(close) = end_trie.find(&name, i) {
                 flush_para(&mut out, &mut para, input);
                 let inner = if close > i + 1 {
                     input[lines[i + 1].start..lines[close - 1].end].to_string()
@@ -1253,31 +1248,56 @@ fn callout_begin(s: &str) -> Option<String> {
     }
 }
 
-/// First line after `from` whose trimmed start is `#+END_<name>` (prefix match — mldoc-
-/// exact, so trailing junk after the name still closes), via the sparse `#+END_` index +
-/// a per-name "absent from here on" memo. A run of unclosed / `#+END_`-mismatched openers
-/// stays linear (audit R2-P4) instead of re-scanning to EOF per opener.
-fn find_callout_end(
-    end_idxs: &[usize],
-    lines: &[Line],
-    no_end: &mut HashSet<String>,
-    from: usize,
-    name: &str,
-) -> Option<usize> {
-    let key = name.to_ascii_lowercase();
-    if no_end.contains(&key) {
-        return None;
+/// A trie over the (lowercased) names of `#+END_<name>` lines. Each node holds the line indexes
+/// of every `#+END_` line whose name PASSES THROUGH it (i.e. has the node's path as a prefix),
+/// in ascending line order. A callout opener named X then finds its closer — the first `#+END_`
+/// line after `from` whose name starts with X (mldoc's case-insensitive prefix match:
+/// `#+END_QUOTEX` closes `QUOTE`) — by walking X (O(|X|)) and `partition_point`-ing the node's
+/// index list. Build is O(Σ |name|) = O(n) and shares prefixes (so a single long name is O(name),
+/// not O(name²) like a per-prefix hashmap). This is O(n) over a parse level even on adversarial
+/// unclosed-opener runs — where mldoc's own `take_until` is O(n²) (measured: 4000 openers = 68s).
+#[derive(Default)]
+struct EndTrie {
+    kids: Vec<HashMap<u8, u32>>, // node → byte → child node
+    ends: Vec<Vec<usize>>,       // node → `#+END_` line indexes with this prefix (ascending)
+}
+impl EndTrie {
+    fn new() -> Self {
+        EndTrie { kids: vec![HashMap::new()], ends: vec![Vec::new()] }
     }
-    let needle = format!("#+END_{}", name);
-    let start = end_idxs.partition_point(|&x| x <= from);
-    for &idx in &end_idxs[start..] {
-        let t = lines[idx].text.trim_start();
-        if t.get(..needle.len()).is_some_and(|p| p.eq_ignore_ascii_case(&needle)) {
-            return Some(idx);
+    /// Index `#+END_` line `idx` under the leading non-ws run of `suffix` (the text after
+    /// `#+END_`), lowercased. The empty prefix (root) matches any opener name (incl. `""`).
+    fn insert(&mut self, suffix: &str, idx: usize) {
+        let mut node = 0usize;
+        self.ends[node].push(idx);
+        for &b in suffix.as_bytes() {
+            if b == b' ' || b == b'\t' {
+                break;
+            }
+            let lb = b.to_ascii_lowercase();
+            node = match self.kids[node].get(&lb) {
+                Some(&c) => c as usize,
+                None => {
+                    let c = self.kids.len();
+                    self.kids.push(HashMap::new());
+                    self.ends.push(Vec::new());
+                    self.kids[node].insert(lb, c as u32);
+                    c
+                }
+            };
+            self.ends[node].push(idx);
         }
     }
-    no_end.insert(key);
-    None
+    /// First `#+END_` line after `from` whose name starts with `name` (case-insensitive), or
+    /// `None` (unclosed/mismatched — O(|name|), no EOF scan). Byte-exact to the old prefix scan.
+    fn find(&self, name: &str, from: usize) -> Option<usize> {
+        let mut node = 0usize;
+        for &b in name.as_bytes() {
+            node = *self.kids[node].get(&b.to_ascii_lowercase())? as usize;
+        }
+        let v = &self.ends[node];
+        v.get(v.partition_point(|&x| x <= from)).copied()
+    }
 }
 
 /// A line that is exactly `$$ … $$` (after trimming) ⇒ block-level displayed math.

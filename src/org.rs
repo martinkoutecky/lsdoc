@@ -100,13 +100,17 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
     // the loop jumps past) can never pair with an opener outside it (the fence-straddle
     // bug). Computed on the original lines; the headline-split rewrite never creates an
     // `#+END_`/`:END:`/fence OPENER line, so the indexes stay valid through it + re-enter.
-    let mut end_idxs: Vec<usize> = Vec::new(); // `#+END_…` lines (block closers)
+    // Block closer index: a trie of `#+END_<name>` line names (see `EndTrie`) — a `#+BEGIN_X`
+    // opener finds its closer by an O(|X|) walk (mldoc's prefix match), absent ⇒ O(1); no EOF
+    // scan, no absence memo. O(n) build / O(n) total (mldoc's `take_until` is O(n²) on these).
+    let mut end_trie = EndTrie::new();
     let mut drawer_end_idxs: Vec<usize> = Vec::new(); // `:END:` lines (drawer closers)
     let mut fence_line_idxs: std::collections::HashMap<u8, Vec<usize>> =
         std::collections::HashMap::new(); // per-char whole-line ```/~~~ marker lines
     for (idx, l) in lines.iter().enumerate() {
-        if l.text.trim_start().get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
-            end_idxs.push(idx);
+        let t = l.text.trim_start();
+        if t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
+            end_trie.insert(&t[6..], idx);
         }
         if l.text.trim().eq_ignore_ascii_case(":END:") {
             drawer_end_idxs.push(idx);
@@ -127,11 +131,6 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
     // suffix is identical). Skipping the collector for those lines keeps repeated
     // collapses linear instead of O(n²) re-scanning.
     let mut collapse_floor = 0usize;
-    // Memo for the headline block-opener split (see `headline_split_opener`): block-names
-    // already known to have NO `#+END_` ahead, so repeated unclosed `* #+BEGIN_X` headlines
-    // and `#+BEGIN_X` openers don't each re-scan to EOF. (Fences need no such memo —
-    // `find_matching_fence` is a monotone-cursor lookup, not a re-scan.)
-    let mut no_block_end: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut fence_cursor: std::collections::HashMap<u8, usize> = std::collections::HashMap::new();
     let mut i = 0;
 
@@ -238,10 +237,8 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
                     content,
                     input,
                     content_off,
-                    &lines,
                     i,
-                    &end_idxs,
-                    &mut no_block_end,
+                    &end_trie,
                     &fence_line_idxs,
                     &mut fence_cursor,
                 )
@@ -369,7 +366,7 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
 
         // 6. `#+BEGIN_X` … `#+END_X` block
         if let Some(name) = block_begin(t) {
-            if let Some(close) = find_block_end(&end_idxs, &lines, &mut no_block_end, i, &name) {
+            if let Some(close) = end_trie.find(&name, i) {
                 flush_para(&mut out, &mut para, input, in_item);
                 let inner = block_code(&lines[i + 1..close]);
                 let span = Some(Span(line_start, lines[close].end));
@@ -745,10 +742,8 @@ fn headline_split_opener(
     content: &str,
     input: &str,
     content_off: usize,
-    lines: &[Line],
     i: usize,
-    end_idxs: &[usize],
-    no_block_end: &mut std::collections::HashSet<String>,
+    end_trie: &EndTrie,
     fence_line_idxs: &std::collections::HashMap<u8, Vec<usize>>,
     fence_cursor: &mut std::collections::HashMap<u8, usize>,
 ) -> bool {
@@ -764,12 +759,10 @@ fn headline_split_opener(
     {
         return true;
     }
-    // A `#+BEGIN_X` block / ```|~~~ fence only splits when it CLOSES. The block-name search
-    // (`find_block_end`) scans `lines[i+1..]`, so it carries a per-name "no `#+END_` ahead"
-    // memo to keep a run of repeated UNCLOSED openers linear; the fence test is the
-    // monotone-cursor finder.
+    // A `#+BEGIN_X` block / ```|~~~ fence only splits when it CLOSES — the block-name close is an
+    // O(1) `end_by_prefix` lookup, the fence test the monotone-cursor finder.
     if let Some(name) = block_begin(content) {
-        return find_block_end(end_idxs, lines, no_block_end, i, &name).is_some();
+        return end_trie.find(&name, i).is_some();
     }
     if let Some((ch, _)) = fence_marker(content) {
         return find_matching_fence(fence_line_idxs, fence_cursor, i, ch).is_some();
@@ -885,32 +878,51 @@ fn block_begin(s: &str) -> Option<String> {
     }
 }
 
-/// First line after `from` whose trimmed start is `#+END_<name>` (prefix match — mldoc-
-/// exact, so trailing junk after the name still closes), via the sparse `#+END_` index +
-/// a per-name "absent from here on" memo. A run of unclosed / `#+END_`-mismatched openers
-/// stays linear (audit R2-P4) instead of re-scanning to EOF per opener. Shared by the main
-/// loop (step 6) and the headline block-opener split.
-fn find_block_end(
-    end_idxs: &[usize],
-    lines: &[Line],
-    no_block_end: &mut std::collections::HashSet<String>,
-    from: usize,
-    name: &str,
-) -> Option<usize> {
-    let key = name.to_ascii_lowercase();
-    if no_block_end.contains(&key) {
-        return None;
+/// A trie over the (lowercased) names of `#+END_<name>` lines — each node holds the line indexes
+/// of every `#+END_` line whose name has the node's path as a prefix (ascending). A `#+BEGIN_X`
+/// opener finds its closer (first `#+END_` line after `from` whose name starts with X — mldoc's
+/// prefix match, `#+END_QUOTEX` closes `QUOTE`) by walking X (O(|X|)) + `partition_point`. Build
+/// is O(Σ|name|) = O(n), prefixes SHARED (one long name is O(name), not O(name²)). O(n) total —
+/// where mldoc's `take_until` is O(n²) on unclosed-opener runs. Shared by the main loop (step 6)
+/// and the headline block-opener split.
+#[derive(Default)]
+struct EndTrie {
+    kids: Vec<std::collections::HashMap<u8, u32>>,
+    ends: Vec<Vec<usize>>,
+}
+impl EndTrie {
+    fn new() -> Self {
+        EndTrie { kids: vec![std::collections::HashMap::new()], ends: vec![Vec::new()] }
     }
-    let needle = format!("#+END_{}", name);
-    let start = end_idxs.partition_point(|&x| x <= from);
-    for &idx in &end_idxs[start..] {
-        let t = lines[idx].text.trim_start();
-        if t.get(..needle.len()).is_some_and(|p| p.eq_ignore_ascii_case(&needle)) {
-            return Some(idx);
+    fn insert(&mut self, suffix: &str, idx: usize) {
+        let mut node = 0usize;
+        self.ends[node].push(idx);
+        for &b in suffix.as_bytes() {
+            if b == b' ' || b == b'\t' {
+                break;
+            }
+            let lb = b.to_ascii_lowercase();
+            node = match self.kids[node].get(&lb) {
+                Some(&c) => c as usize,
+                None => {
+                    let c = self.kids.len();
+                    self.kids.push(std::collections::HashMap::new());
+                    self.ends.push(Vec::new());
+                    self.kids[node].insert(lb, c as u32);
+                    c
+                }
+            };
+            self.ends[node].push(idx);
         }
     }
-    no_block_end.insert(key);
-    None
+    fn find(&self, name: &str, from: usize) -> Option<usize> {
+        let mut node = 0usize;
+        for &b in name.as_bytes() {
+            node = *self.kids[node].get(&b.to_ascii_lowercase())? as usize;
+        }
+        let v = &self.ends[node];
+        v.get(v.partition_point(|&x| x <= from)).copied()
+    }
 }
 
 /// Language token from a `#+BEGIN_SRC <lang> …` line (first whitespace word).

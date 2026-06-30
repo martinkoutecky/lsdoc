@@ -228,13 +228,20 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         // (it sat just under budget at low load until n grew). md was already floored.
         ("md_latex_open", false, 25_000, |n| "\\(".repeat(n)),
         ("org_latex_open", true, 25_000, |n| "\\(".repeat(n)),
-        // NOTE: the four callout scaling cases (md/org_callout_uniq, md/org_callout_longname)
-        // were REMOVED with the revert to on-demand `find_callout_end`/`find_block_end`. That
-        // finder uses a per-name absence memo (linear for repeated/unclosed same-name openers)
-        // but, for adversarial UNIQUE-name unclosed openers, falls back to an `#+END_`-index
-        // scan per opener — a pre-existing, accepted O(n²) limitation of textual-closer +
-        // contextual-opener pairing (the pre-rewrite code shipped it for months). It is NOT
-        // gated here because on-demand pairing is what fixes the phantom-opener correctness bug.
+        // Callout closer-finding adversarial cases. The on-demand dispatch (correct: only
+        // top-level openers are reached) finds `#+END_<name>` via the by-all-prefixes index — an
+        // O(1) bucket lookup, no EOF scan. So even these stay ~linear, where mldoc's own
+        // `take_until` is O(n²) (measured: 4000 unclosed openers = 68s in mldoc):
+        //  - UNIQUE-name openers each with a non-matching `#+END_` (absent bucket ⇒ O(1)/opener):
+        ("md_callout_uniq", false, 8_000, |n| {
+            (0..n).map(|k| format!("#+BEGIN_A{k}\n#+END_Z{k}\n")).collect::<String>()
+        }),
+        ("org_callout_uniq", true, 8_000, |n| {
+            (0..n).map(|k| format!("#+BEGIN_A{k}\n#+END_Z{k}\n")).collect::<String>()
+        }),
+        //  - a validly-closed callout with a LONG NAME (index build is O(name), lookup O(1)):
+        ("md_callout_longname", false, 8_000, |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n))),
+        ("org_callout_longname", true, 8_000, |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n))),
     ]
 }
 
