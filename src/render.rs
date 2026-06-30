@@ -120,23 +120,21 @@ impl Renderer {
 
     fn block(&mut self, b: &Block) {
         match b {
-            // Inline-flow bodies. `bullet`/`paragraph` are bare inline runs; the
-            // bullet's marker/priority/size/htags are consumer-drawn outline chrome,
-            // not part of the body skeleton.
-            Block::Paragraph { inline, .. } | Block::Bullet { inline, .. } => {
-                self.inlines(inline);
-            }
+            // Inline-flow bodies. A `paragraph` is a bare inline run. A `bullet`'s
+            // marker/priority/htags are consumer outline chrome, but its `size` (a
+            // block-authored heading, `- ## x`, the COMMON heading form in a bulleted
+            // graph) IS rendered like a `heading` — the AST field exists for exactly this.
+            Block::Paragraph { inline, .. } => self.inlines(inline),
+            Block::Bullet { inline, size, .. } => match size {
+                Some(s) => self.heading_text(*s, inline),
+                None => self.inlines(inline),
+            },
             Block::Heading { level, size, inline, .. } => {
                 // Displayed heading level = the ATX/setext `size` (1–6); the AST `level`
                 // is mldoc's outline nesting (always 1 for a standalone `#`-heading), so
                 // `### x` has level=1, size=3. The catalog confirms the rendered level is
                 // the size, not `level` (which the contract's `h{level}` shorthand glosses).
-                let h = size.unwrap_or(*level);
-                self.out.push_str("<span class=\"heading-text h");
-                self.out.push_str(&h.to_string());
-                self.out.push_str("\">");
-                self.inlines(inline);
-                self.out.push_str("</span>");
+                self.heading_text(size.unwrap_or(*level), inline);
             }
             Block::List { items, .. } => {
                 let mut cb = 0usize;
@@ -173,6 +171,22 @@ impl Renderer {
             // Not rendered (match the frontend): org drawers / `#+KEY:` keywords /
             // `# comment` lines.
             Block::Drawer { .. } | Block::Directive { .. } | Block::Comment { .. } => {}
+        }
+    }
+
+    /// A heading body: wrap in `heading-text h{h}` when `h ∈ 1..=6` (the frontend's
+    /// `headingLevel` range, `facets.ts`), else a bare inline run — there is no CSS for
+    /// `h7+` and the frontend emits no wrapper above 6. Shared by `Heading` and
+    /// block-authored bullet headings (`- ## x`).
+    fn heading_text(&mut self, h: u32, inline: &[Inline]) {
+        if (1..=6).contains(&h) {
+            self.out.push_str("<span class=\"heading-text h");
+            self.out.push_str(&h.to_string());
+            self.out.push_str("\">");
+            self.inlines(inline);
+            self.out.push_str("</span>");
+        } else {
+            self.inlines(inline);
         }
     }
 
@@ -262,24 +276,33 @@ impl Renderer {
             },
             _ => None,
         };
-        if let Some((ty, title, lead_inline)) = callout {
-            let title_disp = if title.is_empty() { ty.to_uppercase() } else { title };
-            self.open_callout(&ty, &title_disp);
-            self.out.push_str("<div class=\"callout-body\">");
-            // Body = the first paragraph's inlines after the `[!TYPE]` lead (dropping a
-            // following soft break so the title isn't repeated) + the rest of the quote.
-            // Render IN PLACE — do NOT clone `children[1..]` into a new body Vec: that deep-
-            // clones the subtree and, on nested `[!TYPE]` callouts, repeats once per ancestor
-            // level → O(n^2) time + memory. The lead remainder is a bare inline run (a
-            // paragraph block); the remaining children follow with the same `<br>`-join that
-            // `blocks()` applies (the lead paragraph, when present, is the preceding block).
-            let mut rest: &[Inline] = &lead_inline[1..];
-            if matches!(rest.first(), Some(Inline::Break)) {
-                rest = &rest[1..];
+        if let Some((ty, title_text, lead_inline)) = callout {
+            // Split the lead paragraph at the FIRST soft break: everything before it (the
+            // `[!TYPE]` text remainder + any inline markup on the title line) is the TITLE;
+            // everything after begins the BODY. (Previously only `[!TYPE]`'s first plain
+            // segment was the title, so `[!NOTE] Heads **up**` spilled `**up**` into the body.)
+            let break_idx =
+                lead_inline[1..].iter().position(|n| matches!(n, Inline::Break)).map(|p| p + 1);
+            let (title_markup, body_inlines): (&[Inline], &[Inline]) = match break_idx {
+                Some(k) => (&lead_inline[1..k], &lead_inline[k + 1..]),
+                None => (&lead_inline[1..], &[]),
+            };
+            self.open_callout_title(&ty);
+            if title_text.is_empty() && title_markup.is_empty() {
+                esc_text(&ty.to_uppercase(), &mut self.out);
+            } else {
+                esc_text(&title_text, &mut self.out);
+                self.inlines(title_markup);
             }
-            let lead_is_para = !rest.is_empty();
+            self.out.push_str("</div><div class=\"callout-body\">");
+            // Body rendered IN PLACE — NOT via `children[1..].cloned()` (deep-cloning the
+            // subtree once per nesting level → O(n^2) on nested callouts). The body inlines
+            // are a bare inline run (the lead paragraph's tail after the title break); the
+            // remaining children follow with the same `<br>`-join `blocks()` applies (the lead
+            // paragraph, when present, is the preceding inline-flow block).
+            let lead_is_para = !body_inlines.is_empty();
             if lead_is_para {
-                self.inlines(rest);
+                self.inlines(body_inlines);
             }
             let tail = &children[1..];
             for (i, b) in tail.iter().enumerate() {
@@ -319,10 +342,18 @@ impl Renderer {
 
     /// `<div class="callout callout-{ty}"><div class="callout-title">{title}</div>` —
     /// the shared open for Quote `[!TYPE]` and Custom callouts. Caller closes the body.
-    fn open_callout(&mut self, ty: &str, title: &str) {
+    /// Emit `<div class="callout callout-{ty}"><div class="callout-title">` — the caller
+    /// renders the title content (text and/or inlines) then closes `</div>`.
+    fn open_callout_title(&mut self, ty: &str) {
         self.out.push_str("<div class=\"callout callout-");
         esc_attr(ty, &mut self.out);
         self.out.push_str("\"><div class=\"callout-title\">");
+    }
+
+    /// A callout with a plain-text title (Custom callouts; `quote()`'s inline-title path
+    /// opens it directly via `open_callout_title`).
+    fn open_callout(&mut self, ty: &str, title: &str) {
+        self.open_callout_title(ty);
         esc_text(title, &mut self.out);
         self.out.push_str("</div>");
     }
@@ -585,7 +616,7 @@ impl Renderer {
 // Free helpers
 // ===========================================================================
 
-/// `[!TYPE] title…` → `(type_lowercased, title_trimmed)`, or `None` if the leading
+/// `[!TYPE] title…` → `(type_lowercased, title_left_trimmed)`, or `None` if the leading
 /// plain text isn't a GitHub-callout marker. Mirrors the frontend regex
 /// `^\[!(\w+)\]\s*(.*)$` but reads the already-parsed Plain node (no re-parse).
 fn parse_callout_lead(text: &str) -> Option<(String, String)> {
@@ -595,7 +626,10 @@ fn parse_callout_lead(text: &str) -> Option<(String, String)> {
     if ty.is_empty() || !ty.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
         return None;
     }
-    let title = rest[close + 1..].trim().to_string();
+    // Left-trim only (mirror the frontend regex `\[!\w+\]\s*(.*)`): keep a trailing space
+    // before any inline markup on the title line so `[!NOTE] Heads **up**` joins as
+    // "Heads <strong>up</strong>", not "Heads<strong>up</strong>".
+    let title = rest[close + 1..].trim_start().to_string();
     Some((ty.to_ascii_lowercase(), title))
 }
 

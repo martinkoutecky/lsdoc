@@ -33,8 +33,25 @@ fn heading_wraps_in_heading_text_with_level() {
 
 #[test]
 fn bullet_is_a_bare_inline_run() {
-    // marker/priority/size are consumer outline chrome, not part of the body skeleton.
+    // marker/priority are consumer outline chrome; a plain bullet (no heading size) is bare.
     assert_eq!(md("- a bullet body"), "a bullet body");
+}
+
+#[test]
+fn heading_above_6_is_bare() {
+    // size ∈ 1..=6 wraps; size 7 (mldoc allows it) → no heading-text wrapper, matching the
+    // frontend facet (no h7 CSS) (audit F).
+    assert_eq!(md("###### six"), r#"<span class="heading-text h6">six</span>"#);
+    assert_eq!(md("####### seven"), "seven");
+}
+
+#[test]
+fn bullet_authored_heading_wraps() {
+    // `- ## x` carries Bullet.size → rendered as a heading (D1, the common bulleted-graph
+    // heading form); a plain bullet stays bare; size 7 falls back to bare (F).
+    assert_eq!(md("- ## Section"), r#"<span class="heading-text h2">Section</span>"#);
+    assert_eq!(md("- plain bullet"), "plain bullet");
+    assert_eq!(md("- ####### deep"), "deep");
 }
 
 // ===========================================================================
@@ -275,6 +292,18 @@ fn nested_callout_quote_in_place() {
             r#"body1"#,
             r#"<div class="callout callout-tip"><div class="callout-title">inner</div><div class="callout-body">body2<br></div></div>"#,
             r#"</div></div>"#
+        )
+    );
+}
+
+#[test]
+fn callout_title_keeps_inline_markup() {
+    // inline markup on the `[!TYPE]` title line stays in the TITLE, not the body (audit A).
+    assert_eq!(
+        md("> [!NOTE] Heads **up**\n> body"),
+        concat!(
+            r#"<div class="callout callout-note"><div class="callout-title">Heads <strong>up</strong></div>"#,
+            r#"<div class="callout-body">body<br></div></div>"#
         )
     );
 }
