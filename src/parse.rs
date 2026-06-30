@@ -41,37 +41,11 @@ struct Line<'a> {
     text: &'a str, // line content WITHOUT the trailing '\n'
 }
 
-/// Max callout/quote body recursion depth (mirrors org's `QUOTE_NEST_CAP`). A `#+BEGIN_X` body
-/// is re-parsed recursively (mldoc does the same — and is itself O(n²) AND stack-overflows on
-/// deeply-nested closing callouts), so an unbounded depth would SIGABRT and the recurse-on-body
-/// would be O(n²). Capping keeps it O(cap·n)=O(n) and panic-free. Realistic nesting is shallow,
-/// so this is byte-exact below the cap; past it (only adversarial input) mldoc has no defined
-/// output anyway. 64 = the same bound org uses for `>` quotes.
-const BLOCK_NEST_CAP: usize = 64;
-std::thread_local! {
-    static BLOCK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 pub fn parse(input: &str) -> Vec<Block> {
-    // M1 seam: `LSDOC_BLOCK_STREAMING` selects the single-pass streaming driver (no
-    // recursion, no depth cap — it is byte-exact to the legacy below). The legacy
-    // recursion driver stays the DEFAULT and the known-good oracle (M2 flips this).
-    if std::env::var("LSDOC_BLOCK_STREAMING").is_ok() {
-        return parse_streaming_impl(input);
-    }
-    let depth = BLOCK_DEPTH.with(|c| c.get());
-    if depth >= BLOCK_NEST_CAP {
-        // recursion too deep — stop; one flat paragraph (can't SIGABRT). No byte-exact target.
-        return if input.is_empty() {
-            Vec::new()
-        } else {
-            vec![Block::Paragraph { inline: stub_inline(input), span: Some(Span(0, input.len())) }]
-        };
-    }
-    BLOCK_DEPTH.with(|c| c.set(depth + 1));
-    let out = parse_impl(input);
-    BLOCK_DEPTH.with(|c| c.set(depth));
-    out
+    // Single-pass streaming block driver: O(n) time, O(depth) HEAP (the explicit container
+    // stack), NO native recursion and NO depth cap. Byte-exact to mldoc (gated by `harness/`).
+    // (The deep-nesting recurse-on-body — mldoc's O(n²) + stack-overflow — is gone.)
+    parse_impl(input)
 }
 
 /// The outcome of classifying ONE line (`dispatch_md_line`): either advance to line
@@ -141,70 +115,13 @@ fn build_indexes(lines: &[Line]) -> (EndTrie, Vec<usize>, Vec<usize>) {
     (end_trie, drawer_end_idxs, fence_lines)
 }
 
-/// LEGACY md block driver (the default + the byte-exact oracle behind the `LSDOC_BLOCK_STREAMING`
-/// seam). Identical behavior to before the M1 refactor: it loops over the per-line dispatch ladder
-/// (`dispatch_md_line`) with `hi = lines.len()` (so every `closer < hi` bound is trivially true),
-/// and on a callout `Step::Open` it RECURSES on the body slice (`parse(&inner)`), exactly as the
-/// old inline step 2 did. The recursion still bounds each body because every `parse(&inner)`
-/// re-lexes its own slice with its own `hi`.
+/// The md block driver: ONE left-to-right pass over an explicit container-frame stack. Each input
+/// line is classified ONCE (`dispatch_md_line`); a callout body is a contiguous line *window*
+/// pushed as a `Frame` (`Step::Open`) rather than copied + re-lexed (the old recurse-on-body, the
+/// removed source of O(n²) + stack-overflow). Correctness: every closer-search in `dispatch_md_line`
+/// is bounded by the frame's `hi`/`body_end`, so a closer/`\end{}`/`]`/run-line belongs to THIS
+/// body, never the enclosing one. O(n) time, O(depth) HEAP — no native recursion, no depth cap.
 fn parse_impl(input: &str) -> Vec<Block> {
-    let mut lines = split_lines(input);
-    // Byte offset of the last `]` in the whole input (None if none): a block-level hiccup
-    // `[:tag …]` needs a closing `]`, so a line whose `[:` begins at/after this is skipped
-    // O(1) — keeping a run of unclosed `[:` block lines linear (see step 11d').
-    let last_rbracket = input.rfind(']');
-    let (end_trie, drawer_end_idxs, fence_lines) = build_indexes(&lines);
-
-    let mut out: Vec<Block> = Vec::new();
-    let mut para: Option<(usize, usize)> = None;
-    let mut fence_cursor: usize = 0; // monotone cursor into `fence_lines`
-    let n = lines.len();
-    let mut i = 0;
-
-    while i < n {
-        let line_start = lines[i].start; // copied before the `&mut lines` dispatch borrow.
-        match dispatch_md_line(
-            i,
-            &mut lines,
-            &mut out,
-            &mut para,
-            n, // hi = lines.len(): top level, so `closer < hi` is always true (legacy parity).
-            &end_trie,
-            &drawer_end_idxs,
-            &fence_lines,
-            &mut fence_cursor,
-            last_rbracket,
-            input,
-        ) {
-            Step::Next(ni) => i = ni,
-            Step::Open { close, builder } => {
-                // legacy: re-parse the body slice recursively (the SOLE source of O(n²) — M2
-                // removes it). The dispatch helper deliberately did NOT flush para — do it here.
-                flush_para(&mut out, &mut para, input);
-                let inner = if close > i + 1 {
-                    input[lines[i + 1].start..lines[close - 1].end].to_string()
-                } else {
-                    String::new()
-                };
-                let children = parse(&inner);
-                let span = Some(Span(line_start, lines[close].end));
-                out.push(builder.finish(children, span));
-                i = close + 1;
-            }
-        }
-    }
-
-    flush_para(&mut out, &mut para, input);
-    out
-}
-
-/// STREAMING md block driver (behind the `LSDOC_BLOCK_STREAMING` seam; M1). One left-to-right
-/// pass over an explicit container-frame stack: each input line is classified ONCE; a callout
-/// body is a contiguous line *window* pushed as a `Frame` (`Step::Open`) rather than copied +
-/// re-lexed. Byte-exact to `parse_impl` — the correctness story is that every closer-search in
-/// `dispatch_md_line` is bounded by the current frame's `hi`/`body_end` (see that fn). O(n) time,
-/// O(depth) HEAP, no recursion → no `BLOCK_NEST_CAP` needed (M2 deletes the cap).
-fn parse_streaming_impl(input: &str) -> Vec<Block> {
     let mut lines = split_lines(input);
     let last_rbracket = input.rfind(']');
     let (end_trie, drawer_end_idxs, fence_lines) = build_indexes(&lines);
@@ -2117,175 +2034,3 @@ fn build_table_from_texts(rows: &[&str], start: usize, end: usize) -> Block {
     }
 }
 
-/// M1 differential: the streaming md driver MUST be byte-exact to the legacy recursion driver
-/// (the legacy is already byte-exact to mldoc@1.5.7). This is the fast inner-loop oracle —
-/// `parse_streaming_impl(x)` vs `parse_impl(x)`, block tree + spans (compared via `{:?}`), over
-/// (a) a large generated block-construct-rich fuzz nested 2–5 deep and (b) every md input in
-/// `harness/corpus.fuzz.json` (when present — it is regenerated md by the `fuzz.mjs` gate). Both
-/// must be 0 diffs. (Run WITHOUT `LSDOC_BLOCK_STREAMING` set, so `parse_impl`'s internal
-/// `parse(&inner)` uses the legacy recursion — the gate `cargo test --lib` does exactly that.)
-#[cfg(test)]
-mod streaming_eq {
-    use super::*;
-
-    /// Recursively drop every `"span"` key — the OBSERVABLE comparison the node gate makes
-    /// (`compare.mjs`/`fuzz.mjs` `canon` both ignore `"span"`). Streaming callout-child spans are
-    /// GLOBAL by design while legacy's are body-LOCAL (architecture: "child spans become global …
-    /// compare.mjs drops spans → no node-gate impact"); top-level spans match identically. We
-    /// compare the same span-stripped projection the gate does, so a diff here = a REAL structural
-    /// divergence (kind/level/nesting/inline/refs — refs are a pure function of the block tree).
-    fn strip_spans(v: &mut serde_json::Value) {
-        match v {
-            serde_json::Value::Object(map) => {
-                map.remove("span");
-                for val in map.values_mut() {
-                    strip_spans(val);
-                }
-            }
-            serde_json::Value::Array(arr) => {
-                for val in arr.iter_mut() {
-                    strip_spans(val);
-                }
-            }
-            _ => {}
-        }
-    }
-    fn canon(blocks: &[Block]) -> String {
-        let mut v = serde_json::to_value(blocks).expect("serialize blocks");
-        strip_spans(&mut v);
-        v.to_string()
-    }
-    /// Compare the two drivers on one input (span-stripped); `None` on match, else `(legacy,
-    /// streaming)` JSON.
-    fn diff(input: &str) -> Option<(String, String)> {
-        let legacy = canon(&parse_impl(input));
-        let streaming = canon(&parse_streaming_impl(input));
-        if legacy == streaming { None } else { Some((legacy, streaming)) }
-    }
-
-    // A small deterministic LCG so the fuzz is reproducible (matches the harness fuzz style).
-    struct Rng(u64);
-    impl Rng {
-        fn next(&mut self) -> u64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            self.0 >> 16
-        }
-        fn pick<'a>(&mut self, a: &'a [&'a str]) -> &'a str {
-            a[(self.next() as usize) % a.len()]
-        }
-        fn upto(&mut self, n: usize) -> usize {
-            (self.next() as usize) % n
-        }
-    }
-
-    /// Block-construct-rich line alphabet: openers/closers that straddle (so the bounds matter),
-    /// raw/run constructs, and prose. Random multi-line joins produce nested + unclosed cases.
-    const LINES: &[&str] = &[
-        "#+BEGIN_QUOTE", "#+BEGIN_NOTE", "#+BEGIN_TIP", "#+BEGIN_X", "#+BEGIN_warning",
-        "#+END_QUOTE", "#+END_NOTE", "#+END_TIP", "#+END_X", "#+END_", "#+END_warning",
-        "```", "```js", "``` clj :results", "~~~", "~~~~",
-        ":LOGBOOK:", ":PROPERTIES:", ":END:", ":key: value", ":type: x",
-        "\\begin{eq}", "\\end{eq}", "\\begin{equation}", "\\end{equation}", "x=1",
-        "[:div]", "[:span x]", "[:a]", "[:div.cls {:a 1}]", "]", "[:div]x",
-        "> quote", "> - x", "> > q", ">", "> ", ">x",
-        "- bullet", "- ## h", "- ```", "- > q", "- key:: v", "- ", "-", "- ---",
-        "* item", "+ item", "1. item", "1. ", "* ", ": def", ": ab", ": a",
-        "| a | b |", "|---|---|", "| 1 | 2 |", "|a", "term",
-        "# heading", "## h", "### x", "#", "#nospace", "key:: val", "#+name: v", "a:: 1",
-        "$$ x $$", "$$x$$", "<div>x</div>", "<div>", "[^1]: note", "[^1]:",
-        "text", "café 中文", "", "   ", "---", "***", "foo bar", "\tindented",
-    ];
-
-    /// Build one random input: a handful of lines joined with `\n`, plus sometimes a deliberate
-    /// 2–5-deep callout/fence/drawer nesting wrapper to stress the frame stack + closer bounds.
-    fn gen(rng: &mut Rng) -> String {
-        let nlines = 1 + rng.upto(9);
-        let mut lines: Vec<String> = (0..nlines).map(|_| rng.pick(LINES).to_string()).collect();
-        // ~40% of the time, wrap the body in a real, balanced nesting 2–5 deep.
-        if rng.upto(5) < 2 {
-            let depth = 2 + rng.upto(4);
-            let openers = ["#+BEGIN_QUOTE", "#+BEGIN_NOTE", "#+BEGIN_X", "```", ":LOGBOOK:"];
-            let closer = |o: &str| -> &'static str {
-                match o {
-                    "#+BEGIN_QUOTE" => "#+END_QUOTE",
-                    "#+BEGIN_NOTE" => "#+END_NOTE",
-                    "#+BEGIN_X" => "#+END_X",
-                    "```" => "```",
-                    _ => ":END:",
-                }
-            };
-            for _ in 0..depth {
-                let o = openers[rng.upto(openers.len())];
-                lines.insert(0, o.to_string());
-                lines.push(closer(o).to_string());
-            }
-        }
-        // mix in occasional trailing/leading CRLF + blank to exercise line-split edges.
-        let mut s = lines.join("\n");
-        match rng.upto(6) {
-            0 => s.push('\n'),
-            1 => s.push_str("\r\n"),
-            2 => s = format!("{s}\n\n"),
-            _ => {}
-        }
-        s
-    }
-
-    #[test]
-    fn streaming_eq_legacy_generated_fuzz() {
-        assert!(
-            std::env::var("LSDOC_BLOCK_STREAMING").is_err(),
-            "run this differential WITHOUT LSDOC_BLOCK_STREAMING (legacy side must recurse legacy)"
-        );
-        let mut rng = Rng(0x1234_5678_9abc_def0);
-        let n = 60_000;
-        let mut diffs = 0usize;
-        for k in 0..n {
-            let input = gen(&mut rng);
-            if let Some((legacy, streaming)) = diff(&input) {
-                diffs += 1;
-                if diffs <= 10 {
-                    eprintln!("DIFF #{k} input={input:?}\n  legacy   ={legacy}\n  streaming={streaming}");
-                }
-            }
-        }
-        assert_eq!(diffs, 0, "{diffs}/{n} generated-fuzz inputs diverged streaming vs legacy");
-    }
-
-    #[test]
-    fn streaming_eq_legacy_corpus_fuzz() {
-        assert!(std::env::var("LSDOC_BLOCK_STREAMING").is_err());
-        // `harness/corpus.fuzz.json` is the last fuzz run's corpus (`[{id,input,format}]`). It may
-        // be md or org depending on the most recent `fuzz.mjs` invocation; we test ONLY the md
-        // entries (org is M3+). When it holds the 40 000-input md fuzz, this is a heavy oracle;
-        // when it is org, this test is a no-op (covered by the generated fuzz above).
-        #[derive(serde::Deserialize)]
-        struct Item {
-            input: String,
-            #[serde(default)]
-            format: Option<String>,
-        }
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/harness/corpus.fuzz.json");
-        let raw = match std::fs::read_to_string(path) {
-            Ok(r) => r,
-            Err(_) => return, // corpus not present — generated fuzz already covers correctness.
-        };
-        let items: Vec<Item> = serde_json::from_str(&raw).expect("parse corpus.fuzz.json");
-        let mut md = 0usize;
-        let mut diffs = 0usize;
-        for it in &items {
-            if it.format.as_deref() == Some("org") {
-                continue;
-            }
-            md += 1;
-            if let Some((legacy, streaming)) = diff(&it.input) {
-                diffs += 1;
-                if diffs <= 10 {
-                    eprintln!("DIFF input={:?}\n  legacy   ={legacy}\n  streaming={streaming}", it.input);
-                }
-            }
-        }
-        eprintln!("streaming_eq corpus.fuzz.json: {md} md inputs tested, {diffs} diffs");
-        assert_eq!(diffs, 0, "{diffs}/{md} corpus md inputs diverged streaming vs legacy");
-    }
-}

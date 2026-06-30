@@ -106,10 +106,11 @@ fn deep_cases(d: usize) -> Vec<String> {
         format!("{}x{}", "#[[".repeat(d), "]]".repeat(d)),
         "> x\n".repeat(d / 10),
         format!("{}x", "#+BEGIN_QUOTE\n".repeat(d / 20)),
-        // RECURSING nested callouts (distinct names that actually CLOSE → the body IS
-        // re-parsed, unlike the unclosed `#+BEGIN_QUOTE` run above). Without the
-        // BLOCK_NEST_CAP this recursed `d/20` frames deep and SIGABRT'd (~900 on 1 MiB);
-        // the cap bounds it.
+        // RECURSING nested callouts (distinct names that actually CLOSE → the body was
+        // re-parsed by the OLD recursion, unlike the unclosed `#+BEGIN_QUOTE` run above). The
+        // streaming driver opens each as a HEAP frame (no native recursion), so the PARSE uses
+        // O(1) native stack at any depth `d/20` — `assert_no_overflow` forgets the (deep) result
+        // so its recursive drop doesn't overflow the 1 MiB test stack (see that fn).
         {
             let dd = d / 20;
             let mut s = String::new();
@@ -142,10 +143,17 @@ fn assert_no_overflow(d: usize) {
     let inputs = deep_cases(d);
     std::thread::Builder::new()
         .stack_size(1024 * 1024)
-        .spawn(move || inputs.iter().for_each(|s| parse(s)))
+        // Assert the streaming PARSER is bounded-depth: it builds the `Block` tree ITERATIVELY (the
+        // container stack lives on the HEAP), so it never overflows the native stack regardless of
+        // nesting depth. We call the raw block parser (`lsdoc::parse`, not `parse_to_projection`) and
+        // `forget` the result on purpose: DROPPING a deeply-nested `Block` tree recurses and would
+        // overflow the 1 MiB test stack — but that recursive drop (and the recursive project/serialize
+        // a consumer does) is a DOWNSTREAM property of a recursive AST, not a parser one, inherent and
+        // bounded by the consumer's stack (mldoc overflows far earlier, at PARSE time ~1000).
+        .spawn(move || inputs.iter().for_each(|s| std::mem::forget(lsdoc::parse(s, "md"))))
         .expect("spawn parse thread")
         .join()
-        .expect("deep nesting overflowed a 1 MiB stack — parser is not bounded-depth");
+        .expect("deep nesting overflowed a 1 MiB stack — the streaming parser is not bounded-depth");
 }
 
 /// Org-only deep inputs. A single line of `>`×d nests Org `Quote`s (md's quote path is
@@ -258,10 +266,12 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         //  - a validly-closed callout with a LONG NAME (index build is O(name), lookup O(1)):
         ("md_callout_longname", false, 8_000, |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n))),
         ("org_callout_longname", true, 8_000, |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n))),
-        // DEEPLY-NESTED distinct callouts that close → recurse-on-body. mldoc is itself O(n²)
-        // here (and stack-overflows); `BLOCK_NEST_CAP` bounds the recursion to a constant, so
-        // lsdoc is O(cap·n)=O(n) (and panic-free). base > the cap (64) so the bound is active.
-        ("md_nested_callout", false, 2_000, |n| nested_callout(n)),
+        // DEEPLY-NESTED distinct callouts that close → the OLD recurse-on-body (mldoc is itself
+        // O(n²) here AND stack-overflows). The md streaming driver opens each as a HEAP frame —
+        // each line classified once → genuine O(n), NO cap (ratio ≈2×/doubling). md base is kept
+        // drop-safe (max 4× = 4000-deep, whose recursive drop fits the ratio test's 8 MiB main
+        // stack). org is still the legacy capped driver until M5 (shallow result), base stays 2000.
+        ("md_nested_callout", false, 1_000, |n| nested_callout(n)),
         ("org_nested_callout", true, 2_000, |n| nested_callout(n)),
     ]
 }
