@@ -92,6 +92,14 @@ fn linear_cases(n: usize) -> Vec<(&'static str, String)> {
         // linear (no per-hiccup re-precomputation / recursion).
         ("md_hiccup_blocks", "[:a]".repeat(n / 4)),
         ("md_hiccup_inline", "x [:a] ".repeat(n / 7)),    // inline hiccups in a paragraph
+        // Markdown multi-line list (mirrors the org cases): a long sibling run, a single item
+        // with a long continuation-fold tail, and the deeper-unparseable-shape COLLAPSE (the
+        // memoised `collapse_floor` must keep repeated collapse attempts linear, not O(n^2)
+        // suffix re-scanning). Each item's content is re-parsed once over its own folded lines,
+        // so the total content-reparse work stays O(n).
+        ("md_list_siblings", "* a\n".repeat(n / 4)),
+        ("md_list_fold", format!("* a{}", "\n  cont".repeat(n / 4))),
+        ("md_list_collapse", format!("{}  5z", "* a\n".repeat(n / 4))),
     ]
 }
 

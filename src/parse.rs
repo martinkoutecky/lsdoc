@@ -60,7 +60,7 @@ pub fn parse(input: &str) -> Vec<Block> {
     // Single-pass streaming block driver: O(n) time, O(depth) HEAP (the explicit container
     // stack), NO native recursion and NO depth cap. Byte-exact to mldoc (gated by `harness/`).
     // (The deep-nesting recurse-on-body — mldoc's O(n²) + stack-overflow — is gone.)
-    parse_md_streaming(input, false)
+    parse_md_streaming(input, false, false)
 }
 
 /// The outcome of classifying ONE line (`dispatch_md_line`): either advance to line
@@ -85,6 +85,11 @@ struct Frame {
                                      // callout)? (suppresses heading/bullet/property/footnote/
                                      // drawer, trims para breaks before blocks — mldoc
                                      // `block_content_parsers`).
+    in_item: bool,                   // is THIS a markdown list-item content body? (mldoc's
+                                     // `list_content_parsers`: the in-block-content grammar
+                                     // MINUS Lists AND — at the document level — Directive. So
+                                     // it suppresses everything `in_quote` does, PLUS list/
+                                     // def-list, PLUS Directive unless ALSO inside a quote.)
     out: Vec<Block>,                 // children of THIS body.
     para: Option<(usize, usize)>,    // the open paragraph byte-window for THIS body.
     builder: Option<Builder>,        // the opener → emitted on pop (None for the root).
@@ -129,7 +134,7 @@ fn build_indexes(lines: &[Line]) -> (EndTrie, Vec<usize>, Vec<usize>) {
 /// `root_in_quote = false` at the document level; `true` when re-dispatching a `>`-blockquote
 /// body (F1: the body is parsed with the full block grammar MINUS heading/bullet/property/
 /// footnote/drawer, and a paragraph's trailing Break is trimmed before a following block).
-fn parse_md_streaming(input: &str, root_in_quote: bool) -> Vec<Block> {
+fn parse_md_streaming(input: &str, root_in_quote: bool, root_in_item: bool) -> Vec<Block> {
     let mut lines = split_lines(input);
     let last_rbracket = input.rfind(']');
     let (end_trie, drawer_end_idxs, fence_lines) = build_indexes(&lines);
@@ -140,12 +145,19 @@ fn parse_md_streaming(input: &str, root_in_quote: bool) -> Vec<Block> {
     let mut stack: Vec<Frame> = vec![Frame {
         hi: n,
         in_quote: root_in_quote,
+        in_item: root_in_item,
         out: Vec::new(),
         para: None,
         builder: None,
         open_span_start: 0,
     }];
     let mut fence_cursor: usize = 0; // monotone & shared across the whole pass (`i` is monotone).
+    // The list-collapse memo (mldoc's recursive list-parser failure bubble): when a list item's
+    // deeper continuation is an unparseable list-item shape, the list collapses; `collapse_floor`
+    // marks the trigger line so the collapsed region is NOT re-scanned as a list (linearity). One
+    // per streaming pass, shared across frames — `i` is monotone, so a past floor never leaks
+    // into a later body. See `collect_list_md` / `collapse_resume`.
+    let mut collapse_floor: usize = 0;
     // F4/M3: set by an empty heading/bullet marker to the marker line's END offset (the boundary
     // between the marker's trailing-ws `" \n"` and any following blank lines). Consumed by the
     // NEXT line's dispatch: a drop-trigger block drops the marker portion (keeping intervening
@@ -182,13 +194,16 @@ fn parse_md_streaming(input: &str, root_in_quote: bool) -> Vec<Block> {
             let top = stack.last_mut().unwrap();
             let hi = top.hi;
             let in_quote = top.in_quote;
+            let in_item = top.in_item;
             dispatch_md_line(
                 i,
                 &mut lines,
                 &mut top.out,
                 &mut top.para,
                 in_quote,
+                in_item,
                 &mut ws_drop,
+                &mut collapse_floor,
                 hi,
                 &end_trie,
                 &drawer_end_idxs,
@@ -217,6 +232,7 @@ fn parse_md_streaming(input: &str, root_in_quote: bool) -> Vec<Block> {
                 stack.push(Frame {
                     hi: close,
                     in_quote: true,
+                    in_item: false, // a `#+BEGIN_X` callout body is in-block-content, NOT list-item content
                     out: Vec::new(),
                     para: None,
                     builder: Some(builder),
@@ -247,7 +263,9 @@ fn dispatch_md_line<'a>(
     out: &mut Vec<Block>,
     para: &mut Option<(usize, usize)>,
     in_quote: bool,
+    in_item: bool,
     ws_drop: &mut Option<usize>,
+    collapse_floor: &mut usize,
     hi: usize,
     end_trie: &EndTrie,
     drawer_end_idxs: &[usize],
@@ -261,9 +279,12 @@ fn dispatch_md_line<'a>(
     let t = lines[i].text;
     let line_start = lines[i].start;
     let line_end = lines[i].end;
-    // F1: inside a `>`-blockquote body the paragraph parsers trim a trailing Break before a
-    // following block, and heading/bullet/property/footnote/drawer are suppressed (→ text).
-    let trim = in_quote;
+    // "in block content" = a `>`-quote / `#+BEGIN_X` callout body (`in_quote`) OR a markdown
+    // list-item content body (`in_item`). Both trim a paragraph's trailing Break before a
+    // following block and suppress heading/bullet/property/footnote/drawer (mldoc's
+    // `block_content_parsers` / `list_content_parsers` omit those leaf parsers). F1/M-item.
+    let in_block_content = in_quote || in_item;
+    let trim = in_block_content;
     // F4/M3: read + clear the empty-marker ws-drop flag (the marker line's END offset) set by a
     // PREVIOUS line. A drop-trigger block (fence/callout/hr/table/`>`-quote/`$$`/raw-html) drops
     // the marker's `" \n"` portion (keeping intervening blank breaks — M3); a truly-empty line
@@ -346,7 +367,11 @@ fn dispatch_md_line<'a>(
     // eols`, swallowing following truly-empty lines (the md mirror of org's `*absorb = true`; the
     // span extends over them). A directive is ALSO a drop-trigger block: an empty heading/bullet
     // marker's trailing-ws paragraph is dropped before it (F4/M3, e.g. `## \n#+a: 1`).
-    if let Some((name, value)) = crate::org::directive(t) {
+    // Suppressed ONLY in DOCUMENT-level list-item content (`in_item && !in_quote`): mldoc's
+    // top-level `list_content_parsers` (mldoc_parser.ml) OMITS Directive — so a folded
+    // `#+TITLE: x` stays paragraph text with a `#+name` inline tag — whereas inside a `>`-quote /
+    // callout the WITH-Directive `list_content_parsers` (block0.ml) keeps it (verified vs oracle).
+    if let Some((name, value)) = crate::org::directive(t).filter(|_| in_quote || !in_item) {
         drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop the marker `" \n"`, keep blanks.
         flush_para(out, para, input, trim);
         let mut ni = i + 1;
@@ -393,7 +418,7 @@ fn dispatch_md_line<'a>(
     // trailing whitespace splits into [heading, paragraph(trailing ws)].
     // (suppressed inside a `>`-blockquote body — mldoc `block_content_parsers` omits Heading,
     // so `# h` / a `-` bullet there stay paragraph text. F1.)
-    if let Some((level, size, hend)) = heading_at(t).filter(|_| !in_quote) {
+    if let Some((level, size, hend)) = heading_at(t).filter(|_| !in_block_content) {
         flush_para(out, para, input, trim);
         let (marker, priority, title) = split_markers(t[hend..].trim_start());
         let trail = trim_end_ws_len(t);
@@ -433,7 +458,7 @@ fn dispatch_md_line<'a>(
 
     // 5. `-` bullet (mldoc Heading{unordered}) — suppressed inside a `>`-blockquote body
     // (mldoc `block_content_parsers` omits Heading, so `- x` there stays a paragraph). F1.
-    if let Some(level) = dash_bullet_level(t).filter(|_| !in_quote) {
+    if let Some(level) = dash_bullet_level(t).filter(|_| !in_block_content) {
         // mldoc's bullet title is a lookahead (heading0.ml `title_aux_p`): if the
         // text after the bullet prefix parses as a block construct, the bullet gets
         // an EMPTY title and the construct is parsed as the next block. We replicate
@@ -674,7 +699,7 @@ fn dispatch_md_line<'a>(
 
     // 6. footnote definition — suppressed inside a `>`-blockquote body (mldoc
     // `block_content_parsers` omits Footnote, so `[^id]: …` stays paragraph text). F1.
-    if let Some((fname, content)) = footnote_def(t).filter(|_| !in_quote) {
+    if let Some((fname, content)) = footnote_def(t).filter(|_| !in_block_content) {
         flush_para(out, para, input, trim);
         out.push(Block::FootnoteDef {
             name: fname,
@@ -701,7 +726,7 @@ fn dispatch_md_line<'a>(
     // trailing `#+name: value` org directives into the same drawer (drawer.ml
     // `many1 (parse1 <|> parse2)`), so `a:: 1\n#+b: 2` → props a, b. Suppressed inside a
     // `>`-blockquote body (mldoc omits the markdown property from `block_content_parsers`). F1.
-    if property(t).is_some() && !in_quote {
+    if property(t).is_some() && !in_block_content {
         flush_para(out, para, input, trim);
         let start = i;
         let mut props = Vec::new();
@@ -724,41 +749,31 @@ fn dispatch_md_line<'a>(
         return Step::Next(ni);
     }
 
-    // 9. list (group of consecutive `*`/`+`/`N.` items, bounded by `hi`)
-    if let Some(item) = list_item(t) {
-        flush_para(out, para, input, trim);
-        let start = i;
-        let mut items = vec![item];
-        let mut last = i; // last line index that belongs to the list
-        let mut ni = i + 1;
-        while ni < hi {
-            if let Some(it) = list_item(lines[ni].text) {
-                items.push(it);
-                last = ni;
-                ni += 1;
-            } else if lines[ni].text.trim().is_empty() {
-                // mldoc's list absorbs ONE blank line (two_eols): the list span
-                // extends through it. If the next line is another item the list
-                // continues; otherwise the list ends here (the blank consumed, so it
-                // never becomes its own paragraph). A SECOND consecutive blank is not
-                // absorbed — it ends the list and becomes a paragraph.
-                let next_is_item = ni + 1 < hi
-                    && !lines[ni + 1].text.trim().is_empty()
-                    && list_item(lines[ni + 1].text).is_some();
-                last = ni;
-                ni += 1;
-                if !next_is_item {
-                    break;
+    // 9. list (`*`/`+`/`N.` items, bounded by `hi`) — a faithful port of mldoc's shared
+    // `lists0.ml` list parser (markdown branch). Each item folds its indented multi-line
+    // continuation (de-indented via per-line `String.trim`) into its content, which is re-parsed
+    // with the list-item content grammar (`reparse_item_content`, the `in_item` driver). Deeper
+    // is-item lines become children (flat collection + `nest_items`); an unparseable deeper
+    // is-item shape COLLAPSES the list (the recursive-parser failure bubble — `collapse_resume` +
+    // `collapse_floor`). Disabled inside list-item content (`!in_item`: `list_content_parsers`
+    // omits `Lists.parse`); `collapse_floor` skips list-starts inside an already-collapsed region.
+    if !in_item && i >= *collapse_floor && md_marker(t).is_some() {
+        match collect_list_md(lines, i, hi, in_quote) {
+            Ok((block, next)) => {
+                flush_para(out, para, input, trim);
+                out.push(block);
+                return Step::Next(next);
+            }
+            Err(Collapse { kept, resume, trigger }) => {
+                *collapse_floor = trigger;
+                if let Some(block) = kept {
+                    flush_para(out, para, input, trim);
+                    out.push(block);
+                    return Step::Next(resume);
                 }
-            } else {
-                break;
+                // full collapse (resume == i == start): fall through to paragraph.
             }
         }
-        out.push(Block::List {
-            items: crate::projection::nest_items(items),
-            span: Some(Span(lines[start].start, lines[last].end)),
-        });
-        return Step::Next(ni);
     }
 
     // 10. markdown blockquote (mldoc block0.ml `md_blockquote`): a `>` line opens a quote
@@ -829,7 +844,7 @@ fn dispatch_md_line<'a>(
     // inside THIS body (`< hi`); else it belongs to an enclosing body → fall through.
     // Suppressed inside a `>`-blockquote body (mldoc omits Drawer from `block_content_parsers`,
     // so `:NAME: … :END:` there is paragraph text). F1.
-    if let Some(name) = drawer_begin(t).filter(|_| !in_quote) {
+    if let Some(name) = drawer_begin(t).filter(|_| !in_block_content) {
         if let Some(close) = find_drawer_end(drawer_end_idxs, i) {
             if close < hi {
                 flush_para(out, para, input, trim);
@@ -956,7 +971,10 @@ fn dispatch_md_line<'a>(
     // running paragraph (`intro\nterm\n: def` → Paragraph[intro] + def-list), so
     // we check it here at the paragraph point, after every other block construct.
     // The term peek + `build_def_list`'s item/continuation/blank scans are bounded by `hi`.
-    if !t.trim_start().is_empty()
+    // Suppressed in list-item content (`in_item`): mldoc's `list_content_parsers` omits the WHOLE
+    // `Lists.parse` (= regular list <|> `md_definition`), so a def-list never nests inside an item.
+    if !in_item
+        && !t.trim_start().is_empty()
         && i + 1 < hi
         && is_def_opener(lines[i + 1].text)
     {
@@ -1161,85 +1179,250 @@ fn dash_bullet_level(s: &str) -> Option<u32> {
     }
 }
 
-/// Build a markdown `*`/`+`/`N.` list item's content from its raw body. mldoc block-parses
-/// list-item content with a restricted set that recognizes block-Hiccups (`[:tag …]`) but
-/// not headings/etc.: a body beginning with one or more `[:tag …]` vectors yields those
-/// `Hiccup` blocks, then the remainder (if any) as one Paragraph; anything else is a single
-/// inline-parsed Paragraph (`* [:div]x` → [Hiccup, Para "x"]; `* a [:div] b` → [Para]).
-fn list_item_content(body: &str) -> Vec<Block> {
-    let mut pos = 0;
-    let mut blocks: Vec<Block> = Vec::new();
-    while body[pos..].starts_with("[:") {
-        match crate::inline::parse_hiccup(body, pos) {
-            Some(end) => {
-                blocks.push(Block::Hiccup { v: body[pos..end].to_string(), span: None });
-                pos = end;
-            }
-            None => break,
-        }
-    }
-    if blocks.is_empty() {
-        return vec![Block::Paragraph { inline: stub_inline(body), span: None }];
-    }
-    if pos < body.len() {
-        blocks.push(Block::Paragraph { inline: stub_inline(&body[pos..]), span: None });
-    }
-    blocks
+/// A parsed markdown list marker (mldoc `format_checkbox_parser` + the first content line),
+/// PLUS the raw body after `marker + ws + checkbox + spaces` (NOT yet trimmed — `collect_list_md`
+/// applies the per-line `String.trim` mldoc does at content join).
+struct MdMarker {
+    ordered: bool,
+    number: Option<u32>,
+    checkbox: Option<bool>,
+    indent: u32,
+    body: String,
 }
 
-fn list_item(s: &str) -> Option<ListItem> {
+/// Parse a markdown list marker (`*`/`+` then ws, or `N.` then ws; mldoc `format_parser` for
+/// `is_markdown`: `+`/`*` always, plus ordered `digits '.'`). Requires non-empty content after
+/// any checkbox (mldoc's `take_till1` needs ≥1 char) — a bare `* `/`+ `/`1. `/`* [ ]` yields None
+/// (those fall through to a Paragraph). `-` is a Bullet in markdown, never a list marker; `N)` is
+/// not a list. The body is the raw rest after the marker+ws+checkbox+spaces.
+fn md_marker(s: &str) -> Option<MdMarker> {
     let ws = leading_ws(s);
     let rest = &s[ws..];
+    let mk = |ordered, number, content: &str| {
+        let (checkbox, body) = split_checkbox(content);
+        if body.trim().is_empty() {
+            return None;
+        }
+        Some(MdMarker { ordered, number, checkbox, indent: ws as u32, body: body.to_string() })
+    };
     // unordered * or +
     if let Some(after) = rest.strip_prefix('*').or_else(|| rest.strip_prefix('+')) {
         if after.starts_with(' ') || after.starts_with('\t') {
-            let (checkbox, body) = split_checkbox(after.trim_start());
-            // mldoc requires non-empty list content: `* ` / `*  ` / `* [ ]` (an
-            // empty marker, optionally just a checkbox) is a Paragraph, not a List.
-            if body.trim().is_empty() {
-                return None;
-            }
-            return Some(ListItem {
-                ordered: false,
-                number: None,
-                indent: ws as u32,
-                // `*`/`+`/`N.` list content is RAW after the marker+checkbox — mldoc does
-                // NOT strip ATX `#`/task-markers here (unlike `-` bullets): `* # h` → "# h".
-                // It IS block-parsed for leading hiccups (`* [:div]` → item content [Hiccup]).
-                content: list_item_content(body),
-                items: vec![],
-                name: vec![],
-                checkbox,
-            });
+            return mk(false, None, after.trim_start());
         }
     }
     // ordered N.  (NOT N))
     let digits = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
     if digits > 0 {
-        let after = &rest[digits..];
-        if let Some(after2) = after.strip_prefix('.') {
-            if after2.starts_with(' ') || after2.starts_with('\t') {
+        if let Some(after) = rest[digits..].strip_prefix('.') {
+            if after.starts_with(' ') || after.starts_with('\t') {
                 if let Ok(number) = rest[..digits].parse::<u32>() {
-                    let (checkbox, body) = split_checkbox(after2.trim_start());
-                    // mldoc requires non-empty content: `1. ` / `1.  ` / `1. [ ]`
-                    // (an empty ordered marker) is a Paragraph, not a List.
-                    if body.trim().is_empty() {
-                        return None;
-                    }
-                    return Some(ListItem {
-                        ordered: true,
-                        number: Some(number),
-                        indent: ws as u32,
-                        content: list_item_content(body), // raw + leading-hiccup blocks
-                        items: vec![],
-                        name: vec![],
-                        checkbox,
-                    });
+                    return mk(true, Some(number), after.trim_start());
                 }
             }
         }
     }
     None
+}
+
+/// mldoc `check_listitem` (markdown branch): `(indent, is_item, is_heading)`. `is_item` marks a
+/// line as a *list-item shape* for the continuation logic — BROADER than a parseable marker: a
+/// leading integer (`Scanf "%d"` on the trimmed line, even `12abc`/`-5`) is `is_item` regardless
+/// of a following `.`; `+ ` and `* ` (at ANY indent in markdown) are `is_item`. `is_heading` is a
+/// `-`-bullet line (`"- "`, or a lone `-`) — it ENDS an item's content (the `-` becomes a Bullet),
+/// it does NOT fold. The mismatch between `is_item` and the parseable `md_marker` (which fails on
+/// a leading int that is not `N. `) is exactly what drives the collapse.
+fn check_listitem_md(line: &str) -> (u32, bool, bool) {
+    let indent = leading_ws(line);
+    if scan_leading_int(line.trim()) {
+        return (indent as u32, true, false);
+    }
+    let b = line.as_bytes();
+    if b.len() >= indent + 2 {
+        let (p0, p1) = (b[indent], b[indent + 1]);
+        let is_item = (p0 == b'+' && p1 == b' ') || (p0 == b'*' && p1 == b' ');
+        let is_heading = p0 == b'-' && p1 == b' ';
+        (indent as u32, is_item, is_heading)
+    } else if b.len() >= indent + 1 {
+        (indent as u32, false, b[indent] == b'-')
+    } else {
+        (indent as u32, false, false)
+    }
+}
+
+/// mldoc `Scanf.sscanf (String.trim line) "%d"`: does the (already-trimmed) string begin with an
+/// integer (optional `+`/`-` then ≥1 digit)? (Mirrors org's identical helper.)
+fn scan_leading_int(t: &str) -> bool {
+    let b = t.as_bytes();
+    let i = if matches!(b.first(), Some(b'+' | b'-')) { 1 } else { 0 };
+    b.get(i).is_some_and(u8::is_ascii_digit)
+}
+
+/// mldoc `lists0.ml` `definition` (markdown, UNORDERED items only): a `name :: ` item splits its
+/// trimmed-joined content into (`name` inline, description). `end_string " ::"` matched with
+/// `consume:All` only succeeds when the FIRST " ::" is at the very END of the content — so it
+/// fires iff content == `<name> ::` with `<name>` non-empty and containing no earlier " ::"; the
+/// description is then always "" (the `>= l+1` branch is dead under `consume:All`). `* term :: x`
+/// / `* term ::\n…` do NOT fire (something follows the first " ::"); `* term ::` → name "term",
+/// content "". Returns `(name_inline, stripped_content)`; `None` = no split (content unchanged).
+fn md_definition_split(content: &str) -> Option<(Vec<Inline>, String)> {
+    let pos = content.find(" ::")?;
+    if pos + 3 != content.len() {
+        return None; // the first " ::" is not at the end ⇒ consume:All fails ⇒ no definition
+    }
+    let name = &content[..pos];
+    if name.is_empty() {
+        return None; // `take_while1` needs ≥1 char before " ::"
+    }
+    Some((stub_inline(name), String::new()))
+}
+
+/// A (possibly partial) list collapse — mldoc's recursive list parser failed on a deeper
+/// continuation that is a list-item shape but NOT a parseable marker. `kept` is the `List` of
+/// items parsed before the failing item (None if none survive — a full collapse → the start
+/// line re-parses as a Paragraph); `resume` is the line the document parser resumes at (the
+/// failing/first-unkept item's marker); `trigger` memoises the collapse region (`collapse_floor`,
+/// for linearity). Mirrors org's identical struct.
+struct Collapse {
+    kept: Option<Block>,
+    resume: usize,
+    trigger: usize,
+}
+
+/// Collect a markdown list starting at line `start` — a faithful port of mldoc's shared
+/// `lists0.ml` list parser (markdown branch). Each item folds its indented multi-line
+/// continuation (de-indented via per-line `String.trim`) into its content, re-parsed with the
+/// list-item content grammar (`reparse_item_content`, inheriting `in_quote`); deeper is-item
+/// lines become children via the flat sequence + `nest_items`. UNORDERED items run `md_definition_split`.
+///
+/// COLLAPSE: a continuation that is a list-item shape (`check_listitem_md`) DEEPER than the
+/// current item but NOT a parseable marker there (`md_marker` None — a leading int that is not
+/// `N. `) makes the item's child `list_parser` fail. In mldoc that failure bubbles up through
+/// every item that is *first at its level*, terminating at (and keeping) the first ancestor level
+/// with a prior sibling; the failing item onward re-parses as a Paragraph. `collapse_resume`
+/// reproduces that bubble from the flat indent sequence.
+///
+/// `hi` bounds every scan to THIS body (a list inside a callout window must not absorb the
+/// `#+END_…` closer); at the top level `hi == lines.len()` (no-op).
+fn collect_list_md(
+    lines: &[Line],
+    start: usize,
+    hi: usize,
+    in_quote: bool,
+) -> Result<(Block, usize), Collapse> {
+    let mut flat: Vec<ListItem> = Vec::new();
+    let mut flat_lines: Vec<usize> = Vec::new();
+    let mut flat_indents: Vec<u32> = Vec::new();
+    let mut i = start;
+    while i < hi {
+        let t = lines[i].text;
+        // terminator at a would-be marker position: a blank line, or any non-marker line (a
+        // `#` heading / `-` bullet is the mldoc `Heading.parse` breakout — never an `md_marker`).
+        if t.is_empty() {
+            break;
+        }
+        let marker = match md_marker(t) {
+            Some(m) => m,
+            None => break,
+        };
+        let cur_indent = marker.indent;
+        // content = first line (marker body) + folded indented continuation lines, each trimmed.
+        let mut content_lines: Vec<String> = vec![marker.body.trim().to_string()];
+        let mut j = i + 1;
+        let mut trigger: Option<usize> = None;
+        loop {
+            if j >= hi {
+                break; // EOF / body boundary ends this item's content
+            }
+            let cl = lines[j].text;
+            if cl.is_empty() {
+                j += 1; // mldoc `two_eols`: a (truly) blank line ends the content AND is consumed
+                break;
+            }
+            let (ci, is_item, is_heading) = check_listitem_md(cl);
+            if ci == 0 {
+                break; // a col-0 line ends the content (left for the outer loop)
+            }
+            if is_heading {
+                break; // a `-` bullet line ends the content (left to become a Bullet)
+            }
+            if is_item {
+                if ci > cur_indent && md_marker(cl).is_none() {
+                    trigger = Some(j); // COLLAPSE trigger (deeper unparseable list-item shape)
+                }
+                break; // child / breakout / collapse — handled below
+            }
+            content_lines.push(cl.trim().to_string()); // fold (de-indented)
+            j += 1;
+        }
+        if let Some(trigger) = trigger {
+            // The failing item P is the one at line `i` (indent `cur_indent`), NOT pushed.
+            let r = collapse_resume(&flat_indents, cur_indent);
+            let resume = if r < flat_lines.len() { flat_lines[r] } else { i };
+            flat.truncate(r);
+            let kept = if flat.is_empty() {
+                None
+            } else {
+                let items = std::mem::take(&mut flat);
+                Some(Block::List {
+                    items: crate::projection::nest_items(items),
+                    span: Some(Span(lines[start].start, lines[resume - 1].end)),
+                })
+            };
+            return Err(Collapse { kept, resume, trigger });
+        }
+        // mldoc: `content = List.map String.trim content |> concat "\n"`, then UNORDERED items
+        // run `definition` (which may strip a trailing `name ::` and empty the content).
+        let joined = content_lines.join("\n");
+        let (name, content_str) = if marker.ordered {
+            (Vec::new(), joined)
+        } else {
+            match md_definition_split(&joined) {
+                Some((name, stripped)) => (name, stripped),
+                None => (Vec::new(), joined),
+            }
+        };
+        flat.push(ListItem {
+            ordered: marker.ordered,
+            number: marker.number,
+            indent: cur_indent,
+            content: reparse_item_content(&content_str, in_quote),
+            items: vec![],
+            name,
+            checkbox: marker.checkbox,
+        });
+        flat_lines.push(i);
+        flat_indents.push(cur_indent);
+        i = j;
+    }
+    if flat.is_empty() {
+        // defensive: the caller gates on `md_marker`, so unreachable.
+        return Err(Collapse { kept: None, resume: start, trigger: start });
+    }
+    let span = Some(Span(lines[start].start, lines[i - 1].end));
+    Ok((Block::List { items: crate::projection::nest_items(flat), span }, i))
+}
+
+/// Given the indents of the successfully-collected list items and the indent of the failing item
+/// P (conceptually at index `flat_indents.len()`), return the flat index `r` such that items
+/// `[0, r)` are kept and the resume point is item `r`'s marker (or P's marker if `r ==
+/// flat_indents.len()`). Walks up while the current item is the *first at its level* (its nearest
+/// shallower-or-equal predecessor is strictly shallower — a parent, not a prior sibling), matching
+/// mldoc's failure bubble-up. Mirrors org's identical helper.
+fn collapse_resume(flat_indents: &[u32], p_indent: u32) -> usize {
+    let mut cur_indent = p_indent;
+    let mut cur_index = flat_indents.len();
+    loop {
+        let q = (0..cur_index).rev().find(|&j| flat_indents[j] <= cur_indent);
+        match q {
+            None => return cur_index,                                       // first item overall
+            Some(j) if flat_indents[j] == cur_indent => return cur_index,    // prior sibling
+            Some(j) => {
+                cur_index = j; // a parent → bubble up
+                cur_indent = flat_indents[j];
+            }
+        }
+    }
 }
 
 /// A post-`>` core that makes the WHOLE `>` line a plain Paragraph (mldoc does not open
@@ -1353,9 +1536,26 @@ fn reparse_block_content(residual: &str) -> Vec<Block> {
         };
     }
     MD_BLOCK_DEPTH.with(|c| c.set(depth + 1));
-    let out = parse_md_streaming(residual, true);
+    let out = parse_md_streaming(residual, true, false);
     MD_BLOCK_DEPTH.with(|c| c.set(depth));
     out
+}
+
+/// Re-parse a markdown list item's folded content (de-indented continuation lines, joined
+/// with `\n`) through the md driver with the list-item content grammar (mldoc's
+/// `list_content_parsers`: in-block-content MINUS Lists, MINUS Directive at the document
+/// level). `in_quote` is inherited from the list's enclosing frame (a list inside a `>`-quote
+/// keeps Directive in its item content — mldoc instantiates `Lists.parse` with the WITH-Directive
+/// `list_content_parsers` inside `block_content_parsers`). List re-entry is disabled by `in_item`,
+/// so this is depth-1 (any nested callout/quote inside the content takes the guarded
+/// `reparse_block_content` path) — no extra depth guard needed, mirroring org's `streaming_reparse`.
+/// mldoc's content reparse falls back to a single empty Paragraph on an empty content string
+/// (`definition` may strip a `name ::` item to ""), so an empty reparse yields `[Paragraph []]`.
+fn reparse_item_content(content: &str, in_quote: bool) -> Vec<Block> {
+    if content.is_empty() {
+        return vec![Block::Paragraph { inline: Vec::new(), span: None }];
+    }
+    parse_md_streaming(content, in_quote, true)
 }
 
 fn property(s: &str) -> Option<(String, String)> {

@@ -52,6 +52,37 @@ add("nest", "1. a\n   1. nested");        // the former b021 (indented numbered)
 add("nest", "* a\n  * b\n  * b2\n    * c"); // a > [b, b2 > [c]]
 add("nest", "* a\n    * deep\n  * mid");   // mid (indent 2) is a TOP sibling of a, not a child
 
+// list-item multi-line continuation (mldoc `lists0.ml` folds an indented non-item line into the
+// preceding item's content, de-indented via per-line `String.trim`; re-parsed with the item-content
+// grammar). org already folds; this is the markdown port. Verified byte-exact vs the mldoc oracle.
+add("cont", "* a\n  b");                       // plain continuation → paragraph["a", Break, "b"]
+add("cont", "* a\n  b\n  c");                  // multi-line continuation joins with Break
+add("cont", "+ a\n  b");                       // `+` item continuation
+add("cont", "1. a\n   b");                     // ordered item continuation (own indent width)
+add("cont", "10. a\n  b");                     // ordered, continuation shallower than marker width
+add("cont", "* [ ] a\n  b");                   // checkbox item continuation
+add("cont", "* a\n\tb\n\tc");                  // tab-indented continuation
+add("cont", "* a\n\n  b");                     // a BLANK line ENDS the continuation (separate para)
+add("cont", "* a\nb");                         // LAZY (col-0) line does NOT continue
+add("cont", "* a\n  b\nc");                    // fold b, then col-0 c ends list → separate para
+add("cont", "* a\n  cont\n* b");               // cont folds into item 1; `* b` is item 2
+add("cont", "* a\n  b\n  c\n* d\n  e");        // two items, each with continuation
+add("cont", "* a\n  # h");                     // `#` folds (heading suppressed in item content)
+add("cont", "* a\n  -x");                      // `-x` (no space) folds; `- ` would NOT (a Bullet)
+add("cont", "* a\n   \n  b");                  // whitespace-only line folds as an empty Break
+add("cont-block", "* #+BEGIN_TIP\n  this is a tip\n  #+END_TIP"); // `*` admonition folds → custom{tip}
+add("cont-block", "+ #+BEGIN_NOTE\n  n\n  #+END_NOTE");           // `+` admonition folds → custom{note}
+add("cont-block", "* a\n  ```\n  code\n  ```"); // fenced code folds (de-indented body)
+add("cont-block", "* a\n  | t |");             // table folds into item content
+add("cont-block", "* a\n  > q\n  c");          // blockquote folds (lazy continuation inside)
+add("cont-block", "* a\n  #+TITLE: x");        // doc-level item content has NO Directive → inline #tag
+add("cont-child", "* a\n  b\n  * c\n    d");   // continuation then a nested child with its own continuation
+add("cont-child", "+ a\n  + b\n    c\n  d");   // child folds deeper-AND-same-indent non-item lines
+add("cont-collapse", "* a\n  b\n  5x");        // deeper unparseable list-shape → FULL collapse to paragraph
+add("cont-collapse", "* a\n* b\n  5x");        // partial collapse: keep item a, `* b\n  5x` → paragraph
+add("cont-def", "* term ::");                  // unordered `name ::` definition → item name, empty content
+add("cont-def", "* term :: desc");             // trailing text after `::` ⇒ NOT a definition (plain content)
+
 // code fences (mldoc → Src)
 add("code", "```\ncode\n```");
 add("code", "```js\nlet x = 1\n```");
