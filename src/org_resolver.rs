@@ -265,12 +265,12 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
     let nested_close = if has_brk {
         crate::inline::build_nested_close(s)
     } else {
-        std::collections::HashMap::new()
+        Vec::new()
     };
     let hiccup_close = if has_brk {
         crate::inline::build_hiccup_close(s)
     } else {
-        std::collections::HashMap::new()
+        Vec::new()
     };
     let real_dbl = if has_brk { crate::inline::build_real_dbl(s) } else { Vec::new() };
     let mut real_dbl_cur = 0usize;
@@ -943,15 +943,15 @@ fn try_bracket_at(
     bb: &[u8],
     off: usize,
     ctx: Ctx,
-    hiccup_close: &std::collections::HashMap<usize, usize>,
-    nested_close: &std::collections::HashMap<usize, usize>,
+    hiccup_close: &[usize],
+    nested_close: &[usize],
     real_dbl: &[usize],
     real_dbl_cur: &mut usize,
     crlf: &mut usize,
     rb_lb_present: bool,
 ) -> Option<(Inline, usize)> {
     if ctx.hiccup && bb.get(off + 1) == Some(&b':') && crate::inline::hiccup_head_ok(s, off) {
-        if let Some(&end) = hiccup_close.get(&off) {
+        if let Some(end) = hiccup_close.get(off).copied().filter(|&e| e != usize::MAX) {
             return Some((Inline::Hiccup { v: s[off..end].to_string() }, end));
         }
     }
@@ -961,7 +961,7 @@ fn try_bracket_at(
                 return Some((node, end));
             }
         }
-        if nested_close.contains_key(&off) {
+        if nested_close.get(off).is_some_and(|&e| e != usize::MAX) {
             if let Some((end, content)) = crate::inline::parse_nested_link(s, off) {
                 return Some((Inline::NestedLink { content }, end));
             }

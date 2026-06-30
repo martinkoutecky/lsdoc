@@ -127,12 +127,12 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
     let nested_close = if has_brk {
         crate::inline::build_nested_close(s)
     } else {
-        std::collections::HashMap::new()
+        Vec::new()
     };
     let hiccup_close = if has_brk {
         crate::inline::build_hiccup_close(s)
     } else {
-        std::collections::HashMap::new()
+        Vec::new()
     };
     let real_dbl = if has_brk { crate::inline::build_real_dbl(s) } else { Vec::new() };
     let lbp = if has_brk { seq_positions(bb, b']', b'(') } else { Vec::new() };
@@ -161,7 +161,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
             // 1. inline hiccup `[:tag …]` (ctx-gated — off in emphasis content).
             if ctx.hiccup && bb.get(off + 1) == Some(&b':') && crate::inline::hiccup_head_ok(s, off)
             {
-                if let Some(&e) = hiccup_close.get(&off) {
+                if let Some(e) = hiccup_close.get(off).copied().filter(|&e| e != usize::MAX) {
                     flush(&mut out, &mut pending);
                     out.push(Inline::Hiccup { v: s[off..e].to_string() });
                     end = Some(e);
@@ -177,7 +177,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
             }
             // 3. nested-link (escape-free balance) then page-ref (escape-aware first `]]`).
             if end.is_none() && s[off..].starts_with("[[") {
-                if nested_close.contains_key(&off) {
+                if nested_close.get(off).is_some_and(|&e| e != usize::MAX) {
                     if let Some((e, content)) = crate::inline::parse_nested_link(s, off) {
                         flush(&mut out, &mut pending);
                         out.push(Inline::NestedLink { content });

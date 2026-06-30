@@ -21,7 +21,6 @@
 //! `char_indices`, never mid-codepoint.
 
 use crate::projection::{Inline, Url};
-use std::collections::HashMap;
 
 // ---- byte classes ---------------------------------------------------------
 
@@ -1327,16 +1326,17 @@ pub(crate) fn hiccup_head_ok(s: &str, at: usize) -> bool {
 
 /// Pair EVERY `[:`…`]` hiccup vector in `s` in one linear pass (a delimiter stack: a
 /// `[:` pushes, a `]` pops, a `"…"` string is opaque while inside a vector). Returns a
-/// map opener-`[`-byte → index-just-past-the-matching-`]`. This is the structural
-/// replacement for the per-opener balanced re-scan (and the `rbracket` absence cache):
-/// the inline dispatch does an amortized-O(1) lookup instead, so a run of `[:tag `…
-/// (the `hiccup_present` pathology) is linear by construction, not O(n²). The balance
-/// counts every `[:` regardless of tag validity (tag-validity is applied separately at
-/// lookup via [`hiccup_head_ok`]) — matching `parse_hiccup`'s depth scan exactly.
-pub(crate) fn build_hiccup_close(s: &str) -> HashMap<usize, usize> {
+/// position-indexed `Vec` (length `|s|`): `close[opener-`[`-byte]` = index-just-past-the-
+/// matching-`]`, and `usize::MAX` where no hiccup vector opens (NOT a `HashMap<usize,_>` —
+/// the key is a byte position, a perfect array index; see lsdoc/CLAUDE.md). This is the
+/// structural replacement for the per-opener balanced re-scan (and the `rbracket` absence
+/// cache): the inline dispatch does an O(1) array lookup instead. The balance counts every
+/// `[:` regardless of tag validity (tag-validity is applied separately at lookup via
+/// [`hiccup_head_ok`]) — matching `parse_hiccup`'s depth scan exactly.
+pub(crate) fn build_hiccup_close(s: &str) -> Vec<usize> {
     let b = s.as_bytes();
     let n = b.len();
-    let mut close = HashMap::new();
+    let mut close = vec![usize::MAX; n];
     let mut stack: Vec<usize> = Vec::new();
     let mut p = 0;
     while p < n {
@@ -1347,7 +1347,7 @@ pub(crate) fn build_hiccup_close(s: &str) -> HashMap<usize, usize> {
             }
             b']' => {
                 if let Some(o) = stack.pop() {
-                    close.insert(o, p + 1);
+                    close[o] = p + 1;
                 }
                 p += 1;
             }
@@ -1375,13 +1375,15 @@ pub(crate) fn build_hiccup_close(s: &str) -> HashMap<usize, usize> {
 
 /// Pair `[[`…`]]` the way `match_brackets` (nested-link) balances them — a delimiter
 /// stack: `[[` pushes, `]]` pops, a `\n` clears the stack (mldoc returns `None` across a
-/// newline). Returns opener-`[[`-byte → index-just-past-the-matching-`]]`. Escape-FREE,
-/// because `match_brackets` does not treat `\` specially. Gating nested-link on this map
-/// means an unbalanced `[[`-run can't trigger a to-EOF level-scan per opener.
-pub(crate) fn build_nested_close(s: &str) -> HashMap<usize, usize> {
+/// newline). Returns a position-indexed `Vec` (length `|s|`): `close[opener-`[[`-byte]` =
+/// index-just-past-the-matching-`]]`, `usize::MAX` where none (a byte position is a perfect
+/// array index, not a `HashMap` key). Escape-FREE, because `match_brackets` does not treat
+/// `\` specially. Gating nested-link on this means an unbalanced `[[`-run can't trigger a
+/// to-EOF level-scan per opener.
+pub(crate) fn build_nested_close(s: &str) -> Vec<usize> {
     let b = s.as_bytes();
     let n = b.len();
-    let mut close = HashMap::new();
+    let mut close = vec![usize::MAX; n];
     let mut stack: Vec<usize> = Vec::new();
     let mut p = 0;
     while p < n {
@@ -1396,7 +1398,7 @@ pub(crate) fn build_nested_close(s: &str) -> HashMap<usize, usize> {
             }
             b']' if p + 1 < n && b[p + 1] == b']' => {
                 if let Some(o) = stack.pop() {
-                    close.insert(o, p + 2);
+                    close[o] = p + 2;
                 }
                 p += 2;
             }
