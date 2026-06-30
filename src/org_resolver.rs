@@ -9,8 +9,7 @@
 //!    `last_plain_char`) — `a/b/c` stays literal, `/a/` is italic. md has no backward gate.
 //! 3. **Escape is non-destructive**: Org keeps `\X` literally (`\*` → `"\\*"`), md unescapes.
 //!
-//! Built milestone-by-milestone behind the `LSDOC_ORG_INLINE_V2` seam, validated byte-exact
-//! against `crate::org::parse_inline_org_top` over fuzzed Org inputs. **M6-core** here: text /
+//! Byte-exact to mldoc, validated over the differential harness gate. **M6-core** here: text /
 //! break / escape / entity; markers + specials are emitted as deferred tokens (rendered
 //! literally until the emphasis / leaf / bracket sub-steps refine them).
 
@@ -792,7 +791,7 @@ fn resync_straddle(
     t
 }
 
-// ---- leaf / bracket constructs (reimplemented from the v1 `OrgScanner` methods, byte-based;
+// ---- leaf / bracket constructs (byte-based;
 // shared free predicates reused from `crate::inline` / `crate::org`) -----------------------
 
 /// `$ … $` (Inline) / `$$ … $$` (Displayed) — v1 `try_latex_dollar`.
@@ -1176,165 +1175,4 @@ fn first_crlf(bb: &[u8], from: usize) -> usize {
         p += 1;
     }
     p
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Differential: `resolve(org_lex(s)) == crate::org::parse_inline_org_top(s)` over fuzzed
-    /// inputs built from `tokens` (growing per sub-step). `crate::org` is byte-exact to mldoc.
-    fn diff_count(tokens: &[&str], iters: usize, seed0: u64) -> usize {
-        let mut diffs = 0usize;
-        let mut state = seed0 | 1;
-        let mut rng = || {
-            // xorshift64
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-        for _ in 0..iters {
-            let len = (rng() % 7) as usize;
-            let mut s = String::new();
-            for _ in 0..len {
-                s.push_str(tokens[(rng() as usize) % tokens.len()]);
-            }
-            let v2 = parse_inline_org(&s);
-            let v1 = crate::org::parse_inline_org_top(&s);
-            if format!("{v2:?}") != format!("{v1:?}") {
-                if diffs < 10 {
-                    eprintln!("ORG DIFF {s:?}\n   v1={v1:?}\n   v2={v2:?}\n");
-                }
-                diffs += 1;
-            }
-        }
-        diffs
-    }
-
-    /// M6-core: plain / ws / break / Org escape (non-destructive) / entity. NO markers or
-    /// constructs yet (those render literally in the core stub).
-    #[test]
-    fn org_v2_matches_v1_m6_core() {
-        const TOKENS: &[&str] =
-            &["a", "b", " ", "\n", "word", "café", "\\,", "\\;", "\\.", "\\Delta", "\\alpha", "x"];
-        assert_eq!(diff_count(TOKENS, 300_000, 0x6094), 0);
-    }
-
-    /// M6 emphasis: `*` Bold / `/` Italic / `+` Strike / `_` Underline / `^^` Highlight (the
-    /// stateful backward gate + forward-gate/`continue_search`) and `_x`/`^x` sub/superscript.
-    #[test]
-    fn org_v2_matches_v1_m6_emphasis() {
-        const TOKENS: &[&str] = &[
-            "a", "b", " ", "\n", "x", "word", ".", ",",
-            "*", "/", "+", "_", "^", "^^", "*b*", "/i/", "+s+", "_u_", "^^h^^",
-            "_{sub}", "^{sup}", "\\,", "\\Delta",
-        ];
-        assert_eq!(diff_count(TOKENS, 500_000, 0x5E11), 0);
-    }
-
-    /// Exhaustive small Org emphasis strings over `{* / + _ ^ a space}` (lengths 1..=6) — the
-    /// gate-heavy corner (backward state, `_` continue-search, `^^`/`^x` dual use).
-    #[test]
-    fn org_v2_emphasis_exhaustive() {
-        let alpha = [b'*', b'/', b'+', b'_', b'^', b'a', b' '];
-        let mut diffs = 0;
-        let mut buf = Vec::new();
-        fn rec(alpha: &[u8], buf: &mut Vec<u8>, depth: usize, diffs: &mut usize) {
-            if depth > 0 {
-                let s = std::str::from_utf8(buf).unwrap();
-                let v2 = parse_inline_org(s);
-                let v1 = crate::org::parse_inline_org_top(s);
-                if format!("{v2:?}") != format!("{v1:?}") {
-                    if *diffs < 12 {
-                        eprintln!("ORG EX DIFF {s:?}\n   v1={v1:?}\n   v2={v2:?}\n");
-                    }
-                    *diffs += 1;
-                }
-            }
-            if depth == 6 {
-                return;
-            }
-            for &ch in alpha {
-                buf.push(ch);
-                rec(alpha, buf, depth + 1, diffs);
-                buf.pop();
-            }
-        }
-        rec(&alpha, &mut buf, 0, &mut diffs);
-        assert_eq!(diffs, 0, "{diffs} divergences");
-    }
-
-    /// Diagnostic: the inline-relevant subset of the node-fuzz `TOKENS_ORG`, to surface any
-    /// remaining v2-vs-v1 org divergences the curated alphabets missed.
-    #[test]
-    #[ignore = "diagnostic; run explicitly"]
-    fn org_v2_matches_v1_nodefuzz() {
-        const TOKENS: &[&str] = &[
-            "* ", "** ", "*** ", "*", "/", "_", "+", "~", "=", "^", "^^", "[[", "]]", "][",
-            "[[target]]", "[[t][l]]", "[fn:1]", "<2026-06-26 Fri>", "[2026-06-20 Sat]",
-            "SCHEDULED: ", "DEADLINE: ", "[#A] ", ":tag1:tag2:", "\\", "a", "b", " ", "  ", "\n",
-            "café", "中文", "😀", ".", "/", "_x", "^y", "word",
-        ];
-        let n = diff_count(TOKENS, 200_000, 0x7A03);
-        assert_eq!(n, 0, "{n} divergences");
-    }
-
-    /// Diagnostic: full `parse_org_to_projection` v1-vs-v2 over the COMPLETE node-fuzz
-    /// `TOKENS_ORG` (block + inline), to find block-body inline divergences.
-    #[test]
-    #[ignore = "diagnostic; run explicitly"]
-    fn org_v2_block_projection() {
-        const TOKENS: &[&str] = &[
-            "* ", "** ", "*** ", "*", "/", "_", "+", "~", "=", "^", "^^", "[[", "]]", "][",
-            "[[target]]", "[[t][l]]", "[fn:1]", "<2026-06-26 Fri>", "[2026-06-20 Sat]",
-            "#+TITLE: ", "#+BEGIN_SRC ", "#+END_SRC", "#+BEGIN_QUOTE", "#+END_QUOTE", "#+NAME: ",
-            ":PROPERTIES:", ":key: value", ":END:", "SCHEDULED: ", "DEADLINE: ", "TODO ",
-            "DONE ", "[#A] ", ":tag1:tag2:", "- ", "+ ", "1. ", "| a | b |", "\\", "a", "b",
-            " ", "  ", "\n", "café", "中文", "😀", ".", "/", "_x", "^y", "word",
-        ];
-        let mut diffs = 0;
-        let mut state = 0x5151u64 | 1;
-        let mut rng = || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-        for _ in 0..150_000 {
-            let len = (rng() % 7) as usize;
-            let mut s = String::new();
-            for _ in 0..len {
-                s.push_str(TOKENS[(rng() as usize) % TOKENS.len()]);
-            }
-            std::env::remove_var("LSDOC_ORG_INLINE_V2");
-            let v1 = format!("{:?}", crate::parse_org_to_projection(&s));
-            std::env::set_var("LSDOC_ORG_INLINE_V2", "1");
-            let v2 = format!("{:?}", crate::parse_org_to_projection(&s));
-            if v1 != v2 {
-                if diffs < 10 {
-                    eprintln!("ORG BLK DIFF {s:?}\n   v1={v1}\n   v2={v2}\n");
-                }
-                diffs += 1;
-            }
-        }
-        std::env::remove_var("LSDOC_ORG_INLINE_V2");
-        assert_eq!(diffs, 0, "{diffs} divergences");
-    }
-
-    /// M6 leaves: every Org leaf / bracket family + the swallow/fresh interactions.
-    #[test]
-    fn org_v2_matches_v1_m6_leaves() {
-        const TOKENS: &[&str] = &[
-            "a", "b", " ", "\n", "x", "word", ".", ",",
-            "*b*", "/i/", "_u_", "^^h^^", "_{s}", "^{s}",
-            "#tag", "$x$", "$$d$$", "~code~", "=verb=", "<<tg>>",
-            "{{m}}", "{{{q}}}", "((11111111-1111-1111-1111-111111111111))",
-            "[[Foo]]", "[[u][l]]", "[:div ]", "[fn:1]", "[2024-01-01 Mon]",
-            "<https://z.io>", "<a@b.com>", "<2026-06-20 Sat>", "<div>", "</div>",
-            "SCHEDULED: <2004-12-25 Sat>", "http://x.com/a", "\\,", "\\Delta", "\\(e\\)",
-            "~", "=", "<", "{", "(", "[", "]", ")", "}", ">", "!",
-        ];
-        assert_eq!(diff_count(TOKENS, 600_000, 0x10F6), 0);
-    }
 }

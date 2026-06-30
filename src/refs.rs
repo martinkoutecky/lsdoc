@@ -68,15 +68,9 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>, org: b
                 // value's inline list per format, and the two differ (e.g. org `[[x][y]]`
                 // → Search link [no ref]; md `[[x][y]]` → Page_ref "x][y"). C6.
                 let inl = if org {
-                    if crate::org_inline_v2_enabled() {
-                        crate::org_resolver::parse_inline_org(v)
-                    } else {
-                        crate::org::parse_inline_org_top(v)
-                    }
-                } else if crate::inline_v2_enabled() {
-                    crate::resolver::parse_inline(v)
+                    crate::org_resolver::parse_inline_org(v)
                 } else {
-                    crate::inline::parse_inline(v)
+                    crate::resolver::parse_inline(v)
                 };
                 walk_inlines(&inl, page, block);
             }

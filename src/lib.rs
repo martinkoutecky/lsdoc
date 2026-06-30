@@ -29,23 +29,6 @@ pub(crate) mod projection;
 pub(crate) mod refs;
 pub(crate) mod resolver;
 
-/// Inline engine selector. **v2 (the `lexer`+`resolver`) is now the default** markdown inline
-/// implementation (M5 cutover): byte-exact to mldoc over the node gate (1032+99+37) + fuzz
-/// (floor 34/555), linear by construction (`tests/perf.rs`). `LSDOC_INLINE_V1` forces the
-/// legacy v1 scanner, kept as the fast `v2 == v1` differential oracle through the block
-/// rewrite (deleted at M11). Returns true (v2) where env is unavailable (e.g. wasm).
-pub(crate) fn inline_v2_enabled() -> bool {
-    std::env::var_os("LSDOC_INLINE_V1").is_none()
-}
-
-/// Org inline engine selector. **v2 (the `org_resolver`) is now the default** Org inline
-/// implementation (M6 cutover): byte-exact to mldoc over the node gate + org fuzz floor
-/// (356/1522). `LSDOC_ORG_INLINE_V1` forces the legacy `org` scanner, kept as the fast
-/// differential oracle (deleted at M11). Returns true (v2) where env is unavailable.
-pub(crate) fn org_inline_v2_enabled() -> bool {
-    std::env::var_os("LSDOC_ORG_INLINE_V1").is_none()
-}
-
 /// The render contract: the stable, `serde`-serializable AST. **This IS lsdoc's AST**
 /// (the projection that was once described as "comparison-only" — that framing is
 /// retired; it is render-complete and frozen as the integration surface).
@@ -92,15 +75,9 @@ pub fn refs(input: &str, format: &str) -> ast::Refs {
 /// selects Org; anything else is Markdown.
 pub fn inline(input: &str, format: &str) -> Vec<ast::Inline> {
     if format == "org" {
-        if org_inline_v2_enabled() {
-            org_resolver::parse_inline_org(input)
-        } else {
-            org::parse_inline_org_top(input)
-        }
-    } else if inline_v2_enabled() {
-        resolver::parse_inline(input)
+        org_resolver::parse_inline_org(input)
     } else {
-        inline::parse_inline(input)
+        resolver::parse_inline(input)
     }
 }
 
