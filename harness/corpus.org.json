@@ -1996,5 +1996,29 @@
   "cat": "tine-props",
   "input": "#+BEGIN_SRC\nkey:: val\n#+END_SRC",
   "format": "org"
+ },
+ {
+  "id": "o333",
+  "cat": "quote-break",
+  "input": ">>a\n>>b",
+  "format": "org"
+ },
+ {
+  "id": "o334",
+  "cat": "quote-break",
+  "input": "> a\n>> b\n>> c",
+  "format": "org"
+ },
+ {
+  "id": "o335",
+  "cat": "quote-break",
+  "input": "> a\n> #+BEGIN_SRC\n> x\n> #+END_SRC",
+  "format": "org"
+ },
+ {
+  "id": "o336",
+  "cat": "quote-break",
+  "input": "> a\n> -----",
+  "format": "org"
  }
 ]

@@ -455,6 +455,13 @@ add("tine-props", "* foo\n:PROPERTIES:\n:key: val\n:END:"); // bullet, propertie
 add("tine-props", "* foo\nkey:: val");                      // bullet, paragraph (key:: is NOT a property in org)
 add("tine-props", "#+BEGIN_SRC\nkey:: val\n#+END_SRC");     // src (key:: is code, NOT a property)
 
+// quote-body paragraph drops its trailing Break before a FOLLOWING block (mldoc `between_eols`):
+// the para keeps it only at the document level / as the body's LAST block. (Confirmed vs mldoc.)
+add("quote-break", ">>a\n>>b");                  // Q{ P[a], Q{ P[b,Break] } } — NOT P[a,Break]
+add("quote-break", "> a\n>> b\n>> c");           // Q{ P[a], Q{ P[b,Break,c,Break] } }
+add("quote-break", "> a\n> #+BEGIN_SRC\n> x\n> #+END_SRC"); // Q{ P[a], src } — para before a block in a quote
+add("quote-break", "> a\n> -----");             // Q{ P[a], hr }
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

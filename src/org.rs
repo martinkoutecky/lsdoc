@@ -287,7 +287,9 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
             Step::Open { close, builder, child_ctx, indent_strip } => {
                 {
                     let top = stack.last_mut().unwrap();
-                    flush_para(&mut top.out, &mut top.para, input, top.ctx.in_item);
+                    // Preceding paragraph drops its trailing Break before this container opener
+                    // when already inside a list-item / blockquote body (`between_eols`).
+                    flush_para(&mut top.out, &mut top.para, input, top.ctx.in_item || top.ctx.in_quote);
                 }
                 // Clean window (indent-0 + plain-`\n` body) ⇒ heap frame, no copy/re-lex
                 // (the O(n²) fix; child spans become global). Else the de-indented body is
@@ -323,7 +325,10 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
                 // HEAP, NO `>`-depth cap. The open paragraph is flushed first (like
                 // `Step::Open`); a Quote absorbs a following blank (`block_absorbs`).
                 let top = stack.last_mut().unwrap();
-                flush_para(&mut top.out, &mut top.para, input, top.ctx.in_item);
+                // A preceding paragraph drops its trailing Break before this (nested) quote when
+                // already inside a list-item / blockquote body — same `between_eols` rule as the
+                // in-dispatch flushes (mldoc keeps it only at the document level).
+                flush_para(&mut top.out, &mut top.para, input, top.ctx.in_item || top.ctx.in_quote);
                 let block = build_org_quote_streaming(body, span);
                 top.absorb = block_absorbs(&block);
                 top.out.push(block);
@@ -379,6 +384,11 @@ fn dispatch_org_line<'a>(
     let line_start = lines[i].start;
     let line_end = lines[i].end;
     let in_item = ctx.in_item;
+    // A paragraph flushed because a following BLOCK begins drops its trailing `Break_Line` when
+    // that block parser claims the eol first (mldoc `between_eols`) — true in BOTH list-item
+    // content (`in_item`) AND a blockquote body (`in_quote`); at the document level
+    // `Paragraph.sep` claims the eol and the Break stays. (EOF flushes pass `false` explicitly.)
+    let trim = in_item || ctx.in_quote;
     // Byte offset where THIS body ends (the closer line's start, or EOF at the root). CLAMPs
     // the to-end-of-input forward-scanners (`parse_latex_env`, `parse_hiccup`).
     let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
@@ -397,7 +407,7 @@ fn dispatch_org_line<'a>(
 
     // 1. directive `#+KEY: value` (KEY != BEGIN_…) — not a list-item content block.
     if let Some((name, value)) = directive(t).filter(|_| !in_item) {
-        flush_para(out, para, input, in_item);
+        flush_para(out, para, input, trim);
         out.push(Block::Directive { name, value, span: Some(Span(line_start, line_end)) });
         *absorb = true;
         return Step::Next(i + 1);
@@ -405,7 +415,7 @@ fn dispatch_org_line<'a>(
 
     // 1b. comment `# text` (mldoc Comment) — IS a valid list-item content block (not gated).
     if let Some(text) = org_comment(t) {
-        flush_para(out, para, input, in_item);
+        flush_para(out, para, input, trim);
         out.push(Block::Comment { text: text.to_string(), span: Some(Span(line_start, line_end)) });
         *absorb = true;
         return Step::Next(i + 1);
@@ -416,7 +426,7 @@ fn dispatch_org_line<'a>(
     if let Some(name) = drawer_begin(t).filter(|_| !in_item) {
         if let Some(close) = find_drawer_end(drawer_end_idxs, i) {
             if close < hi {
-                flush_para(out, para, input, in_item);
+                flush_para(out, para, input, trim);
                 if name == "properties" {
                     let mut props: Vec<(String, String)> = lines[i + 1..close]
                         .iter()
@@ -473,7 +483,7 @@ fn dispatch_org_line<'a>(
                 fence_cursor,
             )
         {
-            flush_para(out, para, input, in_item);
+            flush_para(out, para, input, trim);
             out.push(Block::Bullet {
                 level,
                 size: None,
@@ -506,7 +516,7 @@ fn dispatch_org_line<'a>(
             return Step::Next(i);
         }
 
-        flush_para(out, para, input, in_item);
+        flush_para(out, para, input, trim);
         let mut inline = org_inline(content);
         let htags = extract_htags(&mut inline);
         let empty_title = inline.is_empty() && htags.is_empty();
@@ -533,7 +543,7 @@ fn dispatch_org_line<'a>(
 
     // 4. table (group of consecutive well-formed `|…|` rows), bounded by `hi`.
     if is_table_row(t) {
-        flush_para(out, para, input, in_item);
+        flush_para(out, para, input, trim);
         let start = i;
         let mut ni = i;
         while ni < hi && is_table_row(lines[ni].text) {
@@ -550,7 +560,7 @@ fn dispatch_org_line<'a>(
     if let Some((name, content, consumed_end)) =
         crate::inline::parse_latex_env(&input[..body_end], line_start, line_content_end)
     {
-        flush_para(out, para, input, in_item);
+        flush_para(out, para, input, trim);
         out.push(Block::LatexEnv { name, content, span: Some(Span(line_start, consumed_end)) });
         *absorb = false;
         let mut ni = i + 1;
@@ -565,7 +575,7 @@ fn dispatch_org_line<'a>(
     if let Some((_c, mend)) = fence_marker(t) {
         if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
             if close < hi {
-                flush_para(out, para, input, in_item);
+                flush_para(out, para, input, trim);
                 let code = if close > i + 1 {
                     input[lines[i + 1].start..lines[close - 1].end].to_string()
                 } else {
@@ -589,7 +599,7 @@ fn dispatch_org_line<'a>(
                 let lname = name.to_ascii_lowercase();
                 match lname.as_str() {
                     "src" => {
-                        flush_para(out, para, input, in_item);
+                        flush_para(out, para, input, trim);
                         let lang = begin_lang(t);
                         let inner = block_code(&lines[i + 1..close]);
                         out.push(Block::Src { lang, code: inner, span: Some(Span(line_start, lines[close].end)) });
@@ -597,7 +607,7 @@ fn dispatch_org_line<'a>(
                         return Step::Next(close + 1);
                     }
                     "example" => {
-                        flush_para(out, para, input, in_item);
+                        flush_para(out, para, input, trim);
                         let inner = block_code(&lines[i + 1..close]);
                         out.push(Block::Example { code: inner, span: Some(Span(line_start, lines[close].end)) });
                         *absorb = true;
@@ -632,7 +642,7 @@ fn dispatch_org_line<'a>(
 
     // 7. verbatim block (Org): consecutive lines starting with `:` → Example. Bounded by `hi`.
     if is_verbatim_line(t) {
-        flush_para(out, para, input, in_item);
+        flush_para(out, para, input, trim);
         let start = i;
         let mut code = String::new();
         let mut ni = i;
@@ -674,7 +684,7 @@ fn dispatch_org_line<'a>(
 
     // 9. block-level displayed math `$$ … $$`.
     if let Some(math) = displayed_math(t) {
-        flush_para(out, para, input, in_item);
+        flush_para(out, para, input, trim);
         out.push(Block::DisplayedMath { text: math, span: Some(Span(line_start, line_end)) });
         *absorb = false;
         return Step::Next(i + 1);
@@ -682,7 +692,7 @@ fn dispatch_org_line<'a>(
 
     // 10. raw HTML (single line, complete element).
     if is_raw_html(t) {
-        flush_para(out, para, input, in_item);
+        flush_para(out, para, input, trim);
         out.push(Block::RawHtml { text: t.to_string(), span: Some(Span(line_start, line_end)) });
         *absorb = false;
         return Step::Next(i + 1);
@@ -691,7 +701,7 @@ fn dispatch_org_line<'a>(
     // 11. footnote definition `[fn:name] text` — not a list-item content block. The body
     // absorbs following continuation lines (mldoc `many1 l`); bounded by `hi`.
     if let Some((name, content)) = footnote_def(t).filter(|_| !in_item) {
-        flush_para(out, para, input, in_item);
+        flush_para(out, para, input, trim);
         let mut body = strip_cr_eol(content, line_has_nl(input, &lines[i])).to_string();
         let mut j = i + 1;
         while j < hi {
@@ -718,7 +728,7 @@ fn dispatch_org_line<'a>(
     if !in_item && i >= *collapse_floor && list_marker(t).is_some() {
         match collect_list(lines, i, hi, Ctx { in_item: true, in_quote: ctx.in_quote }) {
             Ok((block, next)) => {
-                flush_para(out, para, input, in_item);
+                flush_para(out, para, input, trim);
                 out.push(block);
                 *absorb = false;
                 return Step::Next(next);
@@ -726,7 +736,7 @@ fn dispatch_org_line<'a>(
             Err(Collapse { kept, resume, trigger }) => {
                 *collapse_floor = trigger;
                 if let Some(block) = kept {
-                    flush_para(out, para, input, in_item);
+                    flush_para(out, para, input, trim);
                     out.push(block);
                     *absorb = false;
                     return Step::Next(resume);
@@ -738,7 +748,7 @@ fn dispatch_org_line<'a>(
 
     // 13. horizontal rule (exactly 5 dashes).
     if is_org_hr(t) {
-        flush_para(out, para, input, in_item);
+        flush_para(out, para, input, trim);
         out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
         *absorb = false;
         return Step::Next(i + 1);
@@ -753,7 +763,6 @@ fn dispatch_org_line<'a>(
             if let Some(cap_end) = crate::inline::parse_hiccup(&input[..body_end], rec) {
                 // A preceding paragraph drops its trailing Break before a Hiccup inside a
                 // blockquote body / list item, but keeps it at the document level.
-                let trim = in_item || ctx.in_quote;
                 flush_para(out, para, input, trim);
                 out.push(Block::Hiccup {
                     v: input[rec..cap_end].to_string(),
