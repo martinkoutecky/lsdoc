@@ -156,12 +156,12 @@ fn assert_no_overflow(d: usize) {
         .expect("deep nesting overflowed a 1 MiB stack — the streaming parser is not bounded-depth");
 }
 
-/// Org-only deep inputs under the STREAMING driver (M4). `>`×d on one line nests ⌈d/2⌉ Org
+/// Org-only deep inputs under the STREAMING driver. `>`×d on one line nests ⌈d/2⌉ Org
 /// `Quote`s; the streaming `gt_strip` peel (`build_org_quote_streaming`) builds that spine
 /// ITERATIVELY — single-line peel, multi-line tail-peel, lazy-absorbed continuation — with
-/// NO native recursion and NO `QUOTE_NEST_CAP`. Includes the MULTI-LINE `>`-nests (a deep
+/// NO native recursion and NO `>`-depth cap. Includes the MULTI-LINE `>`-nests (a deep
 /// opener + a continuation that rides into the deepest level; a deep `>` line below a
-/// paragraph), the case the M3 recurse-on-body would stack-overflow uncapped.
+/// paragraph), the case the old recurse-on-body would stack-overflow uncapped.
 fn org_deep_cases(d: usize) -> Vec<String> {
     vec![
         format!("{}x", ">".repeat(d)),       // `>`×d on ONE line (single-line peel)
@@ -180,9 +180,9 @@ fn assert_no_overflow_org(d: usize) {
         // so a deep `>`-nest never grows the native stack — no cap needed. `forget` the result,
         // exactly like md's `assert_no_overflow`: DROPPING the deep `Quote` tree recurses and
         // would overflow the 1 MiB test stack, but that recursive drop is a DOWNSTREAM property
-        // of a recursive AST (the consumer's stack), not a parser one. We call the raw streaming
-        // driver (`__parse_org_streaming`, not the env-gated public `parse`) so this never races
-        // the `streaming_eq_org` differential that requires the env unset.
+        // of a recursive AST (the consumer's stack), not a parser one. We call the streaming
+        // root entry point directly (`__parse_org_streaming`, identical to the public `parse`,
+        // which is now the streaming driver).
         .spawn(move || inputs.iter().for_each(|s| std::mem::forget(lsdoc::__parse_org_streaming(s))))
         .expect("spawn parse thread")
         .join()
@@ -278,12 +278,13 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         ("md_callout_longname", false, 8_000, |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n))),
         ("org_callout_longname", true, 8_000, |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n))),
         // DEEPLY-NESTED distinct callouts that close → the OLD recurse-on-body (mldoc is itself
-        // O(n²) here AND stack-overflows). The md streaming driver opens each as a HEAP frame —
-        // each line classified once → genuine O(n), NO cap (ratio ≈2×/doubling). md base is kept
-        // drop-safe (max 4× = 4000-deep, whose recursive drop fits the ratio test's 8 MiB main
-        // stack). org is still the legacy capped driver until M5 (shallow result), base stays 2000.
+        // O(n²) here AND stack-overflows). Both streaming drivers open each as a HEAP frame —
+        // each line classified once → genuine O(n), NO cap (ratio ≈2×/doubling). Both bases are
+        // kept drop-safe (max 4× = 4000-deep, whose recursive drop fits the ratio test's 8 MiB
+        // main stack): org now runs the streaming default (uncapped, deep result), so its base
+        // drops 2000 → 1000 to match md.
         ("md_nested_callout", false, 1_000, |n| nested_callout(n)),
-        ("org_nested_callout", true, 2_000, |n| nested_callout(n)),
+        ("org_nested_callout", true, 1_000, |n| nested_callout(n)),
     ]
 }
 
