@@ -394,6 +394,47 @@ add("empty-marker-drop", "- \n#+BEGIN_QUOTE\n#+END_QUOTE"); // bullet, quote
 add("empty-marker-drop", "## \nplain");                   // heading, paragraph (real content KEPT)
 add("empty-marker-drop", "## \n* x");                     // heading, paragraph[" "], list (KEPT before list)
 
+// === 3 more md grammar divergences (subagent-tasks/fix-3-more.md) ===
+// M1: a md `#+BEGIN_X` callout body (Quote OR Custom) is block-parsed with the SAME
+// in-block-content grammar as a `>`-blockquote body — suppress {heading,bullet,property,
+// footnote,drawer} (→ paragraph text) and trim a paragraph's trailing Break before a block.
+add("m1-callout-suppress", "#+BEGIN_FOO\n# h\n#+END_FOO");         // custom[ P "# h" ] (heading→text)
+add("m1-callout-suppress", "#+BEGIN_FOO\n[^1]: b\n#+END_FOO");     // custom[ P[fnref,": b"] ] (footnote→text)
+add("m1-callout-suppress", "#+BEGIN_FOO\n- x\n#+END_FOO");         // custom[ P "- x" ] (bullet→text)
+add("m1-callout-suppress", "#+BEGIN_FOO\nk:: v\n#+END_FOO");       // custom[ P "k:: v" ] (property→text)
+add("m1-callout-suppress", "#+BEGIN_FOO\n:NAME:\nx\n:END:\n#+END_FOO"); // custom[ P ] (drawer→text)
+add("m1-callout-suppress", "#+BEGIN_QUOTE\n# h\n#+END_QUOTE");     // quote[ P "# h" ] (same grammar)
+add("m1-callout-suppress", "#+BEGIN_QUOTE\n- x\n#+END_QUOTE");     // quote[ P "- x" ]
+add("m1-callout-keep", "#+BEGIN_FOO\n* x\n#+END_FOO");             // custom[ list ] — list still recognized
+add("m1-callout-keep", "#+BEGIN_FOO\n| a | b |\n#+END_FOO");       // custom[ table ] — table still recognized
+add("m1-callout-keep", "#+BEGIN_FOO\n```\ncode\n```\n#+END_FOO");  // custom[ src ] — fence still recognized
+add("m1-callout-keep", "#+BEGIN_FOO\n---\n#+END_FOO");             // custom[ hr ] — hr still recognized
+add("m1-callout-trim", "#+BEGIN_FOO\nintro\n```\ncode\n```\n#+END_FOO"); // custom[ P[intro] (no break), src ]
+add("m1-callout-trim", "#+BEGIN_FOO\nintro\n* item\n#+END_FOO");   // custom[ P[intro] (no break), list ]
+// M2: a valid md `:PROPERTIES:` drawer folds a following `many(property | directive)` run into
+// the SAME props — directives also swallow surrounding blank lines (`optional eols`).
+add("m2-props-fold", ":PROPERTIES:\n:k: v\n:END:\n#+b: 2");        // properties[[k,v],[b,2]]
+add("m2-props-fold", ":PROPERTIES:\n:k: v\n:END:\n#+b: 2\n#+c: 3"); // properties[[k,v],[b,2],[c,3]]
+add("m2-props-fold", ":PROPERTIES:\n:k: v\n:END:\nx:: 1\n#+b: 2"); // properties[[k,v],[x,1],[b,2]]
+add("m2-props-fold", ":PROPERTIES:\n:k: v\n:END:\nx:: 1\ny:: 2");  // properties[[k,v],[x,1],[y,2]]
+add("m2-props-fold", ":PROPERTIES:\n:k: v\n:END:\n\n#+b: 2");      // properties[[k,v],[b,2]] (blank absorbed)
+add("m2-props-fold", ":PROPERTIES:\n:k: v\n:END:\n#+b: 2\n\nplain"); // properties[[k,v],[b,2]], paragraph[plain]
+add("m2-props-nofold", ":PROPERTIES:\n:k: v\n:END:\nplain");      // properties[[k,v]], paragraph[plain] (plain stops)
+add("m2-props-nofold", ":PROPERTIES:\n:k: v\n:END:\nx:: 1\n\ny:: 2"); // props[[k,v],[x,1]], P[break], props[[y,2]]
+// M3: the empty-marker ws-drop survives across a TRULY-EMPTY line — the marker's `" \n"` is
+// dropped before a block, but intervening blank line(s) become their own break-paragraph.
+add("m3-drop-across-blank", "## \n\n```\nx\n```");        // heading, paragraph[Break], src
+add("m3-drop-across-blank", "## \n\n---");                // heading, paragraph[Break], hr
+add("m3-drop-across-blank", "## \n\n| a | b |");          // heading, paragraph[Break], table
+add("m3-drop-across-blank", "## \n\n#+BEGIN_QUOTE\n#+END_QUOTE"); // heading, paragraph[Break], quote
+add("m3-drop-across-blank", "## \n\n> q");                // heading, paragraph[Break], quote
+add("m3-drop-across-blank", "## \n\n$$x$$");              // heading, paragraph[Break], displayed_math
+add("m3-drop-across-blank", "## \n\n<div>x</div>");       // heading, paragraph[Break], raw_html
+add("m3-drop-across-blank", "- \n\n> q");                 // bullet, paragraph[Break], quote
+add("m3-drop-across-blank", "## \n\n\n```\nx\n```");      // heading, paragraph[Break,Break], src (two blanks)
+add("m3-keep-ws", "## \n\nplain");                        // heading, paragraph[" ",Break,Break,plain] (plain keeps ws)
+add("m3-keep-ws", "## \n  \n```\nx\n```");                // heading, paragraph[" ",Break,Hardbreak], src (ws-line keeps ws)
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

@@ -1453,5 +1453,165 @@
   "id": "b290",
   "cat": "empty-marker-drop",
   "input": "## \n* x"
+ },
+ {
+  "id": "b291",
+  "cat": "m1-callout-suppress",
+  "input": "#+BEGIN_FOO\n# h\n#+END_FOO"
+ },
+ {
+  "id": "b292",
+  "cat": "m1-callout-suppress",
+  "input": "#+BEGIN_FOO\n[^1]: b\n#+END_FOO"
+ },
+ {
+  "id": "b293",
+  "cat": "m1-callout-suppress",
+  "input": "#+BEGIN_FOO\n- x\n#+END_FOO"
+ },
+ {
+  "id": "b294",
+  "cat": "m1-callout-suppress",
+  "input": "#+BEGIN_FOO\nk:: v\n#+END_FOO"
+ },
+ {
+  "id": "b295",
+  "cat": "m1-callout-suppress",
+  "input": "#+BEGIN_FOO\n:NAME:\nx\n:END:\n#+END_FOO"
+ },
+ {
+  "id": "b296",
+  "cat": "m1-callout-suppress",
+  "input": "#+BEGIN_QUOTE\n# h\n#+END_QUOTE"
+ },
+ {
+  "id": "b297",
+  "cat": "m1-callout-suppress",
+  "input": "#+BEGIN_QUOTE\n- x\n#+END_QUOTE"
+ },
+ {
+  "id": "b298",
+  "cat": "m1-callout-keep",
+  "input": "#+BEGIN_FOO\n* x\n#+END_FOO"
+ },
+ {
+  "id": "b299",
+  "cat": "m1-callout-keep",
+  "input": "#+BEGIN_FOO\n| a | b |\n#+END_FOO"
+ },
+ {
+  "id": "b300",
+  "cat": "m1-callout-keep",
+  "input": "#+BEGIN_FOO\n```\ncode\n```\n#+END_FOO"
+ },
+ {
+  "id": "b301",
+  "cat": "m1-callout-keep",
+  "input": "#+BEGIN_FOO\n---\n#+END_FOO"
+ },
+ {
+  "id": "b302",
+  "cat": "m1-callout-trim",
+  "input": "#+BEGIN_FOO\nintro\n```\ncode\n```\n#+END_FOO"
+ },
+ {
+  "id": "b303",
+  "cat": "m1-callout-trim",
+  "input": "#+BEGIN_FOO\nintro\n* item\n#+END_FOO"
+ },
+ {
+  "id": "b304",
+  "cat": "m2-props-fold",
+  "input": ":PROPERTIES:\n:k: v\n:END:\n#+b: 2"
+ },
+ {
+  "id": "b305",
+  "cat": "m2-props-fold",
+  "input": ":PROPERTIES:\n:k: v\n:END:\n#+b: 2\n#+c: 3"
+ },
+ {
+  "id": "b306",
+  "cat": "m2-props-fold",
+  "input": ":PROPERTIES:\n:k: v\n:END:\nx:: 1\n#+b: 2"
+ },
+ {
+  "id": "b307",
+  "cat": "m2-props-fold",
+  "input": ":PROPERTIES:\n:k: v\n:END:\nx:: 1\ny:: 2"
+ },
+ {
+  "id": "b308",
+  "cat": "m2-props-fold",
+  "input": ":PROPERTIES:\n:k: v\n:END:\n\n#+b: 2"
+ },
+ {
+  "id": "b309",
+  "cat": "m2-props-fold",
+  "input": ":PROPERTIES:\n:k: v\n:END:\n#+b: 2\n\nplain"
+ },
+ {
+  "id": "b310",
+  "cat": "m2-props-nofold",
+  "input": ":PROPERTIES:\n:k: v\n:END:\nplain"
+ },
+ {
+  "id": "b311",
+  "cat": "m2-props-nofold",
+  "input": ":PROPERTIES:\n:k: v\n:END:\nx:: 1\n\ny:: 2"
+ },
+ {
+  "id": "b312",
+  "cat": "m3-drop-across-blank",
+  "input": "## \n\n```\nx\n```"
+ },
+ {
+  "id": "b313",
+  "cat": "m3-drop-across-blank",
+  "input": "## \n\n---"
+ },
+ {
+  "id": "b314",
+  "cat": "m3-drop-across-blank",
+  "input": "## \n\n| a | b |"
+ },
+ {
+  "id": "b315",
+  "cat": "m3-drop-across-blank",
+  "input": "## \n\n#+BEGIN_QUOTE\n#+END_QUOTE"
+ },
+ {
+  "id": "b316",
+  "cat": "m3-drop-across-blank",
+  "input": "## \n\n> q"
+ },
+ {
+  "id": "b317",
+  "cat": "m3-drop-across-blank",
+  "input": "## \n\n$$x$$"
+ },
+ {
+  "id": "b318",
+  "cat": "m3-drop-across-blank",
+  "input": "## \n\n<div>x</div>"
+ },
+ {
+  "id": "b319",
+  "cat": "m3-drop-across-blank",
+  "input": "- \n\n> q"
+ },
+ {
+  "id": "b320",
+  "cat": "m3-drop-across-blank",
+  "input": "## \n\n\n```\nx\n```"
+ },
+ {
+  "id": "b321",
+  "cat": "m3-keep-ws",
+  "input": "## \n\nplain"
+ },
+ {
+  "id": "b322",
+  "cat": "m3-keep-ws",
+  "input": "## \n  \n```\nx\n```"
  }
 ]

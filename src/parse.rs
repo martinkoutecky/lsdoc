@@ -87,14 +87,15 @@ impl Builder {
 
 /// One open container on the streaming driver's explicit stack. Only re-dispatched
 /// callout bodies become frames; everything else writes into the top frame's `out`/`para`.
-/// `in_quote` marks a `>`-blockquote body (carried by the re-dispatch root + inherited by a
-/// callout nested inside one) — the frame is `hi` + the body accumulators + the captured
-/// opener (root has none) + the context flag.
+/// `in_quote` marks an "in block content" body — the `>`-blockquote re-dispatch root AND every
+/// `#+BEGIN_X` callout body (Quote/Custom), which mldoc reparses with the SAME grammar (M1) —
+/// the frame is `hi` + the body accumulators + the captured opener (root has none) + the flag.
 struct Frame {
     hi: usize,                       // EXCLUSIVE closer line index; line `hi` is the closer.
-    in_quote: bool,                  // is THIS body a `>`-blockquote body? (suppresses
-                                     // heading/bullet/property/footnote/drawer, trims para
-                                     // breaks before blocks — mldoc `block_content_parsers`).
+    in_quote: bool,                  // is THIS an in-block-content body (`>`-quote OR `#+BEGIN_X`
+                                     // callout)? (suppresses heading/bullet/property/footnote/
+                                     // drawer, trims para breaks before blocks — mldoc
+                                     // `block_content_parsers`).
     out: Vec<Block>,                 // children of THIS body.
     para: Option<(usize, usize)>,    // the open paragraph byte-window for THIS body.
     builder: Option<Builder>,        // the opener → emitted on pop (None for the root).
@@ -156,9 +157,12 @@ fn parse_md_streaming(input: &str, root_in_quote: bool) -> Vec<Block> {
         open_span_start: 0,
     }];
     let mut fence_cursor: usize = 0; // monotone & shared across the whole pass (`i` is monotone).
-    // F4: set by an empty heading/bullet marker (trailing-ws para), consumed by the NEXT line's
-    // dispatch — a drop-trigger block drops the para, anything else clears the flag.
-    let mut ws_drop = false;
+    // F4/M3: set by an empty heading/bullet marker to the marker line's END offset (the boundary
+    // between the marker's trailing-ws `" \n"` and any following blank lines). Consumed by the
+    // NEXT line's dispatch: a drop-trigger block drops the marker portion (keeping intervening
+    // blank breaks as their own paragraph — M3), a truly-empty line carries the flag forward, and
+    // any non-empty line clears it (the marker ws is then kept).
+    let mut ws_drop: Option<usize> = None;
     let mut i = 0;
 
     loop {
@@ -210,18 +214,20 @@ fn parse_md_streaming(input: &str, root_in_quote: bool) -> Vec<Block> {
             Step::Open { close, builder } => {
                 // The dispatch helper did NOT flush para for `Open` (but it DID apply the F4
                 // ws-drop) — flush the parent's para (trim if the parent is a quote body), then
-                // push the body frame. A callout nested inside a `>`-quote inherits `in_quote`;
-                // a top-level callout body stays `in_quote = false` (md callout-body grammar is
-                // unchanged — out of the F1 scope).
-                let parent_in_quote = {
+                // push the body frame. M1: a `#+BEGIN_X` callout body (Quote OR Custom) is
+                // block-parsed with the SAME in-block-content grammar as a `>`-blockquote body —
+                // mldoc reparses both with `block_content_parsers` (suppress heading/bullet/
+                // property/footnote/drawer → text; trim a paragraph's trailing Break before a
+                // following block). So the child frame is ALWAYS `in_quote = true`, regardless of
+                // the parent context (the md mirror of org's F2 custom child_ctx).
+                {
                     let top = stack.last_mut().unwrap();
                     let pq = top.in_quote;
                     flush_para(&mut top.out, &mut top.para, input, pq);
-                    pq
-                };
+                }
                 stack.push(Frame {
                     hi: close,
-                    in_quote: parent_in_quote,
+                    in_quote: true,
                     out: Vec::new(),
                     para: None,
                     builder: Some(builder),
@@ -252,7 +258,7 @@ fn dispatch_md_line<'a>(
     out: &mut Vec<Block>,
     para: &mut Option<(usize, usize)>,
     in_quote: bool,
-    ws_drop: &mut bool,
+    ws_drop: &mut Option<usize>,
     hi: usize,
     end_trie: &EndTrie,
     drawer_end_idxs: &[usize],
@@ -269,10 +275,11 @@ fn dispatch_md_line<'a>(
     // F1: inside a `>`-blockquote body the paragraph parsers trim a trailing Break before a
     // following block, and heading/bullet/property/footnote/drawer are suppressed (→ text).
     let trim = in_quote;
-    // F4: read + clear the empty-marker ws-drop flag set by the PREVIOUS line. A drop-trigger
-    // block (fence/callout/hr/table/`>`-quote/`$$`/raw-html) drops the trailing-ws paragraph;
-    // any other line leaves the flag cleared (so it never leaks past the immediate next line).
-    let was_ws_drop = std::mem::replace(ws_drop, false);
+    // F4/M3: read + clear the empty-marker ws-drop flag (the marker line's END offset) set by a
+    // PREVIOUS line. A drop-trigger block (fence/callout/hr/table/`>`-quote/`$$`/raw-html) drops
+    // the marker's `" \n"` portion (keeping intervening blank breaks — M3); a truly-empty line
+    // re-arms it below (step 12); any other line leaves it cleared (marker ws kept).
+    let was_ws_drop = ws_drop.take();
     // Byte offset where THIS body ends (the closer line's start, or EOF at the root). Used to
     // CLAMP the to-end-of-input forward-scanners (`parse_latex_env`, `parse_hiccup`).
     let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
@@ -284,9 +291,7 @@ fn dispatch_md_line<'a>(
     if let Some((_c, mend)) = fence_marker(t) {
         if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
             if close < hi {
-                if was_ws_drop && para_ws_only(para, input) {
-                    *para = None; // F4: drop the empty-marker trailing-ws para before a block.
-                }
+                drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blanks.
                 flush_para(out, para, input, trim);
                 let lang = fence_lang(&t[mend..]);
                 let code = if close > i + 1 {
@@ -316,9 +321,7 @@ fn dispatch_md_line<'a>(
     if let Some(name) = callout_begin(t) {
         if let Some(close) = end_trie.find(&name, i) {
             if close < hi {
-                if was_ws_drop && para_ws_only(para, input) {
-                    *para = None; // F4: drop the empty-marker trailing-ws para (driver flushes).
-                }
+                drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blanks.
                 let builder = if name.eq_ignore_ascii_case("QUOTE") {
                     Builder::Quote
                 } else {
@@ -380,7 +383,7 @@ fn dispatch_md_line<'a>(
                 span: Some(Span(line_start, line_start + trail)),
             });
             *para = Some((line_start + trail, line_end));
-            *ws_drop = true; // F4: the trailing-ws para is droppable if the next line is a block.
+            *ws_drop = Some(line_end); // F4/M3: marker line-end boundary; droppable before a block.
             return Step::Next(i + 1);
         }
         out.push(Block::Heading {
@@ -397,9 +400,7 @@ fn dispatch_md_line<'a>(
 
     // 4. horizontal rule (before dash bullet / list)
     if is_hr(t) {
-        if was_ws_drop && para_ws_only(para, input) {
-            *para = None; // F4: drop the empty-marker trailing-ws para before a block.
-        }
+        drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
         flush_para(out, para, input, trim);
         out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
         return Step::Next(i + 1);
@@ -594,7 +595,7 @@ fn dispatch_md_line<'a>(
                 span: Some(Span(line_start, line_start + trail)),
             });
             *para = Some((line_start + trail, line_end));
-            *ws_drop = true; // F4: the trailing-ws para is droppable if the next line is a block.
+            *ws_drop = Some(line_end); // F4/M3: marker line-end boundary; droppable before a block.
             return Step::Next(i + 1);
         }
         out.push(Block::Bullet {
@@ -623,9 +624,7 @@ fn dispatch_md_line<'a>(
 
     // 7. table (group of consecutive table-row lines, bounded by `hi`)
     if md_table_row(t) {
-        if was_ws_drop && para_ws_only(para, input) {
-            *para = None; // F4: drop the empty-marker trailing-ws para before a block.
-        }
+        drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
         flush_para(out, para, input, trim);
         let start = i;
         let mut ni = i;
@@ -710,9 +709,7 @@ fn dispatch_md_line<'a>(
     // `>` / `> ` / `> - x` are paragraphs). The run is bounded by `hi` (the closer line would
     // otherwise be lazily absorbed — verified load-bearing). F1/F5/F6.
     if quote_opens(t) {
-        if was_ws_drop && para_ws_only(para, input) {
-            *para = None; // F4: drop the empty-marker trailing-ws para before a block.
-        }
+        drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
         flush_para(out, para, input, trim);
         let start = i;
         // Collect the de-`>`'d body string: first line strips up to 2 `>` (opener +
@@ -744,9 +741,7 @@ fn dispatch_md_line<'a>(
 
     // 11. raw HTML (single-line, minimal)
     if is_raw_html(t) {
-        if was_ws_drop && para_ws_only(para, input) {
-            *para = None; // F4: drop the empty-marker trailing-ws para before a block.
-        }
+        drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
         flush_para(out, para, input, trim);
         out.push(Block::RawHtml {
             text: t.to_string(),
@@ -757,9 +752,7 @@ fn dispatch_md_line<'a>(
 
     // 11b. block-level displayed math: a line that is just `$$ … $$`.
     if let Some(math) = displayed_math(t) {
-        if was_ws_drop && para_ws_only(para, input) {
-            *para = None; // F4: drop the empty-marker trailing-ws para before a block.
-        }
+        drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
         flush_para(out, para, input, trim);
         out.push(Block::DisplayedMath {
             text: math,
@@ -790,11 +783,47 @@ fn dispatch_md_line<'a>(
                         .iter()
                         .all(|l| drawer_property(l.text).is_some())
                 {
-                    let props = lines[i + 1..close]
+                    let mut props: Vec<(String, String)> = lines[i + 1..close]
                         .iter()
                         .filter_map(|l| drawer_property(l.text))
                         .collect();
-                    out.push(Block::Properties { props, span });
+                    // M2: mldoc (`drawer.ml`) continues a `Property_Drawer` with a
+                    // `many (parse1 <|> parse2)` AFTER the `:END:`, folding following lines into
+                    // the SAME props: `parse1` = a markdown `key:: value` property (consumes one
+                    // eol, no blank absorption); `parse2` = a `#+name: value` directive, which
+                    // ALSO swallows surrounding blank lines (`optional eols`, so blank-then-
+                    // directive and directive-then-blank both fold). Bounded by `hi` (never cross
+                    // the frame closer). A `:PROPERTIES:` with a stray body line is a generic
+                    // `Drawer` (above) and does NOT fold (F3 unchanged).
+                    let mut j = close + 1;
+                    loop {
+                        if j < hi {
+                            if let Some(kv) = property(lines[j].text) {
+                                props.push(kv);
+                                j += 1;
+                                continue;
+                            }
+                            // directive with leading + trailing truly-empty-line absorption.
+                            let mut k = j;
+                            while k < hi && lines[k].text.is_empty() {
+                                k += 1;
+                            }
+                            if k < hi {
+                                if let Some(kv) = directive_property(lines[k].text) {
+                                    props.push(kv);
+                                    j = k + 1;
+                                    while j < hi && lines[j].text.is_empty() {
+                                        j += 1;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    let end = lines[j - 1].end;
+                    out.push(Block::Properties { props, span: Some(Span(line_start, end)) });
+                    return Step::Next(j);
                 } else {
                     out.push(Block::Drawer { name, span });
                 }
@@ -883,6 +912,13 @@ fn dispatch_md_line<'a>(
         Some((s, _)) => (s, line_end),
         None => (line_start, line_end),
     });
+    // M3: an empty-marker ws-drop survives across a TRULY-EMPTY line (mldoc `optional eols`), so a
+    // block opener after intervening blank line(s) still drops the marker's `" \n"` (keeping the
+    // blanks as a break-paragraph). A non-empty line — even whitespace-only `"  "` — clears it, so
+    // the marker ws is kept (`## \n  \n```` → marker ws kept; `## \n\n```` → marker ws dropped).
+    if was_ws_drop.is_some() && t.is_empty() {
+        *ws_drop = was_ws_drop;
+    }
     Step::Next(i + 1)
 }
 
@@ -916,6 +952,21 @@ fn para_ws_only(para: &Option<(usize, usize)>, input: &str) -> bool {
             .iter()
             .all(|&b| matches!(b, b' ' | b'\t' | b'\n' | b'\r')),
         None => false,
+    }
+}
+
+/// F4/M3: a drop-trigger block follows an empty heading/bullet marker whose trailing-ws
+/// paragraph is open (`was_ws_drop == Some(boundary)`, where `boundary` is the marker line's
+/// end offset). Drop the marker's `" \n"` portion `[para.start, boundary)`; KEEP any intervening
+/// blank lines `[boundary, para.end)` as their own break-paragraph (M3 — the no-blank F4 case is
+/// `boundary == para.end`, dropping the whole para). A no-op unless the para is whitespace-only.
+fn drop_marker_ws(para: &mut Option<(usize, usize)>, was_ws_drop: Option<usize>, input: &str) {
+    if let Some(boundary) = was_ws_drop {
+        if let Some((_, e)) = *para {
+            if para_ws_only(para, input) {
+                *para = if boundary < e { Some((boundary, e)) } else { None };
+            }
+        }
     }
 }
 
