@@ -299,6 +299,27 @@ fn checkbox_list_depth_first_cb_index() {
     );
 }
 
+#[test]
+fn definition_list_term() {
+    assert_eq!(
+        md("Term\n: the definition"),
+        r#"<ul class="md-list"><li class="md-list-item has-term"><span class="md-list-term">Term</span> the definition</li></ul>"#
+    );
+}
+
+#[test]
+fn definition_list_term_renders_inline() {
+    // the term is an inline run (here a page ref), rendered like any other inline.
+    assert_eq!(
+        md("key [[Page]] word\n: the body"),
+        concat!(
+            r#"<ul class="md-list"><li class="md-list-item has-term">"#,
+            r#"<span class="md-list-term">key <a class="page-ref" data-page="Page">[[Page]]</a> word</span> "#,
+            r#"the body</li></ul>"#
+        )
+    );
+}
+
 // ===========================================================================
 // Tables (data-align bonus)
 // ===========================================================================

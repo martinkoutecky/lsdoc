@@ -322,10 +322,14 @@ impl Renderer {
         let ordered = items.first().map(|i| i.ordered).unwrap_or(false);
         self.out.push_str(if ordered { "<ol class=\"md-list\">" } else { "<ul class=\"md-list\">" });
         for item in items {
-            match item.checkbox {
-                Some(_) => self.out.push_str("<li class=\"md-list-item has-checkbox\">"),
-                None => self.out.push_str("<li class=\"md-list-item\">"),
+            self.out.push_str("<li class=\"md-list-item");
+            if item.checkbox.is_some() {
+                self.out.push_str(" has-checkbox");
             }
+            if !item.name.is_empty() {
+                self.out.push_str(" has-term");
+            }
+            self.out.push_str("\">");
             if let Some(checked) = item.checkbox {
                 self.out.push_str(if checked {
                     "<span class=\"block-checkbox checked\""
@@ -335,6 +339,13 @@ impl Renderer {
                 push_attr(&mut self.out, "data-cb-index", &cb.to_string());
                 self.out.push_str("></span> ");
                 *cb += 1;
+            }
+            // Markdown definition-list term (`term\n: def`) — the item's label, rendered
+            // (inline) before its definition body. Empty for ordinary list items.
+            if !item.name.is_empty() {
+                self.out.push_str("<span class=\"md-list-term\">");
+                self.inlines(&item.name);
+                self.out.push_str("</span> ");
             }
             self.blocks(&item.content);
             if !item.items.is_empty() {
