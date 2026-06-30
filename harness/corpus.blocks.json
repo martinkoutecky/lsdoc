@@ -1821,16 +1821,61 @@
  },
  {
   "id": "b364",
+  "cat": "begin-bullet-callout",
+  "input": "- #+BEGIN_NOTE\n  x\n  #+END_NOTE"
+ },
+ {
+  "id": "b365",
+  "cat": "begin-bullet-callout",
+  "input": "- #+BEGIN_TIP\n  this is a tip\n  #+END_TIP"
+ },
+ {
+  "id": "b366",
+  "cat": "begin-bullet-callout",
+  "input": "- #+BEGIN_WARNING\n  w\n  #+END_WARNING"
+ },
+ {
+  "id": "b367",
+  "cat": "begin-bullet-callout",
+  "input": "- #+BEGIN_QUOTE\n  q\n  #+END_QUOTE"
+ },
+ {
+  "id": "b368",
+  "cat": "begin-bullet-callout",
+  "input": "- #+BEGIN_FOO\n  f\n  #+END_FOO"
+ },
+ {
+  "id": "b369",
+  "cat": "begin-bullet-callout",
+  "input": "- #+begin_note\n  x\n  #+END_NOTE"
+ },
+ {
+  "id": "b370",
+  "cat": "begin-bullet-callout",
+  "input": "- #+BEGIN_NOTE\nx\n#+END_NOTE"
+ },
+ {
+  "id": "b371",
+  "cat": "begin-bullet-callout",
+  "input": "- #+BEGIN_NOTE\n  a\n  b\n  #+END_NOTE"
+ },
+ {
+  "id": "b372",
+  "cat": "begin-bullet-callout",
+  "input": "- #+BEGIN_TIP\n  x"
+ },
+ {
+  "id": "b373",
   "cat": "begin-nonreg",
   "input": "#+BEGIN_QUOTE\nquoted\n#+END_QUOTE"
  },
  {
-  "id": "b365",
+  "id": "b374",
   "cat": "begin-nonreg",
   "input": "#+BEGIN_NOTE\nnote body\n#+END_NOTE"
  },
  {
-  "id": "b366",
+  "id": "b375",
   "cat": "begin-nest",
   "input": "#+BEGIN_QUOTE\n#+BEGIN_SRC\nx\n#+END_SRC\n#+END_QUOTE"
  }

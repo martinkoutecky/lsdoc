@@ -493,6 +493,19 @@ add("begin-example", "#+BEGIN_EXAMPLE\nline1\nline2\n#+END_EXAMPLE"); // example
 add("begin-example", "#+BEGIN_EXAMPLE\nx\n#+END_EXAMPLE\n\ny");  // example then paragraph (blank swallowed)
 add("begin-bullet", "- #+BEGIN_SRC python\n  x=1\n  #+END_SRC"); // [bullet, src] (re-bulleted Tine form)
 add("begin-bullet", "- #+BEGIN_EXAMPLE\n  hi\n  #+END_EXAMPLE"); // [bullet, example]
+// Re-bulleted `- #+BEGIN_<TYPE>` Custom/Quote openers (the general admonition fix): the bullet
+// title-lookahead splits into [empty bullet, custom/quote], dispatched IDENTICALLY to the bare
+// form (QUOTE→Quote, else→Custom{name lowercased}). The body is INDENT-CLEARED (mldoc block0.ml,
+// the same first-line-indent rule SRC/EXAMPLE use) then reparsed with the block grammar.
+add("begin-bullet-callout", "- #+BEGIN_NOTE\n  x\n  #+END_NOTE");          // [bullet, custom{note}]
+add("begin-bullet-callout", "- #+BEGIN_TIP\n  this is a tip\n  #+END_TIP"); // [bullet, custom{tip}]
+add("begin-bullet-callout", "- #+BEGIN_WARNING\n  w\n  #+END_WARNING");    // [bullet, custom{warning}]
+add("begin-bullet-callout", "- #+BEGIN_QUOTE\n  q\n  #+END_QUOTE");        // [bullet, quote]
+add("begin-bullet-callout", "- #+BEGIN_FOO\n  f\n  #+END_FOO");            // [bullet, custom{foo}] (unknown→Custom)
+add("begin-bullet-callout", "- #+begin_note\n  x\n  #+END_NOTE");          // case-insensitive BEGIN + name
+add("begin-bullet-callout", "- #+BEGIN_NOTE\nx\n#+END_NOTE");              // Tine real form (indent-0 continuation)
+add("begin-bullet-callout", "- #+BEGIN_NOTE\n  a\n  b\n  #+END_NOTE");     // multi-line body, common indent cleared
+add("begin-bullet-callout", "- #+BEGIN_TIP\n  x");                         // no matching END → normal bullet titled "#+BEGIN_TIP"
 add("begin-nonreg", "#+BEGIN_QUOTE\nquoted\n#+END_QUOTE");       // quote (unchanged)
 add("begin-nonreg", "#+BEGIN_NOTE\nnote body\n#+END_NOTE");      // custom{note} (unchanged)
 add("begin-nest", "#+BEGIN_QUOTE\n#+BEGIN_SRC\nx\n#+END_SRC\n#+END_QUOTE"); // quote[ src ]

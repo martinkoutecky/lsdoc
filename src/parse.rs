@@ -335,28 +335,11 @@ fn dispatch_md_line<'a>(
                 // need new projection kinds and diverge in both formats) → stay Custom.
                 if name.eq_ignore_ascii_case("SRC") || name.eq_ignore_ascii_case("EXAMPLE") {
                     flush_para(out, para, input, trim);
-                    let texts: Vec<&str> = lines[i + 1..close].iter().map(|l| l.text).collect();
-                    let code = crate::org::block_code_texts(&texts);
-                    let mut ni = close + 1;
-                    let mut end = lines[close].end;
-                    while ni < hi && lines[ni].text.is_empty() {
-                        end = lines[ni].end;
-                        ni += 1;
-                    }
-                    let block = if name.eq_ignore_ascii_case("SRC") {
-                        Block::Src { lang: crate::org::begin_lang(t), code, span: Some(Span(line_start, end)) }
-                    } else {
-                        Block::Example { code, span: Some(Span(line_start, end)) }
-                    };
+                    let (block, ni) = raw_callout_block(&name, t, lines, i, close, hi, line_start);
                     out.push(block);
                     return Step::Next(ni);
                 }
-                let builder = if name.eq_ignore_ascii_case("QUOTE") {
-                    Builder::Quote
-                } else {
-                    Builder::Custom(name.to_ascii_lowercase())
-                };
-                return Step::Open { close, builder };
+                return Step::Open { close, builder: callout_builder(&name) };
             }
             // closer is outside this body → fall through.
         }
@@ -514,34 +497,40 @@ fn dispatch_md_line<'a>(
                 }
             }
         }
-        // (a2) `#+BEGIN_SRC`/`#+BEGIN_EXAMPLE` raw-body block opener on the bullet line (B): the
-        // title lookahead reparses the bullet content as a block, so `- #+BEGIN_SRC …` →
-        // [empty bullet, Src/Example] (body indent-cleared via `block_code_texts`, the top-level
-        // mirror). Only splits when the block CLOSES inside this body (`< hi`); otherwise it stays
-        // a normal bullet titled `#+BEGIN_SRC …`. EXPORT/COMMENT/QUOTE/other-custom are NOT split
-        // here (deferred / pre-existing) — they fall through to a normal bullet, as before.
+        // (a2) `#+BEGIN_<TYPE>` block opener on the bullet line (B): the title lookahead reparses
+        // the bullet content as a block, so `- #+BEGIN_<TYPE> … #+END_<TYPE>` → [empty bullet,
+        // <block>] where <block> is dispatched IDENTICALLY to the bare `#+BEGIN_<TYPE>` form (step
+        // 2): SRC→Src / EXAMPLE→Example (raw-body, consumed in place, `raw_callout_block`), QUOTE→
+        // Quote / anything-else→Custom{name lowercased} (a re-dispatched container, `callout_builder`
+        // + `Step::Open`, body block-parsed by the driver with the in-block-content grammar). Only
+        // splits when the block CLOSES inside this body (`< hi`); otherwise the bullet content has no
+        // matching END here and it stays a normal bullet titled `#+BEGIN_<TYPE> …` (mldoc).
         if let Some(bname) = callout_begin(content) {
-            if let Some(close) = end_trie
-                .find(&bname, i)
-                .filter(|&c| c < hi)
-                .filter(|_| bname.eq_ignore_ascii_case("SRC") || bname.eq_ignore_ascii_case("EXAMPLE"))
-            {
+            if let Some(close) = end_trie.find(&bname, i).filter(|&c| c < hi) {
                 flush_para(out, para, input, trim);
                 empty_bullet!();
+                if bname.eq_ignore_ascii_case("SRC") || bname.eq_ignore_ascii_case("EXAMPLE") {
+                    let (block, ni) = raw_callout_block(&bname, content, lines, i, close, hi, content_off);
+                    out.push(block);
+                    return Step::Next(ni);
+                }
+                // QUOTE→Quote / anything-else→Custom (the bare-form `callout_builder` dispatch). The
+                // body is INDENT-CLEARED then reparsed with the in-block-content grammar — mldoc
+                // dedents a `#+BEGIN_X` body by the first body line's leading ws (block0.ml "clear
+                // indents", the SAME `block_code_texts` rule SRC/EXAMPLE use) BEFORE the Quote/Custom
+                // reparse. The re-bulleted body carries the bullet continuation indent, so (unlike
+                // the bare form's in-place `Step::Open`) it MUST be dedented first; the reparse goes
+                // through the shared depth-guarded `reparse_block_content` (the `>`-quote analog).
                 let texts: Vec<&str> = lines[i + 1..close].iter().map(|l| l.text).collect();
-                let code = crate::org::block_code_texts(&texts);
+                let body = crate::org::block_code_texts(&texts);
                 let mut ni = close + 1;
                 let mut end = lines[close].end;
                 while ni < hi && lines[ni].text.is_empty() {
                     end = lines[ni].end;
                     ni += 1;
                 }
-                let block = if bname.eq_ignore_ascii_case("SRC") {
-                    Block::Src { lang: crate::org::begin_lang(content), code, span: Some(Span(content_off, end)) }
-                } else {
-                    Block::Example { code, span: Some(Span(content_off, end)) }
-                };
-                out.push(block);
+                let children = reparse_block_content(&body);
+                out.push(callout_builder(&bname).finish(children, Some(Span(content_off, end))));
                 return Step::Next(ni);
             }
         }
@@ -1445,7 +1434,7 @@ fn build_md_quote(body: String, span: Option<Span>) -> Block {
     }
     let mut residual = views.join("\n");
     residual.push('\n');
-    let children = reparse_md_quote_body(&residual);
+    let children = reparse_block_content(&residual);
     let mut block = Block::Quote { children, span };
     for _ in 1..wrappers {
         block = Block::Quote { children: vec![block], span };
@@ -1453,12 +1442,14 @@ fn build_md_quote(body: String, span: Option<Span>) -> Block {
     block
 }
 
-/// Re-dispatch a `>`-quote residual body through the md driver with `in_quote = true`, under the
-/// `BLOCK_NEST_CAP` depth guard (the org `streaming_reparse` analog). The iterative `>`-peel above
-/// handles single-line `>`×n and the all-continue multi-line tail with NO recursion; only the
-/// adversarial increasing-`>`-per-line spine reaches this re-dispatch deeply, so the guard bounds
-/// it (graceful flat-Paragraph degradation) — fuzz-unreachable, mldoc-overflows-too, consumer-capped.
-fn reparse_md_quote_body(residual: &str) -> Vec<Block> {
+/// Re-dispatch an in-block-content body (a `>`-quote residual OR a re-bulleted `#+BEGIN_X`
+/// Quote/Custom body — mldoc reparses both with `block_content_parsers`) through the md driver
+/// with `in_quote = true`, under the `BLOCK_NEST_CAP` depth guard (the org `streaming_reparse`
+/// analog). For `>`-quotes the iterative `>`-peel above handles single-line `>`×n and the
+/// all-continue multi-line tail with NO recursion, so only the adversarial increasing-`>`-per-line
+/// spine reaches this deeply; for re-bulleted callouts the body is the dedented bullet content.
+/// The guard bounds depth (graceful flat-Paragraph degradation) — mldoc-overflows-too, consumer-capped.
+fn reparse_block_content(residual: &str) -> Vec<Block> {
     let depth = MD_BLOCK_DEPTH.with(|c| c.get());
     if depth >= BLOCK_NEST_CAP {
         return if residual.is_empty() {
@@ -1619,6 +1610,49 @@ fn callout_begin(s: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// The shared `#+BEGIN_<TYPE>` container dispatch (the md mirror of org): `QUOTE`→`Quote`,
+/// anything-else→`Custom{name lowercased}`. SRC/EXAMPLE never reach here — they are raw-body
+/// blocks consumed in place (`raw_callout_block`). Reused by BOTH the bare `#+BEGIN_X` opener
+/// (step 2) and the re-bulleted `- #+BEGIN_X` opener (step 5 a2) so the two can't drift.
+fn callout_builder(name: &str) -> Builder {
+    if name.eq_ignore_ascii_case("QUOTE") {
+        Builder::Quote
+    } else {
+        Builder::Custom(name.to_ascii_lowercase())
+    }
+}
+
+/// Build a raw-body `#+BEGIN_SRC`/`#+BEGIN_EXAMPLE` block: the body indent is cleared by mldoc's
+/// `block_code_texts`, and `Src`'s lang is the first token after the name (`begin_lang`, read from
+/// `name_src` — the opener line / bullet content). Trailing truly-empty lines are swallowed (mldoc
+/// `<* optional eols`), so the returned resume index `ni` skips them. `span_start` is the block's
+/// span start (the line start for the bare form, the bullet CONTENT for the re-bulleted form).
+/// Shared by step 2 (bare) and step 5 a2 (re-bulleted) so the SRC/EXAMPLE handling can't drift.
+fn raw_callout_block(
+    name: &str,
+    name_src: &str,
+    lines: &[Line<'_>],
+    i: usize,
+    close: usize,
+    hi: usize,
+    span_start: usize,
+) -> (Block, usize) {
+    let texts: Vec<&str> = lines[i + 1..close].iter().map(|l| l.text).collect();
+    let code = crate::org::block_code_texts(&texts);
+    let mut ni = close + 1;
+    let mut end = lines[close].end;
+    while ni < hi && lines[ni].text.is_empty() {
+        end = lines[ni].end;
+        ni += 1;
+    }
+    let block = if name.eq_ignore_ascii_case("SRC") {
+        Block::Src { lang: crate::org::begin_lang(name_src), code, span: Some(Span(span_start, end)) }
+    } else {
+        Block::Example { code, span: Some(Span(span_start, end)) }
+    };
+    (block, ni)
 }
 
 /// A trie over the (lowercased) names of `#+END_<name>` lines. Each node holds the line indexes
@@ -2175,6 +2209,57 @@ mod tests {
             Block::Bullet { inline, .. } => assert_eq!(inline, &vec![Inline::Plain { text: ">".into() }]),
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn begin_callout_on_bullet_line() {
+        // A `-` bullet whose content is `#+BEGIN_<TYPE> … #+END_<TYPE>` splits into
+        // [empty bullet, <block>], dispatched IDENTICALLY to the bare form: QUOTE→Quote,
+        // SRC→Src, EXAMPLE→Example, anything-else→Custom{name lowercased}.
+        let name2 = |s: &str| match &parse(s)[1] {
+            Block::Custom { name, .. } => name.clone(),
+            b => panic!("expected Custom, got {b:?}"),
+        };
+        // first plain text of the 2nd block's first child paragraph (verifies body dedent).
+        let body2 = |s: &str| {
+            let kids = match &parse(s)[1] {
+                Block::Custom { children, .. } | Block::Quote { children, .. } => children.clone(),
+                b => panic!("expected Custom/Quote, got {b:?}"),
+            };
+            match &kids[0] {
+                Block::Paragraph { inline, .. } => match &inline[0] {
+                    Inline::Plain { text } => text.clone(),
+                    i => panic!("expected Plain, got {i:?}"),
+                },
+                b => panic!("expected Paragraph, got {b:?}"),
+            }
+        };
+        // NOTE / TIP / WARNING → Custom{name}; the empty bullet precedes the block.
+        assert_eq!(kinds("- #+BEGIN_NOTE\n  x\n  #+END_NOTE"), ["bullet", "custom"]);
+        assert_eq!(name2("- #+BEGIN_NOTE\n  x\n  #+END_NOTE"), "note");
+        assert_eq!(name2("- #+BEGIN_TIP\n  t\n  #+END_TIP"), "tip");
+        assert_eq!(name2("- #+BEGIN_WARNING\n  w\n  #+END_WARNING"), "warning");
+        match &parse("- #+BEGIN_NOTE\n  x\n  #+END_NOTE")[0] {
+            Block::Bullet { inline, .. } => assert!(inline.is_empty()),
+            _ => panic!("expected empty bullet"),
+        }
+        // QUOTE → Quote; unknown TYPE → Custom{type lowercased}.
+        assert_eq!(kinds("- #+BEGIN_QUOTE\n  q\n  #+END_QUOTE"), ["bullet", "quote"]);
+        assert_eq!(name2("- #+BEGIN_FOO\n  f\n  #+END_FOO"), "foo");
+        // case-insensitive BEGIN/END/name.
+        assert_eq!(name2("- #+begin_note\n  x\n  #+END_NOTE"), "note");
+        // body INDENT-CLEARED (block0.ml): the 2-space continuation indent is stripped.
+        assert_eq!(body2("- #+BEGIN_NOTE\n  x\n  #+END_NOTE"), "x");
+        assert_eq!(body2("- #+BEGIN_QUOTE\n  q\n  #+END_QUOTE"), "q");
+        // mismatched / unterminated END → NOT split: a normal bullet + following paragraph.
+        assert_eq!(kinds("- #+BEGIN_TIP\n  x"), ["bullet", "paragraph"]);
+        assert_eq!(kinds("- #+BEGIN_TIP\n  x\n  #+END_OTHER"), ["bullet", "paragraph"]);
+        // SRC/EXAMPLE stay raw-body blocks (non-regression — the v0.2.3 B fix).
+        assert_eq!(kinds("- #+BEGIN_SRC\n  x\n  #+END_SRC"), ["bullet", "src"]);
+        assert_eq!(kinds("- #+BEGIN_EXAMPLE\n  x\n  #+END_EXAMPLE"), ["bullet", "example"]);
+        // bare forms unchanged (no bullet split).
+        assert_eq!(kinds("#+BEGIN_NOTE\nx\n#+END_NOTE"), ["custom"]);
+        assert_eq!(kinds("#+BEGIN_QUOTE\nq\n#+END_QUOTE"), ["quote"]);
     }
 
     #[test]
