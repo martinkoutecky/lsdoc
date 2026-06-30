@@ -85,6 +85,14 @@ std::thread_local! {
 }
 
 pub fn parse(input: &str) -> Vec<Block> {
+    // M3 seam: `LSDOC_BLOCK_STREAMING` selects the single-pass streaming Org driver
+    // (explicit container stack; callout bodies are line WINDOWS, never re-lexed —
+    // kills the recurse-on-body O(n²)). The legacy `parse_doc` recursion driver stays
+    // the DEFAULT and the byte-exact oracle (a Rust `streaming_eq_org` differential +
+    // the node gate verify they agree). The legacy caps/thread-locals are untouched (M5).
+    if std::env::var("LSDOC_BLOCK_STREAMING").is_ok() {
+        return parse_org_streaming(input, Ctx { in_item: false, in_quote: false });
+    }
     let depth = BLOCK_DEPTH.with(|c| c.get());
     if depth >= BLOCK_NEST_CAP {
         return if input.is_empty() {
@@ -99,35 +107,131 @@ pub fn parse(input: &str) -> Vec<Block> {
     out
 }
 
-/// Block segmenter. `in_item` = re-parsing the **content** of an Org list item.
-/// mldoc parses list-item content with `list_content_parsers` (mldoc_parser.ml),
-/// whose choice set does NOT include Directive/Drawer/Heading/Footnote/List — so
-/// inside an item those constructs stay paragraphs (`#+K: v`), verbatim (`:x` →
-/// Example) or inline (`[fn:1] x`), never their own block. Everything else (Table,
-/// `#+BEGIN`/fences/`:`-verbatim/`>`-quote/`$$`/`<html>`, Latex_env, Hr, Paragraph)
-/// is recognised in both contexts. Quote/Custom children re-enter via `parse`
-/// (`in_item = false`), matching mldoc's `block_content_parsers` for those.
-fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
-    let mut lines = split_lines(input);
-    // Byte offset of the last `]` (None if none): a block-level hiccup `[:tag …]` needs a
-    // closing `]`, so a `[:` line starting at/after it is skipped O(1) (see step 13b).
-    let last_rbracket = input.rfind(']');
-    // Sparse, sorted closer-line INDEXES so a `#+BEGIN_X` block / `:NAME:` drawer / fence
-    // opener finds its matching closer ON-DEMAND at the dispatch point (binary-searching
-    // only candidate lines, never an EOF re-scan per opener — kills the O(n²) class, audit
-    // R2-P4/P6). Exact mldoc semantics: the first matching closer line after the opener.
-    // On-demand finding is also context-aware — a closer inside a block/drawer body (which
-    // the loop jumps past) can never pair with an opener outside it (the fence-straddle
-    // bug). Computed on the original lines; the headline-split rewrite never creates an
-    // `#+END_`/`:END:`/fence OPENER line, so the indexes stay valid through it + re-enter.
-    // Block closer index: a trie of `#+END_<name>` line names (see `EndTrie`) — a `#+BEGIN_X`
-    // opener finds its closer by an O(|X|) walk (mldoc's prefix match), absent ⇒ O(1); no EOF
-    // scan, no absence memo. O(n) build / O(n) total (mldoc's `take_until` is O(n²) on these).
+/// The bounded, L-attributed Org block context — exactly two booleans (the linearity
+/// premise: no input-derived state). Set by the ENCLOSING container on push (root =
+/// `{false,false}`). Replaces the `in_item` parameter + the `ORG_IN_QUOTE` thread-local
+/// for the streaming path; the legacy `parse_doc` still derives it from its `in_item`
+/// arg + the thread-local (kept until M5). `in_item` suppresses Directive/Drawer/Headline/
+/// Footnote/List; `in_quote` suppresses Headline (and trims a paragraph's trailing break
+/// before a hiccup).
+#[derive(Clone, Copy)]
+struct Ctx {
+    in_item: bool,
+    in_quote: bool,
+}
+
+/// The outcome of classifying ONE Org line (`dispatch_org_line`): advance to `Next(ni)`,
+/// or recognize a re-dispatched callout opener (`Open`) whose body is `[i+1, close)` and
+/// whose closer is line `close`. Only `#+BEGIN_QUOTE` / `#+BEGIN_<custom>` are `Open`
+/// (SRC/EXAMPLE/fence/latex/drawer/`>`-quote are consumed/recursed in place). The driver
+/// handles the body: legacy recurses on the de-indented `block_code` slice; streaming
+/// pushes a WINDOW frame when the body is a clean `\n`/indent-0 window, else falls back to
+/// the same transformed sub-recursion as legacy (de-indented bodies stay local, "as today").
+enum Step {
+    Next(usize),
+    Open { close: usize, builder: Builder, child_ctx: Ctx, indent_strip: usize },
+}
+
+/// Captures a callout opener's identity so the driver emits the right block once its body
+/// children are known (`Quote` for `#+BEGIN_QUOTE`, else `Custom{name}`).
+enum Builder {
+    Quote,
+    Custom(String),
+}
+impl Builder {
+    fn finish(self, children: Vec<Block>, span: Option<Span>) -> Block {
+        match self {
+            Builder::Quote => Block::Quote { children, span },
+            Builder::Custom(name) => Block::Custom { name, children, span },
+        }
+    }
+}
+
+/// Does this freshly-finished block swallow a following blank line (mldoc's
+/// `<* optional eols`)? Only `Quote`/`Custom` reach this (they are the sole callout
+/// frames / sub-recursions); both absorb, matching legacy's `absorb = true` after a
+/// `#+BEGIN_X` block (step 6).
+fn block_absorbs(b: &Block) -> bool {
+    matches!(b, Block::Quote { .. } | Block::Custom { .. } | Block::Example { .. })
+}
+
+/// One open callout container on the streaming driver's explicit stack. Only re-dispatched
+/// `#+BEGIN_QUOTE`/custom bodies that are CLEAN WINDOWS (indent-0, plain-`\n` body) live
+/// here; de-indented / `>`-quote / list bodies stay transformed sub-recursions. `ctx` is
+/// the child context the PARENT set on push; `absorb` is this body's blank-swallow flag.
+struct Frame {
+    hi: usize,                    // EXCLUSIVE closer line index; line `hi` is the closer.
+    ctx: Ctx,                     // child context (set by the parent on push).
+    out: Vec<Block>,              // children of THIS body.
+    para: Option<(usize, usize)>, // the open paragraph byte-window for THIS body.
+    absorb: bool,                 // did this body's last child swallow a following blank?
+    builder: Option<Builder>,     // the opener → emitted on pop (None for the root).
+    open_span_start: usize,       // byte offset of the opener line start (for the span).
+}
+
+/// A re-parse of a TRANSFORMED body (de-indented callout / `>`-quote / list-item content)
+/// into the driver that is RUNNING — threaded through `dispatch_org_line` so the legacy
+/// driver recurses via `parse_doc`/`parse` and the streaming driver via
+/// `parse_org_streaming`. NOT the seam-aware public `parse` (that couples to the env var
+/// and would break the differential, which runs with the seam OFF).
+type ParseFn = fn(&str, Ctx) -> Vec<Block>;
+
+/// Legacy re-parse of a transformed body (the `ParseFn` the legacy `parse_doc` threads).
+/// Reproduces the OLD call sites EXACTLY: list-item content was `parse_doc(buf, true)`
+/// (no cap wrapper, no thread-local change — `in_quote` is irrelevant under `in_item`);
+/// a callout / `>`-quote body was `parse(inner)` (the `BLOCK_NEST_CAP` cap wrapper) with
+/// `ORG_IN_QUOTE` set to the child's `in_quote` (true for QUOTE / `>`-quote, inherited for
+/// custom — matching the old `parse_quote_inner` / bare `parse`).
+fn legacy_reparse(input: &str, ctx: Ctx) -> Vec<Block> {
+    if ctx.in_item {
+        parse_doc(input, true)
+    } else {
+        let prev = ORG_IN_QUOTE.with(|c| c.replace(ctx.in_quote));
+        let r = parse(input);
+        ORG_IN_QUOTE.with(|c| c.set(prev));
+        r
+    }
+}
+
+/// Streaming re-parse of a transformed body (the `ParseFn` the streaming driver threads):
+/// routes back into `parse_org_streaming` with the child `ctx` carrying `in_quote` (no
+/// thread-local needed). For a callout / `>`-quote body it mirrors legacy's `BLOCK_NEST_CAP`
+/// cap (so deep INDENTED-callout / `>`-quote native recursion stays bounded exactly like
+/// legacy — clean-window callouts are heap frames and never reach this); list-item content
+/// is depth-1 (list re-entry disabled by `in_item`) so it skips the cap, as legacy did.
+fn streaming_reparse(input: &str, ctx: Ctx) -> Vec<Block> {
+    if ctx.in_item {
+        return parse_org_streaming(input, ctx);
+    }
+    let depth = BLOCK_DEPTH.with(|c| c.get());
+    if depth >= BLOCK_NEST_CAP {
+        return if input.is_empty() {
+            Vec::new()
+        } else {
+            vec![Block::Paragraph { inline: org_inline(input), span: Some(Span(0, input.len())) }]
+        };
+    }
+    BLOCK_DEPTH.with(|c| c.set(depth + 1));
+    let out = parse_org_streaming(input, ctx);
+    BLOCK_DEPTH.with(|c| c.set(depth));
+    out
+}
+
+/// The shared per-construct closer/marker indexes over the WHOLE input (built ONCE, O(n)):
+/// the `#+END_<name>` callout-closer trie, the `:END:` drawer-closer index, the whole-line
+/// fence-marker index, and the list of lines whose terminator is NOT a plain single `\n`
+/// (`\r\n` / lone `\r` / EOF). Both drivers query the first three with a `closer < hi`
+/// bound; the streaming driver uses the last to decide when a callout body is a clean
+/// WINDOW (for all-`\n` input it is empty ⇒ every indent-0 callout is a window frame).
+fn build_org_indexes(
+    lines: &[Line],
+    input: &str,
+) -> (EndTrie, Vec<usize>, Vec<usize>, Vec<usize>) {
     let mut end_trie = EndTrie::new();
     let mut drawer_end_idxs: Vec<usize> = Vec::new(); // `:END:` lines (drawer closers)
-    // ALL whole-line fence markers, ascending — mldoc closes a fence at the first later 3+ run of
-    // EITHER char (length/info-agnostic), so closing is char-AGNOSTIC: one list, not per-char.
     let mut fence_lines: Vec<usize> = Vec::new();
+    let mut nonstd_eol_lines: Vec<usize> = Vec::new();
+    let bytes = input.as_bytes();
     for (idx, l) in lines.iter().enumerate() {
         let t = l.text.trim_start();
         if t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
@@ -139,84 +243,290 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
         if fence_marker(l.text).is_some() {
             fence_lines.push(idx);
         }
+        // A plain single-`\n` terminator (so the line's [start,end) byte-range equals
+        // `text` + `\n`, i.e. mldoc's `block_code` is a no-op on it). Anything else
+        // (`\r\n` normalised to `\n`, a lone `\r` normalised, or the EOF line with no
+        // terminator) makes the de-indented reparse string differ from the byte-window.
+        let content_end = l.start + l.text.len();
+        let plain_nl = l.end == content_end + 1 && bytes.get(content_end) == Some(&b'\n');
+        if !plain_nl {
+            nonstd_eol_lines.push(idx);
+        }
     }
+    (end_trie, drawer_end_idxs, fence_lines, nonstd_eol_lines)
+}
+
+/// LEGACY Org block driver (the default + the byte-exact oracle behind the
+/// `LSDOC_BLOCK_STREAMING` seam). A thin loop over `dispatch_org_line` (the shared
+/// per-line ladder); on a callout `Open` it RECURSES on the de-indented `block_code` body
+/// EXACTLY as the old step 6 did (`parse_quote_inner` for QUOTE, `parse` for custom). At
+/// the top level `hi == lines.len()`, so all of `dispatch_org_line`'s `hi`/`body_end`
+/// bounds are no-ops and the behaviour is identical to the pre-extraction inline ladder.
+/// `in_item` = re-parsing the content of an Org list item (mldoc `list_content_parsers`
+/// drops Directive/Drawer/Heading/Footnote/List); `in_quote` (from `ORG_IN_QUOTE`)
+/// suppresses Headline. Both are captured ONCE into `ctx` (constant within a frame).
+fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
+    let mut lines = split_lines(input);
+    // Byte offset of the last `]` (None if none): a block-level hiccup `[:tag …]` needs a
+    // closing `]`, so a `[:` line starting at/after it is skipped O(1) (see step 13b).
+    let last_rbracket = input.rfind(']');
+    let (end_trie, drawer_end_idxs, fence_lines, _nonstd_eol_lines) =
+        build_org_indexes(&lines, input);
+    let n = lines.len();
+    // `in_quote` is constant within one `parse_doc` frame (the caller sets the thread-local
+    // around the recursive re-parse, never mid-loop), so capture the context once.
+    let ctx = Ctx { in_item, in_quote: ORG_IN_QUOTE.with(|c| c.get()) };
     let mut out: Vec<Block> = Vec::new();
     let mut para: Option<(usize, usize)> = None;
-    // After an "absorbing" block (Directive/Comment/Block/Footnote) mldoc's
-    // `<* optional eols` swallows the following blank lines; Heading/Table/Drawer/List
-    // do not (a List only consumes the single blank that ends its last item, via
-    // `two_eols`), so a further blank there becomes a (leading-Break) paragraph.
     let mut absorb = false;
-    // Memoised collapse floor: once a list starting at line `s` collapses with its
-    // trigger at line `e`, every list-start in `[s, e)` collapses the same way (the
-    // suffix is identical). Skipping the collector for those lines keeps repeated
-    // collapses linear instead of O(n²) re-scanning.
     let mut collapse_floor = 0usize;
-    let mut fence_cursor: usize = 0; // monotone cursor into `fence_lines`
+    let mut fence_cursor: usize = 0;
     let mut i = 0;
 
-    while i < lines.len() {
-        // `t`/`line_start`/`line_end` are copied out (a `&'a str` + two `usize`s, none
-        // borrowing the `lines` Vec) so the headline block-opener split can REWRITE
-        // `lines[i]` in place (see step 3) without a borrow conflict.
-        let line = &lines[i];
-        let t = line.text;
-        let line_start = line.start;
-        let line_end = line.end;
-
-        // blank line: extend an open paragraph, else swallow (if absorbing) or start one.
-        if t.trim().is_empty() {
-            if let Some((s, _)) = para {
-                para = Some((s, line_end));
-            } else if absorb {
-                // swallowed by the preceding block.
-            } else {
-                para = Some((line_start, line_end));
+    while i < n {
+        let line_start = lines[i].start;
+        let step = dispatch_org_line(
+            i,
+            &mut lines,
+            &mut out,
+            &mut para,
+            &mut absorb,
+            &mut collapse_floor,
+            &mut fence_cursor,
+            ctx,
+            n,
+            &end_trie,
+            &drawer_end_idxs,
+            &fence_lines,
+            last_rbracket,
+            input,
+            legacy_reparse,
+        );
+        match step {
+            Step::Next(ni) => i = ni,
+            Step::Open { close, builder, .. } => {
+                // The de-indented body re-parse, EXACTLY as the old step 6 QUOTE/custom:
+                // QUOTE re-enters with headline-suppression (`parse_quote_inner`), custom
+                // via the cap-wrapped `parse`. The dispatch helper did NOT flush para.
+                flush_para(&mut out, &mut para, input, ctx.in_item);
+                let inner = block_code(&lines[i + 1..close]);
+                let children = match &builder {
+                    Builder::Quote => parse_quote_inner(&inner),
+                    Builder::Custom(_) => parse(&inner),
+                };
+                let block = builder.finish(children, Some(Span(line_start, lines[close].end)));
+                absorb = block_absorbs(&block);
+                out.push(block);
+                i = close + 1;
             }
-            i += 1;
-            continue;
         }
+    }
 
-        // 1. directive `#+KEY: value` (KEY != BEGIN_…) — not a list-item content block.
-        if let Some((name, value)) = directive(t).filter(|_| !in_item) {
-            flush_para(&mut out, &mut para, input, in_item);
-            out.push(Block::Directive { name, value, span: Some(Span(line_start, line_end)) });
-            absorb = true;
+    flush_para(&mut out, &mut para, input, false);
+    out
+}
+
+/// STREAMING Org block driver (behind the `LSDOC_BLOCK_STREAMING` seam; M3). ONE
+/// left-to-right pass over an explicit container-frame stack: a `#+BEGIN_QUOTE`/custom body
+/// that is a CLEAN WINDOW (indent-0, plain-`\n` lines ⇒ the byte-range equals mldoc's
+/// de-indented reparse string) is pushed as a `Frame` and scanned in place — never copied
+/// or re-lexed (the removed recurse-on-body O(n²)). A de-indented / `\r`-terminated body is
+/// a TRANSFORMED sub-recursion (`block_code` + `streaming_reparse`), byte-exact to legacy
+/// (local spans, "as today"). The `>`-quote and list-item content stay sub-recursions
+/// routed through the SAME driver via `streaming_reparse`. `root_ctx` is the document
+/// default `{false,false}` at the top level, or the child ctx of a transformed re-parse.
+fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
+    let mut lines = split_lines(input);
+    let last_rbracket = input.rfind(']');
+    let (end_trie, drawer_end_idxs, fence_lines, nonstd_eol_lines) =
+        build_org_indexes(&lines, input);
+    let n = lines.len();
+
+    let mut stack: Vec<Frame> = vec![Frame {
+        hi: n,
+        ctx: root_ctx,
+        out: Vec::new(),
+        para: None,
+        absorb: false,
+        builder: None,
+        open_span_start: 0,
+    }];
+    let mut collapse_floor = 0usize; // shared & monotone (i is monotone across frames).
+    let mut fence_cursor: usize = 0;
+    let mut i = 0;
+
+    loop {
+        // Close every callout frame ending at line `i` (consuming its `#+END_` closer).
+        while stack.len() > 1 && stack.last().unwrap().hi == i {
+            let mut f = stack.pop().unwrap();
+            flush_para(&mut f.out, &mut f.para, input, false);
+            let span = Some(Span(f.open_span_start, lines[i].end));
+            let block = f.builder.unwrap().finish(f.out, span);
+            let absorbs = block_absorbs(&block);
+            let parent = stack.last_mut().unwrap();
+            parent.out.push(block);
+            parent.absorb = absorbs; // mldoc: a Quote/Custom swallows a following blank.
             i += 1;
-            continue;
         }
-
-        // 1b. comment `# text` (mldoc Comment). Unlike Directive this IS a valid
-        // list-item content block (mldoc `- a\n  # c` → item content [Paragraph, Comment]),
-        // so it is NOT gated on `in_item`. `#+…` is a directive (handled above);
-        // `#c`/`# `/`##` are paragraphs. Absorbs a following blank line.
-        if let Some(text) = org_comment(t) {
-            flush_para(&mut out, &mut para, input, in_item);
-            out.push(Block::Comment {
-                text: text.to_string(),
-                span: Some(Span(line_start, line_end)),
-            });
-            absorb = true;
-            i += 1;
-            continue;
+        if i >= n {
+            break;
         }
+        let line_start = lines[i].start;
+        let step = {
+            let top = stack.last_mut().unwrap();
+            let hi = top.hi;
+            let ctx = top.ctx;
+            dispatch_org_line(
+                i,
+                &mut lines,
+                &mut top.out,
+                &mut top.para,
+                &mut top.absorb,
+                &mut collapse_floor,
+                &mut fence_cursor,
+                ctx,
+                hi,
+                &end_trie,
+                &drawer_end_idxs,
+                &fence_lines,
+                last_rbracket,
+                input,
+                streaming_reparse,
+            )
+        };
+        match step {
+            Step::Next(ni) => i = ni,
+            Step::Open { close, builder, child_ctx, indent_strip } => {
+                {
+                    let top = stack.last_mut().unwrap();
+                    flush_para(&mut top.out, &mut top.para, input, top.ctx.in_item);
+                }
+                // Clean window (indent-0 + plain-`\n` body) ⇒ heap frame, no copy/re-lex
+                // (the O(n²) fix; child spans become global). Else the de-indented body is
+                // a transformed sub-recursion (block_code + reparse) — byte-exact to legacy.
+                let clean =
+                    indent_strip == 0 && body_is_clean_window(&nonstd_eol_lines, i + 1, close);
+                if clean {
+                    stack.push(Frame {
+                        hi: close,
+                        ctx: child_ctx,
+                        out: Vec::new(),
+                        para: None,
+                        absorb: false,
+                        builder: Some(builder),
+                        open_span_start: line_start,
+                    });
+                    i += 1;
+                } else {
+                    let inner = block_code(&lines[i + 1..close]);
+                    let children = streaming_reparse(&inner, child_ctx);
+                    let block = builder.finish(children, Some(Span(line_start, lines[close].end)));
+                    let absorbs = block_absorbs(&block);
+                    let top = stack.last_mut().unwrap();
+                    top.out.push(block);
+                    top.absorb = absorbs;
+                    i = close + 1;
+                }
+            }
+        }
+    }
 
-        // 2. drawer `:PROPERTIES:`/`:NAME:` … `:END:` — not a list-item content block
-        // (inside an item a `:`-line is verbatim/Example via step 7 instead).
-        if let Some(name) = drawer_begin(t).filter(|_| !in_item) {
-            if let Some(close) = find_drawer_end(&drawer_end_idxs, i) {
-                flush_para(&mut out, &mut para, input, in_item);
+    let mut root = stack.pop().unwrap();
+    flush_para(&mut root.out, &mut root.para, input, false);
+    root.out
+}
+
+/// No non-plain-`\n` body line in `[lo, hi)` (the caller has already applied the indent-0
+/// guard) ⇒ the callout body's byte-range equals mldoc's de-indented `block_code` reparse
+/// string, so it can be a streaming WINDOW frame. For all-`\n` input `nonstd_eol_lines` is
+/// empty ⇒ always true (the common path: every indent-0 callout is a window frame).
+fn body_is_clean_window(nonstd_eol_lines: &[usize], lo: usize, hi: usize) -> bool {
+    let p = nonstd_eol_lines.partition_point(|&x| x < lo);
+    !(p < nonstd_eol_lines.len() && nonstd_eol_lines[p] < hi)
+}
+
+/// Classify ONE Org line `i` in the body bounded by `hi` (EXCLUSIVE closer-line index),
+/// writing any completed block into `out` / accumulating into `para`, threading `absorb`
+/// (blank-swallow) + `collapse_floor` (list-collapse memo) + `fence_cursor`, and return a
+/// `Step`. This is the single per-line dispatch ladder shared by BOTH drivers (legacy
+/// recurses the de-indented body on `Open`; streaming pushes a window frame / sub-recurses).
+/// Every forward closer-search is bounded by `hi` / `body_end` so a closer / `\end{}` / `]`
+/// / run-line BELONGS to this body, never the enclosing one; at the top level `hi ==
+/// lines.len()` (`body_end == input.len()`) so all bounds are no-ops (legacy behaviour). The
+/// `>`-quote and list-item sub-recursions re-enter via the threaded `parse_fn` (the active
+/// driver). `ctx.in_item`/`ctx.in_quote` gate the context-restricted constructs.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_org_line<'a>(
+    i: usize,
+    lines: &mut [Line<'a>],
+    out: &mut Vec<Block>,
+    para: &mut Option<(usize, usize)>,
+    absorb: &mut bool,
+    collapse_floor: &mut usize,
+    fence_cursor: &mut usize,
+    ctx: Ctx,
+    hi: usize,
+    end_trie: &EndTrie,
+    drawer_end_idxs: &[usize],
+    fence_lines: &[usize],
+    last_rbracket: Option<usize>,
+    input: &'a str,
+    parse_fn: ParseFn,
+) -> Step {
+    // Copy out the line fields (a `&'a str` + two `usize`s, none borrowing `lines`) so the
+    // headline / hiccup splits can REWRITE `lines[i]`/`lines[ri]` in place (steps 3, 13b).
+    let t = lines[i].text;
+    let line_start = lines[i].start;
+    let line_end = lines[i].end;
+    let in_item = ctx.in_item;
+    // Byte offset where THIS body ends (the closer line's start, or EOF at the root). CLAMPs
+    // the to-end-of-input forward-scanners (`parse_latex_env`, `parse_hiccup`).
+    let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
+
+    // blank line: extend an open paragraph, else swallow (if absorbing) or start one.
+    if t.trim().is_empty() {
+        if let Some((s, _)) = *para {
+            *para = Some((s, line_end));
+        } else if *absorb {
+            // swallowed by the preceding block.
+        } else {
+            *para = Some((line_start, line_end));
+        }
+        return Step::Next(i + 1);
+    }
+
+    // 1. directive `#+KEY: value` (KEY != BEGIN_…) — not a list-item content block.
+    if let Some((name, value)) = directive(t).filter(|_| !in_item) {
+        flush_para(out, para, input, in_item);
+        out.push(Block::Directive { name, value, span: Some(Span(line_start, line_end)) });
+        *absorb = true;
+        return Step::Next(i + 1);
+    }
+
+    // 1b. comment `# text` (mldoc Comment) — IS a valid list-item content block (not gated).
+    if let Some(text) = org_comment(t) {
+        flush_para(out, para, input, in_item);
+        out.push(Block::Comment { text: text.to_string(), span: Some(Span(line_start, line_end)) });
+        *absorb = true;
+        return Step::Next(i + 1);
+    }
+
+    // 2. drawer `:PROPERTIES:`/`:NAME:` … `:END:` — not a list-item content block. The
+    // `:END:` must lie inside THIS body (`< hi`); else it belongs to an enclosing body.
+    if let Some(name) = drawer_begin(t).filter(|_| !in_item) {
+        if let Some(close) = find_drawer_end(drawer_end_idxs, i) {
+            if close < hi {
+                flush_para(out, para, input, in_item);
                 if name == "properties" {
                     let mut props: Vec<(String, String)> = lines[i + 1..close]
                         .iter()
                         .filter_map(|l| drawer_property(l.text))
                         .collect();
-                    // mldoc `Drawer.parse` is `many1 (parse1 <|> parse2)`: a run of
-                    // `#+NAME: value` directives immediately following the drawer folds
-                    // into the same Property_Drawer (parse2 absorbs trailing eols).
+                    // mldoc `Drawer.parse` folds trailing `#+NAME: value` directives into the
+                    // same Property_Drawer. Bounded by `hi` (don't cross the frame closer).
                     let mut j = close + 1;
                     let mut folded = false;
-                    while j < lines.len() {
+                    while j < hi {
                         if let Some(kv) = directive(lines[j].text) {
                             props.push(kv);
                             folded = true;
@@ -227,151 +537,135 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
                     }
                     let end = lines[j - 1].end;
                     out.push(Block::Properties { props, span: Some(Span(line_start, end)) });
-                    absorb = folded;
-                    i = j;
-                    continue;
+                    *absorb = folded;
+                    return Step::Next(j);
                 }
                 out.push(Block::Drawer { name, span: Some(Span(line_start, lines[close].end)) });
-                absorb = false;
-                i = close + 1;
-                continue;
+                *absorb = false;
+                return Step::Next(close + 1);
             }
+            // :END: is outside this body → fall through.
         }
+    }
 
-        // 3. headline `*{n} ` — not a list-item content block (stays a paragraph line),
-        // and NOT inside a blockquote body (mldoc: `* x` in a quote is a Paragraph). C2.
-        if let Some(level) =
-            headline_level(t).filter(|_| !in_item && !ORG_IN_QUOTE.with(|c| c.get()))
+    // 3. headline `*{n} ` — not a list-item content block, and NOT inside a blockquote body
+    // (mldoc: `* x` in a quote is a Paragraph). C2.
+    if let Some(level) = headline_level(t).filter(|_| !in_item && !ctx.in_quote) {
+        let stars = t.bytes().take_while(|&b| b == b'*').count();
+        let after = t[stars..].trim_start();
+        let (marker, priority, content) = split_markers(after);
+        let content_off = line_start + (t.len() - content.len());
+
+        // SPLIT: the post-marker CONTENT begins a block-construct opener ⇒ emit an empty
+        // bullet (keeping level/marker/priority) and reparse CONTENT as the following block.
+        // The split lookahead is bounded by `hi`/`body_end` (a `#+BEGIN`/fence/`\end{}` that
+        // closes OUTSIDE this body does not split — it belongs to an enclosing body).
+        if !content.is_empty()
+            && headline_split_opener(
+                content,
+                input,
+                content_off,
+                i,
+                hi,
+                body_end,
+                end_trie,
+                fence_lines,
+                fence_cursor,
+            )
         {
-            let stars = t.bytes().take_while(|&b| b == b'*').count();
-            let after = t[stars..].trim_start();
-            let (marker, priority, content) = split_markers(after);
-            // `content` is a (left-trimmed) suffix of the line, so its byte offset is
-            // recoverable from the lengths.
-            let content_off = line_start + (t.len() - content.len());
-
-            // SPLIT: the post-marker CONTENT begins a block-construct opener ⇒ emit an
-            // empty bullet (keeping level/marker/priority) and reparse CONTENT as the
-            // following block, exactly like mldoc's heading-title lookahead (heading0.ml).
-            if !content.is_empty()
-                && headline_split_opener(
-                    content,
-                    input,
-                    content_off,
-                    i,
-                    &end_trie,
-                    &fence_lines,
-                    &mut fence_cursor,
-                )
-            {
-                flush_para(&mut out, &mut para, input, in_item);
-                out.push(Block::Bullet {
-                    level,
-                    size: None,
-                    inline: vec![],
-                    marker,
-                    priority,
-                    htags: vec![],
-                    span: Some(Span(line_start, content_off)),
-                });
-                // Markdown ``` / ~~~ fence → Src: the `* ```` headline line is not itself a
-                // whole-line fence marker (so it isn't in `fence_lines`); its closer is
-                // the first same-char whole-line fence after it. The predicate only lets a
-                // fence reach here when it CLOSES, so this is `Some`; the `if` is a
-                // belt-and-braces guard (an unclosed fence stays the heading title and
-                // never enters this branch).
-                if let Some((_fchar, frun)) = fence_marker(content) {
-                    if let Some(close) = find_matching_fence(&fence_lines, &mut fence_cursor, i) {
-                        let code = if close > i + 1 {
-                            input[lines[i + 1].start..lines[close - 1].end].to_string()
-                        } else {
-                            String::new()
-                        };
-                        let lang = content[frun..].trim().to_string();
-                        out.push(Block::Src {
-                            lang,
-                            code,
-                            span: Some(Span(content_off, lines[close].end)),
-                        });
-                        absorb = true;
-                        i = close + 1;
-                        continue;
-                    }
-                }
-                // Generic reparse: REWRITE this line to its CONTENT slice and re-enter the
-                // loop WITHOUT advancing `i`, so the column-0 block parsers (and their
-                // multi-line consumption of the following real lines) handle it exactly as
-                // mldoc does. Terminates: `content` begins a non-`*` opener, so the headline
-                // branch can't re-fire on it and every other branch advances `i`.
-                lines[i] = Line { start: content_off, end: line_end, text: content };
-                absorb = false;
-                continue;
-            }
-
-            flush_para(&mut out, &mut para, input, in_item);
-            let mut inline = org_inline(content);
-            let htags = extract_htags(&mut inline);
-            let empty_title = inline.is_empty() && htags.is_empty();
+            flush_para(out, para, input, in_item);
             out.push(Block::Bullet {
                 level,
-                size: None, // org headlines carry no `#`-size (mldoc Heading.size = null)
-                inline,
+                size: None,
+                inline: vec![],
                 marker,
                 priority,
-                htags,
-                span: Some(Span(line_start, line_end)),
+                htags: vec![],
+                span: Some(Span(line_start, content_off)),
             });
-            absorb = false;
-            // mldoc quirk: an EMPTY-title headline that still has trailing whitespace
-            // (`*** `, `* TODO `) emits the empty bullet, then the leftover whitespace
-            // begins a fresh paragraph that absorbs the following lines (`* \nx` →
-            // Bullet + Paragraph[" ", Break, "x"]).
-            if empty_title {
-                let content_len = t.trim_end_matches([' ', '\t']).len();
-                if content_len < t.len() {
-                    para = Some((line_start + content_len, line_end));
+            // markdown ```/~~~ fence → Src (the closer is `< hi`, ensured by the predicate).
+            if let Some((_fchar, frun)) = fence_marker(content) {
+                if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
+                    let code = if close > i + 1 {
+                        input[lines[i + 1].start..lines[close - 1].end].to_string()
+                    } else {
+                        String::new()
+                    };
+                    let lang = content[frun..].trim().to_string();
+                    out.push(Block::Src { lang, code, span: Some(Span(content_off, lines[close].end)) });
+                    *absorb = true;
+                    return Step::Next(close + 1);
                 }
             }
-            i += 1;
-            continue;
+            // Generic reparse: REWRITE this line to its CONTENT slice and re-enter WITHOUT
+            // advancing `i` (the rewrite never creates an END/fence/drawer opener, so the
+            // precompute + open frames' `hi` stay valid). Terminates: `content` begins a
+            // non-`*` opener, so the headline branch can't re-fire.
+            lines[i] = Line { start: content_off, end: line_end, text: content };
+            *absorb = false;
+            return Step::Next(i);
         }
 
-        // 4. table (group of consecutive well-formed `|…|` rows)
-        if is_table_row(t) {
-            flush_para(&mut out, &mut para, input, in_item);
-            let start = i;
-            while i < lines.len() && is_table_row(lines[i].text) {
-                i += 1;
+        flush_para(out, para, input, in_item);
+        let mut inline = org_inline(content);
+        let htags = extract_htags(&mut inline);
+        let empty_title = inline.is_empty() && htags.is_empty();
+        out.push(Block::Bullet {
+            level,
+            size: None,
+            inline,
+            marker,
+            priority,
+            htags,
+            span: Some(Span(line_start, line_end)),
+        });
+        *absorb = false;
+        // mldoc quirk: an empty-title headline with trailing whitespace begins a paragraph
+        // from that whitespace (`* \nx` → Bullet + Paragraph[" ", Break, "x"]).
+        if empty_title {
+            let content_len = t.trim_end_matches([' ', '\t']).len();
+            if content_len < t.len() {
+                *para = Some((line_start + content_len, line_end));
             }
-            out.push(build_table(&lines[start..i], lines[start].start, lines[i - 1].end));
-            absorb = false;
-            continue;
         }
+        return Step::Next(i + 1);
+    }
 
-        // 4b. LaTeX environment `\begin{X} … \end{X}` (mldoc Latex_env, before Block).
-        let line_content_end = line_start + t.len();
-        if let Some((name, content, consumed_end)) =
-            crate::inline::parse_latex_env(input, line_start, line_content_end)
-        {
-            flush_para(&mut out, &mut para, input, in_item);
-            out.push(Block::LatexEnv { name, content, span: Some(Span(line_start, consumed_end)) });
-            absorb = false;
-            let mut ni = i + 1;
-            while ni < lines.len() && lines[ni].start < consumed_end {
-                ni += 1;
-            }
-            i = ni;
-            continue;
+    // 4. table (group of consecutive well-formed `|…|` rows), bounded by `hi`.
+    if is_table_row(t) {
+        flush_para(out, para, input, in_item);
+        let start = i;
+        let mut ni = i;
+        while ni < hi && is_table_row(lines[ni].text) {
+            ni += 1;
         }
+        out.push(build_table(&lines[start..ni], lines[start].start, lines[ni - 1].end));
+        *absorb = false;
+        return Step::Next(ni);
+    }
 
-        // 5. fenced code block (```/~~~) — markdown fences work in Org too. ON-DEMAND
-        // (context-aware): a fence-marker line the loop reaches is a top-level opener
-        // (block/drawer bodies are jumped past), so its closer = the first same-char
-        // whole-line fence after it — it can never pair across a body boundary the way the
-        // old global `pair_fences` pre-pass did (the fence-straddle bug).
-        if let Some((_c, mend)) = fence_marker(t) {
-            if let Some(close) = find_matching_fence(&fence_lines, &mut fence_cursor, i) {
-                flush_para(&mut out, &mut para, input, in_item);
+    // 4b. LaTeX environment `\begin{X} … \end{X}` (mldoc Latex_env, before Block). CLAMP the
+    // `\end{}` search to `&input[..body_end]` so an `\end{X}` outside this body is not taken.
+    let line_content_end = line_start + t.len();
+    if let Some((name, content, consumed_end)) =
+        crate::inline::parse_latex_env(&input[..body_end], line_start, line_content_end)
+    {
+        flush_para(out, para, input, in_item);
+        out.push(Block::LatexEnv { name, content, span: Some(Span(line_start, consumed_end)) });
+        *absorb = false;
+        let mut ni = i + 1;
+        while ni < lines.len() && lines[ni].start < consumed_end {
+            ni += 1;
+        }
+        return Step::Next(ni);
+    }
+
+    // 5. fenced code block (```/~~~). ON-DEMAND; the closer must lie inside THIS body
+    // (`< hi`), else this fence is unclosed here → fall through to a later classifier.
+    if let Some((_c, mend)) = fence_marker(t) {
+        if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
+            if close < hi {
+                flush_para(out, para, input, in_item);
                 let code = if close > i + 1 {
                     input[lines[i + 1].start..lines[close - 1].end].to_string()
                 } else {
@@ -379,231 +673,228 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
                 };
                 let lang = t[mend..].trim().to_string();
                 out.push(Block::Src { lang, code, span: Some(Span(line_start, lines[close].end)) });
-                absorb = true;
-                i = close + 1;
-                continue;
+                *absorb = true;
+                return Step::Next(close + 1);
             }
+            // closer is outside this body → fall through.
         }
+    }
 
-        // 6. `#+BEGIN_X` … `#+END_X` block
-        if let Some(name) = block_begin(t) {
-            if let Some(close) = end_trie.find(&name, i) {
-                flush_para(&mut out, &mut para, input, in_item);
-                let inner = block_code(&lines[i + 1..close]);
-                let span = Some(Span(line_start, lines[close].end));
+    // 6. `#+BEGIN_X` … `#+END_X` block. The closer must lie inside THIS body (`< hi`).
+    // QUOTE/custom become re-dispatched `Open` containers (the driver handles the body);
+    // SRC/EXAMPLE are raw bodies consumed in place (`block_code`).
+    if let Some(name) = block_begin(t) {
+        if let Some(close) = end_trie.find(&name, i) {
+            if close < hi {
                 let lname = name.to_ascii_lowercase();
                 match lname.as_str() {
                     "src" => {
+                        flush_para(out, para, input, in_item);
                         let lang = begin_lang(t);
-                        out.push(Block::Src { lang, code: inner, span });
+                        let inner = block_code(&lines[i + 1..close]);
+                        out.push(Block::Src { lang, code: inner, span: Some(Span(line_start, lines[close].end)) });
+                        *absorb = true;
+                        return Step::Next(close + 1);
                     }
-                    "example" => out.push(Block::Example { code: inner, span }),
-                    "quote" => out.push(Block::Quote { children: parse_quote_inner(&inner), span }),
-                    _ => out.push(Block::Custom { name: lname, children: parse(&inner), span }),
-                }
-                absorb = true;
-                i = close + 1;
-                continue;
-            }
-        }
-
-        // 7. verbatim block (Org): consecutive lines starting with `:` → Example.
-        if is_verbatim_line(t) {
-            flush_para(&mut out, &mut para, input, in_item);
-            let start = i;
-            let mut code = String::new();
-            while i < lines.len() && is_verbatim_line(lines[i].text) {
-                code.push_str(verbatim_content(lines[i].text));
-                code.push('\n');
-                i += 1;
-            }
-            out.push(Block::Example { code, span: Some(Span(lines[start].start, lines[i - 1].end)) });
-            absorb = true;
-            continue;
-        }
-
-        // 8. markdown blockquote (`>` …) — also recognised in Org.
-        if let Some(first_content) = quote_first_line(t) {
-            flush_para(&mut out, &mut para, input, in_item);
-            let start = i;
-            // First line: mldoc strips up to TWO leading `>` (enter the quote, then the
-            // remainder is itself a body line that drops one more `>`); continuation
-            // lines drop one. The de-`>`'d body is then re-parsed (a leading `>` body
-            // line ⇒ a nested quote), so N leading `>` nest ⌈N/2⌉ Quotes.
-            let mut body = String::new();
-            body.push_str(&first_content);
-            body.push('\n');
-            i += 1;
-            while i < lines.len() {
-                match quote_line_content(lines[i].text) {
-                    Some(c) => {
-                        body.push_str(&c);
-                        body.push('\n');
-                        i += 1;
+                    "example" => {
+                        flush_para(out, para, input, in_item);
+                        let inner = block_code(&lines[i + 1..close]);
+                        out.push(Block::Example { code: inner, span: Some(Span(line_start, lines[close].end)) });
+                        *absorb = true;
+                        return Step::Next(close + 1);
                     }
-                    None => break,
-                }
-            }
-            // Build the (possibly nested) Quote. A body that is a SINGLE line which
-            // itself opens a quote is peeled ITERATIVELY (so `>`×d on one line can't
-            // stack-overflow via recursive `parse`); other bodies parse normally
-            // (mldoc's recursion, shallow for real multi-line quotes).
-            let span = Some(Span(lines[start].start, lines[i - 1].end));
-            out.push(build_org_quote(body, span));
-            absorb = true;
-            continue;
-        }
-
-        // 9. block-level displayed math `$$ … $$`.
-        if let Some(math) = displayed_math(t) {
-            flush_para(&mut out, &mut para, input, in_item);
-            out.push(Block::DisplayedMath { text: math, span: Some(Span(line_start, line_end)) });
-            absorb = false;
-            i += 1;
-            continue;
-        }
-
-        // 10. raw HTML (single line, complete element).
-        if is_raw_html(t) {
-            flush_para(&mut out, &mut para, input, in_item);
-            out.push(Block::RawHtml { text: t.to_string(), span: Some(Span(line_start, line_end)) });
-            absorb = false;
-            i += 1;
-            continue;
-        }
-
-        // 11. footnote definition `[fn:name] text` — not a list-item content block
-        // (inside an item it stays an inline footnote ref in a paragraph). mldoc's
-        // `footnote_definition = many1 l` absorbs the following continuation lines into
-        // the def's inline body (joined with Break_Line, de-indented) until a
-        // footnote-body terminator (`footnote_cont`); the first line's body comes from
-        // `footnote_def` (which is exactly mldoc's first `l`).
-        if let Some((name, content)) = footnote_def(t).filter(|_| !in_item) {
-            flush_para(&mut out, &mut para, input, in_item);
-            // First body line: mldoc `line = take_till1 is_eol` drops a CRLF `\r`.
-            let mut body = strip_cr_eol(content, line_has_nl(input, &lines[i])).to_string();
-            let mut j = i + 1;
-            while let Some(next) = lines.get(j) {
-                match footnote_cont(next.text, line_has_nl(input, next)) {
-                    Some(c) => {
-                        body.push('\n');
-                        body.push_str(c);
-                        j += 1;
-                    }
-                    None => break,
-                }
-            }
-            out.push(Block::FootnoteDef {
-                name,
-                inline: org_inline(&body),
-                span: Some(Span(line_start, lines[j - 1].end)),
-            });
-            absorb = true;
-            i = j;
-            continue;
-        }
-
-        // 12. list — mldoc Org list parser (lists0.ml): multi-line item-continuation
-        // folding + the indented-`-` collapse quirk (see `collect_list`). Disabled in
-        // list-item content. `collapse_floor` skips list-starts inside a region that
-        // already collapsed (linearity). On collapse the region falls through to the
-        // paragraph fallback below, which reproduces mldoc's failed-list Paragraph.
-        if !in_item && i >= collapse_floor && list_marker(t).is_some() {
-            match collect_list(&lines, i) {
-                Ok((block, next)) => {
-                    flush_para(&mut out, &mut para, input, in_item);
-                    out.push(block);
-                    absorb = false;
-                    i = next;
-                    continue;
-                }
-                Err(Collapse { kept, resume, trigger }) => {
-                    collapse_floor = trigger;
-                    if let Some(block) = kept {
-                        // partial collapse: emit the surviving prefix List, then resume
-                        // (the failing item onward falls through to the paragraph path).
-                        flush_para(&mut out, &mut para, input, in_item);
-                        out.push(block);
-                        absorb = false;
-                        i = resume;
-                        continue;
-                    }
-                    // full collapse (resume == i == start): fall through to paragraph.
-                }
-            }
-        }
-
-        // 13. horizontal rule (exactly 5 dashes).
-        if is_org_hr(t) {
-            flush_para(&mut out, &mut para, input, in_item);
-            out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
-            absorb = false;
-            i += 1;
-            continue;
-        }
-
-        // 13b. block-level Clojure-hiccup `[:tag …]` at BOL (after leading ws). Emitted at
-        // the document level AND inside list-item content (mldoc yields a `Hiccup` block in
-        // both). The string-aware balanced capture may span lines; the remainder past the
-        // `]` re-enters block parsing at BOL (`[:div]x` → [Hiccup, Paragraph x]).
-        {
-            let lw = leading_ws(t);
-            let rec = line_start + lw;
-            if last_rbracket.is_some_and(|last| rec <= last) && input[rec..].starts_with("[:") {
-                if let Some(cap_end) = crate::inline::parse_hiccup(input, rec) {
-                    // A preceding paragraph drops its trailing Break before a Hiccup inside
-                    // a blockquote body (mldoc: `> a\n> [:div]` → Quote[Para "a", Hiccup]),
-                    // but keeps it at the document level (`a\n[:div]` → Para[a, Break]).
-                    let trim = in_item || ORG_IN_QUOTE.with(|c| c.get());
-                    flush_para(&mut out, &mut para, input, trim);
-                    out.push(Block::Hiccup {
-                        v: input[rec..cap_end].to_string(),
-                        span: Some(Span(line_start, cap_end)),
-                    });
-                    absorb = false;
-                    // Resume after the `]`, absorbing consecutive eols (mldoc `<* optional
-                    // eols`: `[:div]\n\nx` → [Hiccup, Para "x"]). A same-line remainder
-                    // (`[:div]x`) keeps its following blanks (only `\n`/`\r` bytes skipped).
-                    let bytes = input.as_bytes();
-                    let mut resume = cap_end;
-                    while resume < bytes.len() && matches!(bytes[resume], b'\n' | b'\r') {
-                        resume += 1;
-                    }
-                    if resume >= bytes.len() {
-                        break; // captured to EOF (+ trailing eols)
-                    }
-                    let mut ri = i;
-                    while ri < lines.len() && lines[ri].end <= resume {
-                        ri += 1;
-                    }
-                    if ri >= lines.len() {
-                        break; // defensive (resume < len ⇒ unreachable)
-                    }
-                    if resume > lines[ri].start {
-                        let content_end = lines[ri].start + lines[ri].text.len();
-                        lines[ri] = Line {
-                            start: resume,
-                            end: lines[ri].end,
-                            text: &input[resume..content_end],
+                    "quote" => {
+                        let indent_strip =
+                            if close > i + 1 { leading_ws(lines[i + 1].text) } else { 0 };
+                        return Step::Open {
+                            close,
+                            builder: Builder::Quote,
+                            child_ctx: Ctx { in_item: false, in_quote: true },
+                            indent_strip,
                         };
                     }
-                    i = ri;
-                    continue;
+                    _ => {
+                        let indent_strip =
+                            if close > i + 1 { leading_ws(lines[i + 1].text) } else { 0 };
+                        // custom does NOT reset the quote flag — it INHERITS the parent's.
+                        return Step::Open {
+                            close,
+                            builder: Builder::Custom(lname),
+                            child_ctx: Ctx { in_item: false, in_quote: ctx.in_quote },
+                            indent_strip,
+                        };
+                    }
                 }
             }
+            // closer is outside this body → fall through.
         }
-
-        // 14. plain line → accumulate into the current paragraph.
-        para = Some(match para {
-            Some((s, _)) => (s, line_end),
-            None => (line_start, line_end),
-        });
-        absorb = false;
-        i += 1;
     }
 
-    flush_para(&mut out, &mut para, input, false);
-    out
+    // 7. verbatim block (Org): consecutive lines starting with `:` → Example. Bounded by `hi`.
+    if is_verbatim_line(t) {
+        flush_para(out, para, input, in_item);
+        let start = i;
+        let mut code = String::new();
+        let mut ni = i;
+        while ni < hi && is_verbatim_line(lines[ni].text) {
+            code.push_str(verbatim_content(lines[ni].text));
+            code.push('\n');
+            ni += 1;
+        }
+        out.push(Block::Example { code, span: Some(Span(lines[start].start, lines[ni - 1].end)) });
+        *absorb = true;
+        return Step::Next(ni);
+    }
+
+    // 8. markdown blockquote (`>` …). The run is bounded by `hi` (else the closer line would
+    // be lazily absorbed into the quote body — `quote_line_content("#+END_QUOTE")` is `Some`).
+    // The (possibly nested) build re-parses the de-`>`'d body via `parse_fn` (the active
+    // driver), staying `QUOTE_NEST_CAP`-bounded for M3.
+    if let Some(first_content) = quote_first_line(t) {
+        flush_para(out, para, input, in_item);
+        let start = i;
+        let mut body = String::new();
+        body.push_str(&first_content);
+        body.push('\n');
+        let mut ni = i + 1;
+        while ni < hi {
+            match quote_line_content(lines[ni].text) {
+                Some(c) => {
+                    body.push_str(&c);
+                    body.push('\n');
+                    ni += 1;
+                }
+                None => break,
+            }
+        }
+        let span = Some(Span(lines[start].start, lines[ni - 1].end));
+        out.push(build_org_quote(body, span, parse_fn));
+        *absorb = true;
+        return Step::Next(ni);
+    }
+
+    // 9. block-level displayed math `$$ … $$`.
+    if let Some(math) = displayed_math(t) {
+        flush_para(out, para, input, in_item);
+        out.push(Block::DisplayedMath { text: math, span: Some(Span(line_start, line_end)) });
+        *absorb = false;
+        return Step::Next(i + 1);
+    }
+
+    // 10. raw HTML (single line, complete element).
+    if is_raw_html(t) {
+        flush_para(out, para, input, in_item);
+        out.push(Block::RawHtml { text: t.to_string(), span: Some(Span(line_start, line_end)) });
+        *absorb = false;
+        return Step::Next(i + 1);
+    }
+
+    // 11. footnote definition `[fn:name] text` — not a list-item content block. The body
+    // absorbs following continuation lines (mldoc `many1 l`); bounded by `hi`.
+    if let Some((name, content)) = footnote_def(t).filter(|_| !in_item) {
+        flush_para(out, para, input, in_item);
+        let mut body = strip_cr_eol(content, line_has_nl(input, &lines[i])).to_string();
+        let mut j = i + 1;
+        while j < hi {
+            match footnote_cont(lines[j].text, line_has_nl(input, &lines[j])) {
+                Some(c) => {
+                    body.push('\n');
+                    body.push_str(c);
+                    j += 1;
+                }
+                None => break,
+            }
+        }
+        out.push(Block::FootnoteDef {
+            name,
+            inline: org_inline(&body),
+            span: Some(Span(line_start, lines[j - 1].end)),
+        });
+        *absorb = true;
+        return Step::Next(j);
+    }
+
+    // 12. list — bounded by `hi`; routed via `parse_fn`. Disabled in list-item content;
+    // `collapse_floor` skips list-starts inside an already-collapsed region (linearity).
+    if !in_item && i >= *collapse_floor && list_marker(t).is_some() {
+        match collect_list(lines, i, hi, Ctx { in_item: true, in_quote: ctx.in_quote }, parse_fn) {
+            Ok((block, next)) => {
+                flush_para(out, para, input, in_item);
+                out.push(block);
+                *absorb = false;
+                return Step::Next(next);
+            }
+            Err(Collapse { kept, resume, trigger }) => {
+                *collapse_floor = trigger;
+                if let Some(block) = kept {
+                    flush_para(out, para, input, in_item);
+                    out.push(block);
+                    *absorb = false;
+                    return Step::Next(resume);
+                }
+                // full collapse (resume == i == start): fall through to paragraph.
+            }
+        }
+    }
+
+    // 13. horizontal rule (exactly 5 dashes).
+    if is_org_hr(t) {
+        flush_para(out, para, input, in_item);
+        out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
+        *absorb = false;
+        return Step::Next(i + 1);
+    }
+
+    // 13b. block-level Clojure-hiccup `[:tag …]` at BOL. The balanced capture is CLAMPed to
+    // `&input[..body_end]`; the remainder past the `]` re-enters block parsing at BOL.
+    {
+        let lw = leading_ws(t);
+        let rec = line_start + lw;
+        if last_rbracket.is_some_and(|last| rec <= last) && input[rec..].starts_with("[:") {
+            if let Some(cap_end) = crate::inline::parse_hiccup(&input[..body_end], rec) {
+                // A preceding paragraph drops its trailing Break before a Hiccup inside a
+                // blockquote body / list item, but keeps it at the document level.
+                let trim = in_item || ctx.in_quote;
+                flush_para(out, para, input, trim);
+                out.push(Block::Hiccup {
+                    v: input[rec..cap_end].to_string(),
+                    span: Some(Span(line_start, cap_end)),
+                });
+                *absorb = false;
+                // Resume after the `]`, absorbing consecutive eols (mldoc `<* optional eols`).
+                // The eol run stops at the closer line (`#+END_…` is non-eol), so it never
+                // crosses into the enclosing body.
+                let bytes = input.as_bytes();
+                let mut resume = cap_end;
+                while resume < bytes.len() && matches!(bytes[resume], b'\n' | b'\r') {
+                    resume += 1;
+                }
+                if resume >= bytes.len() {
+                    return Step::Next(lines.len()); // captured to EOF (+ trailing eols)
+                }
+                let mut ri = i;
+                while ri < lines.len() && lines[ri].end <= resume {
+                    ri += 1;
+                }
+                if ri >= lines.len() {
+                    return Step::Next(lines.len()); // defensive (resume < len ⇒ unreachable)
+                }
+                if resume > lines[ri].start {
+                    let content_end = lines[ri].start + lines[ri].text.len();
+                    lines[ri] = Line { start: resume, end: lines[ri].end, text: &input[resume..content_end] };
+                }
+                return Step::Next(ri);
+            }
+        }
+    }
+
+    // 14. plain line → accumulate into the current paragraph.
+    *para = Some(match *para {
+        Some((s, _)) => (s, line_end),
+        None => (line_start, line_end),
+    });
+    *absorb = false;
+    Step::Next(i + 1)
 }
 
 /// Flush the open paragraph. `trim_eol` drops trailing newline(s) from the slice
@@ -764,6 +1055,8 @@ fn headline_split_opener(
     input: &str,
     content_off: usize,
     i: usize,
+    hi: usize,
+    body_end: usize,
     end_trie: &EndTrie,
     fence_lines: &[usize],
     fence_cursor: &mut usize,
@@ -771,7 +1064,9 @@ fn headline_split_opener(
     if directive(content).is_some()
         || is_verbatim_line(content)
         || is_table_row(content)
-        || crate::inline::parse_latex_env(input, content_off, content_off + content.len()).is_some()
+        // CLAMP the `\end{}` scan to THIS body (streaming): an env that closes outside the
+        // frame is not a split. At the top level `body_end == input.len()` (legacy: no-op).
+        || crate::inline::parse_latex_env(&input[..body_end], content_off, content_off + content.len()).is_some()
         || quote_opens(content)
         || displayed_math(content).is_some()
         || is_raw_html(content)
@@ -780,13 +1075,14 @@ fn headline_split_opener(
     {
         return true;
     }
-    // A `#+BEGIN_X` block / ```|~~~ fence only splits when it CLOSES — the block-name close is an
-    // O(1) `end_by_prefix` lookup, the fence test the monotone-cursor finder.
+    // A `#+BEGIN_X` block / ```|~~~ fence only splits when it CLOSES INSIDE this body
+    // (`< hi`) — the block-name close is an O(1) `end_by_prefix` lookup, the fence test the
+    // monotone-cursor finder. At the top level `hi == lines.len()` (legacy: always true).
     if let Some(name) = block_begin(content) {
-        return end_trie.find(&name, i).is_some();
+        return end_trie.find(&name, i).is_some_and(|c| c < hi);
     }
     if fence_marker(content).is_some() {
-        return find_matching_fence(fence_lines, fence_cursor, i).is_some();
+        return find_matching_fence(fence_lines, fence_cursor, i).is_some_and(|c| c < hi);
     }
     false
 }
@@ -1060,15 +1356,15 @@ fn quote_line_content(s: &str) -> Option<String> {
 /// line nests ⌈d/2⌉ Quotes WITHOUT recursing `parse` (no stack overflow). Other bodies
 /// parse normally (mldoc's recursion, shallow for real multi-line quotes; any deep
 /// single-line quote nested inside is again caught by this peel).
-fn build_org_quote(body: String, span: Option<Span>) -> Block {
-    // `base` = how deeply we are ALREADY nested (across recursive `parse` of multi-line
+fn build_org_quote(body: String, span: Option<Span>, parse_fn: ParseFn) -> Block {
+    // `base` = how deeply we are ALREADY nested (across recursive re-parse of multi-line
     // quote bodies). Combined with the single-line peel below, this bounds TOTAL nesting
     // at `QUOTE_NEST_CAP` regardless of how the `>`s are split across lines.
     let base = ORG_QUOTE_DEPTH.with(|c| c.get());
     let mut depth = 1usize;
     let mut cur = body;
-    // The innermost children. Filled either by peeling out (then `parse`d once) or by
-    // hitting the depth cap (then the remaining text is emitted as a plain Paragraph).
+    // The innermost children. Filled either by peeling out (then re-parsed once via
+    // `parse_fn`) or by hitting the depth cap (then the rest is emitted as a Paragraph).
     let children = loop {
         let trimmed = cur.strip_suffix('\n').unwrap_or(&cur);
         if base + depth >= QUOTE_NEST_CAP {
@@ -1082,16 +1378,16 @@ fn build_org_quote(body: String, span: Option<Span>) -> Block {
             }];
         }
         if trimmed.contains('\n') {
-            // Multi-line body: parse normally (mldoc's recursion), but tracking depth so
-            // a deep `>` first line that re-enters here stays bounded.
-            break parse_nested_quote_body(&cur, base + depth);
+            // Multi-line body: re-parse via the ACTIVE driver, tracking depth so a deep
+            // `>` first line that re-enters here stays bounded.
+            break parse_nested_quote_body(&cur, base + depth, parse_fn);
         }
         match quote_first_line(trimmed) {
             Some(inner) => {
                 cur = inner + "\n";
                 depth += 1;
             }
-            None => break parse_nested_quote_body(&cur, base + depth),
+            None => break parse_nested_quote_body(&cur, base + depth, parse_fn),
         }
     };
     let mut block = Block::Quote { children, span };
@@ -1101,13 +1397,13 @@ fn build_org_quote(body: String, span: Option<Span>) -> Block {
     block
 }
 
-/// Parse a multi-line blockquote body, recording the current nesting depth so a deep
-/// `>` line inside it re-enters `build_org_quote` already aware of how deep we are.
-fn parse_nested_quote_body(body: &str, depth: usize) -> Vec<Block> {
+/// Re-parse a multi-line blockquote body via the ACTIVE driver (`parse_fn`), recording the
+/// current nesting depth so a deep `>` line inside it re-enters `build_org_quote` aware of
+/// how deep we are. The `in_quote:true` child context suppresses headlines (C2) — the
+/// streaming driver reads it from the ctx; the legacy `parse_fn` sets `ORG_IN_QUOTE`.
+fn parse_nested_quote_body(body: &str, depth: usize, parse_fn: ParseFn) -> Vec<Block> {
     let prev = ORG_QUOTE_DEPTH.with(|c| c.replace(depth));
-    let prev_q = ORG_IN_QUOTE.with(|c| c.replace(true)); // suppress headlines (C2)
-    let r = parse(body);
-    ORG_IN_QUOTE.with(|c| c.set(prev_q));
+    let r = parse_fn(body, Ctx { in_item: false, in_quote: true });
     ORG_QUOTE_DEPTH.with(|c| c.set(prev));
     r
 }
@@ -1335,12 +1631,23 @@ struct Collapse {
 /// item that is *first at its level*, terminating at (and keeping) the first ancestor
 /// level that has a prior sibling; the failing item onward re-parses as a Paragraph.
 /// `collapse_resume` reproduces that bubble from the flat indent sequence.
-fn collect_list(lines: &[Line], start: usize) -> Result<(Block, usize), Collapse> {
+///
+/// `hi` bounds every line scan to THIS body (streaming: a list inside a callout window
+/// must not absorb the `#+END_…` closer — an INDENTED closer is `is_item`-false and would
+/// otherwise fold as content); at the top level `hi == lines.len()` (legacy: no-op).
+/// `item_ctx`/`parse_fn` re-parse each item's content via the ACTIVE driver (`in_item`).
+fn collect_list(
+    lines: &[Line],
+    start: usize,
+    hi: usize,
+    item_ctx: Ctx,
+    parse_fn: ParseFn,
+) -> Result<(Block, usize), Collapse> {
     let mut flat: Vec<ListItem> = Vec::new();
     let mut flat_lines: Vec<usize> = Vec::new();
     let mut flat_indents: Vec<u32> = Vec::new();
     let mut i = start;
-    while i < lines.len() {
+    while i < hi {
         let t = lines[i].text;
         // terminators at a would-be marker position: blank line, a col-0 headline, or
         // any non-marker line (mldoc heading-lookahead / `format_checkbox` failure).
@@ -1357,8 +1664,8 @@ fn collect_list(lines: &[Line], start: usize) -> Result<(Block, usize), Collapse
         let mut j = i + 1;
         let mut trigger: Option<usize> = None;
         loop {
-            if j >= lines.len() {
-                break; // EOF ends this item's content
+            if j >= hi {
+                break; // EOF / body boundary ends this item's content
             }
             let cl = lines[j].text;
             if cl.is_empty() {
@@ -1398,7 +1705,7 @@ fn collect_list(lines: &[Line], start: usize) -> Result<(Block, usize), Collapse
             ordered: marker.ordered,
             number: marker.number,
             indent: cur_indent as u32,
-            content: parse_doc(&content_lines.join("\n"), true),
+            content: parse_fn(&content_lines.join("\n"), item_ctx),
             items: vec![],
             name: vec![],
             checkbox: marker.checkbox,
@@ -2381,5 +2688,207 @@ mod tests {
     #[test]
     fn adversarial_runs_terminate() {
         let _ = parse(&"* h\n".repeat(20000));
+    }
+}
+
+// ===========================================================================
+// M3 differential: streaming Org driver == legacy `parse_doc`, span-stripped
+// ===========================================================================
+
+/// Asserts the new streaming Org block driver (`parse_org_streaming`) is byte-exact to the
+/// legacy `parse_doc` recursion driver (the oracle that is itself byte-exact to mldoc),
+/// span-stripped (window-body child spans are GLOBAL, transformed-body spans LOCAL — spans
+/// are not observable; the node gate's `compare.mjs` drops them too). Driven by a generated
+/// Org-grammar fuzz (nested `#+BEGIN`/`#+END`, `>` quotes, lists, drawers, headlines,
+/// `* #+BEGIN_X` splits) PLUS the org entries of `harness/corpus.fuzz.json` if present.
+/// Run WITHOUT the seam set (the legacy side must recurse legacy).
+#[cfg(test)]
+mod streaming_eq_org {
+    use super::*;
+
+    fn root() -> Ctx {
+        Ctx { in_item: false, in_quote: false }
+    }
+
+    /// serde-serialize a block tree and recursively drop every `span` key (the only
+    /// allowed divergence: window child spans are global, transformed local).
+    fn strip_spans(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(m) => {
+                m.remove("span");
+                for (_, vv) in m.iter_mut() {
+                    strip_spans(vv);
+                }
+            }
+            serde_json::Value::Array(a) => {
+                for vv in a.iter_mut() {
+                    strip_spans(vv);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn canon(blocks: &[Block]) -> String {
+        let mut v = serde_json::to_value(blocks).unwrap();
+        strip_spans(&mut v);
+        v.to_string()
+    }
+
+    /// Compare both drivers on one input; on mismatch panic with the exact diverging input.
+    fn check(input: &str) {
+        let legacy = parse_doc(input, false);
+        let streaming = parse_org_streaming(input, root());
+        let a = canon(&legacy);
+        let b = canon(&streaming);
+        assert!(
+            a == b,
+            "streaming != legacy on {:?}\n  legacy   : {}\n  streaming: {}",
+            input,
+            a,
+            b,
+        );
+    }
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            // xorshift64*
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545F4914F6CDD1D)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    const TOKENS: &[&str] = &[
+        "* ", "** ", "*** ", "*", "/", "_", "+", "~", "=", "^", "^^",
+        "[[", "]]", "][", "[[t][l]]", "[fn:1] ", "<2026-06-26 Fri>",
+        "#+TITLE: ", "#+BEGIN_SRC ", "#+END_SRC", "#+BEGIN_QUOTE", "#+END_QUOTE",
+        "#+BEGIN_FOO", "#+END_FOO", "#+BEGIN_EXAMPLE", "#+END_EXAMPLE", "#+NAME: ",
+        ":PROPERTIES:", ":key: value", ":END:", ":LOGBOOK:", "SCHEDULED: ",
+        "TODO ", "DONE ", "[#A] ", ":tag1:tag2:", "- ", "+ ", "1. ", "| a | b |",
+        "\\", "a", "b", " ", "  ", "\n", "café", ".", "/", "_x", "^y", "word",
+        "[:div]", "[:a]", "> ", ">", "-----", "$$x$$", "<div>x</div>",
+    ];
+
+    fn gen_tokens(rng: &mut Rng, max_len: usize) -> String {
+        let len = 1 + rng.below(max_len);
+        let mut s = String::new();
+        for _ in 0..len {
+            s.push_str(TOKENS[rng.below(TOKENS.len())]);
+        }
+        s
+    }
+
+    /// A deliberately nested callout/quote/list document, 1..=depth deep, with indented
+    /// and column-0 bodies, plain text, lists and `>` quotes interspersed.
+    fn gen_nested(rng: &mut Rng, depth: usize) -> String {
+        if depth == 0 {
+            return gen_tokens(rng, 4);
+        }
+        let names = ["QUOTE", "FOO", "SRC", "EXAMPLE", "BAR"];
+        let name = names[rng.below(names.len())];
+        let indent = match rng.below(3) {
+            0 => "",
+            1 => "  ",
+            _ => "    ",
+        };
+        let mut body = String::new();
+        let inner_count = 1 + rng.below(2);
+        for _ in 0..inner_count {
+            match rng.below(5) {
+                0 => {
+                    body.push_str(indent);
+                    body.push_str(&gen_nested(rng, depth - 1));
+                    body.push('\n');
+                }
+                1 => {
+                    body.push_str(indent);
+                    body.push_str("- item\n");
+                    body.push_str(indent);
+                    body.push_str("+ two\n");
+                }
+                2 => {
+                    body.push_str(indent);
+                    body.push_str("> quoted\n");
+                }
+                3 => {
+                    body.push_str(indent);
+                    body.push_str(&gen_tokens(rng, 3));
+                    body.push('\n');
+                }
+                _ => {
+                    body.push_str(indent);
+                    body.push_str("* head\n");
+                }
+            }
+        }
+        format!("#+BEGIN_{name}\n{body}#+END_{name}\n")
+    }
+
+    #[test]
+    fn streaming_matches_legacy_generated() {
+        assert!(
+            std::env::var("LSDOC_BLOCK_STREAMING").is_err(),
+            "run this differential WITHOUT LSDOC_BLOCK_STREAMING (the legacy side must recurse legacy)"
+        );
+        let mut rng = Rng(0x9E3779B97F4A7C15);
+        // token soup (short, adversarial — mirrors the node fuzz alphabet)
+        for _ in 0..30_000 {
+            check(&gen_tokens(&mut rng, 14));
+        }
+        // deliberately nested callout/quote/list documents (2..=6 deep)
+        for _ in 0..8_000 {
+            let depth = 2 + rng.below(5);
+            check(&gen_nested(&mut rng, depth));
+        }
+        // hand-picked hazards (the four M3 risks + the clamp/absorb gates)
+        for s in [
+            "#+BEGIN_QUOTE\n[:div\n#+END_QUOTE\n]",
+            "#+BEGIN_QUOTE\n\\begin{eq}\n#+END_QUOTE\n\\end{eq}",
+            "#+BEGIN_QUOTE\n* x\n#+END_QUOTE",
+            "#+BEGIN_FOO\n* x\n#+END_FOO",
+            "#+BEGIN_FOO\n* #+BEGIN_BAR\n#+END_FOO\n#+END_BAR",
+            "#+BEGIN_QUOTE\n#+BEGIN_QUOTE\nx\n#+END_QUOTE\n\n#+END_QUOTE\ny",
+            "#+BEGIN_QUOTE\n  indented body\n#+END_QUOTE",
+            "#+BEGIN_QUOTE\n- a\n  - nested\n#+END_QUOTE",
+            "* #+BEGIN_QUOTE\nq\n#+END_QUOTE",
+            "#+BEGIN_QUOTE\n> q\n> r\n#+END_QUOTE\n\nafter",
+            "#+BEGIN_FOO\n:PROPERTIES:\n:a: b\n:END:\n#+END_FOO",
+            "#+BEGIN_QUOTE\n[fn:1] body\n#+END_QUOTE",
+            "#+BEGIN_QUOTE\n#+END_QUOTE\n\nx",
+            "#+BEGIN_QUOTE\n#+BEGIN_SRC\ncode\n#+END_SRC\n#+END_QUOTE",
+        ] {
+            check(s);
+        }
+    }
+
+    #[test]
+    fn streaming_matches_legacy_fuzz_corpus() {
+        assert!(std::env::var("LSDOC_BLOCK_STREAMING").is_err());
+        // the org entries of the last-run node fuzz corpus, if present.
+        let Ok(raw) = std::fs::read_to_string("harness/corpus.fuzz.json") else {
+            return;
+        };
+        let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) else {
+            return;
+        };
+        let mut n = 0usize;
+        for c in &arr {
+            if c.get("format").and_then(|f| f.as_str()) != Some("org") {
+                continue;
+            }
+            if let Some(input) = c.get("input").and_then(|i| i.as_str()) {
+                check(input);
+                n += 1;
+            }
+        }
+        eprintln!("streaming_eq_org: checked {n} org corpus.fuzz entries");
     }
 }
