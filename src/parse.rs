@@ -9,13 +9,14 @@
 //! (the full corpus differential + `blockgate`/`inlinegate` + the fuzz tripwires),
 //! comparing the whole projection — block tree AND inline content — modulo `span`.
 //!
-//! Complexity: O(n·log n) typical. Each line is classified in O(line length); container
-//! closers are found ON-DEMAND at the dispatch point (never eagerly pre-paired). Callout
-//! (`#+END_…`) and drawer (`:END:`) closers use per-construct sorted closer-line indexes
-//! (`partition_point` ⇒ O(log n)) plus a per-name "no closer ahead" absence memo; fences
-//! (where the opener and closer tokens are identical) use a monotone per-char cursor (O(1)
-//! amortized). On-demand finding is context-aware: a fence/closer inside a callout or drawer
-//! body (which the main loop jumps past) can never pair with one outside it.
+//! Complexity: O(n). Each line is classified in O(line length); container closers are found
+//! ON-DEMAND at the dispatch point (never eagerly pre-paired). Callout (`#+END_…`), drawer
+//! (`:END:`) and fence closers all use MONOTONE CURSORS (advance-only) over per-construct
+//! sorted closer-line indexes — the drivers query each in non-decreasing line order, so a
+//! lookup is O(1) amortized, not the O(log n) of a binary search (see `EndTrie::find`,
+//! `find_drawer_end`, `find_matching_fence`). On-demand finding is context-aware: a
+//! fence/closer inside a callout or drawer body (which the main loop jumps past) can never
+//! pair with one outside it.
 //!
 //! mldoc quirks replicated (see DECISIONS.md / the block probe):
 //! - only `-` bullets become `Bullet` (mldoc `Heading{unordered}`); `*`/`+` and
