@@ -462,6 +462,33 @@ add("quote-break", "> a\n>> b\n>> c");           // Q{ P[a], Q{ P[b,Break,c,Brea
 add("quote-break", "> a\n> #+BEGIN_SRC\n> x\n> #+END_SRC"); // Q{ P[a], src } — para before a block in a quote
 add("quote-break", "> a\n> -----");             // Q{ P[a], hr }
 
+// === Audit correctness fixes (subagent-tasks/notes/audit-correctness-opus-rewrite.md) ===
+// F2: `#+BEGIN_X` / `>`-quote bodies suppress {headline, drawer, footnote-def} (→ text), while
+// list/table/directive/comment/src/hr/example stay; a para drops its trailing Break before a block.
+add("body-suppress", "#+BEGIN_FOO\n** head\n#+END_FOO");          // custom[ P["** head"] ]
+add("body-suppress", "#+BEGIN_FOO\n* head\n#+END_FOO");           // custom[ P["* head"] ]
+add("body-suppress", "#+BEGIN_FOO\n[fn:1] body\n#+END_FOO");      // custom[ P[fnref," body"] ]
+add("body-suppress", "#+BEGIN_FOO\n:LOGBOOK:\ny\n:END:\n#+END_FOO");      // custom[ example, P, example ]
+add("body-suppress", "#+BEGIN_QUOTE\n:LOGBOOK:\ny\n:END:\n#+END_QUOTE");  // quote[ example, P, example ]
+add("body-suppress", "#+BEGIN_QUOTE\n[fn:1] body\n#+END_QUOTE");  // quote[ P[fnref," body"] ]
+add("body-suppress", "> q\n:LOGBOOK:\nx\n:END:");                 // quote[ P[q], example, P, example ]
+add("body-suppress", "> [fn:1] body");                           // quote[ P[fnref," body"] ]
+add("body-suppress", "#+BEGIN_FOO\n- item\n#+END_FOO");          // custom[ list ] — list KEPT
+add("body-suppress", "#+BEGIN_FOO\n#+TITLE: x\n#+END_FOO");       // custom[ directive ] — directive KEPT
+add("body-suppress", "#+BEGIN_FOO\ntext\n- item\n#+END_FOO");    // custom[ P[text], list ] — Break trimmed
+// F3: `:PROPERTIES:` all-or-nothing — any non-property body line → generic Drawer (no value refs).
+add("props-allornothing", ":PROPERTIES:\nfoo\n:END:");           // drawer "properties"
+add("props-allornothing", ":PROPERTIES:\nfoo\n:k: v\n:END:");    // drawer (bad first line)
+add("props-allornothing", ":PROPERTIES:\n:k: v\n\n:END:");       // drawer (blank body line)
+add("props-allornothing", ":PROPERTIES:\nfoo\n:k: [[Page]]\n:END:"); // drawer — NO phantom page ref
+add("props-allornothing", ":PROPERTIES:\n:k: v\n:END:\n#+FOO: bar"); // properties (valid + directive fold)
+// F4: an empty `* ` headline marker's trailing-ws paragraph is DROPPED before a following block.
+add("empty-marker-drop", "* \n#+BEGIN_SRC\ncode\n#+END_SRC");    // bullet, src
+add("empty-marker-drop", "* \n-----");                           // bullet, hr
+add("empty-marker-drop", "* \n:LOGBOOK:\nx\n:END:");             // bullet, drawer
+add("empty-marker-drop", "* \n| a | b |");                       // bullet, table
+add("empty-marker-drop", "* \nplain");                           // bullet, paragraph (real content KEPT)
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

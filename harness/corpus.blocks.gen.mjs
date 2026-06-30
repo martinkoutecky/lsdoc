@@ -359,6 +359,41 @@ add("tine-ts", "DEADLINE: <2026-01-01 Thu>");             // paragraph[Timestamp
 add("tine-ts", "`SCHEDULED: <2026-01-01 Thu>`");          // paragraph[Code] — NOT a timestamp
 add("tine-ts", "```\nSCHEDULED: <2026-01-01 Thu>\n```");  // src — NOT a timestamp
 
+// === Audit correctness fixes (subagent-tasks/notes/audit-correctness-opus-rewrite.md) ===
+// F6: md Quote/Custom absorb the trailing blank line (mldoc `<* optional eols`).
+add("absorb-quote", "> q\n\ntext");                       // quote, paragraph["text"]
+add("absorb-quote", "> q\n\n# h");                        // quote, heading
+add("absorb-quote", "> q\nlazy\n\nafter");                // quote, paragraph["after"]
+add("absorb-callout", "#+BEGIN_QUOTE\nx\n#+END_QUOTE\n\ntext"); // quote, paragraph["text"]
+add("absorb-callout", "#+BEGIN_FOO\nx\n#+END_FOO\n\ntext");     // custom, paragraph["text"]
+// F3: `:PROPERTIES:` is all-or-nothing — any non-`:key: value` body line → generic Drawer.
+add("props-allornothing", ":PROPERTIES:\nfoo\n:END:");          // drawer "properties"
+add("props-allornothing", ":PROPERTIES:\n:k: v\nfoo\n:END:");   // drawer (one bad line)
+add("props-allornothing", ":PROPERTIES:\n:k: v\n\n:END:");      // drawer (blank body line)
+add("props-allornothing", ":PROPERTIES:\nkey:: v\n:END:");      // drawer (md `key::` ≠ `:key:`)
+add("props-allornothing", ":PROPERTIES:\n:k: v\n:m: w\n:END:"); // properties (all valid)
+// F1: md blockquote body uses the FULL block grammar MINUS {heading,bullet,property,footnote,drawer}.
+add("quote-body", "> q\n---");                            // quote[ P[q], hr ]
+add("quote-body", "> q\n| a | b |");                      // quote[ P[q], table ]
+add("quote-body", "> q\n$$x$$");                          // quote[ P[q], displayed_math ]
+add("quote-body", "> q\n<div>x</div>");                   // quote[ P[q], raw_html ]
+add("quote-body", "> q\n```\ncode\n```");                 // quote[ P[q], src ]
+add("quote-body", "> q\n\\begin{eq}a\\end{eq}");          // quote[ P[q,Break], latex_env, P[Break] ]
+add("quote-body", "> cont\n#+BEGIN_QUOTE\n#+END_QUOTE");  // quote[ P[cont], quote[] ] — no phantom refs
+add("quote-body", "> a:: b");                             // quote[ P ] — property stays text
+add("quote-body", "> # h");                               // quote[ P ] — heading stays text
+add("quote-body", "> - x");                               // quote[ P ] — dash bullet stays text
+// F5: a `>` on a CONTINUATION line nests a child Quote (one `>` stripped/line, not flattened).
+add("quote-nest", "> a\n> > b");                          // quote[ P[a], quote[ P[b] ] ]
+add("quote-nest", "> a\n> > b\n> > > c");                 // quote[ P[a], quote[ P[b], quote[ P[c] ] ] ]
+// F4: an empty `## `/`- ` marker's trailing-ws paragraph is DROPPED before a following block.
+add("empty-marker-drop", "## \n```\ncode\n```");          // heading, src (no spurious paragraph)
+add("empty-marker-drop", "## \n---");                     // heading, hr
+add("empty-marker-drop", "## \n| a | b |");               // heading, table
+add("empty-marker-drop", "- \n#+BEGIN_QUOTE\n#+END_QUOTE"); // bullet, quote
+add("empty-marker-drop", "## \nplain");                   // heading, paragraph (real content KEPT)
+add("empty-marker-drop", "## \n* x");                     // heading, paragraph[" "], list (KEPT before list)
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

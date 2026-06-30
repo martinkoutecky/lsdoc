@@ -1313,5 +1313,145 @@
   "id": "b262",
   "cat": "tine-ts",
   "input": "```\nSCHEDULED: <2026-01-01 Thu>\n```"
+ },
+ {
+  "id": "b263",
+  "cat": "absorb-quote",
+  "input": "> q\n\ntext"
+ },
+ {
+  "id": "b264",
+  "cat": "absorb-quote",
+  "input": "> q\n\n# h"
+ },
+ {
+  "id": "b265",
+  "cat": "absorb-quote",
+  "input": "> q\nlazy\n\nafter"
+ },
+ {
+  "id": "b266",
+  "cat": "absorb-callout",
+  "input": "#+BEGIN_QUOTE\nx\n#+END_QUOTE\n\ntext"
+ },
+ {
+  "id": "b267",
+  "cat": "absorb-callout",
+  "input": "#+BEGIN_FOO\nx\n#+END_FOO\n\ntext"
+ },
+ {
+  "id": "b268",
+  "cat": "props-allornothing",
+  "input": ":PROPERTIES:\nfoo\n:END:"
+ },
+ {
+  "id": "b269",
+  "cat": "props-allornothing",
+  "input": ":PROPERTIES:\n:k: v\nfoo\n:END:"
+ },
+ {
+  "id": "b270",
+  "cat": "props-allornothing",
+  "input": ":PROPERTIES:\n:k: v\n\n:END:"
+ },
+ {
+  "id": "b271",
+  "cat": "props-allornothing",
+  "input": ":PROPERTIES:\nkey:: v\n:END:"
+ },
+ {
+  "id": "b272",
+  "cat": "props-allornothing",
+  "input": ":PROPERTIES:\n:k: v\n:m: w\n:END:"
+ },
+ {
+  "id": "b273",
+  "cat": "quote-body",
+  "input": "> q\n---"
+ },
+ {
+  "id": "b274",
+  "cat": "quote-body",
+  "input": "> q\n| a | b |"
+ },
+ {
+  "id": "b275",
+  "cat": "quote-body",
+  "input": "> q\n$$x$$"
+ },
+ {
+  "id": "b276",
+  "cat": "quote-body",
+  "input": "> q\n<div>x</div>"
+ },
+ {
+  "id": "b277",
+  "cat": "quote-body",
+  "input": "> q\n```\ncode\n```"
+ },
+ {
+  "id": "b278",
+  "cat": "quote-body",
+  "input": "> q\n\\begin{eq}a\\end{eq}"
+ },
+ {
+  "id": "b279",
+  "cat": "quote-body",
+  "input": "> cont\n#+BEGIN_QUOTE\n#+END_QUOTE"
+ },
+ {
+  "id": "b280",
+  "cat": "quote-body",
+  "input": "> a:: b"
+ },
+ {
+  "id": "b281",
+  "cat": "quote-body",
+  "input": "> # h"
+ },
+ {
+  "id": "b282",
+  "cat": "quote-body",
+  "input": "> - x"
+ },
+ {
+  "id": "b283",
+  "cat": "quote-nest",
+  "input": "> a\n> > b"
+ },
+ {
+  "id": "b284",
+  "cat": "quote-nest",
+  "input": "> a\n> > b\n> > > c"
+ },
+ {
+  "id": "b285",
+  "cat": "empty-marker-drop",
+  "input": "## \n```\ncode\n```"
+ },
+ {
+  "id": "b286",
+  "cat": "empty-marker-drop",
+  "input": "## \n---"
+ },
+ {
+  "id": "b287",
+  "cat": "empty-marker-drop",
+  "input": "## \n| a | b |"
+ },
+ {
+  "id": "b288",
+  "cat": "empty-marker-drop",
+  "input": "- \n#+BEGIN_QUOTE\n#+END_QUOTE"
+ },
+ {
+  "id": "b289",
+  "cat": "empty-marker-drop",
+  "input": "## \nplain"
+ },
+ {
+  "id": "b290",
+  "cat": "empty-marker-drop",
+  "input": "## \n* x"
  }
 ]

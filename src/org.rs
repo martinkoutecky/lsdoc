@@ -242,6 +242,9 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
     }];
     let mut collapse_floor = 0usize; // shared & monotone (i is monotone across frames).
     let mut fence_cursor: usize = 0;
+    // F4: set by an empty headline marker (`* ` trailing-ws para), consumed by the NEXT line's
+    // dispatch — a drop-trigger block drops the para, anything else clears the flag.
+    let mut ws_drop = false;
     let mut i = 0;
 
     loop {
@@ -273,6 +276,7 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
                 &mut top.absorb,
                 &mut collapse_floor,
                 &mut fence_cursor,
+                &mut ws_drop,
                 ctx,
                 hi,
                 &end_trie,
@@ -370,6 +374,7 @@ fn dispatch_org_line<'a>(
     absorb: &mut bool,
     collapse_floor: &mut usize,
     fence_cursor: &mut usize,
+    ws_drop: &mut bool,
     ctx: Ctx,
     hi: usize,
     end_trie: &EndTrie,
@@ -384,6 +389,10 @@ fn dispatch_org_line<'a>(
     let line_start = lines[i].start;
     let line_end = lines[i].end;
     let in_item = ctx.in_item;
+    // F4: read + clear the empty-marker ws-drop flag set by the PREVIOUS line. A drop-trigger
+    // block (drawer/table/fence/`#+BEGIN`/verbatim/`>`-quote/`$$`/raw-html/hr) drops the empty
+    // `* ` headline's trailing-ws paragraph; any other line leaves the flag cleared.
+    let was_ws_drop = std::mem::replace(ws_drop, false);
     // A paragraph flushed because a following BLOCK begins drops its trailing `Break_Line` when
     // that block parser claims the eol first (mldoc `between_eols`) — true in BOTH list-item
     // content (`in_item`) AND a blockquote body (`in_quote`); at the document level
@@ -421,13 +430,28 @@ fn dispatch_org_line<'a>(
         return Step::Next(i + 1);
     }
 
-    // 2. drawer `:PROPERTIES:`/`:NAME:` … `:END:` — not a list-item content block. The
-    // `:END:` must lie inside THIS body (`< hi`); else it belongs to an enclosing body.
-    if let Some(name) = drawer_begin(t).filter(|_| !in_item) {
+    // 2. drawer `:PROPERTIES:`/`:NAME:` … `:END:` — not a list-item content block, and NOT
+    // inside a `#+BEGIN_X` / `>`-quote body (mldoc's `block_content_parsers` omits `Drawer`,
+    // so a `:NAME:` there is verbatim/text). The `:END:` must lie inside THIS body (`< hi`);
+    // else it belongs to an enclosing body. F2.
+    if let Some(name) = drawer_begin(t).filter(|_| !in_item && !ctx.in_quote) {
         if let Some(close) = find_drawer_end(drawer_end_idxs, i) {
             if close < hi {
+                if was_ws_drop && para_ws_only(para, input) {
+                    *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
+                }
                 flush_para(out, para, input, trim);
-                if name == "properties" {
+                // mldoc (`drawer.ml`) makes a `Property_Drawer` ONLY when the WHOLE body
+                // parses as `many1 property` — every body line a valid `:key: value` (empty
+                // body allowed). If ANY line fails (plain text, blank, markdown `key:: v`),
+                // `parse1` can't reach `:END:` → it falls back to `drawer_parse` → a generic
+                // `Drawer{name:"properties"}` (no props, no directive folding, no value
+                // ref-walking). C3.
+                if name == "properties"
+                    && lines[i + 1..close]
+                        .iter()
+                        .all(|l| drawer_property(l.text).is_some())
+                {
                     let mut props: Vec<(String, String)> = lines[i + 1..close]
                         .iter()
                         .filter_map(|l| drawer_property(l.text))
@@ -536,6 +560,7 @@ fn dispatch_org_line<'a>(
             let content_len = t.trim_end_matches([' ', '\t']).len();
             if content_len < t.len() {
                 *para = Some((line_start + content_len, line_end));
+                *ws_drop = true; // F4: droppable if the next line opens a block.
             }
         }
         return Step::Next(i + 1);
@@ -543,6 +568,9 @@ fn dispatch_org_line<'a>(
 
     // 4. table (group of consecutive well-formed `|…|` rows), bounded by `hi`.
     if is_table_row(t) {
+        if was_ws_drop && para_ws_only(para, input) {
+            *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
+        }
         flush_para(out, para, input, trim);
         let start = i;
         let mut ni = i;
@@ -560,12 +588,21 @@ fn dispatch_org_line<'a>(
     if let Some((name, content, consumed_end)) =
         crate::inline::parse_latex_env(&input[..body_end], line_start, line_content_end)
     {
-        flush_para(out, para, input, trim);
+        // latex_env is the ONLY block_content construct that does NOT consume the preceding eol,
+        // so inside a `#+BEGIN_X` / `>`-quote body a paragraph KEEPS its trailing Break before it
+        // and the eol AFTER it becomes a Break-paragraph (mldoc `Paragraph.sep`-last). Never trim.
+        flush_para(out, para, input, false);
         out.push(Block::LatexEnv { name, content, span: Some(Span(line_start, consumed_end)) });
         *absorb = false;
         let mut ni = i + 1;
         while ni < lines.len() && lines[ni].start < consumed_end {
             ni += 1;
+        }
+        if ctx.in_quote {
+            let trail_end = if ni < lines.len() { lines[ni].start } else { body_end };
+            if consumed_end < trail_end {
+                *para = Some((consumed_end, trail_end));
+            }
         }
         return Step::Next(ni);
     }
@@ -575,6 +612,9 @@ fn dispatch_org_line<'a>(
     if let Some((_c, mend)) = fence_marker(t) {
         if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
             if close < hi {
+                if was_ws_drop && para_ws_only(para, input) {
+                    *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
+                }
                 flush_para(out, para, input, trim);
                 let code = if close > i + 1 {
                     input[lines[i + 1].start..lines[close - 1].end].to_string()
@@ -596,6 +636,10 @@ fn dispatch_org_line<'a>(
     if let Some(name) = block_begin(t) {
         if let Some(close) = end_trie.find(&name, i) {
             if close < hi {
+                if was_ws_drop && para_ws_only(para, input) {
+                    *para = None; // F4: drop the empty `* ` trailing-ws para (driver flushes
+                                  // for QUOTE/custom Open; src/example flush in place below).
+                }
                 let lname = name.to_ascii_lowercase();
                 match lname.as_str() {
                     "src" => {
@@ -626,11 +670,15 @@ fn dispatch_org_line<'a>(
                     _ => {
                         let indent_strip =
                             if close > i + 1 { leading_ws(lines[i + 1].text) } else { 0 };
-                        // custom does NOT reset the quote flag — it INHERITS the parent's.
+                        // mldoc reparses a custom `#+BEGIN_X` body with `block_content_parsers`
+                        // — the SAME grammar as a QUOTE body (omits headline/drawer/footnote)
+                        // — so the child context is "in block content" (`in_quote: true`),
+                        // which also drops a paragraph's trailing Break before a following
+                        // block (mldoc `between_eols`/`concat`). F2.
                         return Step::Open {
                             close,
                             builder: Builder::Custom(lname),
-                            child_ctx: Ctx { in_item: false, in_quote: ctx.in_quote },
+                            child_ctx: Ctx { in_item: false, in_quote: true },
                             indent_strip,
                         };
                     }
@@ -642,6 +690,9 @@ fn dispatch_org_line<'a>(
 
     // 7. verbatim block (Org): consecutive lines starting with `:` → Example. Bounded by `hi`.
     if is_verbatim_line(t) {
+        if was_ws_drop && para_ws_only(para, input) {
+            *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
+        }
         flush_para(out, para, input, trim);
         let start = i;
         let mut code = String::new();
@@ -663,6 +714,9 @@ fn dispatch_org_line<'a>(
     // `build_org_quote_streaming` (O(n), uncapped). The open paragraph is flushed by the
     // driver (like `Step::Open`), so `out`/`para`/`absorb` are untouched here.
     if let Some(first_content) = quote_first_line(t) {
+        if was_ws_drop && para_ws_only(para, input) {
+            *para = None; // F4: drop the empty `* ` trailing-ws para (driver flushes the Quote).
+        }
         let start = i;
         let mut body = String::new();
         body.push_str(&first_content);
@@ -684,6 +738,9 @@ fn dispatch_org_line<'a>(
 
     // 9. block-level displayed math `$$ … $$`.
     if let Some(math) = displayed_math(t) {
+        if was_ws_drop && para_ws_only(para, input) {
+            *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
+        }
         flush_para(out, para, input, trim);
         out.push(Block::DisplayedMath { text: math, span: Some(Span(line_start, line_end)) });
         *absorb = false;
@@ -692,15 +749,20 @@ fn dispatch_org_line<'a>(
 
     // 10. raw HTML (single line, complete element).
     if is_raw_html(t) {
+        if was_ws_drop && para_ws_only(para, input) {
+            *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
+        }
         flush_para(out, para, input, trim);
         out.push(Block::RawHtml { text: t.to_string(), span: Some(Span(line_start, line_end)) });
         *absorb = false;
         return Step::Next(i + 1);
     }
 
-    // 11. footnote definition `[fn:name] text` — not a list-item content block. The body
-    // absorbs following continuation lines (mldoc `many1 l`); bounded by `hi`.
-    if let Some((name, content)) = footnote_def(t).filter(|_| !in_item) {
+    // 11. footnote definition `[fn:name] text` — not a list-item content block, and NOT
+    // inside a `#+BEGIN_X` / `>`-quote body (mldoc's `block_content_parsers` omits
+    // `Footnote`, so `[fn:n] …` there stays a paragraph with an inline footnote ref). The
+    // body absorbs following continuation lines (mldoc `many1 l`); bounded by `hi`. F2.
+    if let Some((name, content)) = footnote_def(t).filter(|_| !in_item && !ctx.in_quote) {
         flush_para(out, para, input, trim);
         let mut body = strip_cr_eol(content, line_has_nl(input, &lines[i])).to_string();
         let mut j = i + 1;
@@ -748,6 +810,9 @@ fn dispatch_org_line<'a>(
 
     // 13. horizontal rule (exactly 5 dashes).
     if is_org_hr(t) {
+        if was_ws_drop && para_ws_only(para, input) {
+            *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
+        }
         flush_para(out, para, input, trim);
         out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
         *absorb = false;
@@ -821,6 +886,19 @@ fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &s
             inline: org_inline(&input[s..e]),
             span: Some(Span(s, e)),
         });
+    }
+}
+
+/// Is the open paragraph entirely whitespace (spaces/tabs/eols)? F4: an empty `* ` headline
+/// marker's trailing-ws paragraph is dropped when the immediately following line opens a
+/// `Block`/`Hr`/`Table`/verbatim/`:`-drawer construct (mldoc's headline `ws *> title`
+/// lookahead consumes the trailing ws in that case).
+fn para_ws_only(para: &Option<(usize, usize)>, input: &str) -> bool {
+    match para {
+        Some((s, e)) => input.as_bytes()[*s..*e]
+            .iter()
+            .all(|&b| matches!(b, b' ' | b'\t' | b'\n' | b'\r')),
+        None => false,
     }
 }
 

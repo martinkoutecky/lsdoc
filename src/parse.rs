@@ -35,6 +35,17 @@
 use crate::projection::{Block, Inline, ListItem, Span};
 use std::collections::HashMap;
 
+/// Depth guard for the ONE md re-dispatch (`build_md_quote`'s residual reparse). The F1/F5
+/// `>`-quote nesting makes a `>`-on-continuation open a child Quote re-dispatched through the
+/// driver; an adversarial increasing-`>`-per-line spine (O(d²) INPUT, fuzz-unreachable, where
+/// mldoc itself is O(n²)+stack-overflow) would otherwise recurse to depth = #lines and SIGABRT.
+/// Mirrors `org.rs`'s `BLOCK_NEST_CAP`: cap the residual recursion + degrade gracefully to a flat
+/// Paragraph. The cap is unreachable by any gated / realistic / fuzz input (deepest is depth ~3).
+const BLOCK_NEST_CAP: usize = 64;
+std::thread_local! {
+    static MD_BLOCK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 struct Line<'a> {
     start: usize, // byte offset of line start
     end: usize,   // byte offset just past the trailing '\n' (or EOF)
@@ -45,7 +56,7 @@ pub fn parse(input: &str) -> Vec<Block> {
     // Single-pass streaming block driver: O(n) time, O(depth) HEAP (the explicit container
     // stack), NO native recursion and NO depth cap. Byte-exact to mldoc (gated by `harness/`).
     // (The deep-nesting recurse-on-body — mldoc's O(n²) + stack-overflow — is gone.)
-    parse_impl(input)
+    parse_md_streaming(input, false)
 }
 
 /// The outcome of classifying ONE line (`dispatch_md_line`): either advance to line
@@ -76,10 +87,14 @@ impl Builder {
 
 /// One open container on the streaming driver's explicit stack. Only re-dispatched
 /// callout bodies become frames; everything else writes into the top frame's `out`/`para`.
-/// md needs no context flags and no `absorb` (its blank handling is unconditional) — the
-/// frame is exactly `hi` + the body accumulators + the captured opener (root has none).
+/// `in_quote` marks a `>`-blockquote body (carried by the re-dispatch root + inherited by a
+/// callout nested inside one) — the frame is `hi` + the body accumulators + the captured
+/// opener (root has none) + the context flag.
 struct Frame {
     hi: usize,                       // EXCLUSIVE closer line index; line `hi` is the closer.
+    in_quote: bool,                  // is THIS body a `>`-blockquote body? (suppresses
+                                     // heading/bullet/property/footnote/drawer, trims para
+                                     // breaks before blocks — mldoc `block_content_parsers`).
     out: Vec<Block>,                 // children of THIS body.
     para: Option<(usize, usize)>,    // the open paragraph byte-window for THIS body.
     builder: Option<Builder>,        // the opener → emitted on pop (None for the root).
@@ -121,7 +136,10 @@ fn build_indexes(lines: &[Line]) -> (EndTrie, Vec<usize>, Vec<usize>) {
 /// removed source of O(n²) + stack-overflow). Correctness: every closer-search in `dispatch_md_line`
 /// is bounded by the frame's `hi`/`body_end`, so a closer/`\end{}`/`]`/run-line belongs to THIS
 /// body, never the enclosing one. O(n) time, O(depth) HEAP — no native recursion, no depth cap.
-fn parse_impl(input: &str) -> Vec<Block> {
+/// `root_in_quote = false` at the document level; `true` when re-dispatching a `>`-blockquote
+/// body (F1: the body is parsed with the full block grammar MINUS heading/bullet/property/
+/// footnote/drawer, and a paragraph's trailing Break is trimmed before a following block).
+fn parse_md_streaming(input: &str, root_in_quote: bool) -> Vec<Block> {
     let mut lines = split_lines(input);
     let last_rbracket = input.rfind(']');
     let (end_trie, drawer_end_idxs, fence_lines) = build_indexes(&lines);
@@ -131,12 +149,16 @@ fn parse_impl(input: &str) -> Vec<Block> {
     // are callout bodies, popped (and emitted via `builder.finish`) when `i` reaches their `hi`.
     let mut stack: Vec<Frame> = vec![Frame {
         hi: n,
+        in_quote: root_in_quote,
         out: Vec::new(),
         para: None,
         builder: None,
         open_span_start: 0,
     }];
     let mut fence_cursor: usize = 0; // monotone & shared across the whole pass (`i` is monotone).
+    // F4: set by an empty heading/bullet marker (trailing-ws para), consumed by the NEXT line's
+    // dispatch — a drop-trigger block drops the para, anything else clears the flag.
+    let mut ws_drop = false;
     let mut i = 0;
 
     loop {
@@ -144,11 +166,20 @@ fn parse_impl(input: &str) -> Vec<Block> {
         // have `hi == close <= n-1 < n`, so the root (hi == n) is never popped here.
         while stack.len() > 1 && stack.last().unwrap().hi == i {
             let mut f = stack.pop().unwrap();
-            flush_para(&mut f.out, &mut f.para, input);
+            flush_para(&mut f.out, &mut f.para, input, false);
             let span = Some(Span(f.open_span_start, lines[i].end));
             let block = f.builder.unwrap().finish(f.out, span);
             stack.last_mut().unwrap().out.push(block);
             i += 1; // CONSUME the closer line.
+            // mldoc ends a `#+BEGIN_X` callout (Quote/Custom) with `<* optional eols`
+            // (`between_eols`), swallowing following blank lines so they don't become a
+            // leading Break on the next block (all md callout frames are Quote/Custom, both
+            // absorb). Bounded by the parent frame's `hi`; whitespace-only lines are NOT
+            // eols, so only truly empty lines are absorbed. F6.
+            let top_hi = stack.last().unwrap().hi;
+            while i < top_hi && lines[i].text.is_empty() {
+                i += 1;
+            }
         }
         if i >= n {
             break;
@@ -157,11 +188,14 @@ fn parse_impl(input: &str) -> Vec<Block> {
         let step = {
             let top = stack.last_mut().unwrap();
             let hi = top.hi;
+            let in_quote = top.in_quote;
             dispatch_md_line(
                 i,
                 &mut lines,
                 &mut top.out,
                 &mut top.para,
+                in_quote,
+                &mut ws_drop,
                 hi,
                 &end_trie,
                 &drawer_end_idxs,
@@ -174,14 +208,20 @@ fn parse_impl(input: &str) -> Vec<Block> {
         match step {
             Step::Next(ni) => i = ni,
             Step::Open { close, builder } => {
-                // The dispatch helper did NOT flush para for `Open` — flush the parent's, then
-                // push the body frame and step past the opener line.
-                {
+                // The dispatch helper did NOT flush para for `Open` (but it DID apply the F4
+                // ws-drop) — flush the parent's para (trim if the parent is a quote body), then
+                // push the body frame. A callout nested inside a `>`-quote inherits `in_quote`;
+                // a top-level callout body stays `in_quote = false` (md callout-body grammar is
+                // unchanged — out of the F1 scope).
+                let parent_in_quote = {
                     let top = stack.last_mut().unwrap();
-                    flush_para(&mut top.out, &mut top.para, input);
-                }
+                    let pq = top.in_quote;
+                    flush_para(&mut top.out, &mut top.para, input, pq);
+                    pq
+                };
                 stack.push(Frame {
                     hi: close,
+                    in_quote: parent_in_quote,
                     out: Vec::new(),
                     para: None,
                     builder: Some(builder),
@@ -194,7 +234,7 @@ fn parse_impl(input: &str) -> Vec<Block> {
 
     // Only the root remains (all callout bodies closed before EOF); flush its paragraph.
     let mut root = stack.pop().unwrap();
-    flush_para(&mut root.out, &mut root.para, input);
+    flush_para(&mut root.out, &mut root.para, input, false);
     root.out
 }
 
@@ -211,6 +251,8 @@ fn dispatch_md_line<'a>(
     lines: &mut [Line<'a>],
     out: &mut Vec<Block>,
     para: &mut Option<(usize, usize)>,
+    in_quote: bool,
+    ws_drop: &mut bool,
     hi: usize,
     end_trie: &EndTrie,
     drawer_end_idxs: &[usize],
@@ -224,6 +266,13 @@ fn dispatch_md_line<'a>(
     let t = lines[i].text;
     let line_start = lines[i].start;
     let line_end = lines[i].end;
+    // F1: inside a `>`-blockquote body the paragraph parsers trim a trailing Break before a
+    // following block, and heading/bullet/property/footnote/drawer are suppressed (→ text).
+    let trim = in_quote;
+    // F4: read + clear the empty-marker ws-drop flag set by the PREVIOUS line. A drop-trigger
+    // block (fence/callout/hr/table/`>`-quote/`$$`/raw-html) drops the trailing-ws paragraph;
+    // any other line leaves the flag cleared (so it never leaks past the immediate next line).
+    let was_ws_drop = std::mem::replace(ws_drop, false);
     // Byte offset where THIS body ends (the closer line's start, or EOF at the root). Used to
     // CLAMP the to-end-of-input forward-scanners (`parse_latex_env`, `parse_hiccup`).
     let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
@@ -235,7 +284,10 @@ fn dispatch_md_line<'a>(
     if let Some((_c, mend)) = fence_marker(t) {
         if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
             if close < hi {
-                flush_para(out, para, input);
+                if was_ws_drop && para_ws_only(para, input) {
+                    *para = None; // F4: drop the empty-marker trailing-ws para before a block.
+                }
+                flush_para(out, para, input, trim);
                 let lang = fence_lang(&t[mend..]);
                 let code = if close > i + 1 {
                     input[lines[i + 1].start..lines[close - 1].end].to_string()
@@ -264,6 +316,9 @@ fn dispatch_md_line<'a>(
     if let Some(name) = callout_begin(t) {
         if let Some(close) = end_trie.find(&name, i) {
             if close < hi {
+                if was_ws_drop && para_ws_only(para, input) {
+                    *para = None; // F4: drop the empty-marker trailing-ws para (driver flushes).
+                }
                 let builder = if name.eq_ignore_ascii_case("QUOTE") {
                     Builder::Quote
                 } else {
@@ -283,7 +338,11 @@ fn dispatch_md_line<'a>(
     if let Some((name, content, consumed_end)) =
         crate::inline::parse_latex_env(&input[..body_end], line_start, line_content_end)
     {
-        flush_para(out, para, input);
+        // latex_env is the ONLY block_content construct that does NOT consume the preceding
+        // eol (no `optional eols`/`between_eols`), so inside a `>`-quote body a paragraph KEEPS
+        // its trailing Break before it, and the eol AFTER it becomes a `Paragraph_Sep` →
+        // a Break-paragraph (mldoc's `Paragraph.sep`-last ordering). Never trim. F1.
+        flush_para(out, para, input, false);
         out.push(Block::LatexEnv { name, content, span: Some(Span(line_start, consumed_end)) });
         // resume at the first line starting at/after consumed_end (always > i, and <= hi since
         // consumed_end <= body_end == lines[hi].start).
@@ -291,14 +350,23 @@ fn dispatch_md_line<'a>(
         while ni < lines.len() && lines[ni].start < consumed_end {
             ni += 1;
         }
+        if in_quote {
+            // The trailing eol(s) between the `\end{}` and the next line start a Break-paragraph.
+            let trail_end = if ni < lines.len() { lines[ni].start } else { body_end };
+            if consumed_end < trail_end {
+                *para = Some((consumed_end, trail_end));
+            }
+        }
         return Step::Next(ni);
     }
 
     // 3. heading. `level` = 1 + leading-ws (mldoc bumps level per leading
     // space/tab, uncapped); `size` = `#`-count. An empty heading whose line has
     // trailing whitespace splits into [heading, paragraph(trailing ws)].
-    if let Some((level, size, hend)) = heading_at(t) {
-        flush_para(out, para, input);
+    // (suppressed inside a `>`-blockquote body — mldoc `block_content_parsers` omits Heading,
+    // so `# h` / a `-` bullet there stay paragraph text. F1.)
+    if let Some((level, size, hend)) = heading_at(t).filter(|_| !in_quote) {
+        flush_para(out, para, input, trim);
         let (marker, priority, title) = split_markers(t[hend..].trim_start());
         let trail = trim_end_ws_len(t);
         if title.is_empty() && trail < t.len() {
@@ -312,6 +380,7 @@ fn dispatch_md_line<'a>(
                 span: Some(Span(line_start, line_start + trail)),
             });
             *para = Some((line_start + trail, line_end));
+            *ws_drop = true; // F4: the trailing-ws para is droppable if the next line is a block.
             return Step::Next(i + 1);
         }
         out.push(Block::Heading {
@@ -328,13 +397,17 @@ fn dispatch_md_line<'a>(
 
     // 4. horizontal rule (before dash bullet / list)
     if is_hr(t) {
-        flush_para(out, para, input);
+        if was_ws_drop && para_ws_only(para, input) {
+            *para = None; // F4: drop the empty-marker trailing-ws para before a block.
+        }
+        flush_para(out, para, input, trim);
         out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
         return Step::Next(i + 1);
     }
 
-    // 5. `-` bullet (mldoc Heading{unordered}).
-    if let Some(level) = dash_bullet_level(t) {
+    // 5. `-` bullet (mldoc Heading{unordered}) — suppressed inside a `>`-blockquote body
+    // (mldoc `block_content_parsers` omits Heading, so `- x` there stays a paragraph). F1.
+    if let Some(level) = dash_bullet_level(t).filter(|_| !in_quote) {
         // mldoc's bullet title is a lookahead (heading0.ml `title_aux_p`): if the
         // text after the bullet prefix parses as a block construct, the bullet gets
         // an EMPTY title and the construct is parsed as the next block. We replicate
@@ -365,7 +438,7 @@ fn dispatch_md_line<'a>(
             // its very start (a true fence opener).
             if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
                 if close < hi {
-                    flush_para(out, para, input);
+                    flush_para(out, para, input, trim);
                     empty_bullet!();
                     let lang = fence_lang(&content[frun..]);
                     let code = if close > i + 1 {
@@ -388,26 +461,30 @@ fn dispatch_md_line<'a>(
         // bounded by `hi` — the closer line is never a quote-continuation, so absorbing it
         // would wrongly swallow the frame's closer (verified load-bearing).
         if quote_opens(content) {
-            flush_para(out, para, input);
+            flush_para(out, para, input, trim);
             empty_bullet!();
-            let mut body_lines: Vec<String> = Vec::new();
-            if let Some(c) = quote_line_content(content, true) {
-                body_lines.push(c);
+            let mut body = String::new();
+            if let Some(c) = md_quote_first_slice(content) {
+                body.push_str(c);
+                body.push('\n');
             }
             let mut ni = i + 1;
             while ni < hi {
-                match quote_line_content(lines[ni].text, false) {
+                match md_quote_cont_slice(lines[ni].text) {
                     Some(c) => {
-                        body_lines.push(c);
+                        body.push_str(c);
+                        body.push('\n');
                         ni += 1;
                     }
                     None => break,
                 }
             }
-            out.push(Block::Quote {
-                children: parse_quote_body(&body_lines),
-                span: Some(Span(content_off, lines[ni - 1].end)),
-            });
+            let end = lines[ni - 1].end;
+            // F6: a md blockquote ends with `<* optional eols` — swallow following blanks.
+            while ni < hi && lines[ni].text.is_empty() {
+                ni += 1;
+            }
+            out.push(build_md_quote(body, Some(Span(content_off, end))));
             return Step::Next(ni);
         }
         // (c) property line on the bullet line (mldoc heading0.ml: the title is a
@@ -417,7 +494,7 @@ fn dispatch_md_line<'a>(
         // (exactly like step 8). `content` is post-`#{1,n}`-strip, matching the size
         // run; the property `key` rejects bullet prefixes via its space check.
         if let Some(kv) = property(content) {
-            flush_para(out, para, input);
+            flush_para(out, para, input, trim);
             empty_bullet!();
             let mut props = vec![kv];
             let mut end = line_end;
@@ -438,21 +515,21 @@ fn dispatch_md_line<'a>(
         }
         // (d) horizontal rule opener (`---`/`***`/`___`).
         if is_hr(content) {
-            flush_para(out, para, input);
+            flush_para(out, para, input, trim);
             empty_bullet!();
             out.push(Block::Hr { span: Some(Span(content_off, line_end)) });
             return Step::Next(i + 1);
         }
         // (e) block displayed-math opener `$$ … $$` (single line).
         if let Some(math) = displayed_math(content) {
-            flush_para(out, para, input);
+            flush_para(out, para, input, trim);
             empty_bullet!();
             out.push(Block::DisplayedMath { text: math, span: Some(Span(content_off, line_end)) });
             return Step::Next(i + 1);
         }
         // (f) raw-HTML opener.
         if is_raw_html(content) {
-            flush_para(out, para, input);
+            flush_para(out, para, input, trim);
             empty_bullet!();
             out.push(Block::RawHtml { text: content.to_string(), span: Some(Span(content_off, line_end)) });
             return Step::Next(i + 1);
@@ -461,7 +538,7 @@ fn dispatch_md_line<'a>(
         if let Some((name, lc, consumed_end)) =
             crate::inline::parse_latex_env(&input[..body_end], content_off, line_start + t.len())
         {
-            flush_para(out, para, input);
+            flush_para(out, para, input, trim);
             empty_bullet!();
             out.push(Block::LatexEnv { name, content: lc, span: Some(Span(content_off, consumed_end)) });
             let mut ni = i + 1;
@@ -472,7 +549,7 @@ fn dispatch_md_line<'a>(
         }
         // (h) table opener `| … |` (consumes following table-row lines, bounded by `hi`).
         if md_table_row(content) {
-            flush_para(out, para, input);
+            flush_para(out, para, input, trim);
             empty_bullet!();
             let mut texts: Vec<&str> = vec![content];
             let mut ni = i + 1;
@@ -487,7 +564,7 @@ fn dispatch_md_line<'a>(
         // `[^id]` is an inline footnote ref in the heading title, per mldoc heading0).
         if size.is_none() {
             if let Some((fname, fbody)) = footnote_def(content) {
-                flush_para(out, para, input);
+                flush_para(out, para, input, trim);
                 empty_bullet!();
                 out.push(Block::FootnoteDef {
                     name: fname,
@@ -503,7 +580,7 @@ fn dispatch_md_line<'a>(
         // the bullet for the prefix, then the leftover ws starts a paragraph:
         // `- ` / `-   ` / `- ## ` / `- TODO ` → [bullet, paragraph]; a bare `-`
         // / `- ##` / `- TODO` with no trailing ws stays a single empty bullet).
-        flush_para(out, para, input);
+        flush_para(out, para, input, trim);
         let (marker, priority, title) = split_markers(content);
         let trail = trim_end_ws_len(t);
         if title.is_empty() && trail < t.len() {
@@ -517,6 +594,7 @@ fn dispatch_md_line<'a>(
                 span: Some(Span(line_start, line_start + trail)),
             });
             *para = Some((line_start + trail, line_end));
+            *ws_drop = true; // F4: the trailing-ws para is droppable if the next line is a block.
             return Step::Next(i + 1);
         }
         out.push(Block::Bullet {
@@ -531,9 +609,10 @@ fn dispatch_md_line<'a>(
         return Step::Next(i + 1);
     }
 
-    // 6. footnote definition
-    if let Some((fname, content)) = footnote_def(t) {
-        flush_para(out, para, input);
+    // 6. footnote definition — suppressed inside a `>`-blockquote body (mldoc
+    // `block_content_parsers` omits Footnote, so `[^id]: …` stays paragraph text). F1.
+    if let Some((fname, content)) = footnote_def(t).filter(|_| !in_quote) {
+        flush_para(out, para, input, trim);
         out.push(Block::FootnoteDef {
             name: fname,
             inline: stub_inline(content),
@@ -544,7 +623,10 @@ fn dispatch_md_line<'a>(
 
     // 7. table (group of consecutive table-row lines, bounded by `hi`)
     if md_table_row(t) {
-        flush_para(out, para, input);
+        if was_ws_drop && para_ws_only(para, input) {
+            *para = None; // F4: drop the empty-marker trailing-ws para before a block.
+        }
+        flush_para(out, para, input, trim);
         let start = i;
         let mut ni = i;
         while ni < hi && md_table_row(lines[ni].text) {
@@ -556,9 +638,10 @@ fn dispatch_md_line<'a>(
 
     // 8. property drawer (group of consecutive `key:: value` lines, bounded by `hi`). mldoc folds
     // trailing `#+name: value` org directives into the same drawer (drawer.ml
-    // `many1 (parse1 <|> parse2)`), so `a:: 1\n#+b: 2` → props a, b.
-    if property(t).is_some() {
-        flush_para(out, para, input);
+    // `many1 (parse1 <|> parse2)`), so `a:: 1\n#+b: 2` → props a, b. Suppressed inside a
+    // `>`-blockquote body (mldoc omits the markdown property from `block_content_parsers`). F1.
+    if property(t).is_some() && !in_quote {
+        flush_para(out, para, input, trim);
         let start = i;
         let mut props = Vec::new();
         let mut ni = i;
@@ -582,7 +665,7 @@ fn dispatch_md_line<'a>(
 
     // 9. list (group of consecutive `*`/`+`/`N.` items, bounded by `hi`)
     if let Some(item) = list_item(t) {
-        flush_para(out, para, input);
+        flush_para(out, para, input, trim);
         let start = i;
         let mut items = vec![item];
         let mut last = i; // last line index that belongs to the list
@@ -617,44 +700,54 @@ fn dispatch_md_line<'a>(
         return Step::Next(ni);
     }
 
-    // 10. markdown blockquote (mldoc block0.ml `md_blockquote`): a `>` line opens
-    // a quote whose body is the de-`>`'d lines PLUS lazy continuation lines (no
-    // `>` needed) until a blank line or a line that starts a new block
-    // (`- `/`# `/`id:: `/bare `-`/`#`). The body is parsed as block-content — for
-    // markdown prose that is a single Paragraph (with keep_line_break breaks); the
-    // property/heading/bullet parsers are NOT applied inside a quote.
-    // A quote OPENS only if there's non-whitespace after the `>` (mldoc: lone
-    // `>` / `> ` are paragraphs; `>x` / `> x` are quotes). The run is bounded by `hi`
-    // (the closer line would otherwise be lazily absorbed — verified load-bearing).
+    // 10. markdown blockquote (mldoc block0.ml `md_blockquote`): a `>` line opens a quote
+    // whose body is the de-`>`'d lines PLUS lazy continuation lines (no `>` needed) until a
+    // blank line or a line that starts a new block (`- `/`# `/`id:: `/bare `-`/`#`). The
+    // de-`>`'d body is re-parsed with the FULL md block grammar MINUS {heading, bullet,
+    // property, footnote, drawer} (mldoc `block_content_parsers`), and a `>`-on-continuation
+    // nests a child Quote (one `>` stripped per continuation line) — see `build_md_quote`. A
+    // quote OPENS only if the de-`>`'d content is non-empty and non-breaker (mldoc: lone
+    // `>` / `> ` / `> - x` are paragraphs). The run is bounded by `hi` (the closer line would
+    // otherwise be lazily absorbed — verified load-bearing). F1/F5/F6.
     if quote_opens(t) {
-        flush_para(out, para, input);
+        if was_ws_drop && para_ws_only(para, input) {
+            *para = None; // F4: drop the empty-marker trailing-ws para before a block.
+        }
+        flush_para(out, para, input, trim);
         let start = i;
-        let mut body_lines: Vec<String> = Vec::new();
-        // first line: strip the opening `>` then process its remainder like a
-        // continuation (mldoc consumes one `>` then runs lines_while on the rest).
-        if let Some(c) = quote_line_content(lines[i].text, true) {
-            body_lines.push(c);
+        // Collect the de-`>`'d body string: first line strips up to 2 `>` (opener +
+        // `lines_while`'s optional `>`), continuations strip ONE each, `\n`-joined + trailing.
+        let mut body = String::new();
+        if let Some(c) = md_quote_first_slice(t) {
+            body.push_str(c);
+            body.push('\n');
         }
         let mut ni = i + 1;
         while ni < hi {
-            match quote_line_content(lines[ni].text, false) {
+            match md_quote_cont_slice(lines[ni].text) {
                 Some(c) => {
-                    body_lines.push(c);
+                    body.push_str(c);
+                    body.push('\n');
                     ni += 1;
                 }
                 None => break,
             }
         }
-        out.push(Block::Quote {
-            children: parse_quote_body(&body_lines),
-            span: Some(Span(lines[start].start, lines[ni - 1].end)),
-        });
+        let end = lines[ni - 1].end;
+        // F6: a md blockquote ends with `<* optional eols` — swallow following blank lines.
+        while ni < hi && lines[ni].text.is_empty() {
+            ni += 1;
+        }
+        out.push(build_md_quote(body, Some(Span(lines[start].start, end))));
         return Step::Next(ni);
     }
 
     // 11. raw HTML (single-line, minimal)
     if is_raw_html(t) {
-        flush_para(out, para, input);
+        if was_ws_drop && para_ws_only(para, input) {
+            *para = None; // F4: drop the empty-marker trailing-ws para before a block.
+        }
+        flush_para(out, para, input, trim);
         out.push(Block::RawHtml {
             text: t.to_string(),
             span: Some(Span(line_start, line_end)),
@@ -664,7 +757,10 @@ fn dispatch_md_line<'a>(
 
     // 11b. block-level displayed math: a line that is just `$$ … $$`.
     if let Some(math) = displayed_math(t) {
-        flush_para(out, para, input);
+        if was_ws_drop && para_ws_only(para, input) {
+            *para = None; // F4: drop the empty-marker trailing-ws para before a block.
+        }
+        flush_para(out, para, input, trim);
         out.push(Block::DisplayedMath {
             text: math,
             span: Some(Span(line_start, line_end)),
@@ -676,12 +772,24 @@ fn dispatch_md_line<'a>(
     // `:PROPERTIES:` drawer becomes a Property_Drawer even in Markdown (mldoc
     // drawer.ml), with `:key: value` lines parsed as properties. The `:END:` must lie
     // inside THIS body (`< hi`); else it belongs to an enclosing body → fall through.
-    if let Some(name) = drawer_begin(t) {
+    // Suppressed inside a `>`-blockquote body (mldoc omits Drawer from `block_content_parsers`,
+    // so `:NAME: … :END:` there is paragraph text). F1.
+    if let Some(name) = drawer_begin(t).filter(|_| !in_quote) {
         if let Some(close) = find_drawer_end(drawer_end_idxs, i) {
             if close < hi {
-                flush_para(out, para, input);
+                flush_para(out, para, input, trim);
                 let span = Some(Span(line_start, lines[close].end));
-                if name == "properties" {
+                // mldoc (`drawer.ml`) emits a `Property_Drawer` ONLY when the WHOLE body
+                // parses as `many1 property` — every body line a valid `:key: value` (an
+                // empty body is allowed). If ANY body line fails (plain text, a blank line,
+                // a markdown `key:: v`), `parse1` can't reach `:END:` → it falls back to
+                // `drawer_parse` → a generic `Drawer{name:"properties"}` (NO props, NO
+                // value ref-walking). C3.
+                if name == "properties"
+                    && lines[i + 1..close]
+                        .iter()
+                        .all(|l| drawer_property(l.text).is_some())
+                {
                     let props = lines[i + 1..close]
                         .iter()
                         .filter_map(|l| drawer_property(l.text))
@@ -710,7 +818,7 @@ fn dispatch_md_line<'a>(
             // CLAMP the (to-end-of-input) balanced capture to `&input[..body_end]` so a `]`
             // outside this body is not captured (verified load-bearing). `rec < body_end`.
             if let Some(cap_end) = crate::inline::parse_hiccup(&input[..body_end], rec) {
-                flush_para(out, para, input);
+                flush_para(out, para, input, trim);
                 out.push(Block::Hiccup {
                     v: input[rec..cap_end].to_string(),
                     span: Some(Span(line_start, cap_end)),
@@ -761,7 +869,7 @@ fn dispatch_md_line<'a>(
         && i + 1 < hi
         && is_def_opener(lines[i + 1].text)
     {
-        flush_para(out, para, input);
+        flush_para(out, para, input, trim);
         let (item, ni) = build_def_list(lines, i, hi);
         out.push(Block::List {
             items: vec![item],
@@ -780,12 +888,34 @@ fn dispatch_md_line<'a>(
 
 // ---- helpers --------------------------------------------------------------
 
-fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &str) {
-    if let Some((s, e)) = para.take() {
+/// Flush the open paragraph. `trim_eol` drops trailing newline(s) from the slice (so no
+/// trailing `Break_Line`): inside a `>`-blockquote body (`in_quote`) a *following block*
+/// absorbs the paragraph's trailing eol via mldoc's `between_eols`/`concat_paragraph_lines`,
+/// whereas at the document level the eol stays a Break. Body-final / EOF flushes pass `false`.
+fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &str, trim_eol: bool) {
+    if let Some((s, mut e)) = para.take() {
+        if trim_eol {
+            while e > s && matches!(input.as_bytes()[e - 1], b'\n' | b'\r') {
+                e -= 1;
+            }
+        }
         out.push(Block::Paragraph {
             inline: stub_inline(&input[s..e]),
             span: Some(Span(s, e)),
         });
+    }
+}
+
+/// Is the open paragraph entirely whitespace (spaces/tabs/eols)? Used by F4: an empty
+/// heading/bullet marker's trailing-whitespace paragraph is dropped when the immediately
+/// following line opens a `Block`/`Hr`/`Table` construct (mldoc's heading `ws *> title`
+/// lookahead consumes the trailing ws in that case).
+fn para_ws_only(para: &Option<(usize, usize)>, input: &str) -> bool {
+    match para {
+        Some((s, e)) => input.as_bytes()[*s..*e]
+            .iter()
+            .all(|&b| matches!(b, b' ' | b'\t' | b'\n' | b'\r')),
+        None => false,
     }
 }
 
@@ -1103,33 +1233,106 @@ fn quote_para_trigger(core: &str) -> bool {
         || core.starts_with("id:: ")
 }
 
-/// Strip the leading `>` (and recursively any nested `>`) from a quote line, returning
-/// the de-`>`'d body content — or `None` when the line is a paragraph-trigger (so it is
-/// NOT a quote). A lone `>` (+ws) yields `Some("")` (an empty quote-body line). `t` must
-/// be already `trim_start`-ed and begin with `>`. mldoc strips nested `>` to a single
-/// flattened Quote, and a trigger after any number of `>` makes the whole line a
-/// Paragraph (`> > - x` → Paragraph). C2.
-fn quote_strip(t: &str) -> Option<String> {
-    let rest = &t[1..]; // drop the leading '>'
-    let core = rest.trim_start();
-    if core.is_empty() {
-        return Some(String::new());
-    }
-    if quote_para_trigger(core) {
+/// First line of a markdown blockquote (mldoc `md_blockquote = char '>' *> lines_while …`):
+/// the opener consumes one `>` (`char '>'`) and `lines_while`'s `optional (char '>')` strips a
+/// SECOND — so up to TWO `>` on the opener (N leading `>` nest ⌈N/2⌉ Quotes). Opens only if the
+/// de-`>`'d content is non-empty and does NOT start a new block (`- `/`# `/`id:: `/bare `-`/`#`).
+/// Returns the content as a SUFFIX slice (no alloc) so `build_md_quote` peels in place. F1/F5.
+fn md_quote_first_slice(s: &str) -> Option<&str> {
+    let r1 = s.trim_start().strip_prefix('>')?.trim_start();
+    let content = match r1.strip_prefix('>') {
+        Some(r2) => r2.trim_start(),
+        None => r1,
+    };
+    if content.is_empty() || quote_para_trigger(content) {
         return None;
     }
-    if core.starts_with('>') {
-        return quote_strip(core);
-    }
-    Some(core.to_string())
+    Some(content)
 }
 
-/// Does this line OPEN a blockquote? A `>` line opens one unless its post-`>` core is
-/// empty (lone `>`/`> ` → Paragraph) or a paragraph-trigger (`- `/`# `/`id:: ` → the
-/// whole line is a Paragraph, NOT an empty quote). C2.
-fn quote_opens(s: &str) -> bool {
+/// One CONTINUATION line of a markdown blockquote body (mldoc `lines_while`): a `>`(+ws)-only
+/// line → `Some("")` (an empty body line); else strip ONE optional `>` (+ws) and keep the rest
+/// (lazy — a non-`>` line still continues). `None` STOPS the run: a blank line (no `>`), or a
+/// de-`>`'d line that starts a new block. Strips exactly ONE `>` (the F5 fix vs the old
+/// recursive flatten). Borrowing suffix slice. F1/F5.
+fn md_quote_cont_slice(s: &str) -> Option<&str> {
     let t = s.trim_start();
-    t.starts_with('>') && matches!(quote_strip(t), Some(c) if !c.is_empty())
+    let had_gt = t.starts_with('>');
+    let rest = if had_gt { t[1..].trim_start() } else { t };
+    if rest.is_empty() {
+        return if had_gt { Some("") } else { None };
+    }
+    if quote_para_trigger(rest) {
+        return None;
+    }
+    Some(rest)
+}
+
+/// Does this line OPEN a blockquote? (`> x` does; lone `>`/`> `, and a breaker `> - x`/`> # h`/
+/// `> id:: x` do not — they stay paragraphs.) C2.
+fn quote_opens(s: &str) -> bool {
+    md_quote_first_slice(s).is_some()
+}
+
+/// Build the (possibly nested) markdown Quote from an already de-`>`'d body string (the
+/// `\n`-joined + trailing-`\n` content collected by the dispatch). Mirrors the org
+/// `build_org_quote_streaming`: peel the nested-`>` left-spine ITERATIVELY over line VIEWS
+/// (opener strips up to 2 `>`, continuations 1) — one `Quote` wrapper per level, NO `>`-depth
+/// recursion — then re-dispatch the SHALLOW residual through the md block driver with
+/// `in_quote = true` (the full block grammar MINUS heading/bullet/property/footnote/drawer,
+/// trimming a paragraph's trailing Break before a following block). F1/F5.
+fn build_md_quote(body: String, span: Option<Span>) -> Block {
+    let mut views: Vec<&str> = body.lines().collect();
+    let mut wrappers = 1usize; // the outer Quote; +1 per peeled spine level.
+    loop {
+        if views.len() == 1 {
+            match md_quote_first_slice(views[0]) {
+                Some(inner) => {
+                    views[0] = inner;
+                    wrappers += 1;
+                }
+                None => break,
+            }
+        } else if let Some(inner0) = md_quote_first_slice(views[0])
+            .filter(|_| views[1..].iter().all(|v| md_quote_cont_slice(v).is_some()))
+        {
+            views[0] = inner0; // opener strips up to 2 (`md_quote_first_slice`)
+            for v in views[1..].iter_mut() {
+                *v = md_quote_cont_slice(v).unwrap(); // continuations strip 1
+            }
+            wrappers += 1;
+        } else {
+            break;
+        }
+    }
+    let mut residual = views.join("\n");
+    residual.push('\n');
+    let children = reparse_md_quote_body(&residual);
+    let mut block = Block::Quote { children, span };
+    for _ in 1..wrappers {
+        block = Block::Quote { children: vec![block], span };
+    }
+    block
+}
+
+/// Re-dispatch a `>`-quote residual body through the md driver with `in_quote = true`, under the
+/// `BLOCK_NEST_CAP` depth guard (the org `streaming_reparse` analog). The iterative `>`-peel above
+/// handles single-line `>`×n and the all-continue multi-line tail with NO recursion; only the
+/// adversarial increasing-`>`-per-line spine reaches this re-dispatch deeply, so the guard bounds
+/// it (graceful flat-Paragraph degradation) — fuzz-unreachable, mldoc-overflows-too, consumer-capped.
+fn reparse_md_quote_body(residual: &str) -> Vec<Block> {
+    let depth = MD_BLOCK_DEPTH.with(|c| c.get());
+    if depth >= BLOCK_NEST_CAP {
+        return if residual.is_empty() {
+            Vec::new()
+        } else {
+            vec![Block::Paragraph { inline: stub_inline(residual), span: Some(Span(0, residual.len())) }]
+        };
+    }
+    MD_BLOCK_DEPTH.with(|c| c.set(depth + 1));
+    let out = parse_md_streaming(residual, true);
+    MD_BLOCK_DEPTH.with(|c| c.set(depth));
+    out
 }
 
 fn property(s: &str) -> Option<(String, String)> {
@@ -1156,116 +1359,6 @@ fn footnote_def(s: &str) -> Option<(String, &str)> {
     let name = &rest[..end];
     let after = rest[end + 1..].strip_prefix(':')?;
     Some((name.to_string(), after.trim_start()))
-}
-
-/// One blockquote body line (mldoc `md_blockquote` `lines_while`): from a raw line,
-/// strip leading ws, an optional `>` (required only on the first line — handled by
-/// the caller passing `first=true`, which still strips it), and following ws, and
-/// return the remaining content. Returns `None` to STOP the quote: on a blank line
-/// (no `>`, empty after ws) or a line that opens a new block (`- `/`# `/`id:: ` or a
-/// bare `-`/`#`). A line that is just `>`(+ws) yields `Some("")` (an empty quote line).
-fn quote_line_content(s: &str, first: bool) -> Option<String> {
-    let _ = first; // first vs continuation differ only in that the first always has `>`
-    let t = s.trim_start();
-    if t.starts_with('>') {
-        return quote_strip(t);
-    }
-    // lazy continuation (no `>`): a blank line, or a line that starts a new block
-    // (`- `/`# `/`id:: `/bare `-`/`#`), ends the quote. `*`/`+`/`N.` markers are NOT
-    // breakers — they are absorbed and parsed as a List inside the quote body.
-    if t.is_empty() || quote_para_trigger(t) {
-        return None;
-    }
-    Some(t.to_string())
-}
-
-/// Parse a Markdown blockquote body (de-`>`'d content lines) into the inner block
-/// sequence. mldoc recognizes Lists (`*`/`+`/`N.`), block-Hiccups (`[:tag …]`) and
-/// Paragraphs inside a quote (no headings/tables). A paragraph run joins its lines with
-/// `keep_line_break` `Break`s and a trailing `Break` UNLESS it is immediately followed by
-/// a List or a Hiccup (mldoc drops that break). C2.
-fn parse_quote_body(lines: &[String]) -> Vec<Block> {
-    // Expand each (de-`>`'d, trim_start'd) body line into block-hiccup pieces + the text
-    // remainder: a `[:tag …]` at a body-line BOL becomes its own `Hiccup` (mldoc emits one
-    // inside a quote body too). A hiccup that starts mid-line (`a [:div]`) stays in the
-    // Text piece and is handled by the inline parser. Hiccups are captured WITHIN a single
-    // body line (a quote hiccup spanning `>` lines is not modeled — vanishingly rare).
-    enum Q {
-        Hic(String),
-        Text(String),
-    }
-    let mut items: Vec<Q> = Vec::new();
-    for s in lines {
-        let mut pos = 0;
-        while s[pos..].starts_with("[:") {
-            match crate::inline::parse_hiccup(s, pos) {
-                Some(end) => {
-                    items.push(Q::Hic(s[pos..end].to_string()));
-                    pos = end;
-                }
-                None => break,
-            }
-        }
-        if pos == 0 {
-            items.push(Q::Text(s.clone())); // whole line (no leading hiccup)
-        } else if pos < s.len() {
-            items.push(Q::Text(s[pos..].to_string())); // remainder after the hiccup(s)
-        }
-        // pos == s.len() with peeled hiccup(s): line fully consumed, no Text piece.
-    }
-
-    let list_at = |q: &Q| -> Option<ListItem> {
-        match q {
-            Q::Text(t) => list_item(t),
-            Q::Hic(_) => None,
-        }
-    };
-    let mut out = Vec::new();
-    let n = items.len();
-    let mut i = 0;
-    while i < n {
-        match &items[i] {
-            Q::Hic(v) => {
-                out.push(Block::Hiccup { v: v.clone(), span: None });
-                i += 1;
-            }
-            _ if list_at(&items[i]).is_some() => {
-                let mut litems = Vec::new();
-                while i < n {
-                    match list_at(&items[i]) {
-                        Some(it) => {
-                            litems.push(it);
-                            i += 1;
-                        }
-                        None => break,
-                    }
-                }
-                out.push(Block::List { items: crate::projection::nest_items(litems), span: None });
-            }
-            _ => {
-                // paragraph run: consecutive non-list Text pieces.
-                let mut texts: Vec<&str> = Vec::new();
-                while i < n {
-                    match &items[i] {
-                        Q::Text(t) if list_item(t).is_none() => {
-                            texts.push(t.as_str());
-                            i += 1;
-                        }
-                        _ => break,
-                    }
-                }
-                // a following List or Hiccup drops the paragraph's trailing Break (same
-                // rule mldoc applies before a List in the no-hiccup case).
-                let followed = i < n;
-                let mut text = texts.join("\n");
-                if !followed {
-                    text.push('\n');
-                }
-                out.push(Block::Paragraph { inline: stub_inline(&text), span: None });
-            }
-        }
-    }
-    out
 }
 
 /// `#+name: value` org directive line, folded into an adjacent markdown property

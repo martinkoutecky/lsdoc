@@ -2020,5 +2020,131 @@
   "cat": "quote-break",
   "input": "> a\n> -----",
   "format": "org"
+ },
+ {
+  "id": "o337",
+  "cat": "body-suppress",
+  "input": "#+BEGIN_FOO\n** head\n#+END_FOO",
+  "format": "org"
+ },
+ {
+  "id": "o338",
+  "cat": "body-suppress",
+  "input": "#+BEGIN_FOO\n* head\n#+END_FOO",
+  "format": "org"
+ },
+ {
+  "id": "o339",
+  "cat": "body-suppress",
+  "input": "#+BEGIN_FOO\n[fn:1] body\n#+END_FOO",
+  "format": "org"
+ },
+ {
+  "id": "o340",
+  "cat": "body-suppress",
+  "input": "#+BEGIN_FOO\n:LOGBOOK:\ny\n:END:\n#+END_FOO",
+  "format": "org"
+ },
+ {
+  "id": "o341",
+  "cat": "body-suppress",
+  "input": "#+BEGIN_QUOTE\n:LOGBOOK:\ny\n:END:\n#+END_QUOTE",
+  "format": "org"
+ },
+ {
+  "id": "o342",
+  "cat": "body-suppress",
+  "input": "#+BEGIN_QUOTE\n[fn:1] body\n#+END_QUOTE",
+  "format": "org"
+ },
+ {
+  "id": "o343",
+  "cat": "body-suppress",
+  "input": "> q\n:LOGBOOK:\nx\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o344",
+  "cat": "body-suppress",
+  "input": "> [fn:1] body",
+  "format": "org"
+ },
+ {
+  "id": "o345",
+  "cat": "body-suppress",
+  "input": "#+BEGIN_FOO\n- item\n#+END_FOO",
+  "format": "org"
+ },
+ {
+  "id": "o346",
+  "cat": "body-suppress",
+  "input": "#+BEGIN_FOO\n#+TITLE: x\n#+END_FOO",
+  "format": "org"
+ },
+ {
+  "id": "o347",
+  "cat": "body-suppress",
+  "input": "#+BEGIN_FOO\ntext\n- item\n#+END_FOO",
+  "format": "org"
+ },
+ {
+  "id": "o348",
+  "cat": "props-allornothing",
+  "input": ":PROPERTIES:\nfoo\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o349",
+  "cat": "props-allornothing",
+  "input": ":PROPERTIES:\nfoo\n:k: v\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o350",
+  "cat": "props-allornothing",
+  "input": ":PROPERTIES:\n:k: v\n\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o351",
+  "cat": "props-allornothing",
+  "input": ":PROPERTIES:\nfoo\n:k: [[Page]]\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o352",
+  "cat": "props-allornothing",
+  "input": ":PROPERTIES:\n:k: v\n:END:\n#+FOO: bar",
+  "format": "org"
+ },
+ {
+  "id": "o353",
+  "cat": "empty-marker-drop",
+  "input": "* \n#+BEGIN_SRC\ncode\n#+END_SRC",
+  "format": "org"
+ },
+ {
+  "id": "o354",
+  "cat": "empty-marker-drop",
+  "input": "* \n-----",
+  "format": "org"
+ },
+ {
+  "id": "o355",
+  "cat": "empty-marker-drop",
+  "input": "* \n:LOGBOOK:\nx\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o356",
+  "cat": "empty-marker-drop",
+  "input": "* \n| a | b |",
+  "format": "org"
+ },
+ {
+  "id": "o357",
+  "cat": "empty-marker-drop",
+  "input": "* \nplain",
+  "format": "org"
  }
 ]
