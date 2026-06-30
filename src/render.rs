@@ -268,16 +268,27 @@ impl Renderer {
             self.out.push_str("<div class=\"callout-body\">");
             // Body = the first paragraph's inlines after the `[!TYPE]` lead (dropping a
             // following soft break so the title isn't repeated) + the rest of the quote.
+            // Render IN PLACE — do NOT clone `children[1..]` into a new body Vec: that deep-
+            // clones the subtree and, on nested `[!TYPE]` callouts, repeats once per ancestor
+            // level → O(n^2) time + memory. The lead remainder is a bare inline run (a
+            // paragraph block); the remaining children follow with the same `<br>`-join that
+            // `blocks()` applies (the lead paragraph, when present, is the preceding block).
             let mut rest: &[Inline] = &lead_inline[1..];
             if matches!(rest.first(), Some(Inline::Break)) {
                 rest = &rest[1..];
             }
-            let mut body: Vec<Block> = Vec::new();
-            if !rest.is_empty() {
-                body.push(Block::Paragraph { inline: rest.to_vec(), span: None });
+            let lead_is_para = !rest.is_empty();
+            if lead_is_para {
+                self.inlines(rest);
             }
-            body.extend(children[1..].iter().cloned());
-            self.blocks(&body);
+            let tail = &children[1..];
+            for (i, b) in tail.iter().enumerate() {
+                let prev_inline_flow = if i == 0 { lead_is_para } else { is_inline_flow(&tail[i - 1]) };
+                if prev_inline_flow && is_inline_flow(b) {
+                    self.out.push_str("<br>");
+                }
+                self.block(b);
+            }
             self.out.push_str("</div></div>");
         } else {
             self.out.push_str("<blockquote class=\"md-quote\">");

@@ -409,3 +409,59 @@ fn deep_nesting_does_not_overflow_the_stack_heavy() {
 fn pathological_inputs_scale_linearly_heavy() {
     assert_linear_scaling();
 }
+
+/// `render_html` regression guard. The `> [!TYPE]` callout path once rebuilt the body via
+/// `children[1..].iter().cloned()` and recursed — deep-cloning the whole subtree once per
+/// nesting level → O(n²) time + memory on nested callouts (audit HIGH: ~3.2s at depth 4000,
+/// OOM at 16000). The md parser caps nesting at `BLOCK_NEST_CAP=64`, so we build the nested
+/// `[!NOTE]` AST DIRECTLY to reach the regime. Linear render of ~4000 callout blocks is low-ms;
+/// the cloning regression was ~3.2s. A 500ms bound separates them with >6× margin. Big stack
+/// because `render_html` recurses with AST depth; build iteratively, drop on the same thread.
+#[test]
+#[ignore = "render_html linear gate; run with: cargo test --release -- --ignored"]
+fn render_html_nested_callout_is_linear_heavy() {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(|| {
+            use lsdoc::ast::{Block, Inline};
+            fn build(depth: usize) -> Vec<Block> {
+                let lead = || {
+                    vec![
+                        Inline::Plain { text: "[!NOTE] t".to_string() },
+                        Inline::Break,
+                        Inline::Plain { text: "x".to_string() },
+                    ]
+                };
+                let mut node = Block::Quote {
+                    children: vec![Block::Paragraph { inline: lead(), span: None }],
+                    span: None,
+                };
+                for _ in 1..depth {
+                    node = Block::Quote {
+                        children: vec![Block::Paragraph { inline: lead(), span: None }, node],
+                        span: None,
+                    };
+                }
+                vec![node]
+            }
+            let opts = lsdoc::RenderOpts { format: lsdoc::Format::Md };
+            let blocks = build(4000);
+            let render_us = || -> u128 {
+                let t = Instant::now();
+                let s = lsdoc::render_html(std::hint::black_box(&blocks), &opts);
+                std::hint::black_box(&s);
+                t.elapsed().as_micros()
+            };
+            render_us(); // warmup
+            let us = (0..3).map(|_| render_us()).min().unwrap();
+            assert!(
+                us < 500_000,
+                "render_html nested [!TYPE] callout took {}ms at depth 4000 — expected <500ms \
+                 (linear); the quote() O(n²) subtree clone is likely back",
+                us / 1000
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

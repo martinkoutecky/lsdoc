@@ -263,6 +263,22 @@ fn nested_callout_recursion() {
     );
 }
 
+#[test]
+fn nested_callout_quote_in_place() {
+    // a `> [!TYPE]` callout whose body contains a nested `> > [!TYPE]` callout — renders in
+    // place (no subtree clone; the clone was the O(n²) audit HIGH). Lead remainder + the rest
+    // of the children keep the same <br>-join blocks() would apply.
+    assert_eq!(
+        md("> [!NOTE] outer\n> body1\n> > [!TIP] inner\n> > body2"),
+        concat!(
+            r#"<div class="callout callout-note"><div class="callout-title">outer</div><div class="callout-body">"#,
+            r#"body1"#,
+            r#"<div class="callout callout-tip"><div class="callout-title">inner</div><div class="callout-body">body2<br></div></div>"#,
+            r#"</div></div>"#
+        )
+    );
+}
+
 // ===========================================================================
 // Lists
 // ===========================================================================
