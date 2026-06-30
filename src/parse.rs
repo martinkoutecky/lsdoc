@@ -1263,18 +1263,29 @@ fn pair_callouts(lines: &[Line]) -> HashMap<usize, usize> {
     // name_lower → its positions in `stack`, ascending; `.first()` = the OUTERMOST pending
     // opener of that name. Kept in sync on push (append) and pop (drop tail positions ≥ cut).
     let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+    // distinct BYTE-LENGTHS of pending opener names (with counts), so the `#+END_` prefix probe
+    // tests only the `k`s that are actual pending-name lengths — O(distinct pending lengths) per
+    // closer, NOT O(head²) from hashing every growing prefix of a long suffix / block name.
+    let mut name_lens: HashMap<usize, usize> = HashMap::new();
     for (idx, l) in lines.iter().enumerate() {
         if let Some(name) = callout_begin(l.text) {
             let nl = name.to_ascii_lowercase();
+            *name_lens.entry(nl.len()).or_insert(0) += 1;
             by_name.entry(nl.clone()).or_default().push(stack.len());
             stack.push((nl, idx));
             continue;
         }
         let t = l.text.trim_start();
         if t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
-            if let Some(pos) = outermost_callout_match(&by_name, &t[6..]) {
+            if let Some(pos) = outermost_callout_match(&by_name, &name_lens, &t[6..]) {
                 pairs.insert(stack[pos].1, idx);
                 for (nm, _) in stack.drain(pos..) {
+                    if let Some(c) = name_lens.get_mut(&nm.len()) {
+                        *c -= 1;
+                        if *c == 0 {
+                            name_lens.remove(&nm.len());
+                        }
+                    }
                     if let Some(v) = by_name.get_mut(&nm) {
                         while v.last().is_some_and(|&p| p >= pos) {
                             v.pop();
@@ -1289,21 +1300,25 @@ fn pair_callouts(lines: &[Line]) -> HashMap<usize, usize> {
 
 /// The stack position of the OUTERMOST (smallest-position) pending opener whose name is a
 /// case-insensitive prefix of `suffix` (the text after `#+END_`). A callout name has no
-/// whitespace, so only prefixes of `suffix`'s leading non-whitespace run can match; checking
-/// those byte-prefixes is O(|suffix|), keeping `pair_callouts` linear even on adversarial
-/// non-matching `#+END_` runs. `by_name[name].first()` is that name's outermost pending opener.
-fn outermost_callout_match(by_name: &HashMap<String, Vec<usize>>, suffix: &str) -> Option<usize> {
+/// whitespace, so only prefixes of `suffix`'s leading non-whitespace run can match — AND only
+/// at a length some pending opener actually has (`name_lens`), so this is O(distinct pending
+/// lengths · hash), never O(head²). `by_name[name].first()` is that name's outermost pending
+/// opener. (Probing only `name_lens` lengths is equivalent to probing every `k`: a `k` that is
+/// not a pending length can never match a pending name of length `k`.)
+fn outermost_callout_match(
+    by_name: &HashMap<String, Vec<usize>>,
+    name_lens: &HashMap<usize, usize>,
+    suffix: &str,
+) -> Option<usize> {
     let head_len = suffix.bytes().take_while(|&b| b != b' ' && b != b'\t').count();
     let head = suffix[..head_len].to_ascii_lowercase();
     let mut best: Option<usize> = None;
-    let mut k = 1;
-    while k <= head.len() {
-        if head.is_char_boundary(k) {
-            if let Some(&p) = by_name.get(&head[..k]).and_then(|v| v.first()) {
+    for &len in name_lens.keys() {
+        if len <= head.len() && head.is_char_boundary(len) {
+            if let Some(&p) = by_name.get(&head[..len]).and_then(|v| v.first()) {
                 best = Some(best.map_or(p, |b: usize| b.min(p)));
             }
         }
-        k += 1;
     }
     best
 }

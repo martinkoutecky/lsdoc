@@ -244,6 +244,22 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
             8_000,
             |n| (0..n).map(|k| format!("#+BEGIN_A{k}\n#+END_Z{k}\n")).collect::<String>(),
         ),
+        // A validly-closed callout with a LONG NAME: `outermost_callout_match` must not hash
+        // every growing prefix of the `#+END_` suffix (was O(name²) per closer — found by the
+        // perf audit). The `name_lens` distinct-length probe makes it O(name). With `by_name`
+        // non-empty (the opener pending), this fails CAP=3.0 on the pre-fix code (4×/doubling).
+        (
+            "md_callout_longname",
+            false,
+            8_000,
+            |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n)),
+        ),
+        (
+            "org_callout_longname",
+            true,
+            8_000,
+            |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n)),
+        ),
     ]
 }
 

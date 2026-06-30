@@ -930,6 +930,9 @@ fn pair_callouts(
     let mut pairs = std::collections::HashMap::new();
     let mut stack: Vec<(String, usize)> = Vec::new();
     let mut by_name: std::collections::HashMap<String, Vec<usize>> = std::collections::HashMap::new();
+    // distinct byte-lengths of pending opener names (counts) — see the md `pair_callouts`: keeps
+    // the `#+END_` prefix probe O(distinct pending lengths), not O(head²).
+    let mut name_lens: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
     for (idx, l) in lines.iter().enumerate() {
         let opener = block_begin(l.text).or_else(|| {
             recognize_headlines
@@ -938,15 +941,22 @@ fn pair_callouts(
         });
         if let Some(name) = opener {
             let nl = name.to_ascii_lowercase();
+            *name_lens.entry(nl.len()).or_insert(0) += 1;
             by_name.entry(nl.clone()).or_default().push(stack.len());
             stack.push((nl, idx));
             continue;
         }
         let t = l.text.trim_start();
         if t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
-            if let Some(pos) = outermost_callout_match(&by_name, &t[6..]) {
+            if let Some(pos) = outermost_callout_match(&by_name, &name_lens, &t[6..]) {
                 pairs.insert(stack[pos].1, idx);
                 for (nm, _) in stack.drain(pos..) {
+                    if let Some(c) = name_lens.get_mut(&nm.len()) {
+                        *c -= 1;
+                        if *c == 0 {
+                            name_lens.remove(&nm.len());
+                        }
+                    }
                     if let Some(v) = by_name.get_mut(&nm) {
                         while v.last().is_some_and(|&p| p >= pos) {
                             v.pop();
@@ -960,24 +970,23 @@ fn pair_callouts(
 }
 
 /// Stack position of the OUTERMOST pending opener whose name is a case-insensitive prefix of
-/// `suffix` (text after `#+END_`). O(|suffix|): a callout name has no whitespace, so only
-/// prefixes of `suffix`'s leading non-ws run can match. `by_name[name].first()` = that name's
-/// outermost pending opener.
+/// `suffix` (text after `#+END_`). Probes ONLY the byte-lengths some pending opener actually has
+/// (`name_lens`) → O(distinct pending lengths · hash), never O(head²). `by_name[name].first()`
+/// = that name's outermost pending opener.
 fn outermost_callout_match(
     by_name: &std::collections::HashMap<String, Vec<usize>>,
+    name_lens: &std::collections::HashMap<usize, usize>,
     suffix: &str,
 ) -> Option<usize> {
     let head_len = suffix.bytes().take_while(|&b| b != b' ' && b != b'\t').count();
     let head = suffix[..head_len].to_ascii_lowercase();
     let mut best: Option<usize> = None;
-    let mut k = 1;
-    while k <= head.len() {
-        if head.is_char_boundary(k) {
-            if let Some(&p) = by_name.get(&head[..k]).and_then(|v| v.first()) {
+    for &len in name_lens.keys() {
+        if len <= head.len() && head.is_char_boundary(len) {
+            if let Some(&p) = by_name.get(&head[..len]).and_then(|v| v.first()) {
                 best = Some(best.map_or(p, |b: usize| b.min(p)));
             }
         }
-        k += 1;
     }
     best
 }
