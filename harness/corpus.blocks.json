@@ -1283,5 +1283,35 @@
   "id": "b256",
   "cat": "fence-lang",
   "input": "~~~~\na\n~~~~"
+ },
+ {
+  "id": "b257",
+  "cat": "tine-props",
+  "input": "- foo\nkey:: val"
+ },
+ {
+  "id": "b258",
+  "cat": "tine-props",
+  "input": "```\nkey:: val\n```"
+ },
+ {
+  "id": "b259",
+  "cat": "tine-ts",
+  "input": "SCHEDULED: <2026-01-01 Thu>"
+ },
+ {
+  "id": "b260",
+  "cat": "tine-ts",
+  "input": "DEADLINE: <2026-01-01 Thu>"
+ },
+ {
+  "id": "b261",
+  "cat": "tine-ts",
+  "input": "`SCHEDULED: <2026-01-01 Thu>`"
+ },
+ {
+  "id": "b262",
+  "cat": "tine-ts",
+  "input": "```\nSCHEDULED: <2026-01-01 Thu>\n```"
  }
 ]

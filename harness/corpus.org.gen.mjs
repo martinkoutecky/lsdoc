@@ -450,6 +450,11 @@ add("empty-name", "#+BEGIN_\n#+TITLE: x\n#+END_SRC");  // paragraph, directive, 
 add("mixed-fence", "~~~\na\n```\nb");                  // src("a"), paragraph (either-char close)
 add("fence-lang", "~~~~\na\n~~~~");                     // src lang="~" (marker exactly 3 chars)
 
+// FOR-TINE wire contract (org): org properties come from a `:PROPERTIES:` drawer, NOT `key::`.
+add("tine-props", "* foo\n:PROPERTIES:\n:key: val\n:END:"); // bullet, properties{key}
+add("tine-props", "* foo\nkey:: val");                      // bullet, paragraph (key:: is NOT a property in org)
+add("tine-props", "#+BEGIN_SRC\nkey:: val\n#+END_SRC");     // src (key:: is code, NOT a property)
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

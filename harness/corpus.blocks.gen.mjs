@@ -349,6 +349,16 @@ add("mixed-fence", "```\na\n~~~~~ info\nb");              // src("a"), paragraph
 add("fence-lang", "````js\na\n````");                     // src lang="`js"
 add("fence-lang", "~~~~\na\n~~~~");                        // src lang="~"
 
+// FOR-TINE wire contract (md): facets Tine reads off the one lsdoc parse per block.
+// (2) trailing `key:: value` ⇒ Properties, fence-aware (key:: inside src is CODE, not a prop).
+add("tine-props", "- foo\nkey:: val");                    // bullet, properties{key}
+add("tine-props", "```\nkey:: val\n```");                 // src (key:: is code, NOT a property)
+// (3) Timestamp ONLY for a standalone planning line — NEVER inside inline code / a fence.
+add("tine-ts", "SCHEDULED: <2026-01-01 Thu>");            // paragraph[Timestamp{Scheduled}]
+add("tine-ts", "DEADLINE: <2026-01-01 Thu>");             // paragraph[Timestamp{Deadline}]
+add("tine-ts", "`SCHEDULED: <2026-01-01 Thu>`");          // paragraph[Code] — NOT a timestamp
+add("tine-ts", "```\nSCHEDULED: <2026-01-01 Thu>\n```");  // src — NOT a timestamp
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

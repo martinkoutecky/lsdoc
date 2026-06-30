@@ -1978,5 +1978,23 @@
   "cat": "fence-lang",
   "input": "~~~~\na\n~~~~",
   "format": "org"
+ },
+ {
+  "id": "o330",
+  "cat": "tine-props",
+  "input": "* foo\n:PROPERTIES:\n:key: val\n:END:",
+  "format": "org"
+ },
+ {
+  "id": "o331",
+  "cat": "tine-props",
+  "input": "* foo\nkey:: val",
+  "format": "org"
+ },
+ {
+  "id": "o332",
+  "cat": "tine-props",
+  "input": "#+BEGIN_SRC\nkey:: val\n#+END_SRC",
+  "format": "org"
  }
 ]

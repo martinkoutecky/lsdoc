@@ -1689,6 +1689,22 @@ mod tests {
         assert_eq!(prev_end, input.len(), "spans cover the whole input");
     }
 
+    #[test]
+    fn block_span_round_trips_source() {
+        // FOR-TINE wire contract (point 1): a block's `span` [s,e] is its byte-range in the input,
+        // so a consumer can slice the raw text by span (Tine: search-text = raw MINUS the
+        // Properties/Drawer spans). Spans must stay EMITTED (the `Block` enum keeps
+        // `skip_serializing_if = "Option::is_none"`, NOT skip-always) and round-trip exactly.
+        let input = "- foo\nkey:: val"; // [Bullet("foo"), Properties{key}]
+        let blocks = parse(input);
+        let props = blocks
+            .iter()
+            .find(|b| matches!(b, Block::Properties { .. }))
+            .expect("trailing `key::` ⇒ a Properties block");
+        let Span(s, e) = block_span(props).expect("the Properties block carries a span");
+        assert_eq!(&input[s..e], "key:: val", "the span must round-trip to the block's source");
+    }
+
     fn block_span(b: &Block) -> Option<Span> {
         match b {
             Block::Paragraph { span, .. } | Block::Heading { span, .. }
