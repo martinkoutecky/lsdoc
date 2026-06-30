@@ -87,6 +87,14 @@ add("link", `[]()`);
 add("link", `![alt](img.png){:width 200}`);
 add("link", `[label](((${U1})) extra)`); // block-ref-ish but trailing text
 
+// --- link-label emphasis reparse (M1: md labels re-parsed with Ctx::emph) ---
+add("label", "[**b**](u)");                 // bold label
+add("label", "[*i* and `c`](u)");           // italic + code span in a label
+add("label", "[a [[P]] **b**](u)");         // page-ref + bold inside a label
+add("label", "[~~s~~ ^sup^ =hl=](u)");      // strike + superscript + highlight
+add("label", "![**alt** x](pic.png)");      // emphasis in an IMAGE alt label
+add("label", "[a * b](u)");                 // marker present but NOT emphasis → kept PLAIN
+
 // --- escapes ---
 add("escape", "\\[[a]]");
 add("escape", `\\((${U1}))`);

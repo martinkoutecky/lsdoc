@@ -331,651 +331,681 @@
  },
  {
   "id": "c066",
+  "cat": "label",
+  "input": "[**b**](u)"
+ },
+ {
+  "id": "c067",
+  "cat": "label",
+  "input": "[*i* and `c`](u)"
+ },
+ {
+  "id": "c068",
+  "cat": "label",
+  "input": "[a [[P]] **b**](u)"
+ },
+ {
+  "id": "c069",
+  "cat": "label",
+  "input": "[~~s~~ ^sup^ =hl=](u)"
+ },
+ {
+  "id": "c070",
+  "cat": "label",
+  "input": "![**alt** x](pic.png)"
+ },
+ {
+  "id": "c071",
+  "cat": "label",
+  "input": "[a * b](u)"
+ },
+ {
+  "id": "c072",
   "cat": "escape",
   "input": "\\[[a]]"
  },
  {
-  "id": "c067",
+  "id": "c073",
   "cat": "escape",
   "input": "\\((11111111-1111-1111-1111-111111111111))"
  },
  {
-  "id": "c068",
+  "id": "c074",
   "cat": "escape",
   "input": "\\#tag"
  },
  {
-  "id": "c069",
+  "id": "c075",
   "cat": "escape",
   "input": "a \\[[b]] c"
  },
  {
-  "id": "c070",
+  "id": "c076",
   "cat": "escape",
   "input": "\\\\[[a]]"
  },
  {
-  "id": "c071",
+  "id": "c077",
   "cat": "escape",
   "input": "\\`[[a]]\\`"
  },
  {
-  "id": "c072",
+  "id": "c078",
   "cat": "emph",
   "input": "**a*b**c*"
  },
  {
-  "id": "c073",
+  "id": "c079",
   "cat": "emph",
   "input": "*_a_*"
  },
  {
-  "id": "c074",
+  "id": "c080",
   "cat": "emph",
   "input": "***a***"
  },
  {
-  "id": "c075",
+  "id": "c081",
   "cat": "emph",
   "input": "**[[Foo]]**"
  },
  {
-  "id": "c076",
+  "id": "c082",
   "cat": "emph",
   "input": "*[[Foo]]*"
  },
  {
-  "id": "c077",
+  "id": "c083",
   "cat": "emph",
   "input": "_#tag_"
  },
  {
-  "id": "c078",
+  "id": "c084",
   "cat": "emph",
   "input": "~~[[Foo]]~~"
  },
  {
-  "id": "c079",
+  "id": "c085",
   "cat": "emph",
   "input": "==#tag=="
  },
  {
-  "id": "c080",
+  "id": "c086",
   "cat": "emph",
   "input": "a*b*c [[Foo]] d**e"
  },
  {
-  "id": "c081",
+  "id": "c087",
   "cat": "emph",
   "input": "**((nope))**"
  },
  {
-  "id": "c082",
+  "id": "c088",
   "cat": "emph",
   "input": "__[[Foo]]__"
  },
  {
-  "id": "c083",
+  "id": "c089",
   "cat": "prop",
   "input": "a::b mid line"
  },
  {
-  "id": "c084",
+  "id": "c090",
   "cat": "prop",
   "input": "::"
  },
  {
-  "id": "c085",
+  "id": "c091",
   "cat": "prop",
   "input": "k:: v :: w"
  },
  {
-  "id": "c086",
+  "id": "c092",
   "cat": "prop",
   "input": "tags:: [[Foo]], Bar"
  },
  {
-  "id": "c087",
+  "id": "c093",
   "cat": "prop",
   "input": "alias:: a, b"
  },
  {
-  "id": "c088",
+  "id": "c094",
   "cat": "prop",
   "input": "key:: ((not))"
  },
  {
-  "id": "c089",
+  "id": "c095",
   "cat": "prop",
   "input": "x:: #tag"
  },
  {
-  "id": "c090",
+  "id": "c096",
   "cat": "tag",
   "input": "#t."
  },
  {
-  "id": "c091",
+  "id": "c097",
   "cat": "tag",
   "input": "#[[a b]]"
  },
  {
-  "id": "c092",
+  "id": "c098",
   "cat": "tag",
   "input": "#t#t"
  },
  {
-  "id": "c093",
+  "id": "c099",
   "cat": "tag",
   "input": "#中文"
  },
  {
-  "id": "c094",
+  "id": "c100",
   "cat": "tag",
   "input": "#café"
  },
  {
-  "id": "c095",
+  "id": "c101",
   "cat": "tag",
   "input": "#123"
  },
  {
-  "id": "c096",
+  "id": "c102",
   "cat": "tag",
   "input": "#t,"
  },
  {
-  "id": "c097",
+  "id": "c103",
   "cat": "tag",
   "input": "#tag.foo"
  },
  {
-  "id": "c098",
+  "id": "c104",
   "cat": "tag",
   "input": "#a/b/c"
  },
  {
-  "id": "c099",
+  "id": "c105",
   "cat": "tag",
   "input": "#a.b.c"
  },
  {
-  "id": "c100",
+  "id": "c106",
   "cat": "tag",
   "input": "word#tag"
  },
  {
-  "id": "c101",
+  "id": "c107",
   "cat": "tag",
   "input": "a#b"
  },
  {
-  "id": "c102",
+  "id": "c108",
   "cat": "tag",
   "input": "c#sharp"
  },
  {
-  "id": "c103",
+  "id": "c109",
   "cat": "tag",
   "input": "#tag-name_2"
  },
  {
-  "id": "c104",
+  "id": "c110",
   "cat": "tag",
   "input": "#tag!"
  },
  {
-  "id": "c105",
+  "id": "c111",
   "cat": "tag",
   "input": "(#tag)"
  },
  {
-  "id": "c106",
+  "id": "c112",
   "cat": "tag",
   "input": "]#tag"
  },
  {
-  "id": "c107",
+  "id": "c113",
   "cat": "tag",
   "input": "#"
  },
  {
-  "id": "c108",
+  "id": "c114",
   "cat": "tag",
   "input": "# notatag"
  },
  {
-  "id": "c109",
+  "id": "c115",
   "cat": "tag",
   "input": "#[[a]b]]"
  },
  {
-  "id": "c110",
+  "id": "c116",
   "cat": "tag",
   "input": "#[[unclosed"
  },
  {
-  "id": "c111",
+  "id": "c117",
   "cat": "tag",
   "input": "##double"
  },
  {
-  "id": "c112",
+  "id": "c118",
   "cat": "tag",
   "input": "#tag's"
  },
  {
-  "id": "c113",
+  "id": "c119",
   "cat": "tag",
   "input": "email#fragment"
  },
  {
-  "id": "c114",
+  "id": "c120",
   "cat": "tag",
   "input": "#_underscore"
  },
  {
-  "id": "c115",
+  "id": "c121",
   "cat": "tag",
   "input": "#-dash"
  },
  {
-  "id": "c116",
+  "id": "c122",
   "cat": "tag",
   "input": "x#中文"
  },
  {
-  "id": "c117",
+  "id": "c123",
   "cat": "tag",
   "input": "#naïve"
  },
  {
-  "id": "c118",
+  "id": "c124",
   "cat": "tag",
   "input": "pre #tag.next"
  },
  {
-  "id": "c119",
+  "id": "c125",
   "cat": "url",
   "input": "(see http://x.com/a(b))"
  },
  {
-  "id": "c120",
+  "id": "c126",
   "cat": "url",
   "input": "http://x.com."
  },
  {
-  "id": "c121",
+  "id": "c127",
   "cat": "url",
   "input": "https://en.wikipedia.org/wiki/Foo_(bar)"
  },
  {
-  "id": "c122",
+  "id": "c128",
   "cat": "url",
   "input": "see https://ex.com/p#Old then #real"
  },
  {
-  "id": "c123",
+  "id": "c129",
   "cat": "url",
   "input": "<https://ex.com/path>"
  },
  {
-  "id": "c124",
+  "id": "c130",
   "cat": "url",
   "input": "https://x.com/#frag"
  },
  {
-  "id": "c125",
+  "id": "c131",
   "cat": "url",
   "input": "visit (https://a.com) and #tag"
  },
  {
-  "id": "c126",
+  "id": "c132",
   "cat": "url",
   "input": "https://x.com/a)b"
  },
  {
-  "id": "c127",
+  "id": "c133",
   "cat": "url",
   "input": "url: https://x.com, next"
  },
  {
-  "id": "c128",
+  "id": "c134",
   "cat": "macro",
   "input": "{{embed ((11111111-1111-1111-1111-111111111111))}}"
  },
  {
-  "id": "c129",
+  "id": "c135",
   "cat": "macro",
   "input": "{{{n}}}"
  },
  {
-  "id": "c130",
+  "id": "c136",
   "cat": "macro",
   "input": "{{m {{n}}}}"
  },
  {
-  "id": "c131",
+  "id": "c137",
   "cat": "macro",
   "input": "{{query [[Foo]]}}"
  },
  {
-  "id": "c132",
+  "id": "c138",
   "cat": "macro",
   "input": "{{embed [[Foo]]}}"
  },
  {
-  "id": "c133",
+  "id": "c139",
   "cat": "macro",
   "input": "{{embed [[Foo]] ((11111111-1111-1111-1111-111111111111))}}"
  },
  {
-  "id": "c134",
+  "id": "c140",
   "cat": "macro",
   "input": "{{"
  },
  {
-  "id": "c135",
+  "id": "c141",
   "cat": "macro",
   "input": "{{}}"
  },
  {
-  "id": "c136",
+  "id": "c142",
   "cat": "macro",
   "input": "{{renderer :x, [[Foo]]}}"
  },
  {
-  "id": "c137",
+  "id": "c143",
   "cat": "macro",
   "input": "a {{b}} #tag"
  },
  {
-  "id": "c138",
+  "id": "c144",
   "cat": "macro",
   "input": "{{video https://x.com/(v)}}"
  },
  {
-  "id": "c139",
+  "id": "c145",
   "cat": "unicode",
   "input": "[[café]]"
  },
  {
-  "id": "c140",
+  "id": "c146",
   "cat": "unicode",
   "input": "[[naïve]] θ #tag"
  },
  {
-  "id": "c141",
+  "id": "c147",
   "cat": "unicode",
   "input": "[[a​b]]"
  },
  {
-  "id": "c142",
+  "id": "c148",
   "cat": "unicode",
   "input": "#tag​suffix"
  },
  {
-  "id": "c143",
+  "id": "c149",
   "cat": "unicode",
   "input": "[[é]]"
  },
  {
-  "id": "c144",
+  "id": "c150",
   "cat": "unicode",
   "input": "#étag"
  },
  {
-  "id": "c145",
+  "id": "c151",
   "cat": "unicode",
   "input": "[[＃fullwidth]]"
  },
  {
-  "id": "c146",
+  "id": "c152",
   "cat": "unicode",
   "input": "[[😀emoji]]"
  },
  {
-  "id": "c147",
+  "id": "c153",
   "cat": "unicode",
   "input": "#😀"
  },
  {
-  "id": "c148",
+  "id": "c154",
   "cat": "unicode",
   "input": "[[a\tb]]"
  },
  {
-  "id": "c149",
+  "id": "c155",
   "cat": "misc",
   "input": "[[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]]"
  },
  {
-  "id": "c150",
+  "id": "c156",
   "cat": "misc",
   "input": "#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
  },
  {
-  "id": "c151",
+  "id": "c157",
   "cat": "misc",
   "input": "[[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]] [[a]]"
  },
  {
-  "id": "c152",
+  "id": "c158",
   "cat": "misc",
   "input": "((11111111-1111-1111-1111-111111111111)) )) )) )) )) )) )) )) )) ))"
  },
  {
-  "id": "c153",
+  "id": "c159",
   "cat": "misc",
   "input": ""
  },
  {
-  "id": "c154",
+  "id": "c160",
   "cat": "misc",
   "input": "   "
  },
  {
-  "id": "c155",
+  "id": "c161",
   "cat": "misc",
   "input": "plain text no refs at all"
  },
  {
-  "id": "c156",
+  "id": "c162",
   "cat": "misc",
   "input": "[[Foo]] #bar ((11111111-1111-1111-1111-111111111111)) {{q}} `c` **b**"
  },
  {
-  "id": "c157",
+  "id": "c163",
   "cat": "render",
   "input": "![alt](img.png)"
  },
  {
-  "id": "c158",
+  "id": "c164",
   "cat": "render",
   "input": "[alt](img.png)"
  },
  {
-  "id": "c159",
+  "id": "c165",
   "cat": "render",
   "input": "![](x.png)"
  },
  {
-  "id": "c160",
+  "id": "c166",
   "cat": "render",
   "input": "![a](../assets/x.png)"
  },
  {
-  "id": "c161",
+  "id": "c167",
   "cat": "render",
   "input": "[label](http://x.com \"a title\")"
  },
  {
-  "id": "c162",
+  "id": "c168",
   "cat": "render",
   "input": "![alt](img.png \"cap\")"
  },
  {
-  "id": "c163",
+  "id": "c169",
   "cat": "render",
   "input": "[l](u \"a \\\"b\\\" c\")"
  },
  {
-  "id": "c164",
+  "id": "c170",
   "cat": "render",
   "input": "[l](u \"\")"
  },
  {
-  "id": "c165",
+  "id": "c171",
   "cat": "render",
   "input": "[t](u 'single')"
  },
  {
-  "id": "c166",
+  "id": "c172",
   "cat": "render",
   "input": "![a](../assets/x.png){:height 40, :width 100}"
  },
  {
-  "id": "c167",
+  "id": "c173",
   "cat": "render",
   "input": "[a](u){:width 50}"
  },
  {
-  "id": "c168",
+  "id": "c174",
   "cat": "render",
   "input": "![a](x.png \"cap\"){:width 10}"
  },
  {
-  "id": "c169",
+  "id": "c175",
   "cat": "render",
   "input": "text ![i](a.png) and [l](b) end"
  },
  {
-  "id": "c170",
+  "id": "c176",
   "cat": "hiccup",
   "input": "x [:div] y"
  },
  {
-  "id": "c171",
+  "id": "c177",
   "cat": "hiccup",
   "input": "x [:span] y"
  },
  {
-  "id": "c172",
+  "id": "c178",
   "cat": "hiccup",
   "input": "a [:a] b"
  },
  {
-  "id": "c173",
+  "id": "c179",
   "cat": "hiccup",
   "input": "a [:h1] b"
  },
  {
-  "id": "c174",
+  "id": "c180",
   "cat": "hiccup",
   "input": "a [:foo] b"
  },
  {
-  "id": "c175",
+  "id": "c181",
   "cat": "hiccup",
   "input": "a [:aa] b"
  },
  {
-  "id": "c176",
+  "id": "c182",
   "cat": "hiccup",
   "input": "a [:svg] b"
  },
  {
-  "id": "c177",
+  "id": "c183",
   "cat": "hiccup",
   "input": "a [:h7] b"
  },
  {
-  "id": "c178",
+  "id": "c184",
   "cat": "hiccup",
   "input": "a [:div2] b"
  },
  {
-  "id": "c179",
+  "id": "c185",
   "cat": "hiccup",
   "input": "a [:DIV] b"
  },
  {
-  "id": "c180",
+  "id": "c186",
   "cat": "hiccup",
   "input": "a [:Section] b"
  },
  {
-  "id": "c181",
+  "id": "c187",
   "cat": "hiccup",
   "input": "x [:div.cls] y"
  },
  {
-  "id": "c182",
+  "id": "c188",
   "cat": "hiccup",
   "input": "x [:div#id] y"
  },
  {
-  "id": "c183",
+  "id": "c189",
   "cat": "hiccup",
   "input": "x [:div{:a 1}] y"
  },
  {
-  "id": "c184",
+  "id": "c190",
   "cat": "hiccup",
   "input": "x [:div-x] y"
  },
  {
-  "id": "c185",
+  "id": "c191",
   "cat": "hiccup",
   "input": "x [:div \"a]b\"] y"
  },
  {
-  "id": "c186",
+  "id": "c192",
   "cat": "hiccup",
   "input": "x [:div \"a\\\"]b\"] y"
  },
  {
-  "id": "c187",
+  "id": "c193",
   "cat": "hiccup",
   "input": "x [:div [:span]] y"
  },
  {
-  "id": "c188",
+  "id": "c194",
   "cat": "hiccup",
   "input": "x [:div [x]] y"
  },
  {
-  "id": "c189",
+  "id": "c195",
   "cat": "hiccup",
   "input": "x [:div {:a]}] y"
  },
  {
-  "id": "c190",
+  "id": "c196",
   "cat": "hiccup",
   "input": "x [:div.cls {:a 1} \"hi\" [:span \"y\"]] y"
  },
  {
-  "id": "c191",
+  "id": "c197",
   "cat": "hiccup",
   "input": "x [:div y"
  },
  {
-  "id": "c192",
+  "id": "c198",
   "cat": "hiccup",
   "input": "x [:div [:span] y"
  },
  {
-  "id": "c193",
+  "id": "c199",
   "cat": "hiccup",
   "input": "x [:div \"abc] y"
  },
  {
-  "id": "c194",
+  "id": "c200",
   "cat": "hiccup",
   "input": "x[:div]"
  },
  {
-  "id": "c195",
+  "id": "c201",
   "cat": "hiccup",
   "input": "[:div]x and [:span]"
  }

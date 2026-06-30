@@ -76,6 +76,14 @@ pub(crate) fn parse_inline(text: &str) -> Vec<Inline> {
     parse_ctx(text, Ctx::top())
 }
 
+/// Re-parse a markdown link/image LABEL with the restricted emphasis-content context
+/// (mldoc `aux_nested_emphasis`): the same `Ctx::emph()` the resolver already applies to
+/// emphasis *content*. Used by `inline::reparse_label_text` so md label reparse runs on the
+/// v0.2 resolver (matching how Org labels go through `org_resolver::parse_ctx(_, Ctx::label())`).
+pub(crate) fn parse_inline_ctx_emph(text: &str) -> Vec<Inline> {
+    parse_ctx(text, Ctx::emph())
+}
+
 fn parse_ctx(text: &str, ctx: Ctx) -> Vec<Inline> {
     let mut toks = lex(text);
     resolve(text, &mut toks, ctx)
