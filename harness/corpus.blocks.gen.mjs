@@ -330,6 +330,13 @@ add("fence-straddle", "#+BEGIN_NOTE\n```\n#+END_NOTE\n```\nz\n```");    // custo
 add("fence-straddle", "```\n#+BEGIN_QUOTE\n```\n#+END_QUOTE");          // src(body has #+BEGIN), then para
 add("fence-straddle", "#+BEGIN_QUOTE\n```\n```\n#+END_QUOTE\n```\nx\n```"); // quote[src], then src
 
+// phantom-opener regression: a `#+BEGIN_X`/`:NAME:` lexically INSIDE a fenced (opaque)
+// body is CONTENT, not an opener — it must NOT steal the closer of a genuine container
+// that follows the fence. The buggy global pending-opener pre-pass registered it and
+// dropped the real container (`src, paragraph` instead of `src, quote` / `src, properties`).
+add("phantom-opener", "```\n#+BEGIN_QUOTE\n```\n#+BEGIN_QUOTE\nx\n#+END_QUOTE");  // src, quote
+add("phantom-opener", "```\n:LOGBOOK:\n```\n:PROPERTIES:\n:ID: a\n:END:");        // src, properties
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

@@ -1243,5 +1243,15 @@
   "id": "b248",
   "cat": "fence-straddle",
   "input": "#+BEGIN_QUOTE\n```\n```\n#+END_QUOTE\n```\nx\n```"
+ },
+ {
+  "id": "b249",
+  "cat": "phantom-opener",
+  "input": "```\n#+BEGIN_QUOTE\n```\n#+BEGIN_QUOTE\nx\n#+END_QUOTE"
+ },
+ {
+  "id": "b250",
+  "cat": "phantom-opener",
+  "input": "```\n:LOGBOOK:\n```\n:PROPERTIES:\n:ID: a\n:END:"
  }
 ]

@@ -1954,5 +1954,11 @@
   "cat": "fence-straddle",
   "input": ":LOGBOOK:\n```\n:END:\n```\ny\n```",
   "format": "org"
+ },
+ {
+  "id": "o326",
+  "cat": "phantom-opener",
+  "input": "#+BEGIN_SRC org\n:LOGBOOK:\n#+END_SRC\n:PROPERTIES:\n:ID: abc\n:END:",
+  "format": "org"
  }
 ]

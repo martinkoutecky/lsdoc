@@ -439,6 +439,12 @@ add("c7hiccup", "- [:div]x");                // item content [Hiccup, Para x]
 add("fence-straddle", "#+BEGIN_QUOTE\n```\n#+END_QUOTE\n```\nx\n```");  // quote, src
 add("fence-straddle", ":LOGBOOK:\n```\n:END:\n```\ny\n```");           // drawer, src
 
+// phantom-opener regression (org): a `:NAME:` lexically INSIDE a `#+BEGIN_SRC` body is
+// opaque CONTENT, not a drawer opener — it must NOT steal the `:END:` of a genuine
+// `:PROPERTIES:` drawer that follows. The buggy global pending-opener pre-pass registered
+// the body `:LOGBOOK:` and dropped the real drawer (`src, example` instead of `src, properties`).
+add("phantom-opener", "#+BEGIN_SRC org\n:LOGBOOK:\n#+END_SRC\n:PROPERTIES:\n:ID: abc\n:END:"); // src, properties
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

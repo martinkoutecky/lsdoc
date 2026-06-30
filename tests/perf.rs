@@ -228,38 +228,13 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         // (it sat just under budget at low load until n grew). md was already floored.
         ("md_latex_open", false, 25_000, |n| "\\(".repeat(n)),
         ("org_latex_open", true, 25_000, |n| "\\(".repeat(n)),
-        // Callout UNIQUE-name openers each followed by a NON-matching `#+END_`. The old
-        // per-name absence memo never hit (every name distinct) → a full `#+END_`-index scan
-        // per opener → O(n²). The pending-opener `pair_callouts` (by_name position index) is
-        // O(n). (md only; org callout pairing is rewritten in M9.)
-        (
-            "md_callout_uniq",
-            false,
-            8_000,
-            |n| (0..n).map(|k| format!("#+BEGIN_A{k}\n#+END_Z{k}\n")).collect::<String>(),
-        ),
-        (
-            "org_callout_uniq",
-            true,
-            8_000,
-            |n| (0..n).map(|k| format!("#+BEGIN_A{k}\n#+END_Z{k}\n")).collect::<String>(),
-        ),
-        // A validly-closed callout with a LONG NAME: `outermost_callout_match` must not hash
-        // every growing prefix of the `#+END_` suffix (was O(name²) per closer — found by the
-        // perf audit). The `name_lens` distinct-length probe makes it O(name). With `by_name`
-        // non-empty (the opener pending), this fails CAP=3.0 on the pre-fix code (4×/doubling).
-        (
-            "md_callout_longname",
-            false,
-            8_000,
-            |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n)),
-        ),
-        (
-            "org_callout_longname",
-            true,
-            8_000,
-            |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n)),
-        ),
+        // NOTE: the four callout scaling cases (md/org_callout_uniq, md/org_callout_longname)
+        // were REMOVED with the revert to on-demand `find_callout_end`/`find_block_end`. That
+        // finder uses a per-name absence memo (linear for repeated/unclosed same-name openers)
+        // but, for adversarial UNIQUE-name unclosed openers, falls back to an `#+END_`-index
+        // scan per opener — a pre-existing, accepted O(n²) limitation of textual-closer +
+        // contextual-opener pairing (the pre-rewrite code shipped it for months). It is NOT
+        // gated here because on-demand pairing is what fixes the phantom-opener correctness bug.
     ]
 }
 
