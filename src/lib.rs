@@ -81,6 +81,14 @@ pub fn inline(input: &str, format: &str) -> Vec<ast::Inline> {
     }
 }
 
+/// Test/perf hook (NOT stable API): run the STREAMING Org block driver directly, without the
+/// `LSDOC_BLOCK_STREAMING` env seam. Used by `tests/perf.rs` to prove the streaming `>`-quote
+/// path is O(n) / bounded-depth without racing the env-gated `streaming_eq_org` differential.
+#[doc(hidden)]
+pub fn __parse_org_streaming(input: &str) -> Vec<ast::Block> {
+    org::parse_streaming_root(input)
+}
+
 /// Parse Markdown into the full [`ast::Projection`] (`{ blocks, refs }`).
 pub fn parse_to_projection(input: &str) -> Projection {
     let blocks = parse::parse(input);

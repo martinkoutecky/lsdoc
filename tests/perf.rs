@@ -156,14 +156,17 @@ fn assert_no_overflow(d: usize) {
         .expect("deep nesting overflowed a 1 MiB stack — the streaming parser is not bounded-depth");
 }
 
-/// Org-only deep inputs. A single line of `>`×d nests Org `Quote`s (md's quote path is
-/// flat); the handler must peel iteratively AND bound nesting depth so the parse, ref
-/// walk, and drop of the result can't overflow (audit P2: this aborted ~7.5k `>`).
+/// Org-only deep inputs under the STREAMING driver (M4). `>`×d on one line nests ⌈d/2⌉ Org
+/// `Quote`s; the streaming `gt_strip` peel (`build_org_quote_streaming`) builds that spine
+/// ITERATIVELY — single-line peel, multi-line tail-peel, lazy-absorbed continuation — with
+/// NO native recursion and NO `QUOTE_NEST_CAP`. Includes the MULTI-LINE `>`-nests (a deep
+/// opener + a continuation that rides into the deepest level; a deep `>` line below a
+/// paragraph), the case the M3 recurse-on-body would stack-overflow uncapped.
 fn org_deep_cases(d: usize) -> Vec<String> {
     vec![
-        format!("{}x", ">".repeat(d)),       // P2: `>`×d on ONE line
-        format!("x\n{}y", ">".repeat(d)),    // deep `>` line below a paragraph (recursion path)
-        format!("{}x\n> y", ">".repeat(d)),  // deep `>` first line + continuation (recursion path)
+        format!("{}x", ">".repeat(d)),       // `>`×d on ONE line (single-line peel)
+        format!("x\n{}y", ">".repeat(d)),    // deep `>` line below a paragraph (single-line peel)
+        format!("{}x\n> y", ">".repeat(d)),  // MULTI-LINE: deep opener + a lazily-absorbed cont
         "> x\n".repeat(d / 10),              // wide (single quote, many body lines)
     ]
 }
@@ -172,10 +175,18 @@ fn assert_no_overflow_org(d: usize) {
     let inputs = org_deep_cases(d);
     std::thread::Builder::new()
         .stack_size(1024 * 1024)
-        .spawn(move || inputs.iter().for_each(|s| parse_org(s)))
+        // Assert the STREAMING Org parser is bounded-depth: `build_org_quote_streaming` peels
+        // the `>`-spine ITERATIVELY (the wrappers are a loop, the residual a single re-dispatch),
+        // so a deep `>`-nest never grows the native stack — no cap needed. `forget` the result,
+        // exactly like md's `assert_no_overflow`: DROPPING the deep `Quote` tree recurses and
+        // would overflow the 1 MiB test stack, but that recursive drop is a DOWNSTREAM property
+        // of a recursive AST (the consumer's stack), not a parser one. We call the raw streaming
+        // driver (`__parse_org_streaming`, not the env-gated public `parse`) so this never races
+        // the `streaming_eq_org` differential that requires the env unset.
+        .spawn(move || inputs.iter().for_each(|s| std::mem::forget(lsdoc::__parse_org_streaming(s))))
         .expect("spawn parse thread")
         .join()
-        .expect("deep org `>` nesting overflowed a 1 MiB stack — quote handler not bounded");
+        .expect("deep org `>` nesting overflowed a 1 MiB stack — streaming quote peel not bounded");
 }
 
 fn assert_linear_org(n: usize, budget_ms: u128) {
@@ -319,6 +330,49 @@ fn assert_linear_scaling() {
             t4n / 1000.0,
         );
     }
+}
+
+/// Best-of-N time (µs) to PARSE a deep `>`-nest via the STREAMING driver, FORGETTING the
+/// result. The deep `Quote` tree's recursive DROP would dominate the measurement (and
+/// overflow the main stack) — a downstream property of a recursive AST, not the parser; we
+/// measure only the bounded-depth, iterative parse. Mirrors `best_us`'s warmup + min.
+fn best_us_org_deep_quote(input: &str, runs: usize) -> u128 {
+    let once = |s: &str| {
+        let t = Instant::now();
+        std::mem::forget(lsdoc::__parse_org_streaming(std::hint::black_box(s)));
+        t.elapsed().as_micros()
+    };
+    once(input); // warmup: prime allocator + caches
+    (0..runs).map(|_| once(input)).min().unwrap()
+}
+
+/// M4 O(n) gate: a deep MULTI-LINE `>`-nest scales ~linearly under the streaming `gt_strip`
+/// peel — each line is stripped to its depth ONCE (Σ `>`-counts = O(n)), with NO per-level
+/// body copy and NO native recursion, so the `QUOTE_NEST_CAP` is GONE. The legacy
+/// recurse-on-body was O(n²) + stack-overflow on this exact shape (a `>`×d opener that peels
+/// ⌈d/2⌉ deep, plus a continuation lazily absorbed into the deepest level). Two doublings,
+/// gate on the MIN (immune to a single cold spike), like `assert_linear_scaling`.
+#[test]
+#[ignore = "M4 deep-`>` O(n) gate; run with: cargo test --release --test perf -- --ignored"]
+fn org_deep_quote_scales_linearly_heavy() {
+    const CAP: f64 = 3.0;
+    const FLOOR_US: f64 = 20_000.0; // 20ms — below this a ratio is just measurement noise
+    let build = |d: usize| format!("{}x\n> y", ">".repeat(d));
+    let base = 100_000usize;
+    let tn = best_us_org_deep_quote(&build(base), 3) as f64;
+    let t2n = best_us_org_deep_quote(&build(2 * base), 3) as f64;
+    let t4n = best_us_org_deep_quote(&build(4 * base), 3) as f64;
+    let r1 = t2n / tn.max(FLOOR_US);
+    let r2 = t4n / t2n.max(FLOOR_US);
+    let ratio = r1.min(r2);
+    assert!(
+        ratio < CAP,
+        "org deep `>` (gt_strip peel): d={base} {:.1}ms → 2d {:.1}ms → 4d {:.1}ms; doublings \
+         {r1:.1}×, {r2:.1}× — MIN {ratio:.1}× (linear ≈2×; >{CAP}× ⇒ O(n²)/recurse-on-body regression)",
+        tn / 1000.0,
+        t2n / 1000.0,
+        t4n / 1000.0,
+    );
 }
 
 #[test]

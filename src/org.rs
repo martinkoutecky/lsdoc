@@ -107,6 +107,15 @@ pub fn parse(input: &str) -> Vec<Block> {
     out
 }
 
+/// Run the STREAMING Org block driver directly (bypassing the `LSDOC_BLOCK_STREAMING` env
+/// seam), for the perf/overflow gates that must exercise the streaming `>`-quote path WITHOUT
+/// setting a process-wide env var (which would race the `streaming_eq_org` differential, run
+/// in the same `--lib` process). Not part of the stable API; re-exported `#[doc(hidden)]` as
+/// `lsdoc::__parse_org_streaming`.
+pub(crate) fn parse_streaming_root(input: &str) -> Vec<Block> {
+    parse_org_streaming(input, Ctx { in_item: false, in_quote: false })
+}
+
 /// The bounded, L-attributed Org block context — exactly two booleans (the linearity
 /// premise: no input-derived state). Set by the ENCLOSING container on push (root =
 /// `{false,false}`). Replaces the `in_item` parameter + the `ORG_IN_QUOTE` thread-local
@@ -130,6 +139,14 @@ struct Ctx {
 enum Step {
     Next(usize),
     Open { close: usize, builder: Builder, child_ctx: Ctx, indent_strip: usize },
+    /// A markdown `>`-blockquote opener: the run is `[i, ni)`, `body` is the de-`>`'d body
+    /// (built EXACTLY as the old step 8: first line via `quote_first_line`, continuations via
+    /// `quote_line_content`, `\n`-joined + trailing `\n`). The driver flushes the open
+    /// paragraph, emits the (possibly nested) Quote, and resumes at `ni`. Each driver builds
+    /// the nest its own way: legacy via `build_org_quote` (recurse-on-body + `QUOTE_NEST_CAP`,
+    /// the byte-exact oracle), streaming via `build_org_quote_streaming` (iterative `>`-peel,
+    /// O(n) / O(depth) HEAP, NO cap).
+    Quote { ni: usize, body: String, span: Option<Span> },
 }
 
 /// Captures a callout opener's identity so the driver emits the right block once its body
@@ -319,6 +336,14 @@ fn parse_doc(input: &str, in_item: bool) -> Vec<Block> {
                 out.push(block);
                 i = close + 1;
             }
+            Step::Quote { ni, body, span } => {
+                // The byte-exact oracle (unchanged from the old inline step 8): flush, then
+                // `build_org_quote` (recurse-on-body via `legacy_reparse`, `QUOTE_NEST_CAP`).
+                flush_para(&mut out, &mut para, input, ctx.in_item);
+                out.push(build_org_quote(body, span, legacy_reparse));
+                absorb = true;
+                i = ni;
+            }
         }
     }
 
@@ -427,6 +452,19 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
                     top.absorb = absorbs;
                     i = close + 1;
                 }
+            }
+            Step::Quote { ni, body, span } => {
+                // The `>`-quote nest, built ITERATIVELY (`build_org_quote_streaming`): an
+                // iterative `>`-peel for deep `>`-chains (single-line + multi-line tail) +
+                // a `streaming_reparse` of the SHALLOW residual body — O(n) time, O(depth)
+                // HEAP, NO `QUOTE_NEST_CAP`. The open paragraph is flushed first (like the
+                // legacy step 8); a Quote absorbs a following blank (`block_absorbs`).
+                let top = stack.last_mut().unwrap();
+                flush_para(&mut top.out, &mut top.para, input, top.ctx.in_item);
+                let block = build_org_quote_streaming(body, span);
+                top.absorb = block_absorbs(&block);
+                top.out.push(block);
+                i = ni;
             }
         }
     }
@@ -748,10 +786,12 @@ fn dispatch_org_line<'a>(
 
     // 8. markdown blockquote (`>` …). The run is bounded by `hi` (else the closer line would
     // be lazily absorbed into the quote body — `quote_line_content("#+END_QUOTE")` is `Some`).
-    // The (possibly nested) build re-parses the de-`>`'d body via `parse_fn` (the active
-    // driver), staying `QUOTE_NEST_CAP`-bounded for M3.
+    // We only collect the run + de-`>`'d body here and hand it back as `Step::Quote`; the
+    // DRIVER builds the (possibly nested) Quote — legacy via the recurse-on-body
+    // `build_org_quote` (the `QUOTE_NEST_CAP` oracle), streaming via the iterative-peel
+    // `build_org_quote_streaming` (O(n), uncapped). The open paragraph is flushed by the
+    // driver (like `Step::Open`), so `out`/`para`/`absorb` are untouched here.
     if let Some(first_content) = quote_first_line(t) {
-        flush_para(out, para, input, in_item);
         let start = i;
         let mut body = String::new();
         body.push_str(&first_content);
@@ -768,9 +808,7 @@ fn dispatch_org_line<'a>(
             }
         }
         let span = Some(Span(lines[start].start, lines[ni - 1].end));
-        out.push(build_org_quote(body, span, parse_fn));
-        *absorb = true;
-        return Step::Next(ni);
+        return Step::Quote { ni, body, span };
     }
 
     // 9. block-level displayed math `$$ … $$`.
@@ -1324,6 +1362,14 @@ fn quote_line_breaker(s: &str) -> bool {
 /// list/heading/`id::` marker makes mldoc reject the quote entirely, leaving the raw
 /// line a Paragraph). Returns the first body-line content, else None.
 fn quote_first_line(s: &str) -> Option<String> {
+    quote_first_line_slice(s).map(str::to_string)
+}
+
+/// Borrowing core of [`quote_first_line`] — returns the de-`>`'d opener content as a SUFFIX
+/// slice of `s` (no allocation), so the streaming peel (`build_org_quote_streaming`) can strip
+/// `>`-levels in place. `quote_first_line` is exactly `…_slice(s).map(to_string)`, so the two
+/// can never disagree.
+fn quote_first_line_slice(s: &str) -> Option<&str> {
     let r1 = s.trim_start().strip_prefix('>')?.trim_start();
     let content = match r1.strip_prefix('>') {
         Some(r2) => r2.trim_start(),
@@ -1332,23 +1378,30 @@ fn quote_first_line(s: &str) -> Option<String> {
     if content.is_empty() || quote_line_breaker(content) {
         return None;
     }
-    Some(content.to_string())
+    Some(content)
 }
 
 /// One CONTINUATION line of an Org blockquote body (mldoc strips ONE `>` + ws, lazy:
 /// a non-`>` line still continues). Returns None to STOP the run (blank line, or a line
 /// that — after stripping one `>` — starts a new block construct).
 fn quote_line_content(s: &str) -> Option<String> {
+    quote_line_content_slice(s).map(str::to_string)
+}
+
+/// Borrowing core of [`quote_line_content`] — returns the de-`>`'d continuation content as a
+/// SUFFIX slice of `s` (the `>`-blank case is the empty slice; a non-`>` blank / breaker is
+/// `None`). `quote_line_content` is `…_slice(s).map(to_string)`, so they can never disagree.
+fn quote_line_content_slice(s: &str) -> Option<&str> {
     let t = s.trim_start();
     let had_gt = t.starts_with('>');
     let rest = if had_gt { t[1..].trim_start() } else { t };
     if rest.is_empty() {
-        return if had_gt { Some(String::new()) } else { None };
+        return if had_gt { Some("") } else { None };
     }
     if quote_line_breaker(rest) {
         return None;
     }
-    Some(rest.to_string())
+    Some(rest)
 }
 
 /// Build a (possibly nested) Org Quote from an already de-`>`'d body. When the body is
@@ -1406,6 +1459,75 @@ fn parse_nested_quote_body(body: &str, depth: usize, parse_fn: ParseFn) -> Vec<B
     let r = parse_fn(body, Ctx { in_item: false, in_quote: true });
     ORG_QUOTE_DEPTH.with(|c| c.set(prev));
     r
+}
+
+/// STREAMING build of the (possibly nested) Org Quote from an already de-`>`'d body — the
+/// uncapped, O(n)/O(depth)-HEAP replacement for `build_org_quote` used only by
+/// `parse_org_streaming`. Behaviour is byte-identical to `build_org_quote` (verified by
+/// `streaming_eq_org` — spans excluded), but the recurse-on-body is REMOVED for the deep
+/// cases and the `QUOTE_NEST_CAP` is GONE.
+///
+/// # The `>`-strip peel (the O(n) core)
+///
+/// The body is a left-spine of Quotes (mldoc's lazy `>`-absorption: a `>`-line OPENS a nested
+/// quote that swallows the rest of the run; opener strips up to 2 `>` via `quote_first_line`,
+/// continuations 1 via `quote_line_content`). We peel that spine ITERATIVELY over the body's
+/// line VIEWS (suffix `&str` slices — NO per-level body copy, NO native recursion), counting
+/// one `Quote` wrapper per peeled level:
+///   - SINGLE-LINE body that opens a quote (`quote_first_line_slice`) → peel 2 `>`, wrap, loop
+///     (the `>`×N-on-one-line case: ⌈N/2⌉ Quotes, exactly like the old single-line peel).
+///   - MULTI-LINE TAIL: the WHOLE body is one nested quote iff its first line opens a quote
+///     AND every continuation continues (no blank/breaker stop). Peel one `>` off the opener
+///     (2) + each continuation (1), wrap, loop. (Encodes the opener-2 / continuation-1
+///     asymmetry: `quote_first_line_slice` on view[0], `quote_line_content_slice` on view[1..].)
+/// The peel STOPS at the first body whose head no longer opens a quote, or whose run is broken
+/// by a blank / breaker continuation (a `>`-blank `Some("")`, a `- `/`# `/`id:: ` after strip).
+/// That residual body is the SHALLOW part — re-dispatched ONCE via the streaming driver
+/// (`streaming_reparse`, `in_quote:true`), which reproduces mldoc's full body grammar
+/// (paragraphs, footnote `>`-absorption, nested non-tail quotes, lists, callouts, …) exactly
+/// as the legacy recurse-on-body did. Deep `>`-nesting never reaches that re-dispatch, so the
+/// native stack stays O(1) and there is no cap.
+fn build_org_quote_streaming(body: String, span: Option<Span>) -> Block {
+    // Line VIEWS into `body` (trailing `\n` ⇒ no spurious empty tail line). Every view is
+    // already left-trimmed + de-`>`'d-by-one-level (built by `quote_first_line`/
+    // `quote_line_content` in step 8), so peeling them re-applies the SAME predicates.
+    let mut views: Vec<&str> = body.lines().collect();
+    let mut wrappers = 1usize; // the outer Quote; +1 per peeled spine level.
+    loop {
+        if views.len() == 1 {
+            // `>`×N on one line: peel up to 2 `>` per level (`quote_first_line`).
+            match quote_first_line_slice(views[0]) {
+                Some(inner) => {
+                    views[0] = inner;
+                    wrappers += 1;
+                }
+                None => break,
+            }
+        } else if let Some(inner0) = quote_first_line_slice(views[0]).filter(|_| {
+            // Multi-line TAIL: head opens a quote AND every continuation continues ⇒ the whole
+            // body is one nested quote (lazy absorption). Otherwise a leading paragraph / an
+            // interior blank/breaker stop means the residual is shallow → fall to re-dispatch.
+            views[1..].iter().all(|v| quote_line_content_slice(v).is_some())
+        }) {
+            views[0] = inner0; // opener strips 2 (`quote_first_line_slice` already applied)
+            for v in views[1..].iter_mut() {
+                *v = quote_line_content_slice(v).unwrap(); // continuations strip 1
+            }
+            wrappers += 1;
+        } else {
+            break;
+        }
+    }
+    // Rebuild the residual body string (`\n`-joined views + trailing `\n`, exactly the shape
+    // the legacy `parse_nested_quote_body` re-parses) and dispatch it ONCE.
+    let mut residual = views.join("\n");
+    residual.push('\n');
+    let children = streaming_reparse(&residual, Ctx { in_item: false, in_quote: true });
+    let mut block = Block::Quote { children, span };
+    for _ in 1..wrappers {
+        block = Block::Quote { children: vec![block], span };
+    }
+    block
 }
 
 fn displayed_math(s: &str) -> Option<String> {
@@ -2866,6 +2988,49 @@ mod streaming_eq_org {
             "#+BEGIN_QUOTE\n#+BEGIN_SRC\ncode\n#+END_SRC\n#+END_QUOTE",
         ] {
             check(s);
+        }
+    }
+
+    /// `>`-quote: the iterative streaming peel (`build_org_quote_streaming`) must match the
+    /// legacy recurse-on-body (`build_org_quote`) byte-for-byte. Covers the opener-2 /
+    /// continuation-1 asymmetry, the `>`×N-on-one-line peel, multi-line tails, the lazy
+    /// absorption (a `>`-line swallows the rest), `>`-blanks, breakers (`- `/`# `/`id:: `),
+    /// the footnote `>`-absorption edge, and depths up to JUST UNDER `QUOTE_NEST_CAP` (where
+    /// the legacy oracle is still faithful, so both must agree). Past the cap there is no
+    /// byte-exact target (legacy truncates, streaming keeps nesting), so it is NOT checked.
+    #[test]
+    fn streaming_matches_legacy_gt_quotes() {
+        assert!(std::env::var("LSDOC_BLOCK_STREAMING").is_err());
+        for s in [
+            ">a\n>b\n>c",
+            ">>a\n>>b",
+            ">a\n>>b\n>c",
+            ">>>x",
+            ">>>x\n>>>y",
+            ">>a\n>b\n>>c",
+            ">>a\n>b",
+            "> x\n> y",
+            ">>a\n>\n>>b",           // `>`-blank inside the run (pops the nested level)
+            ">a\n\n>b",              // non-`>` blank (run stops, then a fresh quote)
+            ">[fn:1] body\n>> more", // footnote `>`-absorption (re-dispatch handles it)
+            ">- a",                  // breaker on the opener (rejected → Paragraph)
+            ">a\n>- b",              // breaker continuation (run stops)
+            ">># head",              // `# ` breaker after the inner strip
+            ">>id:: 1",
+            ">a\n>>b\n>>>c\n>>>>d",  // increasing `>` per line (non-tail spine)
+            "> a\n  > b",            // indented continuation
+            ">",                     // bare `>` (empty → not a quote)
+            ">>",
+            "x\n>>>y\nz",            // quote sandwiched between paragraphs
+        ] {
+            check(s);
+        }
+        // Deep single-line `>`×N and multi-line tails, swept up to just under the cap.
+        for d in 1..QUOTE_NEST_CAP {
+            check(&format!("{}x", ">".repeat(d)));
+            check(&format!("{}x\n> y", ">".repeat(d)));
+            check(&format!("x\n{}y", ">".repeat(d)));
+            check(&format!("{}", "> q\n".repeat(d)));
         }
     }
 
