@@ -86,17 +86,22 @@ worst-cases — block-opener-heavy (`#+BEGIN_a{k}\n…#+END_a{k}` × N, distinct
 - **3b. `find_drawer_end` `partition_point` → a single monotone cursor** over the flat `:END:` list (drawer
   openers also process in line order). Easy.
 - **3c. org `nonstd_eol_lines` `partition_point` → cursor** (same pattern; check it's monotone-queried).
-- **3d. `refs.rs` sort+dedup — the genuinely-hard piece (string dedup is inherently sort-or-hash).**
-  FIRST investigate: does `harness/compare.mjs` compare refs ordered or as a set, and does mldoc emit refs
-  sorted or in document order? (If the gate sorts both sides, lsdoc's `.sort` is only for its own output
-  and the sole need is DEDUP.) Then choose:
-  - (a) **keep the comparison sort, O(n log n)** — refs are usually few; document it as the one O(n log n)
-    component (the *parse* is still O(n)). Simplest, honest.
-  - (b) **MSD/radix sort the ref strings, O(total ref chars)=O(n) deterministic** — strict goal, bigger
-    constant. Then dedup adjacent.
-  - (c) **intern ref strings via a trie during the walk → dedup on integer ids (bitset), O(n)** — complex.
-  Decide from the profile (is `refs.sort` even hot?). Default recommendation: (a) + an honest note, unless
-  the profile says refs dominate, then (b). DO NOT introduce a HashSet here (violates item 1 + determinism).
+- **3d. `refs.rs` sort+dedup — DECIDED: option (a), keep the sort.** (2026-06-30, after reading both sides.)
+  **Investigation result (corrects an earlier wrong assumption):** the gate does NOT sort both sides at
+  compare time. The oracle (`harness/lib/refs.mjs:68-69`) pre-sorts (`[...new Set()].sort()`), and
+  `compare.mjs:25` is **order-sensitive for arrays** (`v.map(canon)`, no array sort). So lsdoc's `sort()` is
+  load-bearing for TWO things: dedup AND the canonical output order the gate demands — dropping it would also
+  require a harness change (set-comparison). Also: ref keys are **arbitrary user strings** (page names), none
+  of the small-int/byte/position/fixed-dict cases the "avoid hashes" principle targets, so this is the one
+  place an array genuinely won't do and hashing would be *principled* — but it's unnecessary here.
+  **Decision:** keep `page.sort(); page.dedup();` as-is. Document it honestly as the single O(R log R)
+  component (R = ref occurrences ≤ n; refs are realistically tens of short strings ⇒ log R ≈ 5, invisible;
+  std sort on a short `Vec<String>` beats a HashSet/radix/trie at this size — no alloc, no hash machinery).
+  The **parse** is the thing made clean O(n); ref extraction stays O(R log R) and that's the honest claim.
+  Rejected alternatives (only revisit if Step-1 profile shows `refs.sort` genuinely hot — it won't): (b)
+  MSD/radix sort O(n) strict but ~50 LOC worse-constant; (c) deterministic fixed-seed `FxHashSet` + a
+  set-comparison gate, O(R) expected, ~10 LOC + dep + harness change — the route if we ever want it; (d)
+  trie/intern O(n) strict no-hash but ~80 LOC overkill. None justified at realistic R.
 
 ## Step 4 — verify (the real proof)
 - Full gate 0-diff + floors + perf + lib/render, after each step AND at the end.
