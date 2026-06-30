@@ -28,29 +28,35 @@ one O(n·depth) carve-out, depth-bounded by the 1 MiB-stack gate.
 
 ### Container pairing is O(n) by construction
 
-mldoc's `#+BEGIN`/`#+END` and `:NAME:`/`:END:` are **outermost-first** (NOT LIFO):
-`#+BEGIN_QUOTE / #+BEGIN_QUOTE / #+END_QUOTE` → `Quote{ Paragraph("#+BEGIN_QUOTE") }`.
-Closer-finding uses NO binary search and NO absence memo:
+All closers are found **ON-DEMAND at the dispatch point** — i.e. only when the top-down
+dispatch *reaches* an opener (having jumped past any earlier container's body). This is
+mldoc's own recursive-descent + `take_until` structure, and it is what makes pairing
+**correct**: it cleanly separates mldoc's two rules — a closer is **textual** (`take_until`
+sees `#+END_`/`:END:` even inside a fence), but an opener is **contextual** (a `#+BEGIN`/
+`:NAME:` inside an opaque body — fence code, `#+BEGIN_SRC`/Example/drawer bodies, latex envs
+— is content, not an opener). A *global pre-pass* cannot separate these: it registers
+phantom openers inside opaque bodies that steal real closers (a shipped data-loss bug we
+hit and reverted — see [[lsdoc-architecture-redesign]]). The dispatch gets it for free.
 
-- **Callouts + drawers** are pre-paired globally in ONE forward **pending-opener-stack**
-  pass (`pair_callouts` / `pair_drawers`), reproducing outermost-first. This is sound
-  because `#+BEGIN`/`#+END` (and `:NAME:`/`:END:`) are **role-distinct tokens** (a closer
-  line is never also an opener line) and their `take_until` closer is **textual** (ignores
-  fences/drawers — verified vs mldoc). Callout closers prefix-match
-  (`#+END_QUOTEX`/`#+END_QUOTE x` close `QUOTE`; `#+END_QUOT` does not), handled in O(n)
-  via a `by_name` stack-position index (`outermost_callout_match`, an O(|suffix|) prefix
-  probe) — so even unique-name openers + non-matching `#+END_` stay linear.
-- **Fences** (` ``` `/`~~~`) CANNOT be pre-paired: opener and closer are the **same token**,
-  so a global greedy pass mis-assigns roles — that was a real shipped bug (a ` ``` ` inside
-  a callout/drawer body paired with one outside it, giving `quote,paragraph` where mldoc
-  gives `quote,src`). Fences are found ON-DEMAND at the dispatch point (context-correct,
-  since the loop jumps past claimed bodies) via a monotone per-char cursor over
-  `fence_line_idxs`.
+The on-demand finders are O(n) by construction (no per-opener EOF scan):
+- **Callouts** (`#+BEGIN_X` … `#+END_X`, outermost-first, prefix-match — `#+END_QUOTEX`
+  closes `QUOTE`): an **`EndTrie`** over the (lowercased) `#+END_<name>` names. Each node
+  holds the ascending line indexes of every `#+END_` line whose name has that prefix, so an
+  opener X walks X (O(|X|)) and `partition_point`s the node's list; absent path ⇒ O(1)
+  (unclosed). Build is O(Σ|name|) = O(n), prefixes shared (one long name is O(name), not
+  O(name²)). This is O(n) **even on the adversarial unclosed-opener runs mldoc itself is
+  O(n²) on** (measured: 4000 openers = 68 s in mldoc).
+- **Drawers** (`:NAME:` … `:END:`): a sorted `:END:` index + `partition_point` (first
+  `:END:` after the opener).
+- **Fences** (` ``` `/`~~~`, opener == closer token): a monotone per-char cursor over
+  `fence_line_idxs`. (NB the global *greedy* `pair_fences` that lsdoc once used mis-assigned
+  roles across container boundaries — a ` ``` ` inside a callout body paired with one outside
+  it, `quote,paragraph` vs mldoc's `quote,src`; on-demand finding fixes that.)
 
-Org wrinkle: the headline split rewrites a line (`* #+BEGIN_X` / `* :PROPERTIES:` → split
-+ re-enter its content), so the org pairing passes also recognize a container opener behind
-a headline marker (`headline_split_content`), gated `!in_item && !ORG_IN_QUOTE` to match the
-dispatch's split condition.
+Recurse-on-body is the inherent O(n·depth) carve-out (mldoc re-parses callout/drawer/quote
+bodies; depth bounded by the 1 MiB-stack gate). Org wrinkle: the headline split rewrites a
+line (`* #+BEGIN_X` / `* :PROPERTIES:` → emit an empty bullet, then re-enter the content),
+so the close-gate runs on the rewritten content via the same on-demand finders.
 
 ## Performance gate
 
