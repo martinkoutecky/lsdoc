@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { canonJSON } from "./lib/compare.mjs";
 const __dir = dirname(fileURLToPath(import.meta.url));
 
 // Intentional-deviation allowlist: ids we knowingly don't match (documented in
@@ -16,31 +17,9 @@ const allow = existsSync(allowPath)
   ? Object.fromEntries(JSON.parse(readFileSync(allowPath, "utf8")).map((a) => [a.id, a.reason]))
   : {};
 
-// Keys excluded from comparison (verified by lsdoc's own tests, not the oracle):
-//   span — mldoc's block spans are quirky/inconsistent (a Src swallows trailing
-//   blank lines, a Property_Drawer doesn't; lone blank lines become paragraphs)
-//   and mldoc emits NO inline spans at all. Per SPEC §5 we don't bind to mldoc's
-//   internal node identity. See DECISIONS.md ("Spans excluded from comparison").
-//   aligns — lsdoc-only table column alignment (`:--`/`--:`/`:-:`), an enrichment
-//   for `render_html`'s `data-align`. mldoc 1.5.7 discards alignment, so it has no
-//   such field; dropped here (like `span`) keeps the byte-exact gate unaffected.
-const IGNORE_KEYS = new Set(["span", "aligns"]);
-
-// Stable stringify: recursively sort object keys so comparison is order-insensitive,
-// dropping ignored keys.
-function canon(v) {
-  if (Array.isArray(v)) return v.map(canon);
-  if (v && typeof v === "object") {
-    const o = {};
-    for (const k of Object.keys(v).sort()) {
-      if (IGNORE_KEYS.has(k)) continue;
-      o[k] = canon(v[k]);
-    }
-    return o;
-  }
-  return v;
-}
-const s = (v) => JSON.stringify(canon(v));
+// Canonical stringify (key-sorted, drops span/aligns) — see lib/compare.mjs for
+// the shared definition and the rationale for the ignored keys.
+const s = canonJSON;
 
 // Structural skeleton: a block's shape WITHOUT inline content, so block structure
 // (M2) can be gated independently of inline parsing (M3/M4). Keeps kind, level,

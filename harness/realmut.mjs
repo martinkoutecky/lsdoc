@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { normalizeAst } from "./lib/normalize.mjs";
 import { extractRefs } from "./lib/refs.mjs";
+import { canonJSON } from "./lib/compare.mjs";
 
 const require = createRequire(import.meta.url);
 const { Mldoc } = require("mldoc");
@@ -44,12 +45,8 @@ const oracle = (input, fmt) => {
   const ast = JSON.parse(Mldoc.parseJson(input, cfg(fmt)));
   return { blocks: normalizeAst(ast), refs: extractRefs(ast) };
 };
-const IGNORE = new Set(["span", "aligns"]);
-const canon = (v) => Array.isArray(v) ? v.map(canon)
-  : (v && typeof v === "object")
-    ? Object.fromEntries(Object.keys(v).sort().filter(k => !IGNORE.has(k)).map(k => [k, canon(v[k])]))
-    : v;
-const S = (v) => JSON.stringify(canon(v));
+// Canonical stringify (key-sorted, drops span/aligns) — shared in lib/compare.mjs.
+const S = canonJSON;
 
 // --- load the real graphs (whole files) ------------------------------------
 const load = (f) => existsSync(join(__dir, f)) ? JSON.parse(readFileSync(join(__dir, f), "utf8")) : [];

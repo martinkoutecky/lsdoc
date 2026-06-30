@@ -1,7 +1,7 @@
 # lsdoc
 
-A from-scratch, native-Rust parser for **Logseq-flavored Markdown** (and, later,
-Org) → a typed, `serde`-serializable **AST with source spans**, behavior-equivalent
+A from-scratch, native-Rust parser for **Logseq-flavored Markdown and Org** → a
+typed, `serde`-serializable **AST with source spans**, behavior-equivalent
 to Logseq's [`mldoc`](https://github.com/logseq/mldoc) at the granularity that
 matters for indexing and rendering.
 
@@ -13,9 +13,10 @@ the design log (mldoc quirks, intentional deviations, complexity decisions).
 ## Status
 
 **Markdown AND Org complete — exact, render-level mldoc parity, zero allowlist
-deviations.** One differential gate over **623 inputs** (adversarial + mined mldoc/OG
+deviations.** One differential gate over **1188 inputs** (adversarial + mined mldoc/OG
 test suites + real Markdown graph + real Org graph), both formats: **refs, block-struct,
-AND blocks-full all 623/623 (0 diffs, allowlist empty)**; real content —
+AND blocks-full all 1188/1188 (0 diffs, allowlist empty)** — plus the `blockgate` (99
+real block bodies) and `inlinegate` (37 inline) gates; real content —
 `~/research/tine-test` (md) AND `~/research/org-graph` (org) — is 0-diff; fuzzing is
 panic-free over 160k+ inputs; the perf suite is linear and stack-bounded for both
 formats. Milestone order (each gated by "0 oracle diffs on its slice + perf budgets hold"):
@@ -87,7 +88,7 @@ node run.mjs                           # exits non-zero on any divergence
 node run.mjs --no-gen                  # skip corpus regeneration
 node fuzz.mjs [count] [seed]           # differential fuzz (panic + oracle-mismatch)
 node fuzz-triage.mjs [count] [seed]    # bucket fuzz mismatches by structure
-#   run.mjs writes divergences.json (drill-down); probe.mjs dumps raw mldoc AST.
+#   run.mjs writes divergences.json (drill-down) for compare.mjs mismatches.
 ```
 
 ## Layout

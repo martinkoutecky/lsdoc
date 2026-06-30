@@ -1,5 +1,7 @@
 # lsdoc v0.1.4 — upgrade note for the Tine integration
 
+> **Historical (v0.1.4).** Superseded — see README.md and the lsdoc↔Tine integration memory.
+
 Bump the git dependency to **`tag = "v0.1.4"`**. One small thing to handle, the rest is free.
 
 ## ⚠️ Action required: two new AST variants (`hiccup`)

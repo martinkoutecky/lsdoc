@@ -29,6 +29,9 @@ section.
   the loop.
 - **Scope of the current run:** loop milestones 1–5 to the §8 first-cut DoD, then
   stop and report. Org (milestone 6) is deferred to a later session.
+  - **Superseded (later sessions):** Org (M6) and render-level parity (M7) both
+    shipped and are gated; Org is complete, not deferred. See the M6 section below
+    and README.md.
 
 ## Oracle granularity / normalized projection
 

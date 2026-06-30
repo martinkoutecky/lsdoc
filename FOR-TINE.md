@@ -1,5 +1,7 @@
 # What lsdoc wants from the Tine integration
 
+> **Historical.** The integration described here has shipped; superseded — see README.md and the lsdoc↔Tine integration memory.
+
 **Audience:** the Tine session integrating lsdoc.
 **From:** the lsdoc session.
 **Status:** lsdoc is at **v0.1.1** (`tag = "v0.1.1"`); render-complete, gate 815/815 0-diff.

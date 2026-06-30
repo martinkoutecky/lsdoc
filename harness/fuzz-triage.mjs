@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { normalizeAst } from "./lib/normalize.mjs";
 import { extractRefs } from "./lib/refs.mjs";
+import { canonJSON } from "./lib/compare.mjs";
 const require = createRequire(import.meta.url);
 const { Mldoc } = require("mldoc");
 const FORMAT = process.argv[4] === "org" ? "org" : "md";
@@ -30,9 +31,8 @@ const env = { ...process.env, CARGO_HOME:"/aux/koutecky/logseq/.toolchain/cargo"
 spawnSync("cargo",["run","-q","--bin","lsdoc-parse","--",join(__dir,"corpus.fuzz.json"),join(__dir,"lsdoc-fuzz.json")],{cwd:join(__dir,".."),env});
 const ls = Object.fromEntries(JSON.parse(readFileSync(join(__dir,"lsdoc-fuzz.json"),"utf8")).map(x=>[x.id,x]));
 
-const IGN=new Set(["span","aligns"]);
-const canon=(v)=>Array.isArray(v)?v.map(canon):(v&&typeof v==="object"?Object.fromEntries(Object.keys(v).sort().filter(k=>!IGN.has(k)).map(k=>[k,canon(v[k])])):v);
-const S=(v)=>JSON.stringify(canon(v));
+// Canonical stringify (key-sorted, drops span/aligns) — shared in lib/compare.mjs.
+const S = canonJSON;
 const kinds=(bs)=>(bs||[]).map(b=>b.kind).join(",");
 
 const buckets = new Map();

@@ -1,7 +1,7 @@
 # lsdoc architecture (as built)
 
 lsdoc parses Logseq-flavored Markdown + Org into a typed, serde AST, byte-exact to
-`mldoc@1.5.7` over the differential harness (`harness/run.mjs`: 1039 corpus + 99 real
+`mldoc@1.5.7` over the differential harness (`harness/run.mjs`: 1188 corpus + 99 real
 block bodies + 37 inline). Two formats, two parallel implementations that share leaf
 predicates: **Markdown** = `parse.rs` (block) + `lexer.rs`/`resolver.rs` (inline);
 **Org** = `org.rs` (block) + `org_resolver.rs` (inline). The AST/refs/entities and the

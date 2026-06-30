@@ -5,8 +5,8 @@
 //!               (un-bracketed) — ONLY name == "embed".
 //!   block refs: Link Block_ref id; embed-macro ((uuid)) arg — both UUID-gated.
 //!
-//! With the M1 stub parser (plain text only) this returns empty; it produces real
-//! signal once the parser emits links/tags/macros (M4).
+//! These walk the inline tree the parser emits (links/tags/macros) and produce the
+//! real page/block ref sets; they are gated against mldoc's refs by `harness/`.
 
 use crate::projection::{Block, Inline, ListItem, Refs, Url};
 

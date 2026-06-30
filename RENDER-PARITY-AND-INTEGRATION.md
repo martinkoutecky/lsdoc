@@ -1,5 +1,7 @@
 # lsdoc: render-level parity + Tine integration
 
+> **Historical.** Render parity shipped (M7); superseded — see README.md and the lsdoc↔Tine integration memory.
+
 **Audience:** the lsdoc session (this repo).
 **Bottom line:** lsdoc has **verified parity for *indexing*** (refs + block structure +
 inline kind/payload/order/nesting), but **not for *rendering***. The differential

@@ -1,5 +1,7 @@
 # lsdoc request: a public inline-only parse entrypoint
 
+> **Historical.** The inline-only entrypoint shipped (`lsdoc::inline`, gated by `inlinegate`); superseded — see README.md and the lsdoc↔Tine integration memory.
+
 **From:** the Tine session (Tine is the Tauri/SolidJS Logseq-compatible outliner that
 consumes lsdoc as its parser — block index in `tine-core`, and the on-screen render via
 lsdoc compiled to wasm).

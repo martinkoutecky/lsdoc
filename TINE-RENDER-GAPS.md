@@ -1,5 +1,7 @@
 # lsdoc render gaps found by the Tine integration (→ v0.1.1)
 
+> **Historical (v0.1.1).** These gaps are resolved; superseded — see README.md and the lsdoc↔Tine integration memory.
+
 **Audience:** the lsdoc session.
 **Source:** the Tine session, integrating lsdoc v0.1.0 (`59ccd46`) as the renderer.
 **Status:** two gaps found by feeding **real Tine blocks** through lsdoc the way OG

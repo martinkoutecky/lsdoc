@@ -1,5 +1,7 @@
 # Spec: a from-scratch Rust reimplementation of Logseq's `mldoc` parser
 
+> **Historical — initial greenfield brief.** This is the original kickoff spec, not the current state of the parser (Markdown + Org are complete and gated). For what shipped, see README.md and DESIGN-lsdoc-v2.md.
+
 **Name:** `lsdoc`. Repo sits next to Tine at `/aux/koutecky/logseq/lsdoc/` (Martin is
 creating a private GitHub repo for it).
 

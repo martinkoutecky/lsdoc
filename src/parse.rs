@@ -1,10 +1,13 @@
-//! Block segmentation — milestone 2.
+//! Block segmentation — the markdown block parser.
 //!
-//! A single-pass, line-based scanner that splits input into mldoc-equivalent
-//! blocks. Inline content is still a stub (the whole block text as one Plain);
-//! real inline parsing lands in M3/M4. The differential gate for this milestone
-//! is `block-struct` (kind/level/nesting/properties), which ignores inline content
-//! and spans.
+//! A single-pass, line-based streaming scanner that splits input into
+//! mldoc-equivalent blocks. Each block's inline content is fully parsed (see
+//! `inline.rs`); this file owns only the block layer (segmentation + nesting).
+//! The driver (`parse_md_streaming`) keeps an explicit container stack instead of
+//! recursing on block bodies, so it is O(n) time / O(depth) heap with no native
+//! recursion. Correctness is gated byte-exact against mldoc 1.5.7 by `harness/`
+//! (the full corpus differential + `blockgate`/`inlinegate` + the fuzz tripwires),
+//! comparing the whole projection — block tree AND inline content — modulo `span`.
 //!
 //! Complexity: O(n·log n) typical. Each line is classified in O(line length); container
 //! closers are found ON-DEMAND at the dispatch point (never eagerly pre-paired). Callout
@@ -61,10 +64,10 @@ pub fn parse(input: &str) -> Vec<Block> {
 
 /// The outcome of classifying ONE line (`dispatch_md_line`): either advance to line
 /// `Next(ni)`, or recognize a container opener (`Open`) whose body is `[i+1, close)` and
-/// whose closer is line `close`. `Open` defers the body handling to the driver: the
-/// legacy `parse_impl` recurses on the body slice; `parse_streaming_impl` pushes a stack
-/// frame and keeps scanning the same line array. (The dispatch helper never flushes the
-/// paragraph for `Open` — the driver does, just before recursing/pushing.)
+/// whose closer is line `close`. `Open` defers the body handling to the driver:
+/// `parse_md_streaming` pushes a stack frame for the body and keeps scanning the same
+/// line array (no recursion on the body). (The dispatch helper never flushes the
+/// paragraph for `Open` — the driver does, just before pushing the frame.)
 enum Step {
     Next(usize),
     Open { close: usize, builder: Builder },
@@ -246,8 +249,8 @@ fn parse_md_streaming(input: &str, root_in_quote: bool) -> Vec<Block> {
 
 /// Classify ONE md line `i` in the body bounded by `hi` (EXCLUSIVE closer line index), writing
 /// any completed block into `out` / accumulating into `para`, and return a `Step`. This is the
-/// single per-line dispatch ladder shared by BOTH drivers (legacy recurses on `Open`; streaming
-/// pushes a frame). The whole streaming-correctness story lives here: every forward closer-search
+/// single per-line dispatch ladder used by the streaming driver (which pushes a frame on `Open`).
+/// The whole streaming-correctness story lives here: every forward closer-search
 /// is bounded by `hi` / `body_end`, so a closer/`\end{}`/`]`/run-line BELONGS to this body and
 /// never the enclosing one. At the top level `hi == lines.len()` (and `body_end == input.len()`),
 /// so all bounds are no-ops and the behavior is identical to the pre-refactor inline ladder.

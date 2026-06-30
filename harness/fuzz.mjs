@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { normalizeAst } from "./lib/normalize.mjs";
 import { extractRefs } from "./lib/refs.mjs";
+import { canonJSON } from "./lib/compare.mjs";
 
 const require = createRequire(import.meta.url);
 const { Mldoc } = require("mldoc");
@@ -60,20 +61,8 @@ function genInput() {
   return s;
 }
 
-const IGNORE = new Set(["span", "aligns"]);
-function canon(v) {
-  if (Array.isArray(v)) return v.map(canon);
-  if (v && typeof v === "object") {
-    const o = {};
-    for (const k of Object.keys(v).sort()) {
-      if (IGNORE.has(k)) continue;
-      o[k] = canon(v[k]);
-    }
-    return o;
-  }
-  return v;
-}
-const S = (v) => JSON.stringify(canon(v));
+// Canonical stringify (key-sorted, drops span/aligns) — shared in lib/compare.mjs.
+const S = canonJSON;
 
 // build the corpus, run lsdoc once over all of it.
 const inputs = [];

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { normInline, cleanInlines } from "./lib/normalize.mjs";
+import { canonJSON } from "./lib/compare.mjs";
 
 const require = createRequire(import.meta.url);
 const { Mldoc } = require("mldoc");
@@ -41,9 +42,9 @@ const r = spawnSync("cargo", ["run", "-q", "--bin", "lsdoc-parse", "--", corpusP
 if (r.status !== 0) { console.error(`inlinegate: lsdoc run failed (exit ${r.status})`); process.exit(r.status ?? 1); }
 const lsd = Object.fromEntries(JSON.parse(readFileSync(outPath, "utf8")).map((x) => [x.id, x.inline]));
 
-const canon = (v) => Array.isArray(v) ? v.map(canon)
-  : (v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])])) : v);
-const S = (v) => JSON.stringify(canon(v));
+// Canonical stringify (key-sorted, drops span/aligns) — shared in lib/compare.mjs.
+// Inline nodes carry no span/aligns, so the ignore filter is a harmless no-op here.
+const S = canonJSON;
 
 let ok = 0;
 const diffs = [];
