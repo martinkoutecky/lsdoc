@@ -12,7 +12,7 @@
 //! near-twins (`fence_marker`, `split_markers`, `drawer_begin`, `flush_para`) stay per-file.
 
 use crate::projection::{Block, Span};
-use std::collections::HashMap;
+use std::cell::Cell;
 
 /// Anti-SIGABRT depth cap on the two block drivers' residual native recursion (md
 /// `build_md_quote`'s `>`-re-dispatch, org `streaming_reparse`). 64 is far above any reachable
@@ -164,21 +164,34 @@ pub(crate) fn find_matching_fence(fence_lines: &[usize], cursor: &mut usize, fro
     fence_lines.get(*cursor).copied()
 }
 
-/// First `:END:` drawer-closer line strictly after `from`, via binary search (O(log n)).
-pub(crate) fn find_drawer_end(drawer_end_idxs: &[usize], from: usize) -> Option<usize> {
-    drawer_end_idxs.get(drawer_end_idxs.partition_point(|&x| x <= from)).copied()
+/// First `:END:` drawer-closer line strictly after `from`, via a monotone `cursor` (advance-only,
+/// like [`find_matching_fence`]): the drivers reach drawer openers in increasing `from`, so the
+/// cursor only advances ⇒ O(1) amortized, not the O(log n) of a per-opener binary search. The
+/// cursor stops AT (does not consume) the first closer `> from`, so a repeated/equal `from` is
+/// idempotent.
+pub(crate) fn find_drawer_end(drawer_end_idxs: &[usize], cursor: &mut usize, from: usize) -> Option<usize> {
+    while *cursor < drawer_end_idxs.len() && drawer_end_idxs[*cursor] <= from {
+        *cursor += 1;
+    }
+    drawer_end_idxs.get(*cursor).copied()
 }
 
 /// A `#+END_<name>` closer trie: index every closer line under the lowercased leading run of
 /// its name, so the drivers find the first closer after a given line whose name prefix-matches
 /// an opener in O(|name|) with no EOF scan.
+///
+/// Child links are a small sorted-by-insertion `Vec<(byte, node)>` linear-scanned, NOT a
+/// `HashMap<u8, _>` — the fan-out per node is tiny (the distinct next-letters of `#+END_` names)
+/// and a byte is a perfect array key, so hashing it (SipHash!) is strictly more work than a
+/// handful of byte compares. See lsdoc/CLAUDE.md "avoid hashes if an array would do".
 pub(crate) struct EndTrie {
-    kids: Vec<HashMap<u8, u32>>, // node → byte → child node
-    ends: Vec<Vec<usize>>,       // node → `#+END_` line indexes with this prefix (ascending)
+    kids: Vec<Vec<(u8, u32)>>, // node → child links (byte → child node), tiny fan-out → linear scan
+    ends: Vec<Vec<usize>>,     // node → `#+END_` line indexes with this prefix (ascending)
+    cursor: Vec<Cell<usize>>,  // node → monotone read cursor into `ends` (advance-only)
 }
 impl EndTrie {
     pub(crate) fn new() -> Self {
-        EndTrie { kids: vec![HashMap::new()], ends: vec![Vec::new()] }
+        EndTrie { kids: vec![Vec::new()], ends: vec![Vec::new()], cursor: vec![Cell::new(0)] }
     }
     /// Index `#+END_` line `idx` under the leading non-ws run of `suffix` (the text after
     /// `#+END_`), lowercased. The empty prefix (root) matches any opener name (incl. `""`).
@@ -190,13 +203,14 @@ impl EndTrie {
                 break;
             }
             let lb = b.to_ascii_lowercase();
-            node = match self.kids[node].get(&lb) {
-                Some(&c) => c as usize,
+            node = match self.kids[node].iter().find(|&&(k, _)| k == lb) {
+                Some(&(_, c)) => c as usize,
                 None => {
                     let c = self.kids.len();
-                    self.kids.push(HashMap::new());
+                    self.kids.push(Vec::new());
                     self.ends.push(Vec::new());
-                    self.kids[node].insert(lb, c as u32);
+                    self.cursor.push(Cell::new(0));
+                    self.kids[node].push((lb, c as u32));
                     c
                 }
             };
@@ -205,13 +219,28 @@ impl EndTrie {
     }
     /// First `#+END_` line after `from` whose name starts with `name` (case-insensitive), or
     /// `None` (unclosed/mismatched — O(|name|), no EOF scan). Byte-exact to the old prefix scan.
+    ///
+    /// Successor lookup via a per-node MONOTONE CURSOR (advance-only), not `partition_point`:
+    /// the block drivers query each node with non-decreasing `from` (the main-loop line index `i`
+    /// only advances; the headline-split lookahead re-asks at the SAME `i` — idempotent), so
+    /// skipping ends `<= from` is O(1) amortized and the whole closer phase is O(n), not O(n log n).
+    /// Correct across demotion/nesting: a demoted/inner opener still only asks "first end > from",
+    /// and equal/repeated `from` never rewinds the cursor. A fresh `EndTrie` (hence fresh cursors)
+    /// is built per parse pass, so recursive sub-parses don't share cursor state.
     pub(crate) fn find(&self, name: &str, from: usize) -> Option<usize> {
         let mut node = 0usize;
         for &b in name.as_bytes() {
-            node = *self.kids[node].get(&b.to_ascii_lowercase())? as usize;
+            let lb = b.to_ascii_lowercase();
+            node = self.kids[node].iter().find(|&&(k, _)| k == lb).map(|&(_, c)| c as usize)?;
         }
         let v = &self.ends[node];
-        v.get(v.partition_point(|&x| x <= from)).copied()
+        let cur = &self.cursor[node];
+        let mut c = cur.get();
+        while c < v.len() && v[c] <= from {
+            c += 1;
+        }
+        cur.set(c);
+        v.get(c).copied()
     }
 }
 

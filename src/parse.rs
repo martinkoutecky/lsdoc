@@ -152,6 +152,7 @@ fn parse_md_streaming(input: &str, root_in_quote: bool, root_in_item: bool) -> V
         open_span_start: 0,
     }];
     let mut fence_cursor: usize = 0; // monotone & shared across the whole pass (`i` is monotone).
+    let mut drawer_cursor: usize = 0; // ditto, for `:END:` lookups (find_drawer_end).
     // The list-collapse memo (mldoc's recursive list-parser failure bubble): when a list item's
     // deeper continuation is an unparseable list-item shape, the list collapses; `collapse_floor`
     // marks the trigger line so the collapsed region is NOT re-scanned as a list (linearity). One
@@ -209,6 +210,7 @@ fn parse_md_streaming(input: &str, root_in_quote: bool, root_in_item: bool) -> V
                 &drawer_end_idxs,
                 &fence_lines,
                 &mut fence_cursor,
+                &mut drawer_cursor,
                 last_rbracket,
                 input,
             )
@@ -271,6 +273,7 @@ fn dispatch_md_line<'a>(
     drawer_end_idxs: &[usize],
     fence_lines: &[usize],
     fence_cursor: &mut usize,
+    drawer_cursor: &mut usize,
     last_rbracket: Option<usize>,
     input: &'a str,
 ) -> Step {
@@ -845,7 +848,7 @@ fn dispatch_md_line<'a>(
     // Suppressed inside a `>`-blockquote body (mldoc omits Drawer from `block_content_parsers`,
     // so `:NAME: … :END:` there is paragraph text). F1.
     if let Some(name) = drawer_begin(t).filter(|_| !in_block_content) {
-        if let Some(close) = find_drawer_end(drawer_end_idxs, i) {
+        if let Some(close) = find_drawer_end(drawer_end_idxs, drawer_cursor, i) {
             if close < hi {
                 flush_para(out, para, input, trim);
                 let span = Some(Span(line_start, lines[close].end));

@@ -214,6 +214,8 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
     }];
     let mut collapse_floor = 0usize; // shared & monotone (i is monotone across frames).
     let mut fence_cursor: usize = 0;
+    let mut drawer_cursor: usize = 0; // monotone `:END:` cursor (find_drawer_end), shared across the pass.
+    let mut nonstd_cursor: usize = 0; // monotone nonstd-eol cursor (body_is_clean_window), ditto.
     // F4: set by an empty headline marker (`* ` trailing-ws para), consumed by the NEXT line's
     // dispatch — a drop-trigger block drops the para, anything else clears the flag.
     let mut ws_drop = false;
@@ -248,6 +250,7 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
                 &mut top.absorb,
                 &mut collapse_floor,
                 &mut fence_cursor,
+                &mut drawer_cursor,
                 &mut ws_drop,
                 ctx,
                 hi,
@@ -270,8 +273,8 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
                 // Clean window (indent-0 + plain-`\n` body) ⇒ heap frame, no copy/re-lex
                 // (the O(n²) fix; child spans become global). Else the de-indented body is
                 // a transformed sub-recursion (block_code + reparse) — byte-exact to mldoc.
-                let clean =
-                    indent_strip == 0 && body_is_clean_window(&nonstd_eol_lines, i + 1, close);
+                let clean = indent_strip == 0
+                    && body_is_clean_window(&nonstd_eol_lines, &mut nonstd_cursor, i + 1, close);
                 if clean {
                     stack.push(Frame {
                         hi: close,
@@ -322,9 +325,16 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
 /// guard) ⇒ the callout body's byte-range equals mldoc's de-indented `block_code` reparse
 /// string, so it can be a streaming WINDOW frame. For all-`\n` input `nonstd_eol_lines` is
 /// empty ⇒ always true (the common path: every indent-0 callout is a window frame).
-fn body_is_clean_window(nonstd_eol_lines: &[usize], lo: usize, hi: usize) -> bool {
-    let p = nonstd_eol_lines.partition_point(|&x| x < lo);
-    !(p < nonstd_eol_lines.len() && nonstd_eol_lines[p] < hi)
+///
+/// Uses a monotone `cursor` (advance-only) instead of `partition_point`: callout openers are
+/// reached with non-decreasing `lo`, so the first nonstd-eol `>= lo` only moves forward ⇒ O(1)
+/// amortized, O(n) total. The cursor stops AT (does not consume) that line, so the `< hi`
+/// emptiness test is unaffected and a later opener (larger `lo`) advances past lines now behind it.
+fn body_is_clean_window(nonstd_eol_lines: &[usize], cursor: &mut usize, lo: usize, hi: usize) -> bool {
+    while *cursor < nonstd_eol_lines.len() && nonstd_eol_lines[*cursor] < lo {
+        *cursor += 1;
+    }
+    !(*cursor < nonstd_eol_lines.len() && nonstd_eol_lines[*cursor] < hi)
 }
 
 /// Classify ONE Org line `i` in the body bounded by `hi` (EXCLUSIVE closer-line index),
@@ -346,6 +356,7 @@ fn dispatch_org_line<'a>(
     absorb: &mut bool,
     collapse_floor: &mut usize,
     fence_cursor: &mut usize,
+    drawer_cursor: &mut usize,
     ws_drop: &mut bool,
     ctx: Ctx,
     hi: usize,
@@ -407,7 +418,7 @@ fn dispatch_org_line<'a>(
     // so a `:NAME:` there is verbatim/text). The `:END:` must lie inside THIS body (`< hi`);
     // else it belongs to an enclosing body. F2.
     if let Some(name) = drawer_begin(t).filter(|_| !in_item && !ctx.in_quote) {
-        if let Some(close) = find_drawer_end(drawer_end_idxs, i) {
+        if let Some(close) = find_drawer_end(drawer_end_idxs, drawer_cursor, i) {
             if close < hi {
                 if was_ws_drop && para_ws_only(para, input) {
                     *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
