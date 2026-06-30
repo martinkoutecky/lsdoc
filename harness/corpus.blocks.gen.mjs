@@ -435,6 +435,43 @@ add("m3-drop-across-blank", "## \n\n\n```\nx\n```");      // heading, paragraph[
 add("m3-keep-ws", "## \n\nplain");                        // heading, paragraph[" ",Break,Break,plain] (plain keeps ws)
 add("m3-keep-ws", "## \n  \n```\nx\n```");                // heading, paragraph[" ",Break,Hardbreak], src (ws-line keeps ws)
 
+// === md standalone `#+name: value` directive (subagent-tasks/fix-md-directive.md) ===
+// A bare `#+KEY: value` line is a `Block::Directive{name, value}` with a RAW value (no inline
+// parse, no ref walk) — identical to mldoc and to lsdoc's OWN org driver. The md driver had no
+// standalone-directive parser, so it mis-classified the line as a Paragraph whose `#+name`
+// became a phantom `+name` page-tag. Mirrors `crate::org::directive` byte-for-byte.
+add("md-directive", "#+TITLE: my title");                 // directive{TITLE,"my title"}
+add("md-directive", "#+b: 2");                            // directive{b,"2"}
+add("md-directive", "#+key:value");                       // directive{key,"value"} (no space after `:`)
+add("md-directive", "#+key:");                            // directive{key,""} (empty value)
+add("md-directive", "#+CAPTION: a *bold* b");             // directive{CAPTION,"a *bold* b"} (emphasis NOT parsed)
+add("md-directive", "#+TITLE: x  ");                      // directive{TITLE,"x  "} (trailing ws KEPT, left-trim only)
+add("md-directive-ref", "#+a: [[Page]]");                 // directive{a,"[[Page]]"}, refs {} — NO phantom ref (the bug)
+add("md-directive-ws", "  #+a: 1");                       // directive{a,"1"} (leading ws tolerated)
+add("md-directive-ws", "\t#+a: 1");                       // directive{a,"1"} (leading tab tolerated)
+add("md-directive-seq", "#+a: 1\n#+b: 2");                // [directive{a,1}, directive{b,2}] (each line independent)
+add("md-directive-seq", "#+a: 1\nplain");                 // [directive{a,1}, paragraph["plain"]] (does NOT absorb text)
+add("md-directive-seq", "#+a: 1\n\nplain");               // [directive{a,1}, paragraph["plain"]] (blank absorbed)
+add("md-directive-seq", "#+a: 1\n\n\nplain");             // [directive{a,1}, paragraph["plain"]] (two blanks absorbed)
+add("md-directive-seq", "#+a: 1\nmore\n#+b: 2");          // [directive, paragraph[more,Break], directive]
+add("md-directive-seq", "#+a: 1\nb:: 2");                 // [directive{a,1}, properties[[b,2]]] (property starts after)
+// NEGATIVES: text before `#+`, and colon-free `#+BEGIN_X`/`#+END_X` stay non-directive (the block path).
+add("md-directive-neg", "not #+a: 1");                    // paragraph (phantom `+a` tag EXPECTED here — mldoc too)
+add("md-directive-neg", "#+END_X");                       // paragraph (no `:` → tag `+END_X`, mldoc parity)
+add("md-directive-neg", "#+BEGIN_X");                     // paragraph (no `:` → tag `+BEGIN_X`, mldoc parity)
+add("md-directive-neg", "#+END_X: foo");                  // directive{END_X,"foo"} (has `:`, not BEGIN_ — mldoc too)
+// drop-trigger: a directive drops a preceding empty heading/bullet marker's trailing-ws paragraph.
+add("md-directive-drop", "## \n#+a: 1");                  // [heading[], directive{a,1}] (marker ws dropped, no para)
+add("md-directive-drop", "- \n#+a: 1");                   // [bullet[], directive{a,1}]
+// directive IS in `block_content_parsers` — it fires inside a `>`-quote / `#+BEGIN_X` body too.
+add("md-directive-inbody", "#+BEGIN_QUOTE\n#+a: 1\n#+END_QUOTE"); // quote[ directive{a,1} ]
+add("md-directive-inbody", "#+BEGIN_X\n#+a: 1\n#+END_X");         // custom[ directive{a,1} ]
+add("md-directive-inbody", "> #+a: 1");                          // quote[ directive{a,1} ]
+// M2/F3 interaction: M2 still folds a directive into a VALID props drawer; F3 (generic drawer)
+// leaves the trailing directive STANDALONE → [drawer, directive] (the new classifier handles it).
+add("md-directive-m2", ":PROPERTIES:\n:k: v\n:END:\n#+b: 2");    // properties[[k,v],[b,2]] (one block — M2 fold)
+add("md-directive-f3", ":PROPERTIES:\nfoo\n:END:\n#+b: 2");      // [drawer{properties}, directive{b,2}]
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

@@ -942,7 +942,9 @@ fn leading_ws(s: &str) -> usize {
 /// `#+KEY: value` where KEY is non-empty and not `BEGIN_…`. Returns (key, value).
 /// Leading whitespace is allowed (mldoc: `  #+KEY: v` is a directive). The value is
 /// **left-trimmed only** — mldoc keeps trailing whitespace (`#+TITLE: x  ` → `x  `).
-fn directive(s: &str) -> Option<(String, String)> {
+/// `pub(crate)` so the markdown driver (`parse.rs`) mirrors this EXACT classifier for a
+/// standalone `#+name: value` directive line — mldoc parses it identically in both formats.
+pub(crate) fn directive(s: &str) -> Option<(String, String)> {
     let rest = s.trim_start().strip_prefix("#+")?;
     let pos = rest.find(':')?;
     let key = &rest[..pos];

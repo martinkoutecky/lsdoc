@@ -334,6 +334,33 @@ fn dispatch_md_line<'a>(
         // no matching END → fall through (treat as paragraph text).
     }
 
+    // 2c. standalone directive `#+KEY: value` (KEY non-empty, not `BEGIN_…`). The md driver had
+    // NO standalone-directive parser, so a bare `#+TITLE: x` was mis-classified as a Paragraph
+    // whose `#+name` became a phantom `+name` page-tag. mldoc — and lsdoc's OWN org driver —
+    // parse it as a `Block::Directive{name, value}` with a RAW value (no inline parse, no ref
+    // walk), identically in BOTH formats. So we MIRROR the org classifier byte-for-byte by reusing
+    // `crate::org::directive` (leading-ws tolerant key, value LEFT-trimmed only, `BEGIN_…`
+    // excluded). NOT gated on `in_quote`: Directive IS in mldoc's `block_content_parsers`, so it
+    // fires inside a `>`-quote / `#+BEGIN_X` body too (org gates only `in_item`, never the quote
+    // body). Placed AFTER the `#+BEGIN_X` callout opener (so block markers aren't swallowed: a
+    // `#+BEGIN_…` is rejected by `directive`'s `BEGIN_` guard, and a colon-free `#+END_X` has no
+    // `:` so it stays a paragraph — matching mldoc). mldoc `Directive.parse` = `… <* optional
+    // eols`, swallowing following truly-empty lines (the md mirror of org's `*absorb = true`; the
+    // span extends over them). A directive is ALSO a drop-trigger block: an empty heading/bullet
+    // marker's trailing-ws paragraph is dropped before it (F4/M3, e.g. `## \n#+a: 1`).
+    if let Some((name, value)) = crate::org::directive(t) {
+        drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop the marker `" \n"`, keep blanks.
+        flush_para(out, para, input, trim);
+        let mut ni = i + 1;
+        let mut end = line_end;
+        while ni < hi && lines[ni].text.is_empty() {
+            end = lines[ni].end;
+            ni += 1;
+        }
+        out.push(Block::Directive { name, value, span: Some(Span(line_start, end)) });
+        return Step::Next(ni);
+    }
+
     // 2b. LaTeX environment `\begin{X} … \end{X}` (mldoc Latex_env, before Block). CLAMP the
     // `\end{}` search to `&input[..body_end]` so an `\end{X}` outside this body is not captured
     // (verified load-bearing: `#+BEGIN_QUOTE\n\begin{eq}\n#+END_QUOTE\n\end{eq}`).

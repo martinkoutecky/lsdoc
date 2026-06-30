@@ -1613,5 +1613,135 @@
   "id": "b322",
   "cat": "m3-keep-ws",
   "input": "## \n  \n```\nx\n```"
+ },
+ {
+  "id": "b323",
+  "cat": "md-directive",
+  "input": "#+TITLE: my title"
+ },
+ {
+  "id": "b324",
+  "cat": "md-directive",
+  "input": "#+b: 2"
+ },
+ {
+  "id": "b325",
+  "cat": "md-directive",
+  "input": "#+key:value"
+ },
+ {
+  "id": "b326",
+  "cat": "md-directive",
+  "input": "#+key:"
+ },
+ {
+  "id": "b327",
+  "cat": "md-directive",
+  "input": "#+CAPTION: a *bold* b"
+ },
+ {
+  "id": "b328",
+  "cat": "md-directive",
+  "input": "#+TITLE: x  "
+ },
+ {
+  "id": "b329",
+  "cat": "md-directive-ref",
+  "input": "#+a: [[Page]]"
+ },
+ {
+  "id": "b330",
+  "cat": "md-directive-ws",
+  "input": "  #+a: 1"
+ },
+ {
+  "id": "b331",
+  "cat": "md-directive-ws",
+  "input": "\t#+a: 1"
+ },
+ {
+  "id": "b332",
+  "cat": "md-directive-seq",
+  "input": "#+a: 1\n#+b: 2"
+ },
+ {
+  "id": "b333",
+  "cat": "md-directive-seq",
+  "input": "#+a: 1\nplain"
+ },
+ {
+  "id": "b334",
+  "cat": "md-directive-seq",
+  "input": "#+a: 1\n\nplain"
+ },
+ {
+  "id": "b335",
+  "cat": "md-directive-seq",
+  "input": "#+a: 1\n\n\nplain"
+ },
+ {
+  "id": "b336",
+  "cat": "md-directive-seq",
+  "input": "#+a: 1\nmore\n#+b: 2"
+ },
+ {
+  "id": "b337",
+  "cat": "md-directive-seq",
+  "input": "#+a: 1\nb:: 2"
+ },
+ {
+  "id": "b338",
+  "cat": "md-directive-neg",
+  "input": "not #+a: 1"
+ },
+ {
+  "id": "b339",
+  "cat": "md-directive-neg",
+  "input": "#+END_X"
+ },
+ {
+  "id": "b340",
+  "cat": "md-directive-neg",
+  "input": "#+BEGIN_X"
+ },
+ {
+  "id": "b341",
+  "cat": "md-directive-neg",
+  "input": "#+END_X: foo"
+ },
+ {
+  "id": "b342",
+  "cat": "md-directive-drop",
+  "input": "## \n#+a: 1"
+ },
+ {
+  "id": "b343",
+  "cat": "md-directive-drop",
+  "input": "- \n#+a: 1"
+ },
+ {
+  "id": "b344",
+  "cat": "md-directive-inbody",
+  "input": "#+BEGIN_QUOTE\n#+a: 1\n#+END_QUOTE"
+ },
+ {
+  "id": "b345",
+  "cat": "md-directive-inbody",
+  "input": "#+BEGIN_X\n#+a: 1\n#+END_X"
+ },
+ {
+  "id": "b346",
+  "cat": "md-directive-inbody",
+  "input": "> #+a: 1"
+ },
+ {
+  "id": "b347",
+  "cat": "md-directive-m2",
+  "input": ":PROPERTIES:\n:k: v\n:END:\n#+b: 2"
+ },
+ {
+  "id": "b348",
+  "cat": "md-directive-f3",
+  "input": ":PROPERTIES:\nfoo\n:END:\n#+b: 2"
  }
 ]
