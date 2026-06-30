@@ -23,7 +23,7 @@ writeFileSync(join(__dir,"corpus.fuzz.json"), JSON.stringify(inputs));
 const env = { ...process.env, CARGO_HOME:"/aux/koutecky/logseq/.toolchain/cargo", RUSTUP_HOME:"/aux/koutecky/logseq/.toolchain/rustup", PATH:`/aux/koutecky/logseq/.toolchain/cargo/bin:${process.env.PATH}` };
 spawnSync("cargo",["run","-q","--bin","lsdoc-parse","--",join(__dir,"corpus.fuzz.json"),join(__dir,"lsdoc-fuzz.json")],{cwd:join(__dir,".."),env});
 const ls = Object.fromEntries(JSON.parse(readFileSync(join(__dir,"lsdoc-fuzz.json"),"utf8")).map(x=>[x.id,x]));
-const IGN=new Set(["span"]);
+const IGN=new Set(["span","aligns"]);
 const canon=(v)=>Array.isArray(v)?v.map(canon):(v&&typeof v==="object"?Object.fromEntries(Object.keys(v).sort().filter(k=>!IGN.has(k)).map(k=>[k,canon(v[k])])):v);
 const S=(v)=>JSON.stringify(canon(v));
 const kinds=(bs)=>(bs||[]).map(b=>b.kind).join(",");

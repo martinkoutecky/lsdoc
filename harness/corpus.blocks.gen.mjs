@@ -472,6 +472,31 @@ add("md-directive-inbody", "> #+a: 1");                          // quote[ direc
 add("md-directive-m2", ":PROPERTIES:\n:k: v\n:END:\n#+b: 2");    // properties[[k,v],[b,2]] (one block — M2 fold)
 add("md-directive-f3", ":PROPERTIES:\nfoo\n:END:\n#+b: 2");      // [drawer{properties}, directive{b,2}]
 
+// === md `#+BEGIN_SRC` / `#+BEGIN_EXAMPLE` raw-body blocks (audit fix B) ===
+// mldoc's markdown block parser (block0.ml, shared with org) maps `#+BEGIN_SRC`→Src{lang,
+// code} and `#+BEGIN_EXAMPLE`→Example{code} (body indent-cleared, lang = the first token
+// after the name) — NOT a generic Custom. The bullet title-lookahead splits `- #+BEGIN_SRC`
+// into [empty bullet, Src/Example]. Trailing blank lines are swallowed. QUOTE/NOTE stay
+// Quote/Custom (non-regression). EXPORT/COMMENT are DEFERRED (new projection kinds) — not here.
+add("begin-src", "#+BEGIN_SRC python\nx=1\n#+END_SRC");          // src{lang:python, code:"x=1\n"}
+add("begin-src", "#+BEGIN_SRC\nx=1\n#+END_SRC");                 // src{lang:"", code:"x=1\n"} (no lang)
+add("begin-src", "#+BEGIN_SRC\n#+END_SRC");                      // src{lang:"", code:""} (empty body)
+add("begin-src", "#+BEGIN_SRC js\nlet a = 1\nlet b = 2\n#+END_SRC"); // src multiline
+add("begin-src", "#+BEGIN_SRC python\n    x=1\n    y=2\n#+END_SRC");  // body common-indent cleared
+add("begin-src", "#+BEGIN_SRC clojure :results\n(inc 2)\n#+END_SRC"); // lang = first token only
+add("begin-src", "#+begin_src python\nx=1\n#+end_src");          // case-insensitive name
+add("begin-src", "text before\n#+BEGIN_SRC\nx\n#+END_SRC");      // paragraph then src
+add("begin-src", "#+BEGIN_SRC\nx\n#+END_SRC\nafter");            // src then paragraph (no blank)
+add("begin-src", "#+BEGIN_SRC\nx\n#+END_SRC\n\ny");              // src then paragraph (blank swallowed)
+add("begin-example", "#+BEGIN_EXAMPLE\nhello\n#+END_EXAMPLE");   // example{code:"hello\n"}
+add("begin-example", "#+BEGIN_EXAMPLE\nline1\nline2\n#+END_EXAMPLE"); // example multiline
+add("begin-example", "#+BEGIN_EXAMPLE\nx\n#+END_EXAMPLE\n\ny");  // example then paragraph (blank swallowed)
+add("begin-bullet", "- #+BEGIN_SRC python\n  x=1\n  #+END_SRC"); // [bullet, src] (re-bulleted Tine form)
+add("begin-bullet", "- #+BEGIN_EXAMPLE\n  hi\n  #+END_EXAMPLE"); // [bullet, example]
+add("begin-nonreg", "#+BEGIN_QUOTE\nquoted\n#+END_QUOTE");       // quote (unchanged)
+add("begin-nonreg", "#+BEGIN_NOTE\nnote body\n#+END_NOTE");      // custom{note} (unchanged)
+add("begin-nest", "#+BEGIN_QUOTE\n#+BEGIN_SRC\nx\n#+END_SRC\n#+END_QUOTE"); // quote[ src ]
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

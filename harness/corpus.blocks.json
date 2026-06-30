@@ -1743,5 +1743,95 @@
   "id": "b348",
   "cat": "md-directive-f3",
   "input": ":PROPERTIES:\nfoo\n:END:\n#+b: 2"
+ },
+ {
+  "id": "b349",
+  "cat": "begin-src",
+  "input": "#+BEGIN_SRC python\nx=1\n#+END_SRC"
+ },
+ {
+  "id": "b350",
+  "cat": "begin-src",
+  "input": "#+BEGIN_SRC\nx=1\n#+END_SRC"
+ },
+ {
+  "id": "b351",
+  "cat": "begin-src",
+  "input": "#+BEGIN_SRC\n#+END_SRC"
+ },
+ {
+  "id": "b352",
+  "cat": "begin-src",
+  "input": "#+BEGIN_SRC js\nlet a = 1\nlet b = 2\n#+END_SRC"
+ },
+ {
+  "id": "b353",
+  "cat": "begin-src",
+  "input": "#+BEGIN_SRC python\n    x=1\n    y=2\n#+END_SRC"
+ },
+ {
+  "id": "b354",
+  "cat": "begin-src",
+  "input": "#+BEGIN_SRC clojure :results\n(inc 2)\n#+END_SRC"
+ },
+ {
+  "id": "b355",
+  "cat": "begin-src",
+  "input": "#+begin_src python\nx=1\n#+end_src"
+ },
+ {
+  "id": "b356",
+  "cat": "begin-src",
+  "input": "text before\n#+BEGIN_SRC\nx\n#+END_SRC"
+ },
+ {
+  "id": "b357",
+  "cat": "begin-src",
+  "input": "#+BEGIN_SRC\nx\n#+END_SRC\nafter"
+ },
+ {
+  "id": "b358",
+  "cat": "begin-src",
+  "input": "#+BEGIN_SRC\nx\n#+END_SRC\n\ny"
+ },
+ {
+  "id": "b359",
+  "cat": "begin-example",
+  "input": "#+BEGIN_EXAMPLE\nhello\n#+END_EXAMPLE"
+ },
+ {
+  "id": "b360",
+  "cat": "begin-example",
+  "input": "#+BEGIN_EXAMPLE\nline1\nline2\n#+END_EXAMPLE"
+ },
+ {
+  "id": "b361",
+  "cat": "begin-example",
+  "input": "#+BEGIN_EXAMPLE\nx\n#+END_EXAMPLE\n\ny"
+ },
+ {
+  "id": "b362",
+  "cat": "begin-bullet",
+  "input": "- #+BEGIN_SRC python\n  x=1\n  #+END_SRC"
+ },
+ {
+  "id": "b363",
+  "cat": "begin-bullet",
+  "input": "- #+BEGIN_EXAMPLE\n  hi\n  #+END_EXAMPLE"
+ },
+ {
+  "id": "b364",
+  "cat": "begin-nonreg",
+  "input": "#+BEGIN_QUOTE\nquoted\n#+END_QUOTE"
+ },
+ {
+  "id": "b365",
+  "cat": "begin-nonreg",
+  "input": "#+BEGIN_NOTE\nnote body\n#+END_NOTE"
+ },
+ {
+  "id": "b366",
+  "cat": "begin-nest",
+  "input": "#+BEGIN_QUOTE\n#+BEGIN_SRC\nx\n#+END_SRC\n#+END_QUOTE"
  }
 ]

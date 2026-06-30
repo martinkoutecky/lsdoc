@@ -322,6 +322,32 @@ fn dispatch_md_line<'a>(
         if let Some(close) = end_trie.find(&name, i) {
             if close < hi {
                 drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blanks.
+                // B: SRC/EXAMPLE are RAW-body blocks consumed in place — NOT re-dispatched
+                // containers. mldoc's markdown block parser (block0.ml, shared with org) maps
+                // `#+BEGIN_SRC`→Src{lang, code} and `#+BEGIN_EXAMPLE`→Example{code}, with the
+                // body indent-cleared (`block_code_texts`) and the lang the first token after
+                // the name (`begin_lang`) — MIRRORING org.rs exactly. Trailing truly-empty
+                // lines are swallowed (mldoc `<* optional eols`, like the fence handler), so a
+                // following paragraph gets no leading Break. EXPORT/COMMENT are DEFERRED (they
+                // need new projection kinds and diverge in both formats) → stay Custom.
+                if name.eq_ignore_ascii_case("SRC") || name.eq_ignore_ascii_case("EXAMPLE") {
+                    flush_para(out, para, input, trim);
+                    let texts: Vec<&str> = lines[i + 1..close].iter().map(|l| l.text).collect();
+                    let code = crate::org::block_code_texts(&texts);
+                    let mut ni = close + 1;
+                    let mut end = lines[close].end;
+                    while ni < hi && lines[ni].text.is_empty() {
+                        end = lines[ni].end;
+                        ni += 1;
+                    }
+                    let block = if name.eq_ignore_ascii_case("SRC") {
+                        Block::Src { lang: crate::org::begin_lang(t), code, span: Some(Span(line_start, end)) }
+                    } else {
+                        Block::Example { code, span: Some(Span(line_start, end)) }
+                    };
+                    out.push(block);
+                    return Step::Next(ni);
+                }
                 let builder = if name.eq_ignore_ascii_case("QUOTE") {
                     Builder::Quote
                 } else {
@@ -483,6 +509,37 @@ fn dispatch_md_line<'a>(
                     out.push(Block::Src { lang, code, span: Some(Span(content_off, end)) });
                     return Step::Next(ni);
                 }
+            }
+        }
+        // (a2) `#+BEGIN_SRC`/`#+BEGIN_EXAMPLE` raw-body block opener on the bullet line (B): the
+        // title lookahead reparses the bullet content as a block, so `- #+BEGIN_SRC …` →
+        // [empty bullet, Src/Example] (body indent-cleared via `block_code_texts`, the top-level
+        // mirror). Only splits when the block CLOSES inside this body (`< hi`); otherwise it stays
+        // a normal bullet titled `#+BEGIN_SRC …`. EXPORT/COMMENT/QUOTE/other-custom are NOT split
+        // here (deferred / pre-existing) — they fall through to a normal bullet, as before.
+        if let Some(bname) = callout_begin(content) {
+            if let Some(close) = end_trie
+                .find(&bname, i)
+                .filter(|&c| c < hi)
+                .filter(|_| bname.eq_ignore_ascii_case("SRC") || bname.eq_ignore_ascii_case("EXAMPLE"))
+            {
+                flush_para(out, para, input, trim);
+                empty_bullet!();
+                let texts: Vec<&str> = lines[i + 1..close].iter().map(|l| l.text).collect();
+                let code = crate::org::block_code_texts(&texts);
+                let mut ni = close + 1;
+                let mut end = lines[close].end;
+                while ni < hi && lines[ni].text.is_empty() {
+                    end = lines[ni].end;
+                    ni += 1;
+                }
+                let block = if bname.eq_ignore_ascii_case("SRC") {
+                    Block::Src { lang: crate::org::begin_lang(content), code, span: Some(Span(content_off, end)) }
+                } else {
+                    Block::Example { code, span: Some(Span(content_off, end)) }
+                };
+                out.push(block);
+                return Step::Next(ni);
             }
         }
         // (b) markdown blockquote opener on the bullet line (lazy continuation). The run is

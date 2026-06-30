@@ -49,7 +49,9 @@ pub enum Align {
 /// Parse a table separator row into per-column alignment. Splits on `|` (the
 /// column delimiter for both markdown and org), reading a leading/trailing `:`
 /// per cell: `:--`→Left, `--:`→Right, `:-:`→Center, `---`→`None` (unaligned).
-/// Used by both table builders ([`crate::parse`] md + [`crate::org`]).
+/// A cell with no `-` (`:`, `::`) is NOT an alignment → `None` (mldoc/GitHub
+/// require a `-` in a separator cell — fix D). Markdown-only now: org's
+/// `build_table` no longer calls this (fix C).
 pub(crate) fn parse_separator_aligns(sep: &str) -> Vec<Option<Align>> {
     let t = sep.trim();
     let t = t.strip_prefix('|').unwrap_or(t);
@@ -57,6 +59,12 @@ pub(crate) fn parse_separator_aligns(sep: &str) -> Vec<Option<Align>> {
     t.split('|')
         .map(|c| {
             let c = c.trim();
+            // Fix D: a separator cell must contain at least one `-` to be an alignment
+            // (mldoc/GitHub require a `-`); a colon-only cell (`:`, `::`) is NOT an
+            // alignment → `None`, not Center.
+            if !c.contains('-') {
+                return None;
+            }
             match (c.starts_with(':'), c.ends_with(':')) {
                 (true, true) => Some(Align::Center),
                 (false, true) => Some(Align::Right),

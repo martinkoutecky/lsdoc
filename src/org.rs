@@ -1227,7 +1227,9 @@ impl EndTrie {
 }
 
 /// Language token from a `#+BEGIN_SRC <lang> …` line (first whitespace word).
-fn begin_lang(s: &str) -> String {
+/// `pub(crate)`: the md driver (`crate::parse`) reuses it for markdown `#+BEGIN_SRC`
+/// (mldoc parses the SRC lang identically in both formats — see fix B).
+pub(crate) fn begin_lang(s: &str) -> String {
     let t = s.trim_start();
     t[8..].split_whitespace().nth(1).unwrap_or("").to_string()
 }
@@ -1236,13 +1238,22 @@ fn begin_lang(s: &str) -> String {
 /// line plus a trailing `\n`, with the common indent (the first line's leading
 /// whitespace) stripped from each line (mldoc `block0.ml` "clear indents").
 fn block_code(inner: &[Line]) -> String {
-    if inner.is_empty() {
+    let texts: Vec<&str> = inner.iter().map(|l| l.text).collect();
+    block_code_texts(&texts)
+}
+
+/// The raw-body builder for a `#+BEGIN_SRC`/`#+BEGIN_EXAMPLE` block, over the body lines'
+/// text (the common indent — the first line's leading ws — cleared from each, joined with
+/// one `\n` per line plus a trailing `\n`; mldoc `block0.ml` "clear indents"). `pub(crate)`:
+/// the md driver reuses this VERBATIM so markdown `#+BEGIN_SRC`/`EXAMPLE` mirror org exactly
+/// (fix B — mldoc's markdown block parser is the same `block_content` grammar).
+pub(crate) fn block_code_texts(texts: &[&str]) -> String {
+    if texts.is_empty() {
         return String::new();
     }
-    let indent = leading_ws(inner[0].text);
+    let indent = leading_ws(texts[0]);
     let mut out = String::new();
-    for l in inner {
-        let t = l.text;
+    for &t in texts {
         let lw = leading_ws(t);
         let cleared = if lw >= indent {
             &t[indent..] // leading ws are ASCII (space/tab) ⇒ byte-safe
@@ -1810,17 +1821,11 @@ fn build_table(rows: &[Line], start: usize, end: usize) -> Block {
         .map(|l| split_cells(l.text))
         .collect();
 
-    // lsdoc-only render enrichment (gate-dropped): per-column `:`-alignment from the
-    // first separator row, if any. Org alignment is non-standard `:`-based here; kept
-    // only when a column is actually marked (so ordinary `|---+---|` rules emit nothing).
-    let aligns = rows
-        .iter()
-        .map(|l| l.text)
-        .find(|t| is_sep(t))
-        .map(crate::projection::parse_separator_aligns)
-        .filter(|a| a.iter().any(Option::is_some));
-
-    Block::Table { header, rows: body, aligns, span: Some(Span(start, end)) }
+    // Fix C: org tables emit NO `aligns`. Org's real column alignment is a `<l>/<c>/<r>`
+    // cookie row (using `+` junctions), NOT a markdown `:--` separator, so reusing the
+    // markdown separator parser here produced WRONG alignment. mldoc discards org alignment
+    // entirely (no oracle truth), so `data-align` is markdown-only.
+    Block::Table { header, rows: body, aligns: None, span: Some(Span(start, end)) }
 }
 
 // ===========================================================================

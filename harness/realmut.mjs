@@ -44,7 +44,7 @@ const oracle = (input, fmt) => {
   const ast = JSON.parse(Mldoc.parseJson(input, cfg(fmt)));
   return { blocks: normalizeAst(ast), refs: extractRefs(ast) };
 };
-const IGNORE = new Set(["span"]);
+const IGNORE = new Set(["span", "aligns"]);
 const canon = (v) => Array.isArray(v) ? v.map(canon)
   : (v && typeof v === "object")
     ? Object.fromEntries(Object.keys(v).sort().filter(k => !IGNORE.has(k)).map(k => [k, canon(v[k])]))

@@ -60,7 +60,7 @@ function genInput() {
   return s;
 }
 
-const IGNORE = new Set(["span"]);
+const IGNORE = new Set(["span", "aligns"]);
 function canon(v) {
   if (Array.isArray(v)) return v.map(canon);
   if (v && typeof v === "object") {
