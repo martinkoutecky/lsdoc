@@ -1808,7 +1808,17 @@ fn build_table(rows: &[Line], start: usize, end: usize) -> Block {
         .map(|l| split_cells(l.text))
         .collect();
 
-    Block::Table { header, rows: body, span: Some(Span(start, end)) }
+    // lsdoc-only render enrichment (gate-dropped): per-column `:`-alignment from the
+    // first separator row, if any. Org alignment is non-standard `:`-based here; kept
+    // only when a column is actually marked (so ordinary `|---+---|` rules emit nothing).
+    let aligns = rows
+        .iter()
+        .map(|l| l.text)
+        .find(|t| is_sep(t))
+        .map(crate::projection::parse_separator_aligns)
+        .filter(|a| a.iter().any(Option::is_some));
+
+    Block::Table { header, rows: body, aligns, span: Some(Span(start, end)) }
 }
 
 // ===========================================================================

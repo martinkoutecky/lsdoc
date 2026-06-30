@@ -35,6 +35,38 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Per-column table alignment, parsed from the separator row (`:--`/`--:`/`:-:`).
+/// An lsdoc-only render enrichment used by [`crate::render_html`]'s `data-align`
+/// (mldoc discards table alignment); the differential gate drops it like `span`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+/// Parse a table separator row into per-column alignment. Splits on `|` (the
+/// column delimiter for both markdown and org), reading a leading/trailing `:`
+/// per cell: `:--`→Left, `--:`→Right, `:-:`→Center, `---`→`None` (unaligned).
+/// Used by both table builders ([`crate::parse`] md + [`crate::org`]).
+pub(crate) fn parse_separator_aligns(sep: &str) -> Vec<Option<Align>> {
+    let t = sep.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = t.strip_suffix('|').unwrap_or(t);
+    t.split('|')
+        .map(|c| {
+            let c = c.trim();
+            match (c.starts_with(':'), c.ends_with(':')) {
+                (true, true) => Some(Align::Center),
+                (false, true) => Some(Align::Right),
+                (true, false) => Some(Align::Left),
+                (false, false) => None,
+            }
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind")]
 pub enum Block {
@@ -174,6 +206,14 @@ pub enum Block {
     Table {
         header: Option<Vec<Vec<Inline>>>,
         rows: Vec<Vec<Vec<Inline>>>,
+        /// Per-column alignment parsed from the markdown `:--`/`--:`/`:-:` (or org)
+        /// separator row. An **lsdoc-only render enrichment**: mldoc 1.5.7 discards
+        /// alignment, so this is excluded from the differential gate exactly like
+        /// `span` (`harness/compare.mjs` + `harness/blockgate.mjs` drop the key).
+        /// `None` = no separator row / no `:` markers; each column is `Some` only
+        /// when that column carried a marker. Modeled on `Span` as a gate-dropped field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        aligns: Option<Vec<Option<Align>>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },

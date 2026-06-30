@@ -27,6 +27,7 @@ pub(crate) mod org_resolver;
 pub(crate) mod parse;
 pub(crate) mod projection;
 pub(crate) mod refs;
+pub mod render;
 pub(crate) mod resolver;
 
 /// The render contract: the stable, `serde`-serializable AST. **This IS lsdoc's AST**
@@ -50,8 +51,10 @@ pub(crate) mod resolver;
 ///   distinguishes `Date`/`Range`/`Scheduled`/`Deadline`/`Closed`).
 /// - [`Inline::Email`](ast::Inline)`.text` — mldoc's address record.
 pub mod ast {
-    pub use crate::projection::{Block, Inline, ListItem, Projection, Refs, Span, Url};
+    pub use crate::projection::{Align, Block, Inline, ListItem, Projection, Refs, Span, Url};
 }
+
+pub use render::{render_html, Format, RenderOpts};
 
 use projection::Projection;
 

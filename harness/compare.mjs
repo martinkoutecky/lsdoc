@@ -21,7 +21,10 @@ const allow = existsSync(allowPath)
 //   blank lines, a Property_Drawer doesn't; lone blank lines become paragraphs)
 //   and mldoc emits NO inline spans at all. Per SPEC §5 we don't bind to mldoc's
 //   internal node identity. See DECISIONS.md ("Spans excluded from comparison").
-const IGNORE_KEYS = new Set(["span"]);
+//   aligns — lsdoc-only table column alignment (`:--`/`--:`/`:-:`), an enrichment
+//   for `render_html`'s `data-align`. mldoc 1.5.7 discards alignment, so it has no
+//   such field; dropped here (like `span`) keeps the byte-exact gate unaffected.
+const IGNORE_KEYS = new Set(["span", "aligns"]);
 
 // Stable stringify: recursively sort object keys so comparison is order-insensitive,
 // dropping ignored keys.
