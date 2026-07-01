@@ -67,12 +67,11 @@ fn hiccup_unclosed(m: usize) -> String {
 fn resync(n: usize) -> String {
     "#a\\".repeat(n)
 }
-/// Tag straddling into a `` `code` `` LEAF, ×n. STILL O(n²)+native-recurse: backtick Code pairing
-/// is NON-LOCAL — consuming a Code opener re-pairs every downstream backtick (mldoc re-parses from
-/// `end`), so reusing the outer tokens mis-pairs a surviving Code span (`#a` `b`` → mldoc `code(b)`,
-/// token-reuse → plain `` `b` ``; verified vs the oracle). Token reuse therefore cannot fix this
-/// family byte-exactly; only a suffix re-lex (O(n²)) or a delimiter-stack rewrite can. Kept on the
-/// byte-exact recurse path; see subagent-tasks/notes/lsdoc-inline-C-impl.md. (Bug 2b, residual.)
+/// Tag straddling into a `` `code` `` LEAF, ×n. FIXED (D): the lexer no longer pre-builds code spans
+/// as multi-byte `Leaf`s — a backtick is a one-byte `Punct` and the resolver recognizes code spans
+/// LAZILY at dispatch. So a tag consuming a backtick lands on a clean 1-byte boundary (no straddle,
+/// no re-lex) and the consumed backtick is simply never dispatched as a code opener (mldoc's
+/// behavior). O(n). See subagent-tasks/notes/lsdoc-inline-delimstack-design.md. (Bug 2b, residual.)
 fn resync_leaf(n: usize) -> String {
     "#a`#`".repeat(n)
 }
@@ -130,31 +129,30 @@ fn complexity_gate() {
         assert_linear("hiccup_unclosed", hiccup_unclosed, 3000, "org");
         // C (2b): the inline escape-straddle resync reuses the outer tokens (re-lexes only the
         // O(1) split boundary token, then re-dispatches in the loop) instead of recursing over the
-        // whole remaining suffix → LINEAR. (The code-LEAF twin stays a target below — non-local
-        // backtick pairing forbids byte-exact token reuse there; see `resync_leaf`.)
+        // whole remaining suffix → LINEAR.
         assert_linear("resync", resync, 1500, "md");
+        // D (2b, code-leaf): code spans are recognized LAZILY at dispatch (one-byte backtick
+        // `Punct`, no pre-built `Leaf`), so a tag consuming a backtick lands on a clean boundary —
+        // the straddle cannot exist, no re-lex → LINEAR.
+        assert_linear("resync_leaf", resync_leaf, 1500, "md");
     });
-    // C (2b) no-SIGABRT: the escape-straddle family is now O(1) native stack, so ~64 KB parses on
-    // a SMALL (4 MiB) stack where the old per-unit suffix-recurse overflowed at ~24 KB (on the
-    // default stack). `forget` the flat 22k-tag AST — this guards only the PARSE stack.
+    // (2b) no-SIGABRT on a SMALL (4 MiB) stack, where the old per-unit suffix-recurse overflowed at
+    // ~24 KB on the default stack: both the escape (C) and code-leaf (D) straddle families now parse
+    // ~64 KB with O(1) native stack. `forget` the flat AST — this guards only the PARSE stack.
     std::thread::Builder::new()
         .stack_size(4 * 1024 * 1024)
-        .spawn(|| std::mem::forget(lsdoc::parse(&resync(22_000), "md")))
+        .spawn(|| {
+            std::mem::forget(lsdoc::parse(&resync(22_000), "md")); // escape ×22k ≈ 66 KB
+            std::mem::forget(lsdoc::parse(&resync_leaf(13_000), "md")); // code-leaf ×13k ≈ 65 KB
+        })
         .unwrap()
         .join()
         .unwrap();
 }
 
-/// The audit's remaining O(n²) family. FAILS today (that is the point — it proves the gate catches
-/// what 1321/1321 byte-exact missed). A (container-prefix walk) + B (hiccup balance index) + C's
-/// escape-straddle half DONE (moved into `complexity_gate`). RESIDUAL: `resync_leaf`, the inline
-/// code-LEAF straddle — NOT byte-exactly fixable by token reuse (non-local backtick Code pairing;
-/// a suffix re-lex or a delimiter-stack rewrite is required — see the C-impl note). Left here as a
-/// documented, known-O(n²) target rather than shipping a byte-inexact "fix".
+/// The audit's not-yet-fixed O(n²) families. EMPTY: all four (`gt_spine`/`gt_breaker` 1a/1b → A,
+/// `hiccup_unclosed` 2a → B, `resync` + `resync_leaf` 2b → C/D) are now single-pass and live in
+/// `complexity_gate`. Kept as a shell so a future re-scan regression has an obvious home.
 #[test]
-#[ignore = "audit O(n^2) residual — code-leaf straddle; needs a delimiter-stack rewrite, not token reuse"]
-fn complexity_gate_targets() {
-    big_stack(|| {
-        assert_linear("resync_leaf", resync_leaf, 1500, "md"); // C (2b) residual
-    });
-}
+#[ignore = "empty — all audit O(n^2) families are single-pass (in complexity_gate)"]
+fn complexity_gate_targets() {}

@@ -121,18 +121,15 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
             }
             b'\\' => lex_backslash(s, &mut i, &mut pending, &mut pending_off, &mut toks),
             b'`' => {
-                if let Some((node, end)) = code_span(s, i) {
-                    flush!();
-                    toks.push(Token { off: i, kind: Kind::Leaf(node) });
-                    i = end;
-                } else {
-                    // failed code span: a `` ` `` is a marker-delim, so emit it as a Punct
-                    // (fresh-making) rather than merging into Text — the position after it is a
-                    // fresh dispatch point (`` `((uuid)) `` → `` ` `` + block-ref).
-                    flush!();
-                    toks.push(Token { off: i, kind: Kind::Punct(b'`') });
-                    i += 1;
-                }
+                // Phase D: emit a backtick as a ONE-BYTE `Punct`; the resolver recognizes code
+                // spans LAZILY at dispatch (like tags/links), reusing `code_span`. Pre-building a
+                // multi-byte code `Leaf` here is what let a tag consuming a backtick force a
+                // non-local `resync` re-lex (bug 2b, code-leaf O(n²)). A `` ` `` is a marker-delim
+                // (fresh-making); the position after it is a fresh dispatch point (`` `((uuid)) ``
+                // → `` ` `` + block-ref).
+                flush!();
+                toks.push(Token { off: i, kind: Kind::Punct(b'`') });
+                i += 1;
             }
             _ if is_marker(c) => {
                 // group a run of the same emphasis marker into one Delim token.
@@ -258,8 +255,9 @@ fn flush_into(pending: &mut String, pending_off: &mut usize, toks: &mut Vec<Toke
 
 /// `` `…` `` (single) / ``` ``…`` ``` (double-backtick) code span → (Code node, end). The
 /// content is raw (a lexer mode: no inner token recognition), so emphasis/brackets inside
-/// code never become tokens.
-fn code_span(s: &str, at: usize) -> Option<(Inline, usize)> {
+/// code never become tokens. `pub(crate)` so the resolver can recognize code spans LAZILY at
+/// dispatch time (Phase D) instead of the lexer pre-building them as multi-byte `Leaf`s.
+pub(crate) fn code_span(s: &str, at: usize) -> Option<(Inline, usize)> {
     let b = s.as_bytes();
     let n = b.len();
     if b.get(at + 1) != Some(&b'`') {

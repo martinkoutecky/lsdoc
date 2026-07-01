@@ -1008,5 +1008,45 @@
   "id": "c201",
   "cat": "hiccup",
   "input": "[:div]x and [:span]"
+ },
+ {
+  "id": "c202",
+  "cat": "codespan",
+  "input": "*a`*`b*"
+ },
+ {
+  "id": "c203",
+  "cat": "codespan",
+  "input": "`*a*`"
+ },
+ {
+  "id": "c204",
+  "cat": "codespan",
+  "input": "**a`**`b**"
+ },
+ {
+  "id": "c205",
+  "cat": "codespan",
+  "input": "_a`_`b_"
+ },
+ {
+  "id": "c206",
+  "cat": "codespan",
+  "input": "#a`#`"
+ },
+ {
+  "id": "c207",
+  "cat": "codespan",
+  "input": "#a`b`c"
+ },
+ {
+  "id": "c208",
+  "cat": "codespan",
+  "input": "[`a`](x)"
+ },
+ {
+  "id": "c209",
+  "cat": "codespan",
+  "input": "`[[a]]`"
  }
 ]

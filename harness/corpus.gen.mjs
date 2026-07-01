@@ -249,6 +249,19 @@ add("hiccup", 'x [:div "abc] y');             // unterminated string → plain
 add("hiccup", "x[:div]");                     // hiccup not at BOL → inline
 add("hiccup", "[:div]x and [:span]");         // BOL handled by block gen; here mid-text
 
+// codespan (D): code spans are now recognized lazily at resolver dispatch (backtick = one-byte
+// token, not a pre-built Leaf). Lock the one genuinely-new interaction: emphasis `find_closer`
+// now skips code spans (the pre-built Leaf used to hide inner markers from the token scan), and
+// the code-leaf straddle (`#a`#`) which drove the audit's last O(n²). See lsdoc-single-pass-audit.
+add("codespan", "*a`*`b*");        // `*` INSIDE code must not close the outer emphasis
+add("codespan", "`*a*`");          // markers inside code stay literal (not emphasis)
+add("codespan", "**a`**`b**");     // `**` inside code hidden from the bold scan
+add("codespan", "_a`_`b_");        // `_` inside code hidden
+add("codespan", "#a`#`");          // code-leaf unit (the O(n²) trigger — a tag eats a backtick)
+add("codespan", "#a`b`c");         // tag then code span
+add("codespan", "[`a`](x)");       // code span inside a link label
+add("codespan", "`[[a]]`");        // link syntax inside code stays literal
+
 // emit
 const out = cases.map((c, idx) => ({ id: `c${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));

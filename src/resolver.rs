@@ -112,6 +112,15 @@ fn class_idx(ch: u8) -> usize {
     }
 }
 
+/// Dispatch-time code span (Phase D): reuse the lexer's byte-exact `code_span` builder and set the
+/// absolute span, so a `` ` `` is recognized at resolve time (like tags/links) instead of pre-built
+/// as a multi-byte `Leaf`. A backtick consumed by a construct is then never dispatched → no straddle.
+fn try_code_span(s: &str, off: usize, base: usize) -> Option<(Inline, usize)> {
+    let (mut node, end) = crate::lexer::code_span(s, off)?;
+    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + end)));
+    Some((node, end))
+}
+
 fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let bb = s.as_bytes();
     let mut out: Vec<Inline> = Vec::new();
@@ -276,6 +285,27 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             continue;
         }
 
+        // `` ` `` code span (Phase D) — recognized LAZILY here (was a pre-built lexer `Leaf`). On
+        // success emit the Code node + `resync` past its extent (the closer `` ` `` and content are
+        // consumed tokens); else the backtick is a literal marker-delim → fresh point (`` `((uuid))
+        // `` → `` ` `` + block-ref). Greedy left-to-right: a backtick a construct already consumed
+        // is never dispatched here, so a tag eating a `` ` `` needs no re-lex (bug 2b, code-leaf).
+        if matches!(toks[t].kind, Kind::Punct(b'`')) {
+            let off = toks[t].off;
+            if let Some((node, e)) = try_code_span(s, off, base) {
+                flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                out.push(node);
+                t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base);
+            } else {
+                if pending.is_empty() { plain_start = Some(base + off); }
+                if plain_start.is_some() { plain_end = base + off + 1; }
+                pending.push('`');
+                t += 1;
+                fresh = true; // `` ` `` is a marker-delim → fresh point
+            }
+            continue;
+        }
+
         // `\(` / `\[` latex-backslash (ctx-dependent): a Latex span when `ctx.latex` and a
         // `\)`/`\]` closer exists ahead, else an escape (the `(`/`[` literal). The monotone
         // closer floor keeps a `\(`×n run linear.
@@ -427,9 +457,10 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     }
                     fresh = true;
                 }
+                // Phase D: a `Leaf` is now only a `\name` Entity (code spans are dispatched lazily
+                // at the `` ` `` Punct branch above). It ends at the next token's byte offset (or EOF).
                 Kind::Leaf(node) => {
                     flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                    // a Leaf (a code span) ends at the next token's byte offset (or EOF).
                     let tok_end_val = if t + 1 < toks.len() { toks[t + 1].off } else { s.len() };
                     let mut node = node.clone();
                     crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + tok_end_val)));
@@ -488,7 +519,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 if no_closer[cls][k - 1] {
                     continue;
                 }
-                let Some((closer_t, closer_off)) = find_closer(bb, toks, t, ch, k) else {
+                let Some((closer_t, closer_off)) = find_closer(s, toks, t, ch, k) else {
                     no_closer[cls][k - 1] = true;
                     continue;
                 };
@@ -556,14 +587,32 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
 /// non-ws). Code/escapes are already collapsed into Leaf/Text tokens, so scanning `Delim`
 /// tokens reproduces v1's byte scan that skips them. The `_` forward gate is the caller's
 /// post-check. Returns `(closer_token_index, closer_byte_offset)`.
-fn find_closer(bb: &[u8], toks: &[Token], open_t: usize, ch: u8, k: usize) -> Option<(usize, usize)> {
+fn find_closer(s: &str, toks: &[Token], open_t: usize, ch: u8, k: usize) -> Option<(usize, usize)> {
+    let bb = s.as_bytes();
     let mut q = open_t + 1;
     while q < toks.len() {
-        if let Kind::Delim { ch: dch, len } = &toks[q].kind {
-            let qoff = toks[q].off;
-            if *dch == ch && *len >= k && qoff > 0 && !is_ws_or_nl(bb[qoff - 1]) {
-                return Some((q, qoff));
+        match &toks[q].kind {
+            // a `` ` `` code span PROTECTS its content: a `*`/`_` inside `` `…` `` is not a valid
+            // closer (mldoc recognizes code spans while scanning emphasis content). Skip past the
+            // span. Phase D dispatches code lazily, so this must be explicit — the old pre-built
+            // code `Leaf` hid the inner markers from this token scan implicitly; the skip restores
+            // that exact behavior byte-for-byte (reuses the dispatch's `code_span`, zero drift).
+            Kind::Punct(b'`') => {
+                if let Some((_, e)) = crate::lexer::code_span(s, toks[q].off) {
+                    q += 1;
+                    while q < toks.len() && toks[q].off < e {
+                        q += 1;
+                    }
+                    continue;
+                }
             }
+            Kind::Delim { ch: dch, len } => {
+                let qoff = toks[q].off;
+                if *dch == ch && *len >= k && qoff > 0 && !is_ws_or_nl(bb[qoff - 1]) {
+                    return Some((q, qoff));
+                }
+            }
+            _ => {}
         }
         q += 1;
     }
@@ -606,17 +655,17 @@ fn first_crlf(bb: &[u8], from: usize) -> usize {
 /// token boundary; tag / bare-url end mid-Text (at a ws / tag-delim), so when `end` lands
 /// strictly inside a straddling token, recover the tail `s[end..token_end]` and re-dispatch.
 ///
-/// FAST PATH (Phase C, audit bug 2b): the outer `lex(s)` ALREADY tokenized `[end, n)`. The
-/// lexer's ONLY non-local construct is the backtick Code (and `&…;` Entity) `Leaf` — grouping
-/// that a straddle can invalidate by consuming a Code opener (or promoting a freed escaped
-/// backtick to one), which SHIFTS all downstream backtick pairing. So when the straddled
-/// boundary token is NOT a `Leaf` and the freed byte is not a backtick, `toks[t+1..]` IS the
-/// correct tail: re-lex ONLY the O(1) split token's tail `[end, te)` → one `Punct`/`Text`
-/// token, overwrite `toks[t]`, and re-dispatch via the loop (no recursion, no suffix re-lex).
-/// Escape (`#a\`), plain-tail, keyword-timestamp and bare-url straddles all land here → O(n),
-/// no native stack. `Leaf` + backtick-seam fall through to the byte-exact RECURSE below (they
-/// are the residual `#a\`code\`` O(n²)/SIGABRT family — non-local pairing forbids token reuse;
-/// see subagent-tasks/notes/lsdoc-inline-C-impl.md).
+/// FAST PATH (Phase C/D, audit bug 2b): the outer `lex(s)` ALREADY tokenized `[end, n)`. Since
+/// Phase D the md lexer has NO non-local construct a straddle can invalidate — code spans are
+/// recognized LAZILY at dispatch (a backtick is a one-byte `Punct`), so a freed backtick simply
+/// re-dispatches and pairs on the lazy scan. The only remaining pre-built multi-byte `Leaf` is a
+/// `\name` Entity (which does not straddle from a tag). So when the straddled boundary token is
+/// NOT a `Leaf`, `toks[t+1..]` IS the correct tail: re-lex ONLY the O(1) split token's tail
+/// `[end, te)` → one `Punct`/`Text` token, overwrite `toks[t]`, and re-dispatch via the loop (no
+/// recursion, no suffix re-lex). Escape (`#a\`), freed-backtick, plain-tail, keyword-timestamp and
+/// bare-url straddles all land here → O(n), no native stack. A residual Entity `Leaf` straddle
+/// (rare, non-chaining) falls through to the byte-exact RECURSE below. (The `#a\`code\`` code-leaf
+/// O(n²)/SIGABRT family no longer exists — see subagent-tasks/notes/lsdoc-inline-delimstack-design.md.)
 #[allow(clippy::too_many_arguments)]
 fn resync(
     s: &str,
@@ -641,10 +690,11 @@ fn resync(
         // token boundaries needn't align).
         let bb = s.as_bytes();
         let te = if t + 1 < toks.len() { toks[t + 1].off } else { n };
-        // FAST PATH — reuse the outer tail (see the fn doc). Excludes `Leaf` (consumed Code /
-        // Entity grouping) and a freed escaped-backtick (`bb[end] == '`'` promotes it to a
-        // Code opener): both mutate downstream backtick pairing, so token reuse is unsound.
-        if !matches!(toks[t].kind, Kind::Leaf(_)) && bb.get(end) != Some(&b'`') {
+        // FAST PATH — reuse the outer tail (see the fn doc). Excludes only `Leaf` (a `\name`
+        // Entity, the sole remaining pre-built multi-byte token — code spans are dispatch-time
+        // since Phase D, so a freed backtick is a one-byte `Punct` that re-dispatches + pairs
+        // lazily, no longer a non-local hazard).
+        if !matches!(toks[t].kind, Kind::Leaf(_)) {
             let mut retok = lex(&s[end..te]);
             if retok.len() == 1 && matches!(retok[0].kind, Kind::Text(_) | Kind::Punct(_)) {
                 crate::metrics::scan_work(te - end); // O(1): ONLY the split token re-lexed
@@ -654,9 +704,9 @@ fn resync(
                 return t; // re-dispatch the corrected token in the same loop
             }
         }
-        // RECURSE (byte-exact, but O(n²)/native): a `Leaf` code/entity span whose opener the
-        // construct consumed, a freed escaped-backtick, or an exotic multi-token tail — the
-        // tail spans a region whose (non-local) backtick pairing differs from the outer stream.
+        // RECURSE (byte-exact): a `\name` Entity `Leaf` whose opener a construct consumed, or an
+        // exotic multi-token tail. Rare and non-chaining (code spans are dispatch-time since D, so
+        // the chaining `#a\`code\`` family is gone); kept as the byte-exact fallback.
         let recurse = matches!(toks[t].kind, Kind::Leaf(_))
             || bb.get(end).is_some_and(|&c| is_special_lead(c))
             || (ctx.timestamps && crate::inline::parse_keyword_timestamp(s, end).is_some())

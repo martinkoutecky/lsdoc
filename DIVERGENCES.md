@@ -104,6 +104,30 @@ hiccup gates and confirm the fuzz floors improve. Status: **OPEN.**
 
 ---
 
+## D4 — a `\r\n` inside a DOUBLE-backtick code span is kept raw instead of normalized
+
+**Trigger:** a double-backtick code span (``` ``…`` ```) that spans a `\r\n` line ending. **MD.**
+
+```
+input:  "``a\r\nb``"
+mldoc:  Code(text="a\n\nb")   ← normalizes the CRLF inside the code content
+lsdoc:  Code(text="a\r\nb")   ← keeps the raw CRLF
+```
+
+**Root cause:** `inline.rs::code_span` extracts the code content as a raw byte-slice; mldoc
+normalizes `\r\n`→`\n\n` (line-ending normalization) inside double-code content. Purely a
+content-extraction quirk in `code_span` — **pre-existing** (verified byte-identical on `bb35b6e`,
+before the Phase-D lazy-code-span refactor, which reuses `code_span` verbatim).
+
+**Reachability:** a CRLF file with a multi-line double-backtick code span. Uncommon (most graphs
+are LF; single-backtick code stops at the newline so it's double-code-only).
+
+**Fix direction:** normalize `\r\n`→`\n\n` (confirm the exact mldoc rule — `\n\n` vs `\n`) in
+`code_span`'s content extraction for the double-backtick case. SMALL, localized to `inline.rs`.
+Status: **OPEN.** (Lowest priority — the most exotic of the four.)
+
+---
+
 ## Not on this list (for contrast)
 These are **sanctioned**, not divergences to fix — see the O(n) audit spec's E1/E2:
 - **`refs.rs` sort/dedup** — O(R log R), the one deliberate super-linear place (canonical ref order).
