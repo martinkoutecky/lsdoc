@@ -79,9 +79,9 @@ pub fn refs(input: &str, format: &str) -> ast::Refs {
 /// selects Org; anything else is Markdown.
 pub fn inline(input: &str, format: &str) -> Vec<ast::Inline> {
     if format == "org" {
-        org_resolver::parse_inline_org(input)
+        org_resolver::parse_inline_org(input, 0)
     } else {
-        resolver::parse_inline(input)
+        resolver::parse_inline(input, 0)
     }
 }
 
@@ -115,5 +115,239 @@ pub fn parse_format(input: &str, format: &str) -> Projection {
         parse_org_to_projection(input)
     } else {
         parse_to_projection(input)
+    }
+}
+
+#[cfg(test)]
+mod span_tests {
+    use crate::projection::{Inline, Span};
+
+    fn parse_md(s: &str) -> Vec<Inline> {
+        crate::resolver::parse_inline(s, 0)
+    }
+
+    /// S5: `block_body[span] == text` for every `plain` node (recursing into children/labels).
+    fn assert_s5(input: &str, inlines: &[Inline]) {
+        for n in inlines {
+            check_s5_node(input, n);
+        }
+    }
+    fn check_s5_node(input: &str, n: &Inline) {
+        match n {
+            Inline::Plain { text, span } => {
+                if let Some(Span(s, e)) = span {
+                    assert_eq!(
+                        &input.as_bytes()[*s..*e],
+                        text.as_bytes(),
+                        "S5 fail: plain '{text}' has span [{s},{e}) but source is '{}'",
+                        &input[*s..*e]
+                    );
+                }
+            }
+            Inline::Emphasis { children, .. }
+            | Inline::Subscript { children, .. }
+            | Inline::Superscript { children, .. }
+            | Inline::Tag { children, .. } => {
+                for c in children {
+                    check_s5_node(input, c);
+                }
+            }
+            Inline::Link { label, .. } => {
+                for c in label {
+                    check_s5_node(input, c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn test_plain_span() {
+        let s = "hello world";
+        let out = parse_md(s);
+        assert_eq!(out.len(), 1);
+        assert!(matches!(&out[0], Inline::Plain { text, span }
+            if text == "hello world" && *span == Some(Span(0, 11))));
+        assert_s5(s, &out);
+    }
+
+    #[test]
+    fn test_emphasis_worked_example() {
+        // from spec: "a **b** c" (9 bytes)
+        let s = "a **b** c";
+        let out = parse_md(s);
+        assert_eq!(out.len(), 3);
+        if let Inline::Plain { text, span } = &out[0] {
+            assert_eq!(text, "a ");
+            assert_eq!(*span, Some(Span(0, 2)));
+        } else {
+            panic!("out[0] not plain");
+        }
+        if let Inline::Emphasis { emph, children, span } = &out[1] {
+            assert_eq!(emph, "Bold");
+            assert_eq!(*span, Some(Span(2, 7)));
+            assert_eq!(children.len(), 1);
+            if let Inline::Plain { text, span } = &children[0] {
+                assert_eq!(text, "b");
+                assert_eq!(*span, Some(Span(4, 5)));
+            } else {
+                panic!("emphasis child not plain");
+            }
+        } else {
+            panic!("out[1] not emphasis");
+        }
+        if let Inline::Plain { text, span } = &out[2] {
+            assert_eq!(text, " c");
+            assert_eq!(*span, Some(Span(7, 9)));
+        } else {
+            panic!("out[2] not plain");
+        }
+        assert_s5(s, &out);
+    }
+
+    #[test]
+    fn test_nested_emphasis() {
+        // ***x*** → Italic[Bold[plain "x"]]; the inner plain span is the innermost slice.
+        let s = "***x***";
+        let out = parse_md(s);
+        assert_eq!(out.len(), 1);
+        let Inline::Emphasis { emph, children, span } = &out[0] else { panic!("not emphasis") };
+        assert_eq!(emph, "Italic");
+        assert_eq!(*span, Some(Span(0, 7)));
+        assert_eq!(children.len(), 1);
+        let Inline::Emphasis { emph, children, span: inner_span } = &children[0] else {
+            panic!("inner not emphasis")
+        };
+        assert_eq!(emph, "Bold");
+        // S3: inner ⊆ outer.
+        let (Some(Span(is, ie)), Some(Span(os, oe))) = (*inner_span, *span) else {
+            panic!("missing spans")
+        };
+        assert!(os <= is && ie <= oe, "inner {inner_span:?} not contained in outer {span:?}");
+        assert_eq!(children.len(), 1);
+        if let Inline::Plain { text, span } = &children[0] {
+            assert_eq!(text, "x");
+            assert_eq!(*span, Some(Span(3, 4)));
+        } else {
+            panic!("innermost not plain");
+        }
+        assert_s5(s, &out);
+    }
+
+    #[test]
+    fn test_link_label_span() {
+        // [t](u) → Link [0,6) with label plain "t" at [1,2)
+        let s = "[t](u)";
+        let out = parse_md(s);
+        assert_eq!(out.len(), 1);
+        let Inline::Link { span, label, .. } = &out[0] else { panic!("not link") };
+        assert_eq!(*span, Some(Span(0, 6)));
+        assert_eq!(label.len(), 1);
+        if let Inline::Plain { text, span } = &label[0] {
+            assert_eq!(text, "t");
+            assert_eq!(*span, Some(Span(1, 2)));
+        } else {
+            panic!("label[0] not plain");
+        }
+        assert_s5(s, &out);
+    }
+
+    #[test]
+    fn test_link_multi_node_label() {
+        // [**a**~~b~~](u): the label fully decomposes into two emphasis nodes with absolute
+        // spans into the block body (S2), each containing its own plain child.
+        let s = "[**a**~~b~~](u)";
+        let out = parse_md(s);
+        assert_eq!(out.len(), 1);
+        let Inline::Link { label, span, .. } = &out[0] else { panic!("not link") };
+        assert_eq!(*span, Some(Span(0, 15)));
+        assert_eq!(label.len(), 2);
+        if let Inline::Emphasis { emph, span, .. } = &label[0] {
+            assert_eq!(emph, "Bold");
+            assert_eq!(*span, Some(Span(1, 6)));
+        } else {
+            panic!("label[0] not emphasis");
+        }
+        if let Inline::Emphasis { emph, span, .. } = &label[1] {
+            assert_eq!(emph, "Strike_through");
+            assert_eq!(*span, Some(Span(6, 11)));
+        } else {
+            panic!("label[1] not emphasis");
+        }
+        assert_s5(s, &out);
+    }
+
+    #[test]
+    fn test_inline_code_span() {
+        // `x` → code atom over [0,3) (delimiters included)
+        let s = "`x`";
+        let out = parse_md(s);
+        assert_eq!(out.len(), 1);
+        if let Inline::Code { text, span } = &out[0] {
+            assert_eq!(text, "x");
+            assert_eq!(*span, Some(Span(0, 3)));
+        } else {
+            panic!("not code");
+        }
+    }
+
+    #[test]
+    fn test_non_ascii_plain() {
+        // "café" — é is 2 bytes (U+00E9), so offsets are BYTES.
+        let s = "café";
+        assert_eq!(s.len(), 5);
+        let out = parse_md(s);
+        assert_eq!(out.len(), 1);
+        if let Inline::Plain { text, span } = &out[0] {
+            assert_eq!(text, "café");
+            assert_eq!(*span, Some(Span(0, 5)));
+        } else {
+            panic!("not plain");
+        }
+        assert_s5(s, &out);
+    }
+
+    #[test]
+    fn test_tag_non_ascii() {
+        // "#škola" in org mode — š is 2 bytes; Tag [0,7), plain "škola" [1,7).
+        let s = "#škola";
+        assert_eq!(s.len(), 7);
+        let out = crate::org_resolver::parse_inline_org(s, 0);
+        let tag = out.iter().find(|n| matches!(n, Inline::Tag { .. }));
+        let Some(Inline::Tag { children, span }) = tag else { panic!("expected Tag node") };
+        assert_eq!(*span, Some(Span(0, 7)));
+        let plain = children.iter().find(|n| matches!(n, Inline::Plain { .. }));
+        if let Some(Inline::Plain { text, span }) = plain {
+            assert_eq!(text, "škola");
+            assert_eq!(*span, Some(Span(1, 7)));
+        } else {
+            panic!("expected a plain child");
+        }
+        assert_s5(s, &out);
+    }
+
+    #[test]
+    fn test_table_cell_base() {
+        // A table cell's inline spans are ABSOLUTE block-body offsets (S2/S5).
+        let input = "| hello | world |";
+        let blocks = crate::parse::parse(input);
+        let Some(crate::projection::Block::Table { rows, header, .. }) = blocks.first() else {
+            panic!("expected a Table");
+        };
+        // "| hello | world |" is a header-only table (no separator/body), so the cells live
+        // in `header`; either way, check whichever holds the row.
+        let row = header.as_ref().map(|h| h.as_slice()).or_else(|| rows.first().map(|r| r.as_slice()));
+        let row = row.expect("a header or body row");
+        let cell = row.first().expect("a first cell");
+        if let Some(Inline::Plain { text, span }) = cell.first() {
+            assert_eq!(text, "hello");
+            if let Some(Span(s, e)) = span {
+                assert_eq!(&input.as_bytes()[*s..*e], text.as_bytes(), "S5 in table cell");
+            } else {
+                panic!("table cell plain has no span");
+            }
+        } else {
+            panic!("first cell not a plain");
+        }
     }
 }

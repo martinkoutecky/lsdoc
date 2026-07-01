@@ -271,7 +271,7 @@ impl Renderer {
     fn quote(&mut self, children: &[Block]) {
         let callout = match children.first() {
             Some(Block::Paragraph { inline, .. }) => match inline.first() {
-                Some(Inline::Plain { text }) => parse_callout_lead(text).map(|(ty, title)| (ty, title, inline)),
+                Some(Inline::Plain { text, .. }) => parse_callout_lead(text).map(|(ty, title)| (ty, title, inline)),
                 _ => None,
             },
             _ => None,
@@ -282,7 +282,7 @@ impl Renderer {
             // everything after begins the BODY. (Previously only `[!TYPE]`'s first plain
             // segment was the title, so `[!NOTE] Heads **up**` spilled `**up**` into the body.)
             let break_idx =
-                lead_inline[1..].iter().position(|n| matches!(n, Inline::Break)).map(|p| p + 1);
+                lead_inline[1..].iter().position(|n| matches!(n, Inline::Break { .. })).map(|p| p + 1);
             let (title_markup, body_inlines): (&[Inline], &[Inline]) = match break_idx {
                 Some(k) => (&lead_inline[1..k], &lead_inline[k + 1..]),
                 None => (&lead_inline[1..], &[]),
@@ -408,14 +408,14 @@ impl Renderer {
 
     fn inline(&mut self, i: &Inline) {
         match i {
-            Inline::Plain { text } => esc_text(text, &mut self.out),
-            Inline::Code { text } | Inline::Verbatim { text } => {
+            Inline::Plain { text, .. } => esc_text(text, &mut self.out),
+            Inline::Code { text, .. } | Inline::Verbatim { text, .. } => {
                 self.out.push_str("<code class=\"inline-code\">");
                 esc_text(text, &mut self.out);
                 self.out.push_str("</code>");
             }
-            Inline::Break | Inline::HardBreak => self.out.push_str("<br>"),
-            Inline::Emphasis { emph, children } => {
+            Inline::Break { .. } | Inline::HardBreak { .. } => self.out.push_str("<br>"),
+            Inline::Emphasis { emph, children, .. } => {
                 let tag = match emph.as_str() {
                     "Bold" => Some("strong"),
                     "Italic" => Some("em"),
@@ -436,18 +436,18 @@ impl Renderer {
                     self.inlines(children);
                 }
             }
-            Inline::Subscript { children } => {
+            Inline::Subscript { children, .. } => {
                 self.out.push_str("<sub>");
                 self.inlines(children);
                 self.out.push_str("</sub>");
             }
-            Inline::Superscript { children } => {
+            Inline::Superscript { children, .. } => {
                 self.out.push_str("<sup>");
                 self.inlines(children);
                 self.out.push_str("</sup>");
             }
             Inline::Link { url, label, image, metadata, .. } => self.link(url, label, *image, metadata),
-            Inline::NestedLink { content } => {
+            Inline::NestedLink { content, .. } => {
                 // Logseq `[[a [[b]] c]]` — routed as a page ref (catalog), inner kept raw.
                 self.out.push_str("<a class=\"page-ref\"");
                 push_attr(&mut self.out, "data-page", content);
@@ -455,12 +455,12 @@ impl Renderer {
                 esc_text(content, &mut self.out);
                 self.out.push_str("]]</a>");
             }
-            Inline::Target { text } => {
+            Inline::Target { text, .. } => {
                 self.out.push_str("<span class=\"org-target\">");
                 esc_text(text, &mut self.out);
                 self.out.push_str("</span>");
             }
-            Inline::Tag { children } => {
+            Inline::Tag { children, .. } => {
                 let name = flatten_text(children);
                 self.out.push_str("<a class=\"tag\"");
                 push_attr(&mut self.out, "data-page", &name);
@@ -468,14 +468,14 @@ impl Renderer {
                 esc_text(&name, &mut self.out);
                 self.out.push_str("</a>");
             }
-            Inline::Macro { name, args } => {
+            Inline::Macro { name, args, .. } => {
                 let json = serde_json::to_string(args).unwrap_or_else(|_| "[]".to_string());
                 self.out.push_str("<span class=\"macro\"");
                 push_attr(&mut self.out, "data-macro", name);
                 push_attr(&mut self.out, "data-args", &json);
                 self.out.push_str("></span>");
             }
-            Inline::Latex { mode, body } => {
+            Inline::Latex { mode, body, .. } => {
                 let cls = if mode == "Displayed" { "math math-display" } else { "math" };
                 self.out.push_str("<span class=\"");
                 self.out.push_str(cls);
@@ -483,14 +483,14 @@ impl Renderer {
                 push_attr(&mut self.out, "data-tex", body);
                 self.out.push_str("></span>");
             }
-            Inline::Timestamp { ts, date } => self.timestamp(ts, date),
-            Inline::Fnref { name } => {
+            Inline::Timestamp { ts, date, .. } => self.timestamp(ts, date),
+            Inline::Fnref { name, .. } => {
                 self.out.push_str("<sup class=\"footnote-ref\">");
                 esc_text(name, &mut self.out);
                 self.out.push_str("</sup>");
             }
-            Inline::InlineHtml { text } => self.raw_html(text),
-            Inline::Email { text } => {
+            Inline::InlineHtml { text, .. } => self.raw_html(text),
+            Inline::Email { text, .. } => {
                 let addr = email_addr(text);
                 self.out.push_str("<a class=\"external-link\"");
                 push_attr(&mut self.out, "href", &format!("mailto:{addr}"));
@@ -499,7 +499,7 @@ impl Renderer {
                 self.out.push_str("</a>");
             }
             Inline::Entity { unicode, .. } => esc_text(unicode, &mut self.out),
-            Inline::Hiccup { v } => esc_text(v, &mut self.out),
+            Inline::Hiccup { v, .. } => esc_text(v, &mut self.out),
         }
     }
 
@@ -656,11 +656,11 @@ fn flatten_text(inlines: &[Inline]) -> String {
 fn flatten_into(inlines: &[Inline], out: &mut String) {
     for s in inlines {
         match s {
-            Inline::Plain { text } | Inline::Code { text } | Inline::Verbatim { text } => out.push_str(text),
-            Inline::Emphasis { children, .. } | Inline::Subscript { children } | Inline::Superscript { children } => {
+            Inline::Plain { text, .. } | Inline::Code { text, .. } | Inline::Verbatim { text, .. } => out.push_str(text),
+            Inline::Emphasis { children, .. } | Inline::Subscript { children, .. } | Inline::Superscript { children, .. } => {
                 flatten_into(children, out);
             }
-            Inline::Tag { children } => {
+            Inline::Tag { children, .. } => {
                 out.push('#');
                 flatten_into(children, out);
             }
@@ -671,14 +671,14 @@ fn flatten_into(inlines: &[Inline], out: &mut String) {
                     flatten_into(label, out);
                 }
             }
-            Inline::NestedLink { content } => out.push_str(content),
-            Inline::Target { text } => out.push_str(text),
+            Inline::NestedLink { content, .. } => out.push_str(content),
+            Inline::Target { text, .. } => out.push_str(text),
             Inline::Entity { unicode, .. } => out.push_str(unicode),
             Inline::Latex { body, .. } => out.push_str(body),
-            Inline::Hiccup { v } => out.push_str(v),
+            Inline::Hiccup { v, .. } => out.push_str(v),
             // Not part of `astText`: contribute no text.
-            Inline::Break
-            | Inline::HardBreak
+            Inline::Break { .. }
+            | Inline::HardBreak { .. }
             | Inline::Macro { .. }
             | Inline::Timestamp { .. }
             | Inline::Fnref { .. }

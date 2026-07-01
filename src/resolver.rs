@@ -11,7 +11,7 @@
 
 use crate::inline::{is_underscore_delim, is_ws_or_nl};
 use crate::lexer::{lex, Kind, Token};
-use crate::projection::Inline;
+use crate::projection::{Inline, Span};
 
 /// Active constructs (mirrors v1's `Ctx`; grows as families migrate). Page-ref / nested-link
 /// / md-link / code / emphasis / escapes are ALWAYS on (no flag); these gate the constructs
@@ -71,22 +71,23 @@ impl Ctx {
     }
 }
 
-/// Parse a run of inline markup (top-level Markdown context).
-pub(crate) fn parse_inline(text: &str) -> Vec<Inline> {
-    parse_ctx(text, Ctx::top())
+/// Parse a run of inline markup (top-level Markdown context). `base` is the absolute byte
+/// offset of `text[0]` in the block body — every emitted node's `span` is absolute (S2).
+pub(crate) fn parse_inline(text: &str, base: usize) -> Vec<Inline> {
+    parse_ctx(text, Ctx::top(), base)
 }
 
 /// Re-parse a markdown link/image LABEL with the restricted emphasis-content context
 /// (mldoc `aux_nested_emphasis`): the same `Ctx::emph()` the resolver already applies to
 /// emphasis *content*. Used by `inline::reparse_label_text` so md label reparse runs on the
 /// v0.2 resolver (matching how Org labels go through `org_resolver::parse_ctx(_, Ctx::label())`).
-pub(crate) fn parse_inline_ctx_emph(text: &str) -> Vec<Inline> {
-    parse_ctx(text, Ctx::emph())
+pub(crate) fn parse_inline_ctx_emph(text: &str, base: usize) -> Vec<Inline> {
+    parse_ctx(text, Ctx::emph(), base)
 }
 
-fn parse_ctx(text: &str, ctx: Ctx) -> Vec<Inline> {
+fn parse_ctx(text: &str, ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut toks = lex(text);
-    resolve(text, &mut toks, ctx)
+    resolve(text, &mut toks, ctx, base)
 }
 
 /// Emphasis candidate patterns for a marker, longest-first (mldoc dispatch order).
@@ -111,10 +112,15 @@ fn class_idx(ch: u8) -> usize {
     }
 }
 
-fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
+fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let bb = s.as_bytes();
     let mut out: Vec<Inline> = Vec::new();
     let mut pending = String::new();
+    // Span tracking for the pending plain run: `plain_start` is the ABSOLUTE byte offset of
+    // the run's first byte (None once a `\`-transform makes it non-1:1 → S5 can't hold),
+    // `plain_end` its absolute end. `flush` turns them into the `Plain.span`.
+    let mut plain_start: Option<usize> = None;
+    let mut plain_end: usize = 0;
     // no_closer[class][k-1]: once an opener of (marker,len) finds no forward closer, every
     // later opener of that class skips the search (monotone forward floor — the mldoc
     // emphasis linearity device; NOT a CommonMark backward openers_bottom).
@@ -162,16 +168,16 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
             if ctx.hiccup && bb.get(off + 1) == Some(&b':') && crate::inline::hiccup_head_ok(s, off)
             {
                 if let Some(e) = hiccup_close.get(off).copied().filter(|&e| e != usize::MAX) {
-                    flush(&mut out, &mut pending);
-                    out.push(Inline::Hiccup { v: s[off..e].to_string() });
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    out.push(Inline::Hiccup { v: s[off..e].to_string(), span: Some(Span(base + off, base + e)) });
                     end = Some(e);
                 }
             }
             // 2. footnote `[^id]` (ctx-gated).
             if end.is_none() && ctx.footnotes && bb.get(off + 1) == Some(&b'^') {
                 if let Some((e, name)) = crate::inline::parse_footnote_ref(s, off) {
-                    flush(&mut out, &mut pending);
-                    out.push(Inline::Fnref { name });
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    out.push(Inline::Fnref { name, span: Some(Span(base + off, base + e)) });
                     end = Some(e);
                 }
             }
@@ -179,8 +185,8 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
             if end.is_none() && s[off..].starts_with("[[") {
                 if nested_close.get(off).is_some_and(|&e| e != usize::MAX) {
                     if let Some((e, content)) = crate::inline::parse_nested_link(s, off) {
-                        flush(&mut out, &mut pending);
-                        out.push(Inline::NestedLink { content });
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        out.push(Inline::NestedLink { content, span: Some(Span(base + off, base + e)) });
                         end = Some(e);
                     }
                 }
@@ -194,7 +200,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                         }
                         if d > off + 2 && crlf > d {
                             if let Some((e, name, full)) = crate::inline::parse_page_ref(s, off) {
-                                flush(&mut out, &mut pending);
+                                flush(&mut out, &mut pending, &mut plain_start, plain_end);
                                 out.push(Inline::Link {
                                     url: crate::projection::Url::PageRef { v: name },
                                     label: vec![],
@@ -202,6 +208,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                                     image: false,
                                     metadata: String::new(),
                                     title: None,
+                                    span: Some(Span(base + off, base + e)),
                                 });
                                 end = Some(e);
                             }
@@ -211,17 +218,20 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
             }
             // 4. markdown link `[label](url)` — needs a `](` before the next eol and a `)`.
             if end.is_none() {
-                if let Some((node, e)) =
-                    try_md_link(s, bb, off, false, &lbp, &mut lbp_cur, &mut crlf, &mut rparen)
+                if let Some((mut node, e)) =
+                    try_md_link(s, bb, off, false, &lbp, &mut lbp_cur, &mut crlf, &mut rparen, base)
                 {
-                    flush(&mut out, &mut pending);
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                     out.push(node);
                     end = Some(e);
                 }
             }
             match end {
-                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx),
+                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base),
                 None => {
+                    if pending.is_empty() { plain_start = Some(base + off); }
+                    if plain_start.is_some() { plain_end = base + off + 1; }
                     pending.push('[');
                     t += 1;
                     fresh = true; // `[` is a marker-delim → fresh point
@@ -239,22 +249,25 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
             let off = toks[t].off;
             let mut end = None;
             if c == b'$' && ctx.latex {
-                if let Some((node, e)) = crate::inline::parse_latex_dollar_at(s, off) {
-                    flush(&mut out, &mut pending);
+                if let Some((mut node, e)) = crate::inline::parse_latex_dollar_at(s, off) {
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                     out.push(node);
                     end = Some(e);
                 }
             } else if c == b'#' && ctx.tags {
-                let (e, children) = crate::inline::parse_tag_name(s, off + 1, true);
+                let (e, children) = crate::inline::parse_tag_name(s, off + 1, true, base);
                 if e > off + 1 && !children.is_empty() {
-                    flush(&mut out, &mut pending);
-                    out.push(Inline::Tag { children });
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    out.push(Inline::Tag { children, span: Some(Span(base + off, base + e)) });
                     end = Some(e);
                 }
             }
             match end {
-                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx),
+                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base),
                 None => {
+                    if pending.is_empty() { plain_start = Some(base + off); }
+                    if plain_start.is_some() { plain_end = base + off + 1; }
                     pending.push(c as char);
                     t += 1;
                     fresh = true; // `$`/`#` are marker-delims → fresh point
@@ -286,17 +299,21 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                     bs_brack < bb.len()
                 };
                 if closer {
-                    if let Some((node, e)) = crate::inline::parse_latex_backslash_at(s, off) {
-                        flush(&mut out, &mut pending);
+                    if let Some((mut node, e)) = crate::inline::parse_latex_backslash_at(s, off) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                         out.push(node);
                         end = Some(e);
                     }
                 }
             }
             match end {
-                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx),
+                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base),
                 None => {
-                    pending.push(c as char); // escape: drop `\`, keep `(`/`[`
+                    // escape: the `\` is DROPPED, only `(`/`[` kept → the plain run is no
+                    // longer 1:1 with source, so S5 can't hold for it.
+                    plain_start = None;
+                    pending.push(c as char);
                     t += 1;
                     fresh = true;
                 }
@@ -319,7 +336,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
             if fresh {
                 let opened = match c {
                     b'!' if ctx.images && bb.get(off + 1) == Some(&b'[') => {
-                        try_md_link(s, bb, off + 1, true, &lbp, &mut lbp_cur, &mut crlf, &mut rparen)
+                        try_md_link(s, bb, off + 1, true, &lbp, &mut lbp_cur, &mut crlf, &mut rparen, base)
                     }
                     b'{' if ctx.macros => crate::inline::parse_macro_at(s, off),
                     b'(' if ctx.block_refs => crate::inline::parse_block_ref_at(s, off),
@@ -331,15 +348,20 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                     }
                     _ => None,
                 };
-                if let Some((node, e)) = opened {
-                    flush(&mut out, &mut pending);
+                if let Some((mut node, e)) = opened {
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    // span starts at the dispatch byte (`!`/`{`/`(`/`<`), which for `!` is one
+                    // before the `[` that `try_md_link` was handed — the image extent includes it.
+                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                     out.push(node);
-                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx);
+                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base);
                     continue;
                 }
             }
             // not consumed (failed opener, or mid-plain-run) → render as plain; now mid-run, so
             // a following swallow byte won't be re-dispatched.
+            if pending.is_empty() { plain_start = Some(base + off); }
+            if plain_start.is_some() { plain_end = base + off + 1; }
             pending.push(c as char);
             fresh = false;
             t += 1;
@@ -357,10 +379,11 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                     None
                 })
                 .or_else(|| if ctx.urls { crate::inline::parse_bare_url(s, off) } else { None });
-                if let Some((e, node)) = leaf {
-                    flush(&mut out, &mut pending);
+                if let Some((e, mut node)) = leaf {
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                     out.push(node);
-                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx);
+                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base);
                     continue;
                 }
             }
@@ -368,6 +391,9 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 Kind::Text(x) => x,
                 _ => unreachable!(),
             };
+            let txt_len = txt.len();
+            if pending.is_empty() { plain_start = Some(base + off); }
+            if plain_start.is_some() { plain_end = base + off + txt_len; }
             pending.push_str(txt);
             fresh = trailing_ws(txt) > 0;
             t += 1;
@@ -376,39 +402,54 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
 
         // Non-delimiter tokens pass straight through (Text is handled by its own block above).
         if !matches!(toks[t].kind, Kind::Delim { .. }) {
+            let off = toks[t].off;
             match &toks[t].kind {
                 Kind::Newline(c) => {
+                    let c = *c;
                     if ctx.breaks {
                         // hard break: `\n` (not `\r`) immediately preceded by >=2 spaces/tabs
                         // in the pending run — the spaces are consumed (mldoc).
                         let tw = trailing_ws(&pending);
-                        if *c == b'\n' && tw >= 2 {
+                        if c == b'\n' && tw >= 2 {
+                            // the consumed spaces leave the plain run; drop them from its end.
+                            if plain_start.is_some() { plain_end -= tw; }
                             pending.truncate(pending.len() - tw);
-                            flush(&mut out, &mut pending);
-                            out.push(Inline::HardBreak);
+                            flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                            out.push(Inline::HardBreak { span: Some(Span(base + off, base + off + 1)) });
                         } else {
-                            flush(&mut out, &mut pending);
-                            out.push(Inline::Break);
+                            flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                            out.push(Inline::Break { span: Some(Span(base + off, base + off + 1)) });
                         }
                     } else {
-                        pending.push(*c as char);
+                        if pending.is_empty() { plain_start = Some(base + off); }
+                        if plain_start.is_some() { plain_end = base + off + 1; }
+                        pending.push(c as char);
                     }
                     fresh = true;
                 }
                 Kind::Leaf(node) => {
-                    flush(&mut out, &mut pending);
-                    out.push(node.clone());
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    // a Leaf (a code span) ends at the next token's byte offset (or EOF).
+                    let tok_end_val = if t + 1 < toks.len() { toks[t + 1].off } else { s.len() };
+                    let mut node = node.clone();
+                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + tok_end_val)));
+                    out.push(node);
                     fresh = true;
                 }
                 // resolved escape / lone `\` / unknown entity letters — the position right
                 // after is a fresh dispatch point in mldoc.
                 Kind::Escape(x) => {
-                    pending.push_str(x);
+                    // the backslash is dropped from the text → S5 can't hold for this run.
+                    plain_start = None;
+                    pending.push_str(x.as_str());
                     fresh = true;
                 }
                 // `$`/`#` (M3 markers) render literally for now; they are marker-delims → fresh.
                 Kind::Punct(c) => {
-                    pending.push(*c as char);
+                    let c = *c;
+                    if pending.is_empty() { plain_start = Some(base + off); }
+                    if plain_start.is_some() { plain_end = base + off + 1; }
+                    pending.push(c as char);
                     fresh = true;
                 }
                 // Text/Delim/LatexBs are handled by dedicated blocks above.
@@ -456,16 +497,22 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 if ch == b'_' && bb.get(closer_off + k).is_some_and(|&a| !is_underscore_delim(a)) {
                     continue;
                 }
-                let children = parse_ctx(&s[content_start..closer_off], Ctx::emph());
+                let children = parse_ctx(&s[content_start..closer_off], Ctx::emph(), base + content_start);
+                // full source extent of the emphasis: opener `off` … past the k closing markers.
+                let full = Some(Span(base + off, base + closer_off + k));
                 let node = if nested {
+                    // `***x***` → Italic[Bold[…]]: the synthetic inner Bold has no delimiters of
+                    // its own (it is the same run split by mldoc), so it shares the full extent —
+                    // trivially satisfying S3 (child ⊆ parent) with the outer Italic.
                     Inline::Emphasis {
                         emph: "Italic".to_string(),
-                        children: vec![Inline::Emphasis { emph: kind.to_string(), children }],
+                        children: vec![Inline::Emphasis { emph: kind.to_string(), children, span: full }],
+                        span: full,
                     }
                 } else {
-                    Inline::Emphasis { emph: kind.to_string(), children }
+                    Inline::Emphasis { emph: kind.to_string(), children, span: full }
                 };
-                flush(&mut out, &mut pending);
+                flush(&mut out, &mut pending, &mut plain_start, plain_end);
                 out.push(node);
                 // Resume past the k closing markers; closer-run surplus re-enters as a fresh
                 // Delim (mldoc re-dispatches at byte closer_off + k).
@@ -488,6 +535,8 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
         }
         if !matched {
             // failed opener: emit ONE marker char, re-dispatch the rest of the run at off+1.
+            if pending.is_empty() { plain_start = Some(base + off); }
+            if plain_start.is_some() { plain_end = base + off + 1; }
             pending.push(ch as char);
             if len > 1 {
                 toks[t] = Token { off: off + 1, kind: Kind::Delim { ch, len: len - 1 } };
@@ -498,7 +547,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
         // a marker run (matched emphasis or a literal marker char) is a marker-delim → fresh.
         fresh = true;
     }
-    flush(&mut out, &mut pending);
+    flush(&mut out, &mut pending, &mut plain_start, plain_end);
     out
 }
 
@@ -521,9 +570,20 @@ fn find_closer(bb: &[u8], toks: &[Token], open_t: usize, ch: u8, k: usize) -> Op
     None
 }
 
-fn flush(out: &mut Vec<Inline>, pending: &mut String) {
+/// Flush the pending plain run as a `Plain` node. `plain_start` is the absolute byte offset
+/// of the run's first byte (None if a `\`-transform in the run made the source non-1:1, so
+/// S5 can't hold — the Plain then carries no span); `plain_end` is the run's absolute end.
+fn flush(
+    out: &mut Vec<Inline>,
+    pending: &mut String,
+    plain_start: &mut Option<usize>,
+    plain_end: usize,
+) {
     if !pending.is_empty() {
-        out.push(Inline::Plain { text: std::mem::take(pending) });
+        let span = plain_start.take().map(|s| Span(s, plain_end));
+        out.push(Inline::Plain { text: std::mem::take(pending), span });
+    } else {
+        plain_start.take();
     }
 }
 
@@ -556,6 +616,9 @@ fn resync(
     pending: &mut String,
     fresh: &mut bool,
     ctx: Ctx,
+    plain_start: &mut Option<usize>,
+    plain_end: &mut usize,
+    base: usize,
 ) -> usize {
     let n = s.len();
     let tok_end = |i: usize| if i + 1 < toks.len() { toks[i + 1].off } else { n };
@@ -577,11 +640,15 @@ fn resync(
             || (ctx.timestamps && crate::inline::parse_keyword_timestamp(s, end).is_some())
             || (ctx.urls && crate::inline::parse_bare_url(s, end).is_some());
         if recurse {
-            flush(out, pending);
-            out.extend(parse_ctx(&s[end..], ctx));
+            flush(out, pending, plain_start, *plain_end);
+            // the remainder is re-parsed with its own absolute base `base + end`.
+            out.extend(parse_ctx(&s[end..], ctx, base + end));
             return toks.len(); // recursion handled the remainder — stop the outer walk
         }
+        // the tail bytes are pushed RAW (no unescape) → they map 1:1 to source from `end`.
         let tail = &s[end..tok_end(t)];
+        *plain_start = Some(base + end);
+        *plain_end = base + tok_end(t);
         pending.push_str(tail);
         *fresh = trailing_ws(tail) > 0;
         t += 1;
@@ -630,7 +697,7 @@ fn try_angle(s: &str, at: usize, ctx: Ctx, html_closer: bool) -> Option<(Inline,
     }
     if ctx.html {
         if let Some((e, text)) = crate::inline::parse_inline_html_cached(s, at, html_closer) {
-            return Some((Inline::InlineHtml { text }, e));
+            return Some((Inline::InlineHtml { text, span: None }, e));
         }
     }
     None
@@ -684,6 +751,7 @@ fn try_md_link(
     lbp_cur: &mut usize,
     crlf: &mut usize,
     rparen: &mut usize,
+    base: usize,
 ) -> Option<(Inline, usize)> {
     while lbp.get(*lbp_cur).is_some_and(|&p| p < at) {
         *lbp_cur += 1;
@@ -701,5 +769,5 @@ fn try_md_link(
     if *rparen >= bb.len() {
         return None; // no closing `)` ahead
     }
-    crate::inline::md_link(s, at, image)
+    crate::inline::md_link(s, at, image, base)
 }

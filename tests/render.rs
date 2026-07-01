@@ -433,7 +433,7 @@ fn script_and_quote_in_page_name_are_attr_escaped() {
 // ===========================================================================
 
 fn plain_para(text: &str) -> Block {
-    Block::Paragraph { inline: vec![Inline::Plain { text: text.into() }], span: None }
+    Block::Paragraph { inline: vec![Inline::Plain { text: text.into(), span: None }], span: None }
 }
 
 #[test]

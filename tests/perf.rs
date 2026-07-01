@@ -435,9 +435,9 @@ fn render_html_nested_callout_is_linear_heavy() {
             fn build(depth: usize) -> Vec<Block> {
                 let lead = || {
                     vec![
-                        Inline::Plain { text: "[!NOTE] t".to_string() },
-                        Inline::Break,
-                        Inline::Plain { text: "x".to_string() },
+                        Inline::Plain { text: "[!NOTE] t".to_string(), span: None },
+                        Inline::Break { span: None },
+                        Inline::Plain { text: "x".to_string(), span: None },
                     ]
                 };
                 let mut node = Block::Quote {

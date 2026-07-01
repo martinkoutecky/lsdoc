@@ -443,7 +443,7 @@ fn dispatch_md_line<'a>(
         out.push(Block::Heading {
             level,
             size: Some(size),
-            inline: stub_inline(title),
+            inline: stub_inline(title, crate::inline::ptr_base(title, input)),
             marker,
             priority,
             htags: vec![],
@@ -649,7 +649,7 @@ fn dispatch_md_line<'a>(
                 texts.push(lines[ni].text);
                 ni += 1;
             }
-            out.push(build_table_from_texts(&texts, content_off, lines[ni - 1].end));
+            out.push(build_table_from_texts(&texts, content_off, lines[ni - 1].end, input));
             return Step::Next(ni);
         }
         // (i) footnote-definition opener — only WITHOUT a `#` prefix (with a `#`,
@@ -660,7 +660,7 @@ fn dispatch_md_line<'a>(
                 empty_bullet!();
                 out.push(Block::FootnoteDef {
                     name: fname,
-                    inline: stub_inline(fbody),
+                    inline: stub_inline(fbody, crate::inline::ptr_base(fbody, input)),
                     span: Some(Span(content_off, line_end)),
                 });
                 return Step::Next(i + 1);
@@ -692,7 +692,7 @@ fn dispatch_md_line<'a>(
         out.push(Block::Bullet {
             level,
             size,
-            inline: stub_inline(title),
+            inline: stub_inline(title, crate::inline::ptr_base(title, input)),
             marker,
             priority,
             htags: vec![],
@@ -707,7 +707,7 @@ fn dispatch_md_line<'a>(
         flush_para(out, para, input, trim);
         out.push(Block::FootnoteDef {
             name: fname,
-            inline: stub_inline(content),
+            inline: stub_inline(content, crate::inline::ptr_base(content, input)),
             span: Some(Span(line_start, line_end)),
         });
         return Step::Next(i + 1);
@@ -722,7 +722,7 @@ fn dispatch_md_line<'a>(
         while ni < hi && md_table_row(lines[ni].text) {
             ni += 1;
         }
-        out.push(build_table(&lines[start..ni], lines[start].start, lines[ni - 1].end));
+        out.push(build_table(&lines[start..ni], lines[start].start, lines[ni - 1].end, input));
         return Step::Next(ni);
     }
 
@@ -983,7 +983,7 @@ fn dispatch_md_line<'a>(
         && is_def_opener(lines[i + 1].text)
     {
         flush_para(out, para, input, trim);
-        let (item, ni) = build_def_list(lines, i, hi);
+        let (item, ni) = build_def_list(lines, i, hi, input);
         out.push(Block::List {
             items: vec![item],
             span: Some(Span(line_start, lines[ni - 1].end)),
@@ -1020,7 +1020,7 @@ fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &s
             }
         }
         out.push(Block::Paragraph {
-            inline: stub_inline(&input[s..e]),
+            inline: stub_inline(&input[s..e], s),
             span: Some(Span(s, e)),
         });
     }
@@ -1041,9 +1041,82 @@ fn drop_marker_ws(para: &mut Option<(usize, usize)>, was_ws_drop: Option<usize>,
     }
 }
 
-fn stub_inline(s: &str) -> Vec<Inline> {
-    // The real inline parser. Name kept for the existing call sites.
-    crate::resolver::parse_inline(s)
+fn stub_inline(s: &str, base: usize) -> Vec<Inline> {
+    // The real inline parser. `base` = the absolute byte offset of `s` in the block body.
+    crate::resolver::parse_inline(s, base)
+}
+
+/// Null out the `span` of `n` and, recursively, of its inline children. Used when the inline
+/// text was parsed from a FOLDED (joined) buffer whose positions don't map to the block body,
+/// so no meaningful source span exists (spans must be absent, not wrong).
+fn none_out_inline(n: &mut Inline) {
+    crate::projection::set_inline_span(n, None);
+    match n {
+        Inline::Emphasis { children, .. }
+        | Inline::Subscript { children, .. }
+        | Inline::Superscript { children, .. }
+        | Inline::Tag { children, .. } => {
+            for c in children.iter_mut() {
+                none_out_inline(c);
+            }
+        }
+        Inline::Link { label, .. } => {
+            for c in label.iter_mut() {
+                none_out_inline(c);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `pub(crate)` so the org driver can null the inline spans of its FOLDED reparse buffers.
+pub(crate) fn none_out_inlines(inlines: &mut [Inline]) {
+    for n in inlines.iter_mut() {
+        none_out_inline(n);
+    }
+}
+
+fn none_out_list_items(items: &mut [ListItem]) {
+    for item in items.iter_mut() {
+        none_out_inlines(&mut item.name);
+        none_out_blocks(&mut item.content);
+        none_out_list_items(&mut item.items);
+    }
+}
+
+/// Recursively null out every INLINE span in `blocks` (block-level spans are untouched —
+/// they are excluded from the gate and not part of this task's inline-span contract).
+/// `pub(crate)` so the org driver reuses it for its FOLDED `streaming_reparse` bodies.
+pub(crate) fn none_out_blocks(blocks: &mut [Block]) {
+    for block in blocks.iter_mut() {
+        match block {
+            Block::Paragraph { inline, .. }
+            | Block::Heading { inline, .. }
+            | Block::Bullet { inline, .. }
+            | Block::FootnoteDef { inline, .. } => {
+                none_out_inlines(inline);
+            }
+            Block::Table { header, rows, .. } => {
+                if let Some(h) = header {
+                    for cell in h.iter_mut() {
+                        none_out_inlines(cell);
+                    }
+                }
+                for row in rows.iter_mut() {
+                    for cell in row.iter_mut() {
+                        none_out_inlines(cell);
+                    }
+                }
+            }
+            Block::List { items, .. } => {
+                none_out_list_items(items);
+            }
+            Block::Quote { children, .. } | Block::Custom { children, .. } => {
+                none_out_blocks(children);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Title text of an ATX-ish bullet/heading content: strip a leading `#{1,n} ` run
@@ -1278,7 +1351,10 @@ fn md_definition_split(content: &str) -> Option<(Vec<Inline>, String)> {
     if name.is_empty() {
         return None; // `take_while1` needs ≥1 char before " ::"
     }
-    Some((stub_inline(name), String::new()))
+    // `content` is a FOLDED join → its positions don't map to the block body; drop the spans.
+    let mut inl = stub_inline(name, 0);
+    none_out_inlines(&mut inl);
+    Some((inl, String::new()))
 }
 
 /// A (possibly partial) list collapse — mldoc's recursive list parser failed on a deeper
@@ -1532,16 +1608,21 @@ fn build_md_quote(body: String, span: Option<Span>) -> Block {
 /// The guard bounds depth (graceful flat-Paragraph degradation) — mldoc-overflows-too, consumer-capped.
 fn reparse_block_content(residual: &str) -> Vec<Block> {
     let depth = MD_BLOCK_DEPTH.with(|c| c.get());
-    if depth >= BLOCK_NEST_CAP {
-        return if residual.is_empty() {
+    let mut out = if depth >= BLOCK_NEST_CAP {
+        if residual.is_empty() {
             Vec::new()
         } else {
-            vec![Block::Paragraph { inline: stub_inline(residual), span: Some(Span(0, residual.len())) }]
-        };
-    }
-    MD_BLOCK_DEPTH.with(|c| c.set(depth + 1));
-    let out = parse_md_streaming(residual, true, false);
-    MD_BLOCK_DEPTH.with(|c| c.set(depth));
+            vec![Block::Paragraph { inline: stub_inline(residual, 0), span: Some(Span(0, residual.len())) }]
+        }
+    } else {
+        MD_BLOCK_DEPTH.with(|c| c.set(depth + 1));
+        let o = parse_md_streaming(residual, true, false);
+        MD_BLOCK_DEPTH.with(|c| c.set(depth));
+        o
+    };
+    // `residual` is a FOLDED (de-`>`'d / dedented) buffer → inline spans don't map to the
+    // block body; drop them (block-level spans are gate-excluded and left as-is).
+    none_out_blocks(&mut out);
     out
 }
 
@@ -1559,7 +1640,11 @@ fn reparse_item_content(content: &str, in_quote: bool) -> Vec<Block> {
     if content.is_empty() {
         return vec![Block::Paragraph { inline: Vec::new(), span: None }];
     }
-    parse_md_streaming(content, in_quote, true)
+    // `content` is a FOLDED (de-indented, `\n`-joined) buffer → inline spans don't map to the
+    // block body; drop them.
+    let mut out = parse_md_streaming(content, in_quote, true);
+    none_out_blocks(&mut out);
+    out
 }
 
 fn property(s: &str) -> Option<(String, String)> {
@@ -1640,11 +1725,13 @@ fn def_line_content_ok(content: &str) -> bool {
 /// Build the markdown definition list whose term is `lines[i]` and whose `:` items
 /// follow. Returns the single `ListItem` and the next line index (after the items and
 /// any trailing blank lines mldoc's `<* optional eols` absorbs).
-fn build_def_list(lines: &[Line], i: usize, hi: usize) -> (ListItem, usize) {
+fn build_def_list(lines: &[Line], i: usize, hi: usize, input: &str) -> (ListItem, usize) {
     // All scans are bounded by `hi`: at the top level `hi == lines.len()` (identical to
     // before); inside a callout body the closer line (`#+END_X`) is never a def
     // opener/continuation/blank, so the bound matches the legacy body-local scan exactly.
-    let name = stub_inline(lines[i].text.trim_start()); // mldoc name = `spaces *> line`
+    // The term is a raw sub-slice of `lines[i].text` → its inline spans are absolute (S2).
+    let term = lines[i].text.trim_start(); // mldoc name = `spaces *> line`
+    let name = stub_inline(term, crate::inline::ptr_base(term, input));
     let mut content: Vec<Block> = Vec::new();
     let mut j = i + 1;
     while j < hi && is_def_opener(lines[j].text) {
@@ -1657,10 +1744,13 @@ fn build_def_list(lines: &[Line], i: usize, hi: usize) -> (ListItem, usize) {
             item_lines.push(lines[j].text.trim_start().to_string());
             j += 1;
         }
-        // mldoc inline-parses `String.trim`-ed of the joined item.
+        // mldoc inline-parses `String.trim`-ed of the joined item — a FOLDED buffer, so its
+        // inline spans don't map to the block body; drop them.
         let item_text = item_lines.join("\n");
+        let mut inl = stub_inline(item_text.trim(), 0);
+        none_out_inlines(&mut inl);
         content.push(Block::Paragraph {
-            inline: stub_inline(item_text.trim()),
+            inline: inl,
             span: None,
         });
     }
@@ -1755,6 +1845,14 @@ fn drawer_begin(s: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::projection::Block;
+
+    /// Strip inline spans (added by the source-span feature) so structural `assert_eq!`s over
+    /// inline vecs stay span-agnostic — the span invariants are checked separately (lib.rs).
+    fn ns(v: &[Inline]) -> Vec<Inline> {
+        let mut v = v.to_vec();
+        none_out_inlines(&mut v);
+        v
+    }
 
     fn kinds(input: &str) -> Vec<&'static str> {
         parse(input).iter().map(|b| match b {
@@ -1858,7 +1956,7 @@ mod tests {
         let item0_text = |s: &str| match &parse(s)[0] {
             Block::List { items, .. } => match &items[0].content[0] {
                 Block::Paragraph { inline, .. } => match &inline[0] {
-                    Inline::Plain { text } => text.clone(),
+                    Inline::Plain { text, .. } => text.clone(),
                     _ => panic!(),
                 },
                 _ => panic!(),
@@ -2015,7 +2113,7 @@ mod tests {
         };
         let para_text = |b: &Block| match b {
             Block::Paragraph { inline, .. } => match inline.first() {
-                Some(Inline::Plain { text }) => text.clone(),
+                Some(Inline::Plain { text, .. }) => text.clone(),
                 _ => String::new(),
             },
             _ => panic!("expected paragraph"),
@@ -2141,7 +2239,7 @@ mod tests {
         match &parse("term\n: definition")[0] {
             Block::List { items, .. } => {
                 assert_eq!(items.len(), 1);
-                assert_eq!(items[0].name, vec![Inline::Plain { text: "term".into() }]);
+                assert_eq!(ns(&items[0].name), vec![Inline::Plain { text: "term".into(), span: None }]);
                 assert!(matches!(items[0].content[0], Block::Paragraph { .. }));
             }
             _ => panic!(),
@@ -2155,11 +2253,11 @@ mod tests {
         // two terms (continuation): item1 content joins `d1`+`t2` across a Break.
         match &parse("t1\n: d1\nt2\n: d2")[0] {
             Block::List { items, .. } => {
-                assert_eq!(items[0].name, vec![Inline::Plain { text: "t1".into() }]);
+                assert_eq!(ns(&items[0].name), vec![Inline::Plain { text: "t1".into(), span: None }]);
                 match &items[0].content[0] {
-                    Block::Paragraph { inline, .. } => assert_eq!(inline, &vec![
-                        Inline::Plain { text: "d1".into() }, Inline::Break,
-                        Inline::Plain { text: "t2".into() },
+                    Block::Paragraph { inline, .. } => assert_eq!(ns(inline), vec![
+                        Inline::Plain { text: "d1".into(), span: None }, Inline::Break { span: None },
+                        Inline::Plain { text: "t2".into(), span: None },
                     ]),
                     _ => panic!(),
                 }
@@ -2195,7 +2293,7 @@ mod tests {
         assert_eq!(kinds("- ```\nnoclose"), ["bullet", "paragraph"]);
         assert_eq!(kinds("- normal text"), ["bullet"]);
         match &parse("- >")[0] {
-            Block::Bullet { inline, .. } => assert_eq!(inline, &vec![Inline::Plain { text: ">".into() }]),
+            Block::Bullet { inline, .. } => assert_eq!(ns(inline), vec![Inline::Plain { text: ">".into(), span: None }]),
             _ => panic!(),
         }
     }
@@ -2217,7 +2315,7 @@ mod tests {
             };
             match &kids[0] {
                 Block::Paragraph { inline, .. } => match &inline[0] {
-                    Inline::Plain { text } => text.clone(),
+                    Inline::Plain { text, .. } => text.clone(),
                     i => panic!("expected Plain, got {i:?}"),
                 },
                 b => panic!("expected Paragraph, got {b:?}"),
@@ -2258,7 +2356,7 @@ mod tests {
         fn label(it: &ListItem) -> String {
             match &it.content[0] {
                 Block::Paragraph { inline, .. } => match inline.first() {
-                    Some(Inline::Plain { text }) => text.clone(),
+                    Some(Inline::Plain { text, .. }) => text.clone(),
                     _ => String::new(),
                 },
                 _ => String::new(),
@@ -2313,19 +2411,26 @@ fn md_table_row(s: &str) -> bool {
     t.len() >= 2 && t.starts_with('|') && t.ends_with('|')
 }
 
-fn build_table(rows: &[Line], start: usize, end: usize) -> Block {
+fn build_table(rows: &[Line], start: usize, end: usize, input: &str) -> Block {
     let texts: Vec<&str> = rows.iter().map(|l| l.text).collect();
-    build_table_from_texts(&texts, start, end)
+    build_table_from_texts(&texts, start, end, input)
 }
 
 /// Build a `Table` from raw row strings (used by both the top-level table block and the
 /// `- | … |` bullet-opener split, whose first row is a mid-line bullet body, not a `Line`).
-fn build_table_from_texts(rows: &[&str], start: usize, end: usize) -> Block {
+/// Each `rows[k]` is a sub-slice of `input` (a real row line, or a bullet content line), so
+/// each cell's byte offset into the block body is recovered by pointer arithmetic (S2).
+fn build_table_from_texts(rows: &[&str], start: usize, end: usize, input: &str) -> Block {
     let split_cells = |s: &str| -> Vec<Vec<Inline>> {
         let t = s.trim();
         let t = t.strip_prefix('|').unwrap_or(t);
         let t = t.strip_suffix('|').unwrap_or(t);
-        t.split('|').map(|c| stub_inline(c.trim())).collect()
+        t.split('|')
+            .map(|c| {
+                let c = c.trim();
+                stub_inline(c, crate::inline::ptr_base(c, input))
+            })
+            .collect()
     };
     let is_sep = |s: &str| -> bool {
         let t = s.trim();

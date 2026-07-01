@@ -131,20 +131,27 @@ struct Frame {
 /// peels iteratively, so neither reaches this guard. List-item content is depth-1 (list
 /// re-entry disabled by `in_item`) so it skips the guard.
 fn streaming_reparse(input: &str, ctx: Ctx) -> Vec<Block> {
-    if ctx.in_item {
-        return parse_org_streaming(input, ctx);
-    }
-    let depth = BLOCK_DEPTH.with(|c| c.get());
-    if depth >= BLOCK_NEST_CAP {
-        return if input.is_empty() {
-            Vec::new()
+    // Every `streaming_reparse` input is a FOLDED buffer (a `\n`-joined list-item content, a
+    // dedented `#+BEGIN_X` body, or a de-`>`'d quote residual) whose byte positions don't map
+    // to the enclosing block body, so the reparsed INLINE spans are meaningless → null them.
+    let mut out = if ctx.in_item {
+        parse_org_streaming(input, ctx)
+    } else {
+        let depth = BLOCK_DEPTH.with(|c| c.get());
+        if depth >= BLOCK_NEST_CAP {
+            if input.is_empty() {
+                Vec::new()
+            } else {
+                vec![Block::Paragraph { inline: org_inline(input, 0), span: Some(Span(0, input.len())) }]
+            }
         } else {
-            vec![Block::Paragraph { inline: org_inline(input), span: Some(Span(0, input.len())) }]
-        };
-    }
-    BLOCK_DEPTH.with(|c| c.set(depth + 1));
-    let out = parse_org_streaming(input, ctx);
-    BLOCK_DEPTH.with(|c| c.set(depth));
+            BLOCK_DEPTH.with(|c| c.set(depth + 1));
+            let o = parse_org_streaming(input, ctx);
+            BLOCK_DEPTH.with(|c| c.set(depth));
+            o
+        }
+    };
+    crate::parse::none_out_blocks(&mut out);
     out
 }
 
@@ -524,7 +531,7 @@ fn dispatch_org_line<'a>(
         }
 
         flush_para(out, para, input, trim);
-        let mut inline = org_inline(content);
+        let mut inline = org_inline(content, crate::inline::ptr_base(content, input));
         let htags = extract_htags(&mut inline);
         let empty_title = inline.is_empty() && htags.is_empty();
         out.push(Block::Bullet {
@@ -560,7 +567,7 @@ fn dispatch_org_line<'a>(
         while ni < hi && is_table_row(lines[ni].text) {
             ni += 1;
         }
-        out.push(build_table(&lines[start..ni], lines[start].start, lines[ni - 1].end));
+        out.push(build_table(&lines[start..ni], lines[start].start, lines[ni - 1].end, input));
         *absorb = false;
         return Step::Next(ni);
     }
@@ -759,9 +766,13 @@ fn dispatch_org_line<'a>(
                 None => break,
             }
         }
+        // `body` is a FOLDED (possibly multi-line joined) buffer → inline spans don't map to
+        // the block body; drop them.
+        let mut inl = org_inline(&body, 0);
+        crate::parse::none_out_inlines(&mut inl);
         out.push(Block::FootnoteDef {
             name,
-            inline: org_inline(&body),
+            inline: inl,
             span: Some(Span(line_start, lines[j - 1].end)),
         });
         *absorb = true;
@@ -866,7 +877,7 @@ fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &s
             }
         }
         out.push(Block::Paragraph {
-            inline: org_inline(&input[s..e]),
+            inline: org_inline(&input[s..e], s),
             span: Some(Span(s, e)),
         });
     }
@@ -1022,7 +1033,7 @@ fn split_markers(s: &str) -> (Option<String>, Option<String>, &str) {
 /// text ends with `:` (len > 1), split off a trailing `:tag1:tag2:` run (mldoc
 /// `heading0.ml`). Mutates `title` in place; returns the tag list.
 fn extract_htags(title: &mut Vec<Inline>) -> Vec<String> {
-    let Some(Inline::Plain { text }) = title.last() else {
+    let Some(Inline::Plain { text, .. }) = title.last() else {
         return Vec::new();
     };
     let s = text.trim().to_string();
@@ -1040,12 +1051,14 @@ fn extract_htags(title: &mut Vec<Inline>) -> Vec<String> {
     // title2 = drop_last 1 title (then append [Plain prefix] if prefix != "")
     title.pop();
     if !prefix.is_empty() {
-        title.push(Inline::Plain { text: prefix });
+        // reformatted (trimmed) text → no source span.
+        title.push(Inline::Plain { text: prefix, span: None });
     }
     // last_plain: if the (new) last inline is Plain, rtrim it and add one trailing space.
-    if let Some(Inline::Plain { text }) = title.last_mut() {
+    if let Some(Inline::Plain { text, span }) = title.last_mut() {
         let trimmed = text.trim_end();
         *text = format!("{} ", trimmed);
+        *span = None; // text reformatted → span no longer matches source
     }
     tags
 }
@@ -1611,12 +1624,17 @@ fn is_table_row(s: &str) -> bool {
     t.len() >= 2 && t.starts_with('|') && t.ends_with('|')
 }
 
-fn build_table(rows: &[Line], start: usize, end: usize) -> Block {
+fn build_table(rows: &[Line], start: usize, end: usize, input: &str) -> Block {
     let split_cells = |s: &str| -> Vec<Vec<Inline>> {
         let t = s.trim();
         let t = t.strip_prefix('|').unwrap_or(t);
         let t = t.strip_suffix('|').unwrap_or(t);
-        t.split('|').map(|c| org_inline(c.trim())).collect()
+        t.split('|')
+            .map(|c| {
+                let c = c.trim();
+                org_inline(c, crate::inline::ptr_base(c, input))
+            })
+            .collect()
     };
     // Org separator line: between the outer pipes only `-`, `+`, `|`, `:`, space.
     let is_sep = |s: &str| -> bool {
@@ -1647,9 +1665,10 @@ fn build_table(rows: &[Line], start: usize, end: usize) -> Block {
 // Inline parsing
 // ===========================================================================
 
-/// Block-body inline seam: the v0.2 `org_resolver`. Name kept for the block call sites.
-pub(crate) fn org_inline(text: &str) -> Vec<Inline> {
-    crate::org_resolver::parse_inline_org(text)
+/// Block-body inline seam: the v0.2 `org_resolver`. `base` = the absolute byte offset of
+/// `text` in the block body. Name kept for the block call sites.
+pub(crate) fn org_inline(text: &str, base: usize) -> Vec<Inline> {
+    crate::org_resolver::parse_inline_org(text, base)
 }
 
 
@@ -1689,11 +1708,13 @@ pub(crate) fn parse_org_autolink(s: &str, at: usize) -> Option<(usize, Inline)> 
     let full = format!("{}:{}{}", protocol, slashes, link);
     let node = Inline::Link {
         url: Url::Complex { protocol: Some(protocol), link: Some(link) },
-        label: vec![Inline::Plain { text: full.clone() }],
+        // synthetic label (== full, no `<>`): no clean source slice → no span.
+        label: vec![Inline::Plain { text: full.clone(), span: None }],
         full,
         image: false,
         metadata: String::new(),
         title: None,
+        span: None,
     };
     Some((j + 1, node))
 }
@@ -1747,28 +1768,36 @@ pub(crate) fn classify_org_link_2(name: &str) -> Url {
 mod tests {
     use super::*;
 
+    /// Strip inline spans so structural `assert_eq!`s over inline vecs stay span-agnostic
+    /// (span invariants are checked separately in lib.rs).
+    fn ns(v: &[Inline]) -> Vec<Inline> {
+        let mut v = v.to_vec();
+        crate::parse::none_out_inlines(&mut v);
+        v
+    }
+
     fn ik(i: &Inline) -> String {
         match i {
-            Inline::Plain { text } => format!("plain({text})"),
-            Inline::Code { text } => format!("code({text})"),
-            Inline::Verbatim { text } => format!("verb({text})"),
+            Inline::Plain { text, .. } => format!("plain({text})"),
+            Inline::Code { text, .. } => format!("code({text})"),
+            Inline::Verbatim { text, .. } => format!("verb({text})"),
             Inline::Emphasis { emph, .. } => format!("em({emph})"),
             Inline::Subscript { .. } => "sub".into(),
             Inline::Superscript { .. } => "sup".into(),
             Inline::Link { url, .. } => format!("link({})", uk(url)),
-            Inline::Tag { children } => format!("tag({})", txt(children)),
-            Inline::Macro { name, args } => format!("macro({name};{})", args.join("|")),
-            Inline::NestedLink { content } => format!("nested({content})"),
-            Inline::Target { text } => format!("target({text})"),
-            Inline::Break => "break".into(),
-            Inline::HardBreak => "hardbreak".into(),
-            Inline::Latex { mode, body } => format!("latex({mode}:{body})"),
-            Inline::Fnref { name } => format!("fn({name})"),
+            Inline::Tag { children, .. } => format!("tag({})", txt(children)),
+            Inline::Macro { name, args, .. } => format!("macro({name};{})", args.join("|")),
+            Inline::NestedLink { content, .. } => format!("nested({content})"),
+            Inline::Target { text, .. } => format!("target({text})"),
+            Inline::Break { .. } => "break".into(),
+            Inline::HardBreak { .. } => "hardbreak".into(),
+            Inline::Latex { mode, body, .. } => format!("latex({mode}:{body})"),
+            Inline::Fnref { name, .. } => format!("fn({name})"),
             Inline::Timestamp { ts, .. } => format!("ts({ts})"),
-            Inline::InlineHtml { text } => format!("html({text})"),
+            Inline::InlineHtml { text, .. } => format!("html({text})"),
             Inline::Email { .. } => "email".into(),
             Inline::Entity { unicode, .. } => format!("entity({unicode})"),
-            Inline::Hiccup { v } => format!("hiccup({v})"),
+            Inline::Hiccup { v, .. } => format!("hiccup({v})"),
         }
     }
     fn uk(u: &Url) -> String {
@@ -1787,9 +1816,9 @@ mod tests {
     fn txt(c: &[Inline]) -> String {
         c.iter()
             .map(|x| match x {
-                Inline::Plain { text } => text.clone(),
+                Inline::Plain { text, .. } => text.clone(),
                 Inline::Link { full, .. } => full.clone(),
-                Inline::NestedLink { content } => content.clone(),
+                Inline::NestedLink { content, .. } => content.clone(),
                 _ => String::new(),
             })
             .collect()
@@ -1895,7 +1924,7 @@ mod tests {
                 assert_eq!(marker.as_deref(), Some("TODO"));
                 assert_eq!(priority.as_deref(), Some("A"));
                 assert_eq!(htags, &vec!["tag1".to_string(), "tag2".to_string()]);
-                assert_eq!(inline, &vec![Inline::Plain { text: "task with ".into() }]);
+                assert_eq!(ns(inline), vec![Inline::Plain { text: "task with ".into(), span: None }]);
             }
             _ => panic!(),
         }
@@ -1911,7 +1940,7 @@ mod tests {
         match &parse("* plain :only:tags:")[0] {
             Block::Bullet { htags, inline, .. } => {
                 assert_eq!(htags, &vec!["only".to_string(), "tags".to_string()]);
-                assert_eq!(inline, &vec![Inline::Plain { text: "plain ".into() }]);
+                assert_eq!(ns(inline), vec![Inline::Plain { text: "plain ".into(), span: None }]);
             }
             _ => panic!(),
         }
@@ -2087,11 +2116,11 @@ mod tests {
         // multi-line paragraph coalesces with Break_Line.
         match &parse("a plain paragraph\nsecond line")[0] {
             Block::Paragraph { inline, .. } => assert_eq!(
-                inline,
-                &vec![
-                    Inline::Plain { text: "a plain paragraph".into() },
-                    Inline::Break,
-                    Inline::Plain { text: "second line".into() },
+                ns(inline),
+                vec![
+                    Inline::Plain { text: "a plain paragraph".into(), span: None },
+                    Inline::Break { span: None },
+                    Inline::Plain { text: "second line".into(), span: None },
                 ]
             ),
             _ => panic!(),
@@ -2208,7 +2237,7 @@ mod tests {
         fn label(it: &ListItem) -> String {
             match &it.content[0] {
                 Block::Paragraph { inline, .. } => match inline.first() {
-                    Some(Inline::Plain { text }) => text.clone(),
+                    Some(Inline::Plain { text, .. }) => text.clone(),
                     _ => String::new(),
                 },
                 _ => String::new(),
@@ -2279,8 +2308,8 @@ mod tests {
         let plains: Vec<String> = para_inline("- a\n  more")
             .iter()
             .filter_map(|i| match i {
-                Inline::Plain { text } => Some(text.clone()),
-                Inline::Break => Some("⏎".into()),
+                Inline::Plain { text, .. } => Some(text.clone()),
+                Inline::Break { .. } => Some("⏎".into()),
                 _ => None,
             })
             .collect();
@@ -2409,8 +2438,8 @@ mod tests {
                 Block::FootnoteDef { inline, .. } => inline
                     .iter()
                     .map(|i| match i {
-                        Inline::Plain { text } => text.clone(),
-                        Inline::Break => "\u{23ce}".into(),
+                        Inline::Plain { text, .. } => text.clone(),
+                        Inline::Break { .. } => "\u{23ce}".into(),
                         other => format!("<{}>", ik(other)),
                     })
                     .collect(),
@@ -2516,11 +2545,11 @@ mod tests {
         // the leftover-ws paragraph absorbs following lines.
         match &parse("* \nreal content")[1] {
             Block::Paragraph { inline, .. } => assert_eq!(
-                inline,
-                &vec![
-                    Inline::Plain { text: " ".into() },
-                    Inline::Break,
-                    Inline::Plain { text: "real content".into() },
+                ns(inline),
+                vec![
+                    Inline::Plain { text: " ".into(), span: None },
+                    Inline::Break { span: None },
+                    Inline::Plain { text: "real content".into(), span: None },
                 ]
             ),
             _ => panic!(),

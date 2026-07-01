@@ -71,4 +71,8 @@ const bg = run("node", [join(__dir, "blockgate.mjs")], { allowFail: true });
 // 6. inline-entrypoint gate: lsdoc `inline()` vs mldoc `parseInlineJson` (the inline->edn /
 //    OG inline-text path Tine uses for property values, breadcrumbs, ref previews, cells).
 const ig = run("node", [join(__dir, "inlinegate.mjs")], { allowFail: true });
-process.exit((cmp.status ?? 0) || (bg.status ?? 0) || (ig.status ?? 0));
+// 7. inline source-span invariant gate (S1–S5) over lsdoc-out.json (the projection output
+//    written in step 3; inlinegate/blockgate write their own files, so it's still intact).
+const sg = run("node", [join(__dir, "spans.mjs")], { allowFail: true });
+console.log("spans gate:", sg.status === 0 ? "ok" : "FAIL");
+process.exit((cmp.status ?? 0) || (bg.status ?? 0) || (ig.status ?? 0) || (sg.status ?? 0));

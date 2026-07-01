@@ -220,6 +220,7 @@ fn lex_backslash(
                             html: e.html.to_string(),
                             ascii: e.ascii.to_string(),
                             unicode: e.unicode.to_string(),
+                            span: None,
                         }),
                     });
                 }
@@ -268,11 +269,11 @@ fn code_span(s: &str, at: usize) -> Option<(Inline, usize)> {
             j += 1;
         }
         if j > start && j < n && b[j] == b'`' {
-            return Some((Inline::Code { text: s[start..j].to_string() }, j + 1));
+            return Some((Inline::Code { text: s[start..j].to_string(), span: None }, j + 1));
         }
         return None;
     }
     let start = at + 2;
     let end = crate::inline::find_sub(b, start, b"``")?;
-    Some((Inline::Code { text: s[start..end].to_string() }, end + 2))
+    Some((Inline::Code { text: s[start..end].to_string(), span: None }, end + 2))
 }

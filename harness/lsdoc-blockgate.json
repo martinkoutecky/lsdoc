@@ -11,7 +11,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Tine ⟷ OG parity test graph"
+              "text": "Tine ⟷ OG parity test graph",
+              "span": [
+                4,
+                33
+              ]
             }
           ],
           "span": [
@@ -23,88 +27,66 @@
           "kind": "paragraph",
           "inline": [
             {
-              "k": "break"
-            },
-            {
-              "k": "plain",
-              "text": "A shared Logseq graph (standard "
-            },
-            {
-              "k": "code",
-              "text": "pages/"
-            },
-            {
-              "k": "plain",
-              "text": " + "
-            },
-            {
-              "k": "code",
-              "text": "journals/"
-            },
-            {
-              "k": "plain",
-              "text": " layout) for verifying that"
-            },
-            {
-              "k": "break"
-            },
-            {
-              "k": "plain",
-              "text": "Tine matches OG (original Logseq). "
-            },
-            {
-              "k": "emphasis",
-              "emph": "Bold",
-              "children": [
-                {
-                  "k": "plain",
-                  "text": "Open the same folder in both apps and compare."
-                }
-              ]
-            },
-            {
-              "k": "break"
-            },
-            {
-              "k": "break"
-            },
-            {
-              "k": "plain",
-              "text": "Convention: "
-            },
-            {
-              "k": "emphasis",
-              "emph": "Bold",
-              "children": [
-                {
-                  "k": "plain",
-                  "text": "every Tine feature or bug fix adds a small, self-contained example\nhere"
-                }
+              "k": "break",
+              "span": [
+                34,
+                35
               ]
             },
             {
               "k": "plain",
-              "text": " — one page (or a few) that exercises the behavior, so we can eyeball it"
+              "text": "A shared Logseq graph (standard ",
+              "span": [
+                35,
+                67
+              ]
             },
             {
-              "k": "break"
+              "k": "code",
+              "text": "pages/",
+              "span": [
+                67,
+                75
+              ]
             },
             {
               "k": "plain",
-              "text": "side by side in OG and Tine and catch parity gaps. Keep examples minimal and"
+              "text": " + ",
+              "span": [
+                75,
+                78
+              ]
             },
             {
-              "k": "break"
+              "k": "code",
+              "text": "journals/",
+              "span": [
+                78,
+                89
+              ]
             },
             {
               "k": "plain",
-              "text": "labeled by the feature they test."
+              "text": " layout) for verifying that",
+              "span": [
+                89,
+                116
+              ]
             },
             {
-              "k": "break"
+              "k": "break",
+              "span": [
+                116,
+                117
+              ]
             },
             {
-              "k": "break"
+              "k": "plain",
+              "text": "Tine matches OG (original Logseq). ",
+              "span": [
+                117,
+                152
+              ]
             },
             {
               "k": "emphasis",
@@ -112,86 +94,288 @@
               "children": [
                 {
                   "k": "plain",
-                  "text": "Reference screenshots live in "
+                  "text": "Open the same folder in both apps and compare.",
+                  "span": [
+                    154,
+                    200
+                  ]
+                }
+              ],
+              "span": [
+                152,
+                202
+              ]
+            },
+            {
+              "k": "break",
+              "span": [
+                202,
+                203
+              ]
+            },
+            {
+              "k": "break",
+              "span": [
+                203,
+                204
+              ]
+            },
+            {
+              "k": "plain",
+              "text": "Convention: ",
+              "span": [
+                204,
+                216
+              ]
+            },
+            {
+              "k": "emphasis",
+              "emph": "Bold",
+              "children": [
+                {
+                  "k": "plain",
+                  "text": "every Tine feature or bug fix adds a small, self-contained example\nhere",
+                  "span": [
+                    218,
+                    289
+                  ]
+                }
+              ],
+              "span": [
+                216,
+                291
+              ]
+            },
+            {
+              "k": "plain",
+              "text": " — one page (or a few) that exercises the behavior, so we can eyeball it",
+              "span": [
+                291,
+                365
+              ]
+            },
+            {
+              "k": "break",
+              "span": [
+                365,
+                366
+              ]
+            },
+            {
+              "k": "plain",
+              "text": "side by side in OG and Tine and catch parity gaps. Keep examples minimal and",
+              "span": [
+                366,
+                442
+              ]
+            },
+            {
+              "k": "break",
+              "span": [
+                442,
+                443
+              ]
+            },
+            {
+              "k": "plain",
+              "text": "labeled by the feature they test.",
+              "span": [
+                443,
+                476
+              ]
+            },
+            {
+              "k": "break",
+              "span": [
+                476,
+                477
+              ]
+            },
+            {
+              "k": "break",
+              "span": [
+                477,
+                478
+              ]
+            },
+            {
+              "k": "emphasis",
+              "emph": "Bold",
+              "children": [
+                {
+                  "k": "plain",
+                  "text": "Reference screenshots live in ",
+                  "span": [
+                    480,
+                    510
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "assets/"
+                  "text": "assets/",
+                  "span": [
+                    510,
+                    519
+                  ]
                 }
+              ],
+              "span": [
+                478,
+                521
               ]
             },
             {
               "k": "plain",
-              "text": " so they survive across sessions:"
+              "text": " so they survive across sessions:",
+              "span": [
+                521,
+                554
+              ]
             },
             {
-              "k": "break"
-            },
-            {
-              "k": "code",
-              "text": "<feature>-og.png"
-            },
-            {
-              "k": "plain",
-              "text": " is the oracle (Martin screenshots real OG), "
-            },
-            {
-              "k": "code",
-              "text": "<feature>-tine.png"
-            },
-            {
-              "k": "break"
-            },
-            {
-              "k": "plain",
-              "text": "is what Claude verified against it. When a feature lands, Claude drops its Tine"
-            },
-            {
-              "k": "break"
-            },
-            {
-              "k": "plain",
-              "text": "shot in and notes exactly which page(s) to screenshot in OG."
-            },
-            {
-              "k": "break"
-            },
-            {
-              "k": "break"
-            },
-            {
-              "k": "plain",
-              "text": "Markdown format; "
+              "k": "break",
+              "span": [
+                554,
+                555
+              ]
             },
             {
               "k": "code",
-              "text": ":file/name-format :triple-lowbar"
+              "text": "<feature>-og.png",
+              "span": [
+                555,
+                573
+              ]
             },
             {
               "k": "plain",
-              "text": " (so "
+              "text": " is the oracle (Martin screenshots real OG), ",
+              "span": [
+                573,
+                618
+              ]
             },
             {
               "k": "code",
-              "text": "a/b"
+              "text": "<feature>-tine.png",
+              "span": [
+                618,
+                638
+              ]
+            },
+            {
+              "k": "break",
+              "span": [
+                638,
+                639
+              ]
             },
             {
               "k": "plain",
-              "text": " ⇒ "
+              "text": "is what Claude verified against it. When a feature lands, Claude drops its Tine",
+              "span": [
+                639,
+                718
+              ]
+            },
+            {
+              "k": "break",
+              "span": [
+                718,
+                719
+              ]
+            },
+            {
+              "k": "plain",
+              "text": "shot in and notes exactly which page(s) to screenshot in OG.",
+              "span": [
+                719,
+                779
+              ]
+            },
+            {
+              "k": "break",
+              "span": [
+                779,
+                780
+              ]
+            },
+            {
+              "k": "break",
+              "span": [
+                780,
+                781
+              ]
+            },
+            {
+              "k": "plain",
+              "text": "Markdown format; ",
+              "span": [
+                781,
+                798
+              ]
             },
             {
               "k": "code",
-              "text": "a___b.md"
+              "text": ":file/name-format :triple-lowbar",
+              "span": [
+                798,
+                832
+              ]
             },
             {
               "k": "plain",
-              "text": ")."
+              "text": " (so ",
+              "span": [
+                832,
+                837
+              ]
             },
             {
-              "k": "break"
+              "k": "code",
+              "text": "a/b",
+              "span": [
+                837,
+                842
+              ]
             },
             {
-              "k": "break"
+              "k": "plain",
+              "text": " ⇒ ",
+              "span": [
+                842,
+                847
+              ]
+            },
+            {
+              "k": "code",
+              "text": "a___b.md",
+              "span": [
+                847,
+                857
+              ]
+            },
+            {
+              "k": "plain",
+              "text": ").",
+              "span": [
+                857,
+                859
+              ]
+            },
+            {
+              "k": "break",
+              "span": [
+                859,
+                860
+              ]
+            },
+            {
+              "k": "break",
+              "span": [
+                860,
+                861
+              ]
             }
           ],
           "span": [
@@ -206,7 +390,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Examples"
+              "text": "Examples",
+              "span": [
+                864,
+                872
+              ]
             }
           ],
           "span": [
@@ -218,7 +406,11 @@
           "kind": "paragraph",
           "inline": [
             {
-              "k": "break"
+              "k": "break",
+              "span": [
+                873,
+                874
+              ]
             }
           ],
           "span": [
@@ -232,25 +424,41 @@
             [
               {
                 "k": "plain",
-                "text": "Feature"
+                "text": "Feature",
+                "span": [
+                  876,
+                  883
+                ]
               }
             ],
             [
               {
                 "k": "plain",
-                "text": "Pages"
+                "text": "Pages",
+                "span": [
+                  886,
+                  891
+                ]
               }
             ],
             [
               {
                 "k": "plain",
-                "text": "What to check"
+                "text": "What to check",
+                "span": [
+                  894,
+                  907
+                ]
               }
             ],
             [
               {
                 "k": "plain",
-                "text": "Shots"
+                "text": "Shots",
+                "span": [
+                  910,
+                  915
+                ]
               }
             ]
           ],
@@ -259,49 +467,93 @@
               [
                 {
                   "k": "plain",
-                  "text": "Namespaces (macro + Hierarchy)"
+                  "text": "Namespaces (macro + Hierarchy)",
+                  "span": [
+                    964,
+                    994
+                  ]
                 }
               ],
               [
                 {
                   "k": "code",
-                  "text": "Formula1"
+                  "text": "Formula1",
+                  "span": [
+                    997,
+                    1007
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": ", "
+                  "text": ", ",
+                  "span": [
+                    1007,
+                    1009
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "Formula1/2026"
+                  "text": "Formula1/2026",
+                  "span": [
+                    1009,
+                    1024
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": ", "
+                  "text": ", ",
+                  "span": [
+                    1024,
+                    1026
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "Formula1/2026/08 Austrian Grand Prix"
+                  "text": "Formula1/2026/08 Austrian Grand Prix",
+                  "span": [
+                    1026,
+                    1064
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": ", "
+                  "text": ", ",
+                  "span": [
+                    1064,
+                    1066
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "Formula1/2026/09 Italian Grand Prix"
+                  "text": "Formula1/2026/09 Italian Grand Prix",
+                  "span": [
+                    1066,
+                    1103
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": ", "
+                  "text": ", ",
+                  "span": [
+                    1103,
+                    1105
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "Formula1/2025/12 Abu Dhabi Grand Prix"
+                  "text": "Formula1/2025/12 Abu Dhabi Grand Prix",
+                  "span": [
+                    1105,
+                    1144
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": " (note: "
+                  "text": " (note: ",
+                  "span": [
+                    1144,
+                    1152
+                  ]
                 },
                 {
                   "k": "emphasis",
@@ -309,27 +561,51 @@
                   "children": [
                     {
                       "k": "plain",
-                      "text": "no "
+                      "text": "no ",
+                      "span": [
+                        1154,
+                        1157
+                      ]
                     },
                     {
                       "k": "code",
-                      "text": "Formula1/2025"
+                      "text": "Formula1/2025",
+                      "span": [
+                        1157,
+                        1172
+                      ]
                     },
                     {
                       "k": "plain",
-                      "text": " page of its own"
+                      "text": " page of its own",
+                      "span": [
+                        1172,
+                        1188
+                      ]
                     }
+                  ],
+                  "span": [
+                    1152,
+                    1190
                   ]
                 },
                 {
                   "k": "plain",
-                  "text": ")"
+                  "text": ")",
+                  "span": [
+                    1190,
+                    1191
+                  ]
                 }
               ],
               [
                 {
                   "k": "plain",
-                  "text": "Open "
+                  "text": "Open ",
+                  "span": [
+                    1194,
+                    1199
+                  ]
                 },
                 {
                   "k": "emphasis",
@@ -337,21 +613,41 @@
                   "children": [
                     {
                       "k": "plain",
-                      "text": "Formula1"
+                      "text": "Formula1",
+                      "span": [
+                        1201,
+                        1209
+                      ]
                     }
+                  ],
+                  "span": [
+                    1199,
+                    1211
                   ]
                 },
                 {
                   "k": "plain",
-                  "text": ": "
+                  "text": ": ",
+                  "span": [
+                    1211,
+                    1213
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "{{namespace Formula1}}"
+                  "text": "{{namespace Formula1}}",
+                  "span": [
+                    1213,
+                    1237
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": " shows a bold "
+                  "text": " shows a bold ",
+                  "span": [
+                    1237,
+                    1251
+                  ]
                 },
                 {
                   "k": "emphasis",
@@ -359,13 +655,25 @@
                   "children": [
                     {
                       "k": "plain",
-                      "text": "Namespace"
+                      "text": "Namespace",
+                      "span": [
+                        1253,
+                        1262
+                      ]
                     }
+                  ],
+                  "span": [
+                    1251,
+                    1264
                   ]
                 },
                 {
                   "k": "plain",
-                  "text": " label + the bulleted descendant tree. The automatic "
+                  "text": " label + the bulleted descendant tree. The automatic ",
+                  "span": [
+                    1264,
+                    1317
+                  ]
                 },
                 {
                   "k": "emphasis",
@@ -373,13 +681,25 @@
                   "children": [
                     {
                       "k": "plain",
-                      "text": "Hierarchy"
+                      "text": "Hierarchy",
+                      "span": [
+                        1319,
+                        1328
+                      ]
                     }
+                  ],
+                  "span": [
+                    1317,
+                    1330
                   ]
                 },
                 {
                   "k": "plain",
-                  "text": " section lists "
+                  "text": " section lists ",
+                  "span": [
+                    1330,
+                    1345
+                  ]
                 },
                 {
                   "k": "emphasis",
@@ -387,21 +707,41 @@
                   "children": [
                     {
                       "k": "plain",
-                      "text": "one bulleted row per namespace level"
+                      "text": "one bulleted row per namespace level",
+                      "span": [
+                        1347,
+                        1383
+                      ]
                     }
+                  ],
+                  "span": [
+                    1345,
+                    1385
                   ]
                 },
                 {
                   "k": "plain",
-                  "text": " as a breadcrumb ("
+                  "text": " as a breadcrumb (",
+                  "span": [
+                    1385,
+                    1403
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "[[Formula1]] / [[2026]] / …"
+                  "text": "[[Formula1]] / [[2026]] / …",
+                  "span": [
+                    1403,
+                    1434
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": ") — including a synthesized "
+                  "text": ") — including a synthesized ",
+                  "span": [
+                    1434,
+                    1464
+                  ]
                 },
                 {
                   "k": "emphasis",
@@ -409,39 +749,75 @@
                   "children": [
                     {
                       "k": "code",
-                      "text": "[[Formula1]] / [[2025]]"
+                      "text": "[[Formula1]] / [[2025]]",
+                      "span": [
+                        1466,
+                        1491
+                      ]
                     }
+                  ],
+                  "span": [
+                    1464,
+                    1493
                   ]
                 },
                 {
                   "k": "plain",
-                  "text": " row even though that page has no file. "
+                  "text": " row even though that page has no file. ",
+                  "span": [
+                    1493,
+                    1533
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "icon::"
+                  "text": "icon::",
+                  "span": [
+                    1533,
+                    1541
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": " is hidden (shown as the title icon, not a property row)."
+                  "text": " is hidden (shown as the title icon, not a property row).",
+                  "span": [
+                    1541,
+                    1598
+                  ]
                 }
               ],
               [
                 {
                   "k": "code",
-                  "text": "assets/namespace-tine.png"
+                  "text": "assets/namespace-tine.png",
+                  "span": [
+                    1601,
+                    1628
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": " (Tine); add "
+                  "text": " (Tine); add ",
+                  "span": [
+                    1628,
+                    1641
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "assets/namespace-og.png"
+                  "text": "assets/namespace-og.png",
+                  "span": [
+                    1641,
+                    1666
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": " (real OG)"
+                  "text": " (real OG)",
+                  "span": [
+                    1666,
+                    1676
+                  ]
                 }
               ]
             ],
@@ -449,101 +825,71 @@
               [
                 {
                   "k": "plain",
-                  "text": "Macros (easy + medium tier)"
+                  "text": "Macros (easy + medium tier)",
+                  "span": [
+                    1681,
+                    1708
+                  ]
                 }
               ],
               [
                 {
                   "k": "code",
-                  "text": "Macros"
-                },
-                {
-                  "k": "plain",
-                  "text": " (+ "
-                },
-                {
-                  "k": "code",
-                  "text": ":macros"
-                },
-                {
-                  "k": "plain",
-                  "text": " in "
-                },
-                {
-                  "k": "code",
-                  "text": "logseq/config.edn"
-                },
-                {
-                  "k": "plain",
-                  "text": ")"
-                }
-              ],
-              [
-                {
-                  "k": "plain",
-                  "text": "Open "
-                },
-                {
-                  "k": "emphasis",
-                  "emph": "Bold",
-                  "children": [
-                    {
-                      "k": "plain",
-                      "text": "Macros"
-                    }
+                  "text": "Macros",
+                  "span": [
+                    1711,
+                    1719
                   ]
                 },
                 {
                   "k": "plain",
-                  "text": ": "
+                  "text": " (+ ",
+                  "span": [
+                    1719,
+                    1723
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "{{twitter}}"
+                  "text": ":macros",
+                  "span": [
+                    1723,
+                    1732
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": "="
+                  "text": " in ",
+                  "span": [
+                    1732,
+                    1736
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "{{tweet}}"
+                  "text": "logseq/config.edn",
+                  "span": [
+                    1736,
+                    1755
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": ", "
-                },
-                {
-                  "k": "code",
-                  "text": "{{vimeo id}}"
-                },
-                {
-                  "k": "plain",
-                  "text": "/"
-                },
-                {
-                  "k": "code",
-                  "text": "{{bilibili BV…}}"
-                },
+                  "text": ")",
+                  "span": [
+                    1755,
+                    1756
+                  ]
+                }
+              ],
+              [
                 {
                   "k": "plain",
-                  "text": " iframe embeds, "
-                },
-                {
-                  "k": "code",
-                  "text": "{{img url w h}}"
-                },
-                {
-                  "k": "plain",
-                  "text": "/"
-                },
-                {
-                  "k": "code",
-                  "text": "{{img url center}}"
-                },
-                {
-                  "k": "plain",
-                  "text": " sizing+alignment, and "
+                  "text": "Open ",
+                  "span": [
+                    1759,
+                    1764
+                  ]
                 },
                 {
                   "k": "emphasis",
@@ -551,65 +897,251 @@
                   "children": [
                     {
                       "k": "plain",
-                      "text": "user "
+                      "text": "Macros",
+                      "span": [
+                        1766,
+                        1772
+                      ]
+                    }
+                  ],
+                  "span": [
+                    1764,
+                    1774
+                  ]
+                },
+                {
+                  "k": "plain",
+                  "text": ": ",
+                  "span": [
+                    1774,
+                    1776
+                  ]
+                },
+                {
+                  "k": "code",
+                  "text": "{{twitter}}",
+                  "span": [
+                    1776,
+                    1789
+                  ]
+                },
+                {
+                  "k": "plain",
+                  "text": "=",
+                  "span": [
+                    1789,
+                    1790
+                  ]
+                },
+                {
+                  "k": "code",
+                  "text": "{{tweet}}",
+                  "span": [
+                    1790,
+                    1801
+                  ]
+                },
+                {
+                  "k": "plain",
+                  "text": ", ",
+                  "span": [
+                    1801,
+                    1803
+                  ]
+                },
+                {
+                  "k": "code",
+                  "text": "{{vimeo id}}",
+                  "span": [
+                    1803,
+                    1817
+                  ]
+                },
+                {
+                  "k": "plain",
+                  "text": "/",
+                  "span": [
+                    1817,
+                    1818
+                  ]
+                },
+                {
+                  "k": "code",
+                  "text": "{{bilibili BV…}}",
+                  "span": [
+                    1818,
+                    1838
+                  ]
+                },
+                {
+                  "k": "plain",
+                  "text": " iframe embeds, ",
+                  "span": [
+                    1838,
+                    1854
+                  ]
+                },
+                {
+                  "k": "code",
+                  "text": "{{img url w h}}",
+                  "span": [
+                    1854,
+                    1871
+                  ]
+                },
+                {
+                  "k": "plain",
+                  "text": "/",
+                  "span": [
+                    1871,
+                    1872
+                  ]
+                },
+                {
+                  "k": "code",
+                  "text": "{{img url center}}",
+                  "span": [
+                    1872,
+                    1892
+                  ]
+                },
+                {
+                  "k": "plain",
+                  "text": " sizing+alignment, and ",
+                  "span": [
+                    1892,
+                    1915
+                  ]
+                },
+                {
+                  "k": "emphasis",
+                  "emph": "Bold",
+                  "children": [
+                    {
+                      "k": "plain",
+                      "text": "user ",
+                      "span": [
+                        1917,
+                        1922
+                      ]
                     },
                     {
                       "k": "code",
-                      "text": ":macros"
+                      "text": ":macros",
+                      "span": [
+                        1922,
+                        1931
+                      ]
                     }
+                  ],
+                  "span": [
+                    1915,
+                    1933
                   ]
                 },
                 {
                   "k": "plain",
-                  "text": " — "
+                  "text": " — ",
+                  "span": [
+                    1933,
+                    1938
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "{{poem red, blue}}"
+                  "text": "{{poem red, blue}}",
+                  "span": [
+                    1938,
+                    1958
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": "→\"Roses are red, violets are blue.\" and "
+                  "text": "→\"Roses are red, violets are blue.\" and ",
+                  "span": [
+                    1958,
+                    2000
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "{{hi Martin, Macros}}"
+                  "text": "{{hi Martin, Macros}}",
+                  "span": [
+                    2000,
+                    2023
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": "→bold + "
+                  "text": "→bold + ",
+                  "span": [
+                    2023,
+                    2033
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "[[Macros]]"
+                  "text": "[[Macros]]",
+                  "span": [
+                    2033,
+                    2045
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": " link. "
+                  "text": " link. ",
+                  "span": [
+                    2045,
+                    2052
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "{{youtube-timestamp}}"
+                  "text": "{{youtube-timestamp}}",
+                  "span": [
+                    2052,
+                    2075
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": "/"
+                  "text": "/",
+                  "span": [
+                    2075,
+                    2076
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "{{cloze}}"
+                  "text": "{{cloze}}",
+                  "span": [
+                    2076,
+                    2087
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": "/"
+                  "text": "/",
+                  "span": [
+                    2087,
+                    2088
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "{{zotero-*}}"
+                  "text": "{{zotero-*}}",
+                  "span": [
+                    2088,
+                    2102
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": " render "
+                  "text": " render ",
+                  "span": [
+                    2102,
+                    2110
+                  ]
                 },
                 {
                   "k": "emphasis",
@@ -617,31 +1149,59 @@
                   "children": [
                     {
                       "k": "plain",
-                      "text": "degraded"
+                      "text": "degraded",
+                      "span": [
+                        2112,
+                        2120
+                      ]
                     }
+                  ],
+                  "span": [
+                    2110,
+                    2122
                   ]
                 },
                 {
                   "k": "plain",
-                  "text": " (Tine has no YT-player API / SRS / Zotero connector) and say so — expected to differ from OG."
+                  "text": " (Tine has no YT-player API / SRS / Zotero connector) and say so — expected to differ from OG.",
+                  "span": [
+                    2122,
+                    2218
+                  ]
                 }
               ],
               [
                 {
                   "k": "code",
-                  "text": "screenshots/macros.png"
+                  "text": "screenshots/macros.png",
+                  "span": [
+                    2221,
+                    2245
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": " (Tine, in repo); add "
+                  "text": " (Tine, in repo); add ",
+                  "span": [
+                    2245,
+                    2267
+                  ]
                 },
                 {
                   "k": "code",
-                  "text": "assets/macros-og.png"
+                  "text": "assets/macros-og.png",
+                  "span": [
+                    2267,
+                    2289
+                  ]
                 },
                 {
                   "k": "plain",
-                  "text": " (real OG)"
+                  "text": " (real OG)",
+                  "span": [
+                    2289,
+                    2299
+                  ]
                 }
               ]
             ]
@@ -706,6 +1266,10 @@
               "name": "namespace",
               "args": [
                 "Formula1"
+              ],
+              "span": [
+                2,
+                24
               ]
             }
           ],
@@ -732,7 +1296,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Top-level Formula1 notes."
+              "text": "Top-level Formula1 notes.",
+              "span": [
+                2,
+                27
+              ]
             }
           ],
           "span": [
@@ -792,15 +1360,27 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Race notes for the Abu Dhabi Grand Prix. (Note: no "
+              "text": "Race notes for the Abu Dhabi Grand Prix. (Note: no ",
+              "span": [
+                2,
+                53
+              ]
             },
             {
               "k": "code",
-              "text": "Formula1/2025"
+              "text": "Formula1/2025",
+              "span": [
+                53,
+                68
+              ]
             },
             {
               "k": "plain",
-              "text": " page of its"
+              "text": " page of its",
+              "span": [
+                68,
+                80
+              ]
             }
           ],
           "span": [
@@ -813,22 +1393,42 @@
           "inline": [
             {
               "k": "plain",
-              "text": "own — the Hierarchy section must still synthesize a "
+              "text": "own — the Hierarchy section must still synthesize a ",
+              "span": [
+                81,
+                135
+              ]
             },
             {
               "k": "code",
-              "text": "Formula1 / 2025"
+              "text": "Formula1 / 2025",
+              "span": [
+                135,
+                152
+              ]
             },
             {
               "k": "plain",
-              "text": " level row,"
+              "text": " level row,",
+              "span": [
+                152,
+                163
+              ]
             },
             {
-              "k": "break"
+              "k": "break",
+              "span": [
+                163,
+                164
+              ]
             },
             {
               "k": "plain",
-              "text": "matching OG.)"
+              "text": "matching OG.)",
+              "span": [
+                164,
+                177
+              ]
             }
           ],
           "span": [
@@ -888,7 +1488,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Season 2026."
+              "text": "Season 2026.",
+              "span": [
+                2,
+                14
+              ]
             }
           ],
           "span": [
@@ -948,7 +1552,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Race notes for the Austrian Grand Prix."
+              "text": "Race notes for the Austrian Grand Prix.",
+              "span": [
+                2,
+                41
+              ]
             }
           ],
           "span": [
@@ -1008,7 +1616,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Race notes for the Italian Grand Prix."
+              "text": "Race notes for the Italian Grand Prix.",
+              "span": [
+                2,
+                40
+              ]
             }
           ],
           "span": [
@@ -1035,7 +1647,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Macros parity test"
+              "text": "Macros parity test",
+              "span": [
+                5,
+                23
+              ]
             }
           ],
           "span": [
@@ -1061,7 +1677,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Open this page in "
+              "text": "Open this page in ",
+              "span": [
+                2,
+                20
+              ]
             },
             {
               "k": "emphasis",
@@ -1069,13 +1689,25 @@
               "children": [
                 {
                   "k": "plain",
-                  "text": "OG"
+                  "text": "OG",
+                  "span": [
+                    22,
+                    24
+                  ]
                 }
+              ],
+              "span": [
+                20,
+                26
               ]
             },
             {
               "k": "plain",
-              "text": " and "
+              "text": " and ",
+              "span": [
+                26,
+                31
+              ]
             },
             {
               "k": "emphasis",
@@ -1083,13 +1715,25 @@
               "children": [
                 {
                   "k": "plain",
-                  "text": "Tine"
+                  "text": "Tine",
+                  "span": [
+                    33,
+                    37
+                  ]
                 }
+              ],
+              "span": [
+                31,
+                39
               ]
             },
             {
               "k": "plain",
-              "text": " and compare each line."
+              "text": " and compare each line.",
+              "span": [
+                39,
+                62
+              ]
             }
           ],
           "span": [
@@ -1115,7 +1759,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Embeds (provider-named macros accept a bare id OR a full URL):"
+              "text": "Embeds (provider-named macros accept a bare id OR a full URL):",
+              "span": [
+                2,
+                64
+              ]
             }
           ],
           "span": [
@@ -1141,13 +1789,21 @@
           "inline": [
             {
               "k": "plain",
-              "text": "video: "
+              "text": "video: ",
+              "span": [
+                2,
+                9
+              ]
             },
             {
               "k": "macro",
               "name": "video",
               "args": [
                 "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+              ],
+              "span": [
+                9,
+                62
               ]
             }
           ],
@@ -1174,13 +1830,21 @@
           "inline": [
             {
               "k": "plain",
-              "text": "vimeo: "
+              "text": "vimeo: ",
+              "span": [
+                2,
+                9
+              ]
             },
             {
               "k": "macro",
               "name": "vimeo",
               "args": [
                 "76979871"
+              ],
+              "span": [
+                9,
+                27
               ]
             }
           ],
@@ -1207,13 +1871,21 @@
           "inline": [
             {
               "k": "plain",
-              "text": "bilibili: "
+              "text": "bilibili: ",
+              "span": [
+                2,
+                12
+              ]
             },
             {
               "k": "macro",
               "name": "bilibili",
               "args": [
                 "BV1xx411c7mD"
+              ],
+              "span": [
+                12,
+                37
               ]
             }
           ],
@@ -1240,13 +1912,21 @@
           "inline": [
             {
               "k": "plain",
-              "text": "tweet: "
+              "text": "tweet: ",
+              "span": [
+                2,
+                9
+              ]
             },
             {
               "k": "macro",
               "name": "tweet",
               "args": [
                 "https://twitter.com/logseq/status/123"
+              ],
+              "span": [
+                9,
+                56
               ]
             }
           ],
@@ -1273,13 +1953,21 @@
           "inline": [
             {
               "k": "plain",
-              "text": "twitter (alias of tweet): "
+              "text": "twitter (alias of tweet): ",
+              "span": [
+                2,
+                28
+              ]
             },
             {
               "k": "macro",
               "name": "twitter",
               "args": [
                 "https://twitter.com/logseq/status/123"
+              ],
+              "span": [
+                28,
+                77
               ]
             }
           ],
@@ -1306,7 +1994,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Image sizing/alignment:"
+              "text": "Image sizing/alignment:",
+              "span": [
+                2,
+                25
+              ]
             }
           ],
           "span": [
@@ -1335,6 +2027,10 @@
               "name": "img",
               "args": [
                 "https://logseq.com/blog/images/logo.png 120 120"
+              ],
+              "span": [
+                2,
+                57
               ]
             }
           ],
@@ -1364,6 +2060,10 @@
               "name": "img",
               "args": [
                 "https://logseq.com/blog/images/logo.png center"
+              ],
+              "span": [
+                2,
+                56
               ]
             }
           ],
@@ -1390,7 +2090,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Degraded (Tine has no on-page YouTube player API / SRS engine / Zotero connector):"
+              "text": "Degraded (Tine has no on-page YouTube player API / SRS engine / Zotero connector):",
+              "span": [
+                2,
+                84
+              ]
             }
           ],
           "span": [
@@ -1416,13 +2120,21 @@
           "inline": [
             {
               "k": "plain",
-              "text": "youtube-timestamp: "
+              "text": "youtube-timestamp: ",
+              "span": [
+                2,
+                21
+              ]
             },
             {
               "k": "macro",
               "name": "youtube-timestamp",
               "args": [
                 "125"
+              ],
+              "span": [
+                21,
+                46
               ]
             }
           ],
@@ -1449,13 +2161,21 @@
           "inline": [
             {
               "k": "plain",
-              "text": "cloze: "
+              "text": "cloze: ",
+              "span": [
+                2,
+                9
+              ]
             },
             {
               "k": "macro",
               "name": "cloze",
               "args": [
                 "the answer\\\\the cue"
+              ],
+              "span": [
+                9,
+                38
               ]
             }
           ],
@@ -1482,7 +2202,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "zotero: "
+              "text": "zotero: ",
+              "span": [
+                2,
+                10
+              ]
             },
             {
               "k": "macro",
@@ -1490,6 +2214,10 @@
               "args": [
                 "ABCD1234",
                 "my paper.pdf"
+              ],
+              "span": [
+                10,
+                57
               ]
             }
           ],
@@ -1516,31 +2244,59 @@
           "inline": [
             {
               "k": "plain",
-              "text": "User-defined "
+              "text": "User-defined ",
+              "span": [
+                2,
+                15
+              ]
             },
             {
               "k": "code",
-              "text": ":macros"
+              "text": ":macros",
+              "span": [
+                15,
+                24
+              ]
             },
             {
               "k": "plain",
-              "text": " (see "
+              "text": " (see ",
+              "span": [
+                24,
+                30
+              ]
             },
             {
               "k": "code",
-              "text": "logseq/config.edn"
+              "text": "logseq/config.edn",
+              "span": [
+                30,
+                49
+              ]
             },
             {
               "k": "plain",
-              "text": "): "
+              "text": "): ",
+              "span": [
+                49,
+                52
+              ]
             },
             {
               "k": "code",
-              "text": "$1..$N"
+              "text": "$1..$N",
+              "span": [
+                52,
+                60
+              ]
             },
             {
               "k": "plain",
-              "text": " filled with comma-separated args, then rendered as markdown:"
+              "text": " filled with comma-separated args, then rendered as markdown:",
+              "span": [
+                60,
+                121
+              ]
             }
           ],
           "span": [
@@ -1570,6 +2326,10 @@
               "args": [
                 "red",
                 "blue"
+              ],
+              "span": [
+                2,
+                20
               ]
             }
           ],
@@ -1600,6 +2360,10 @@
               "args": [
                 "Martin",
                 "Macros"
+              ],
+              "span": [
+                2,
+                23
               ]
             }
           ],
@@ -1626,7 +2390,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Something happened on this day. Let's put something in the agenda "
+              "text": "Something happened on this day. Let's put something in the agenda ",
+              "span": [
+                2,
+                68
+              ]
             }
           ],
           "span": [
@@ -1648,7 +2416,11 @@
                   "year": 2026
                 },
                 "wday": "Fri"
-              }
+              },
+              "span": [
+                69,
+                95
+              ]
             }
           ],
           "span": [
@@ -1674,7 +2446,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Bla bla"
+              "text": "Bla bla",
+              "span": [
+                2,
+                9
+              ]
             }
           ],
           "span": [
@@ -1704,7 +2480,11 @@
                 "type": "page_ref",
                 "v": "Friday, 26-06-2026"
               },
-              "full": "[[Friday, 26-06-2026]]"
+              "full": "[[Friday, 26-06-2026]]",
+              "span": [
+                2,
+                24
+              ]
             }
           ],
           "span": [
@@ -1721,7 +2501,11 @@
                 "type": "page_ref",
                 "v": "Wednesday, 24-06-2026"
               },
-              "full": "[[Wednesday, 24-06-2026]]"
+              "full": "[[Wednesday, 24-06-2026]]",
+              "span": [
+                25,
+                50
+              ]
             }
           ],
           "span": [
@@ -1758,7 +2542,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": " "
+              "text": " ",
+              "span": [
+                1,
+                2
+              ]
             }
           ],
           "span": [
@@ -1784,7 +2572,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Tried out the Org demo graph in Tine today"
+              "text": "Tried out the Org demo graph in Tine today",
+              "span": [
+                2,
+                44
+              ]
             }
           ],
           "span": [
@@ -1810,7 +2602,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "follow up on the "
+              "text": "follow up on the ",
+              "span": [
+                7,
+                24
+              ]
             },
             {
               "k": "link",
@@ -1818,11 +2614,19 @@
                 "type": "page_ref",
                 "v": "kitchen-sink"
               },
-              "full": "[[kitchen-sink]]"
+              "full": "[[kitchen-sink]]",
+              "span": [
+                24,
+                40
+              ]
             },
             {
               "k": "plain",
-              "text": " feature tour"
+              "text": " feature tour",
+              "span": [
+                40,
+                53
+              ]
             }
           ],
           "marker": "TODO",
@@ -1845,7 +2649,11 @@
                   "year": 2026
                 },
                 "wday": "Sat"
-              }
+              },
+              "span": [
+                54,
+                81
+              ]
             }
           ],
           "span": [
@@ -1873,7 +2681,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "loaded the graph and clicked around"
+              "text": "loaded the graph and clicked around",
+              "span": [
+                7,
+                42
+              ]
             }
           ],
           "marker": "DONE",
@@ -1900,7 +2712,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "something something"
+              "text": "something something",
+              "span": [
+                2,
+                21
+              ]
             }
           ],
           "span": [
@@ -1934,7 +2750,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": " "
+              "text": " ",
+              "span": [
+                1,
+                2
+              ]
             }
           ],
           "span": [
@@ -1990,7 +2810,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Formula 1 — namespace demo"
+              "text": "Formula 1 — namespace demo",
+              "span": [
+                2,
+                30
+              ]
             }
           ],
           "span": [
@@ -2019,6 +2843,10 @@
               "name": "namespace",
               "args": [
                 "Formula1"
+              ],
+              "span": [
+                2,
+                24
               ]
             }
           ],
@@ -2045,31 +2873,55 @@
           "inline": [
             {
               "k": "plain",
-              "text": "The tree above renders from the "
+              "text": "The tree above renders from the ",
+              "span": [
+                2,
+                34
+              ]
             },
             {
               "k": "macro",
               "name": "namespace",
               "args": [
                 "Formula1"
+              ],
+              "span": [
+                34,
+                56
               ]
             },
             {
               "k": "plain",
-              "text": " macro; each page shows its own icon (icon:: / "
+              "text": " macro; each page shows its own icon (icon:: / ",
+              "span": [
+                56,
+                103
+              ]
             },
             {
               "k": "tag",
               "children": [
                 {
                   "k": "plain",
-                  "text": "+ICON"
+                  "text": "+ICON",
+                  "span": [
+                    104,
+                    109
+                  ]
                 }
+              ],
+              "span": [
+                103,
+                109
               ]
             },
             {
               "k": "plain",
-              "text": ":)."
+              "text": ":).",
+              "span": [
+                109,
+                112
+              ]
             }
           ],
           "span": [
@@ -2127,7 +2979,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Season 2023"
+              "text": "Season 2023",
+              "span": [
+                2,
+                13
+              ]
             }
           ],
           "span": [
@@ -2153,7 +3009,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Recap of the 2023 Formula 1 season."
+              "text": "Recap of the 2023 Formula 1 season.",
+              "span": [
+                2,
+                37
+              ]
             }
           ],
           "span": [
@@ -2209,7 +3069,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Bahrain Grand Prix 2023"
+              "text": "Bahrain Grand Prix 2023",
+              "span": [
+                2,
+                25
+              ]
             }
           ],
           "span": [
@@ -2235,7 +3099,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Race notes for the 2023 Bahrain GP."
+              "text": "Race notes for the 2023 Bahrain GP.",
+              "span": [
+                2,
+                37
+              ]
             }
           ],
           "span": [
@@ -2291,7 +3159,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Season 2024"
+              "text": "Season 2024",
+              "span": [
+                2,
+                13
+              ]
             }
           ],
           "span": [
@@ -2317,7 +3189,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Recap of the 2024 Formula 1 season."
+              "text": "Recap of the 2024 Formula 1 season.",
+              "span": [
+                2,
+                37
+              ]
             }
           ],
           "span": [
@@ -2373,7 +3249,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Bahrain Grand Prix 2024"
+              "text": "Bahrain Grand Prix 2024",
+              "span": [
+                2,
+                25
+              ]
             }
           ],
           "span": [
@@ -2399,7 +3279,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Race notes for the 2024 Bahrain GP."
+              "text": "Race notes for the 2024 Bahrain GP.",
+              "span": [
+                2,
+                37
+              ]
             }
           ],
           "span": [
@@ -2464,7 +3348,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Welcome — this is an Org-mode demo graph for Tine"
+              "text": "Welcome — this is an Org-mode demo graph for Tine",
+              "span": [
+                2,
+                53
+              ]
             }
           ],
           "span": [
@@ -2477,15 +3365,27 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Each headline (a line starting with one or more "
+              "text": "Each headline (a line starting with one or more ",
+              "span": [
+                54,
+                102
+              ]
             },
             {
               "k": "verbatim",
-              "text": "*"
+              "text": "*",
+              "span": [
+                102,
+                105
+              ]
             },
             {
               "k": "plain",
-              "text": ") is a block; this paragraph under the headline is the block's body. Inline styles: "
+              "text": ") is a block; this paragraph under the headline is the block's body. Inline styles: ",
+              "span": [
+                105,
+                189
+              ]
             },
             {
               "k": "emphasis",
@@ -2493,13 +3393,25 @@
               "children": [
                 {
                   "k": "plain",
-                  "text": "bold"
+                  "text": "bold",
+                  "span": [
+                    190,
+                    194
+                  ]
                 }
+              ],
+              "span": [
+                189,
+                195
               ]
             },
             {
               "k": "plain",
-              "text": ", "
+              "text": ", ",
+              "span": [
+                195,
+                197
+              ]
             },
             {
               "k": "emphasis",
@@ -2507,13 +3419,25 @@
               "children": [
                 {
                   "k": "plain",
-                  "text": "italic"
+                  "text": "italic",
+                  "span": [
+                    198,
+                    204
+                  ]
                 }
+              ],
+              "span": [
+                197,
+                205
               ]
             },
             {
               "k": "plain",
-              "text": ", "
+              "text": ", ",
+              "span": [
+                205,
+                207
+              ]
             },
             {
               "k": "emphasis",
@@ -2521,13 +3445,25 @@
               "children": [
                 {
                   "k": "plain",
-                  "text": "underline"
+                  "text": "underline",
+                  "span": [
+                    208,
+                    217
+                  ]
                 }
+              ],
+              "span": [
+                207,
+                218
               ]
             },
             {
               "k": "plain",
-              "text": ", "
+              "text": ", ",
+              "span": [
+                218,
+                220
+              ]
             },
             {
               "k": "emphasis",
@@ -2535,29 +3471,57 @@
               "children": [
                 {
                   "k": "plain",
-                  "text": "strike"
+                  "text": "strike",
+                  "span": [
+                    221,
+                    227
+                  ]
                 }
+              ],
+              "span": [
+                220,
+                228
               ]
             },
             {
               "k": "plain",
-              "text": ", "
+              "text": ", ",
+              "span": [
+                228,
+                230
+              ]
             },
             {
               "k": "code",
-              "text": "code"
+              "text": "code",
+              "span": [
+                230,
+                236
+              ]
             },
             {
               "k": "plain",
-              "text": ", "
+              "text": ", ",
+              "span": [
+                236,
+                238
+              ]
             },
             {
               "k": "verbatim",
-              "text": "verbatim"
+              "text": "verbatim",
+              "span": [
+                238,
+                248
+              ]
             },
             {
               "k": "plain",
-              "text": ", and "
+              "text": ", and ",
+              "span": [
+                248,
+                254
+              ]
             },
             {
               "k": "emphasis",
@@ -2565,13 +3529,25 @@
               "children": [
                 {
                   "k": "plain",
-                  "text": "highlight"
+                  "text": "highlight",
+                  "span": [
+                    256,
+                    265
+                  ]
                 }
+              ],
+              "span": [
+                254,
+                267
               ]
             },
             {
               "k": "plain",
-              "text": "."
+              "text": ".",
+              "span": [
+                267,
+                268
+              ]
             }
           ],
           "span": [
@@ -2597,7 +3573,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Links: "
+              "text": "Links: ",
+              "span": [
+                2,
+                9
+              ]
             },
             {
               "k": "link",
@@ -2605,11 +3585,19 @@
                 "type": "page_ref",
                 "v": "logseq-claude"
               },
-              "full": "[[logseq-claude]]"
+              "full": "[[logseq-claude]]",
+              "span": [
+                9,
+                26
+              ]
             },
             {
               "k": "plain",
-              "text": ", a labelled link "
+              "text": ", a labelled link ",
+              "span": [
+                26,
+                44
+              ]
             },
             {
               "k": "link",
@@ -2620,14 +3608,26 @@
               "label": [
                 {
                   "k": "plain",
-                  "text": "the project page"
+                  "text": "the project page",
+                  "span": [
+                    61,
+                    77
+                  ]
                 }
               ],
-              "full": "[[logseq-claude][the project page]]"
+              "full": "[[logseq-claude][the project page]]",
+              "span": [
+                44,
+                79
+              ]
             },
             {
               "k": "plain",
-              "text": ", and an external one "
+              "text": ", and an external one ",
+              "span": [
+                79,
+                101
+              ]
             },
             {
               "k": "link",
@@ -2639,10 +3639,18 @@
               "label": [
                 {
                   "k": "plain",
-                  "text": "the Org website"
+                  "text": "the Org website",
+                  "span": [
+                    124,
+                    139
+                  ]
                 }
               ],
-              "full": "[[https://orgmode.org][the Org website]]"
+              "full": "[[https://orgmode.org][the Org website]]",
+              "span": [
+                101,
+                141
+              ]
             }
           ],
           "span": [
@@ -2670,20 +3678,36 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Boundary-safe plain text: a/b/c file paths, snake"
+              "text": "Boundary-safe plain text: a/b/c file paths, snake",
+              "span": [
+                2,
+                51
+              ]
             },
             {
               "k": "subscript",
               "children": [
                 {
                   "k": "plain",
-                  "text": "case_var,"
+                  "text": "case_var,",
+                  "span": [
+                    52,
+                    61
+                  ]
                 }
+              ],
+              "span": [
+                51,
+                61
               ]
             },
             {
               "k": "plain",
-              "text": " and 2"
+              "text": " and 2",
+              "span": [
+                61,
+                67
+              ]
             },
             {
               "k": "emphasis",
@@ -2691,13 +3715,25 @@
               "children": [
                 {
                   "k": "plain",
-                  "text": "3"
+                  "text": "3",
+                  "span": [
+                    68,
+                    69
+                  ]
                 }
+              ],
+              "span": [
+                67,
+                70
               ]
             },
             {
               "k": "plain",
-              "text": "4 all stay literal (no accidental emphasis)"
+              "text": "4 all stay literal (no accidental emphasis)",
+              "span": [
+                70,
+                113
+              ]
             }
           ],
           "span": [
@@ -2710,7 +3746,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "id:: 5a54faaf-5e54-45c4-9e09-3cac8a65ef48"
+              "text": "id:: 5a54faaf-5e54-45c4-9e09-3cac8a65ef48",
+              "span": [
+                114,
+                155
+              ]
             }
           ],
           "span": [
@@ -2736,7 +3776,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "[something]((5a54faaf-5e54-45c4-9e09-3cac8a65ef48))"
+              "text": "[something]((5a54faaf-5e54-45c4-9e09-3cac8a65ef48))",
+              "span": [
+                2,
+                53
+              ]
             }
           ],
           "span": [
@@ -2770,7 +3814,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": " "
+              "text": " ",
+              "span": [
+                1,
+                2
+              ]
             }
           ],
           "span": [
@@ -2796,7 +3844,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "high-priority task with a schedule"
+              "text": "high-priority task with a schedule",
+              "span": [
+                12,
+                46
+              ]
             }
           ],
           "marker": "TODO",
@@ -2820,7 +3872,11 @@
                   "year": 2026
                 },
                 "wday": "Fri"
-              }
+              },
+              "span": [
+                47,
+                74
+              ]
             }
           ],
           "span": [
@@ -2846,7 +3902,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "an in-progress task that references "
+              "text": "an in-progress task that references ",
+              "span": [
+                8,
+                44
+              ]
             },
             {
               "k": "link",
@@ -2854,7 +3914,11 @@
                 "type": "page_ref",
                 "v": "n-fold IP"
               },
-              "full": "[[n-fold IP]]"
+              "full": "[[n-fold IP]]",
+              "span": [
+                44,
+                57
+              ]
             }
           ],
           "marker": "DOING",
@@ -2883,7 +3947,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "a finished task (note the struck-through marker)"
+              "text": "a finished task (note the struck-through marker)",
+              "span": [
+                7,
+                55
+              ]
             }
           ],
           "marker": "DONE",
@@ -2910,7 +3978,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Inline timestamps: met on "
+              "text": "Inline timestamps: met on ",
+              "span": [
+                2,
+                28
+              ]
             },
             {
               "k": "timestamp",
@@ -2923,11 +3995,19 @@
                   "year": 2026
                 },
                 "wday": "Fri"
-              }
+              },
+              "span": [
+                28,
+                44
+              ]
             },
             {
               "k": "plain",
-              "text": " (active) and logged "
+              "text": " (active) and logged ",
+              "span": [
+                44,
+                65
+              ]
             },
             {
               "k": "timestamp",
@@ -2940,11 +4020,19 @@
                   "year": 2026
                 },
                 "wday": "Sat"
-              }
+              },
+              "span": [
+                65,
+                81
+              ]
             },
             {
               "k": "plain",
-              "text": " (inactive)"
+              "text": " (inactive)",
+              "span": [
+                81,
+                92
+              ]
             }
           ],
           "span": [
@@ -2970,7 +4058,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "A parent headline — children nest by star depth"
+              "text": "A parent headline — children nest by star depth",
+              "span": [
+                2,
+                51
+              ]
             }
           ],
           "span": [
@@ -2996,7 +4088,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "child block with "
+              "text": "child block with ",
+              "span": [
+                2,
+                19
+              ]
             },
             {
               "k": "emphasis",
@@ -3004,13 +4100,25 @@
               "children": [
                 {
                   "k": "plain",
-                  "text": "emphasis"
+                  "text": "emphasis",
+                  "span": [
+                    20,
+                    28
+                  ]
                 }
+              ],
+              "span": [
+                19,
+                29
               ]
             },
             {
               "k": "plain",
-              "text": " and a "
+              "text": " and a ",
+              "span": [
+                29,
+                36
+              ]
             },
             {
               "k": "link",
@@ -3018,11 +4126,19 @@
                 "type": "page_ref",
                 "v": "logseq-claude"
               },
-              "full": "[[logseq-claude]]"
+              "full": "[[logseq-claude]]",
+              "span": [
+                36,
+                53
+              ]
             },
             {
               "k": "plain",
-              "text": " link"
+              "text": " link",
+              "span": [
+                53,
+                58
+              ]
             }
           ],
           "span": [
@@ -3050,7 +4166,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "a finished child task"
+              "text": "a finished child task",
+              "span": [
+                7,
+                28
+              ]
             }
           ],
           "marker": "DONE",
@@ -3077,7 +4197,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "a grandchild, two levels deep"
+              "text": "a grandchild, two levels deep",
+              "span": [
+                2,
+                31
+              ]
             }
           ],
           "span": [
@@ -3103,7 +4227,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "A plain list inside one block block block"
+              "text": "A plain list inside one block block block",
+              "span": [
+                2,
+                43
+              ]
             }
           ],
           "span": [
@@ -3198,7 +4326,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "An Org table"
+              "text": "An Org table",
+              "span": [
+                2,
+                14
+              ]
             }
           ],
           "span": [
@@ -3212,13 +4344,21 @@
             [
               {
                 "k": "plain",
-                "text": "Feature"
+                "text": "Feature",
+                "span": [
+                  17,
+                  24
+                ]
               }
             ],
             [
               {
                 "k": "plain",
-                "text": "Status"
+                "text": "Status",
+                "span": [
+                  28,
+                  34
+                ]
               }
             ]
           ],
@@ -3227,13 +4367,21 @@
               [
                 {
                   "k": "plain",
-                  "text": "Outliner"
+                  "text": "Outliner",
+                  "span": [
+                    63,
+                    71
+                  ]
                 }
               ],
               [
                 {
                   "k": "plain",
-                  "text": "done"
+                  "text": "done",
+                  "span": [
+                    74,
+                    78
+                  ]
                 }
               ]
             ],
@@ -3241,13 +4389,21 @@
               [
                 {
                   "k": "plain",
-                  "text": "Queries"
+                  "text": "Queries",
+                  "span": [
+                    86,
+                    93
+                  ]
                 }
               ],
               [
                 {
                   "k": "plain",
-                  "text": "partial"
+                  "text": "partial",
+                  "span": [
+                    97,
+                    104
+                  ]
                 }
               ]
             ]
@@ -3275,7 +4431,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "An Org source block (a leading * inside stays code, not a headline)"
+              "text": "An Org source block (a leading * inside stays code, not a headline)",
+              "span": [
+                2,
+                69
+              ]
             }
           ],
           "span": [
@@ -3310,7 +4470,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "An Org quote block"
+              "text": "An Org quote block",
+              "span": [
+                2,
+                20
+              ]
             }
           ],
           "span": [
@@ -3326,10 +4490,18 @@
               "inline": [
                 {
                   "k": "plain",
-                  "text": "To be, or not to be, that is the question."
+                  "text": "To be, or not to be, that is the question.",
+                  "span": [
+                    35,
+                    77
+                  ]
                 },
                 {
-                  "k": "break"
+                  "k": "break",
+                  "span": [
+                    77,
+                    78
+                  ]
                 }
               ],
               "span": [
@@ -3361,7 +4533,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "A block with a properties drawer"
+              "text": "A block with a properties drawer",
+              "span": [
+                2,
+                34
+              ]
             }
           ],
           "span": [
@@ -3391,7 +4567,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "The drawer above is hidden metadata; this line is the visible body."
+              "text": "The drawer above is hidden metadata; this line is the visible body.",
+              "span": [
+                82,
+                149
+              ]
             }
           ],
           "span": [
@@ -3447,7 +4627,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "This page exists so the links on "
+              "text": "This page exists so the links on ",
+              "span": [
+                2,
+                35
+              ]
             },
             {
               "k": "link",
@@ -3455,11 +4639,19 @@
                 "type": "page_ref",
                 "v": "kitchen-sink"
               },
-              "full": "[[kitchen-sink]]"
+              "full": "[[kitchen-sink]]",
+              "span": [
+                35,
+                51
+              ]
             },
             {
               "k": "plain",
-              "text": " resolve to real content"
+              "text": " resolve to real content",
+              "span": [
+                51,
+                75
+              ]
             }
           ],
           "span": [
@@ -3487,7 +4679,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Tine is a fast, Logseq-compatible outliner — see "
+              "text": "Tine is a fast, Logseq-compatible outliner — see ",
+              "span": [
+                2,
+                53
+              ]
             },
             {
               "k": "link",
@@ -3495,11 +4691,19 @@
                 "type": "page_ref",
                 "v": "kitchen-sink"
               },
-              "full": "[[kitchen-sink]]"
+              "full": "[[kitchen-sink]]",
+              "span": [
+                53,
+                69
+              ]
             },
             {
               "k": "plain",
-              "text": " for the feature tour"
+              "text": " for the feature tour",
+              "span": [
+                69,
+                90
+              ]
             }
           ],
           "span": [
@@ -3512,7 +4716,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "id:: bc03f166-fe8c-4795-b2a3-777da5da10bd"
+              "text": "id:: bc03f166-fe8c-4795-b2a3-777da5da10bd",
+              "span": [
+                91,
+                132
+              ]
             }
           ],
           "span": [
@@ -3540,7 +4748,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Anything that links here shows up below in this page's Linked References"
+              "text": "Anything that links here shows up below in this page's Linked References",
+              "span": [
+                2,
+                74
+              ]
             }
           ],
           "span": [
@@ -3596,31 +4808,59 @@
           "inline": [
             {
               "k": "plain",
-              "text": "NOTE: This page (and the "
+              "text": "NOTE: This page (and the ",
+              "span": [
+                2,
+                27
+              ]
             },
             {
               "k": "verbatim",
-              "text": "mwe-namespace/..."
+              "text": "mwe-namespace/...",
+              "span": [
+                27,
+                46
+              ]
             },
             {
               "k": "plain",
-              "text": " pages) is a Claude-created example demonstrating Logseq namespaces. Safe to delete: remove every file in "
+              "text": " pages) is a Claude-created example demonstrating Logseq namespaces. Safe to delete: remove every file in ",
+              "span": [
+                46,
+                152
+              ]
             },
             {
               "k": "verbatim",
-              "text": "pages/"
+              "text": "pages/",
+              "span": [
+                152,
+                160
+              ]
             },
             {
               "k": "plain",
-              "text": " whose name starts with "
+              "text": " whose name starts with ",
+              "span": [
+                160,
+                184
+              ]
             },
             {
               "k": "verbatim",
-              "text": "mwe-namespace"
+              "text": "mwe-namespace",
+              "span": [
+                184,
+                199
+              ]
             },
             {
               "k": "plain",
-              "text": "."
+              "text": ".",
+              "span": [
+                199,
+                200
+              ]
             }
           ],
           "span": [
@@ -3646,7 +4886,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "This is a "
+              "text": "This is a ",
+              "span": [
+                2,
+                12
+              ]
             },
             {
               "k": "emphasis",
@@ -3654,21 +4898,41 @@
               "children": [
                 {
                   "k": "plain",
-                  "text": "parent"
+                  "text": "parent",
+                  "span": [
+                    13,
+                    19
+                  ]
                 }
+              ],
+              "span": [
+                12,
+                20
               ]
             },
             {
               "k": "plain",
-              "text": " namespace page. Its name has no slash, but other pages are named under it as "
+              "text": " namespace page. Its name has no slash, but other pages are named under it as ",
+              "span": [
+                20,
+                98
+              ]
             },
             {
               "k": "verbatim",
-              "text": "mwe-namespace/<child>"
+              "text": "mwe-namespace/<child>",
+              "span": [
+                98,
+                121
+              ]
             },
             {
               "k": "plain",
-              "text": "."
+              "text": ".",
+              "span": [
+                121,
+                122
+              ]
             }
           ],
           "span": [
@@ -3694,7 +4958,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Direct children (Tine shows these in a \"Namespace\" section below the page; click them):"
+              "text": "Direct children (Tine shows these in a \"Namespace\" section below the page; click them):",
+              "span": [
+                2,
+                89
+              ]
             }
           ],
           "span": [
@@ -3780,55 +5048,107 @@
           "inline": [
             {
               "k": "plain",
-              "text": "A namespace is purely name-based: a page named "
+              "text": "A namespace is purely name-based: a page named ",
+              "span": [
+                2,
+                49
+              ]
             },
             {
               "k": "verbatim",
-              "text": "a/b/c"
+              "text": "a/b/c",
+              "span": [
+                49,
+                56
+              ]
             },
             {
               "k": "plain",
-              "text": " is \"under\" "
+              "text": " is \"under\" ",
+              "span": [
+                56,
+                68
+              ]
             },
             {
               "k": "verbatim",
-              "text": "a/b"
+              "text": "a/b",
+              "span": [
+                68,
+                73
+              ]
             },
             {
               "k": "plain",
-              "text": ". There is no special property — only the "
+              "text": ". There is no special property — only the ",
+              "span": [
+                73,
+                117
+              ]
             },
             {
               "k": "verbatim",
-              "text": "/"
+              "text": "/",
+              "span": [
+                117,
+                120
+              ]
             },
             {
               "k": "plain",
-              "text": " in the page name. On disk the "
+              "text": " in the page name. On disk the ",
+              "span": [
+                120,
+                151
+              ]
             },
             {
               "k": "verbatim",
-              "text": "/"
+              "text": "/",
+              "span": [
+                151,
+                154
+              ]
             },
             {
               "k": "plain",
-              "text": " is encoded (see the filenames: "
+              "text": " is encoded (see the filenames: ",
+              "span": [
+                154,
+                186
+              ]
             },
             {
               "k": "verbatim",
-              "text": "mwe-namespace___alpha.org"
+              "text": "mwe-namespace___alpha.org",
+              "span": [
+                186,
+                213
+              ]
             },
             {
               "k": "plain",
-              "text": " uses triple-underscore for "
+              "text": " uses triple-underscore for ",
+              "span": [
+                213,
+                241
+              ]
             },
             {
               "k": "verbatim",
-              "text": "/"
+              "text": "/",
+              "span": [
+                241,
+                244
+              ]
             },
             {
               "k": "plain",
-              "text": ")."
+              "text": ").",
+              "span": [
+                244,
+                246
+              ]
             }
           ],
           "span": [
@@ -3854,7 +5174,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Try it: open "
+              "text": "Try it: open ",
+              "span": [
+                2,
+                15
+              ]
             },
             {
               "k": "link",
@@ -3862,11 +5186,19 @@
                 "type": "page_ref",
                 "v": "mwe-namespace/alpha/deep"
               },
-              "full": "[[mwe-namespace/alpha/deep]]"
+              "full": "[[mwe-namespace/alpha/deep]]",
+              "span": [
+                15,
+                43
+              ]
             },
             {
               "k": "plain",
-              "text": " and look at the breadcrumb above its title."
+              "text": " and look at the breadcrumb above its title.",
+              "span": [
+                43,
+                87
+              ]
             }
           ],
           "span": [
@@ -3924,15 +5256,27 @@
           "inline": [
             {
               "k": "plain",
-              "text": "This is "
+              "text": "This is ",
+              "span": [
+                2,
+                10
+              ]
             },
             {
               "k": "verbatim",
-              "text": "mwe-namespace/alpha"
+              "text": "mwe-namespace/alpha",
+              "span": [
+                10,
+                31
+              ]
             },
             {
               "k": "plain",
-              "text": ", a child of "
+              "text": ", a child of ",
+              "span": [
+                31,
+                44
+              ]
             },
             {
               "k": "link",
@@ -3940,11 +5284,19 @@
                 "type": "page_ref",
                 "v": "mwe-namespace"
               },
-              "full": "[[mwe-namespace]]"
+              "full": "[[mwe-namespace]]",
+              "span": [
+                44,
+                61
+              ]
             },
             {
               "k": "plain",
-              "text": ". (Claude-created example.)"
+              "text": ". (Claude-created example.)",
+              "span": [
+                61,
+                88
+              ]
             }
           ],
           "span": [
@@ -3972,15 +5324,27 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Above the title you should see a breadcrumb: "
+              "text": "Above the title you should see a breadcrumb: ",
+              "span": [
+                2,
+                47
+              ]
             },
             {
               "k": "verbatim",
-              "text": "mwe-namespace"
+              "text": "mwe-namespace",
+              "span": [
+                47,
+                62
+              ]
             },
             {
               "k": "plain",
-              "text": " (clickable, jumps to the parent)."
+              "text": " (clickable, jumps to the parent).",
+              "span": [
+                62,
+                96
+              ]
             }
           ],
           "span": [
@@ -4006,7 +5370,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "It has its own child one level deeper: "
+              "text": "It has its own child one level deeper: ",
+              "span": [
+                2,
+                41
+              ]
             },
             {
               "k": "link",
@@ -4014,11 +5382,19 @@
                 "type": "page_ref",
                 "v": "mwe-namespace/alpha/deep"
               },
-              "full": "[[mwe-namespace/alpha/deep]]"
+              "full": "[[mwe-namespace/alpha/deep]]",
+              "span": [
+                41,
+                69
+              ]
             },
             {
               "k": "plain",
-              "text": "."
+              "text": ".",
+              "span": [
+                69,
+                70
+              ]
             }
           ],
           "span": [
@@ -4046,7 +5422,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Cross-link to its sibling: "
+              "text": "Cross-link to its sibling: ",
+              "span": [
+                2,
+                29
+              ]
             },
             {
               "k": "link",
@@ -4054,11 +5434,19 @@
                 "type": "page_ref",
                 "v": "mwe-namespace/beta"
               },
-              "full": "[[mwe-namespace/beta]]"
+              "full": "[[mwe-namespace/beta]]",
+              "span": [
+                29,
+                51
+              ]
             },
             {
               "k": "plain",
-              "text": "."
+              "text": ".",
+              "span": [
+                51,
+                52
+              ]
             }
           ],
           "span": [
@@ -4116,15 +5504,27 @@
           "inline": [
             {
               "k": "plain",
-              "text": "This is "
+              "text": "This is ",
+              "span": [
+                2,
+                10
+              ]
             },
             {
               "k": "verbatim",
-              "text": "mwe-namespace/alpha/deep"
+              "text": "mwe-namespace/alpha/deep",
+              "span": [
+                10,
+                36
+              ]
             },
             {
               "k": "plain",
-              "text": ", two levels under "
+              "text": ", two levels under ",
+              "span": [
+                36,
+                55
+              ]
             },
             {
               "k": "link",
@@ -4132,11 +5532,19 @@
                 "type": "page_ref",
                 "v": "mwe-namespace"
               },
-              "full": "[[mwe-namespace]]"
+              "full": "[[mwe-namespace]]",
+              "span": [
+                55,
+                72
+              ]
             },
             {
               "k": "plain",
-              "text": ". (Claude-created example.)"
+              "text": ". (Claude-created example.)",
+              "span": [
+                72,
+                99
+              ]
             }
           ],
           "span": [
@@ -4164,15 +5572,27 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Its breadcrumb should read "
+              "text": "Its breadcrumb should read ",
+              "span": [
+                2,
+                29
+              ]
             },
             {
               "k": "verbatim",
-              "text": "mwe-namespace › alpha"
+              "text": "mwe-namespace › alpha",
+              "span": [
+                29,
+                54
+              ]
             },
             {
               "k": "plain",
-              "text": " (both clickable ancestors)."
+              "text": " (both clickable ancestors).",
+              "span": [
+                54,
+                82
+              ]
             }
           ],
           "span": [
@@ -4198,7 +5618,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Back up one level: "
+              "text": "Back up one level: ",
+              "span": [
+                2,
+                21
+              ]
             },
             {
               "k": "link",
@@ -4206,11 +5630,19 @@
                 "type": "page_ref",
                 "v": "mwe-namespace/alpha"
               },
-              "full": "[[mwe-namespace/alpha]]"
+              "full": "[[mwe-namespace/alpha]]",
+              "span": [
+                21,
+                44
+              ]
             },
             {
               "k": "plain",
-              "text": "."
+              "text": ".",
+              "span": [
+                44,
+                45
+              ]
             }
           ],
           "span": [
@@ -4268,15 +5700,27 @@
           "inline": [
             {
               "k": "plain",
-              "text": "This is "
+              "text": "This is ",
+              "span": [
+                2,
+                10
+              ]
             },
             {
               "k": "verbatim",
-              "text": "mwe-namespace/beta"
+              "text": "mwe-namespace/beta",
+              "span": [
+                10,
+                30
+              ]
             },
             {
               "k": "plain",
-              "text": ", a sibling of "
+              "text": ", a sibling of ",
+              "span": [
+                30,
+                45
+              ]
             },
             {
               "k": "link",
@@ -4284,11 +5728,19 @@
                 "type": "page_ref",
                 "v": "mwe-namespace/alpha"
               },
-              "full": "[[mwe-namespace/alpha]]"
+              "full": "[[mwe-namespace/alpha]]",
+              "span": [
+                45,
+                68
+              ]
             },
             {
               "k": "plain",
-              "text": " and a child of "
+              "text": " and a child of ",
+              "span": [
+                68,
+                84
+              ]
             },
             {
               "k": "link",
@@ -4296,11 +5748,19 @@
                 "type": "page_ref",
                 "v": "mwe-namespace"
               },
-              "full": "[[mwe-namespace]]"
+              "full": "[[mwe-namespace]]",
+              "span": [
+                84,
+                101
+              ]
             },
             {
               "k": "plain",
-              "text": ". (Claude-created example.)"
+              "text": ". (Claude-created example.)",
+              "span": [
+                101,
+                128
+              ]
             }
           ],
           "span": [
@@ -4329,7 +5789,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "Unlike alpha, beta has no deeper children — so its \"Namespace\" section is empty."
+              "text": "Unlike alpha, beta has no deeper children — so its \"Namespace\" section is empty.",
+              "span": [
+                2,
+                84
+              ]
             }
           ],
           "span": [
@@ -4385,7 +5849,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "n-fold integer programming — a stub page linked from "
+              "text": "n-fold integer programming — a stub page linked from ",
+              "span": [
+                2,
+                57
+              ]
             },
             {
               "k": "link",
@@ -4393,7 +5861,11 @@
                 "type": "page_ref",
                 "v": "kitchen-sink"
               },
-              "full": "[[kitchen-sink]]"
+              "full": "[[kitchen-sink]]",
+              "span": [
+                57,
+                73
+              ]
             }
           ],
           "span": [
@@ -4421,7 +5893,11 @@
           "inline": [
             {
               "k": "plain",
-              "text": "It exists so a "
+              "text": "It exists so a ",
+              "span": [
+                2,
+                17
+              ]
             },
             {
               "k": "link",
@@ -4429,11 +5905,19 @@
                 "type": "page_ref",
                 "v": "bracket link"
               },
-              "full": "[[bracket link]]"
+              "full": "[[bracket link]]",
+              "span": [
+                17,
+                33
+              ]
             },
             {
               "k": "plain",
-              "text": " with a space in the name navigates to a real file (=n-fold IP.org=)"
+              "text": " with a space in the name navigates to a real file (=n-fold IP.org=)",
+              "span": [
+                33,
+                101
+              ]
             }
           ],
           "span": [

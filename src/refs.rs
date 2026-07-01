@@ -68,9 +68,9 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>, org: b
                 // value's inline list per format, and the two differ (e.g. org `[[x][y]]`
                 // → Search link [no ref]; md `[[x][y]]` → Page_ref "x][y"). C6.
                 let inl = if org {
-                    crate::org_resolver::parse_inline_org(v)
+                    crate::org_resolver::parse_inline_org(v, 0)
                 } else {
-                    crate::resolver::parse_inline(v)
+                    crate::resolver::parse_inline(v, 0)
                 };
                 walk_inlines(&inl, page, block);
             }
@@ -118,8 +118,8 @@ fn walk_inlines(inlines: &[Inline], page: &mut Vec<String>, block: &mut Vec<Stri
                 }
                 walk_inlines(label, page, block);
             }
-            Inline::Tag { children } => page.push(unbracket(&tag_text(children))),
-            Inline::Macro { name, args } if name == "embed" => {
+            Inline::Tag { children, .. } => page.push(unbracket(&tag_text(children))),
+            Inline::Macro { name, args, .. } if name == "embed" => {
                 let joined = args.join(", ");
                 if let Some(id) = block_ref_id(&joined).and_then(|s| parse_uuid(&s)) {
                     block.push(id); // {{embed ((uuid))}}
@@ -131,8 +131,8 @@ fn walk_inlines(inlines: &[Inline], page: &mut Vec<String>, block: &mut Vec<Stri
                 }
             }
             Inline::Emphasis { children, .. }
-            | Inline::Subscript { children }
-            | Inline::Superscript { children } => walk_inlines(children, page, block),
+            | Inline::Subscript { children, .. }
+            | Inline::Superscript { children, .. } => walk_inlines(children, page, block),
             _ => {}
         }
     }
@@ -143,9 +143,9 @@ fn tag_text(children: &[Inline]) -> String {
     let mut s = String::new();
     for seg in children {
         match seg {
-            Inline::Plain { text } => s.push_str(text),
+            Inline::Plain { text, .. } => s.push_str(text),
             Inline::Link { full, .. } => s.push_str(full),
-            Inline::NestedLink { content } => s.push_str(content),
+            Inline::NestedLink { content, .. } => s.push_str(content),
             _ => {}
         }
     }

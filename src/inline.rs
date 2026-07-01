@@ -20,7 +20,20 @@
 //! BYTE-SAFETY: all `&str` slicing is at ASCII delimiter / run boundaries or via
 //! `char_indices`, never mid-codepoint.
 
-use crate::projection::{Inline, Url};
+use crate::projection::{Inline, Span, Url};
+
+/// Byte offset of `sub` within `parent` (both must share the same backing buffer — `sub`
+/// is a sub-slice of `parent`). Used to recover the absolute base for a sub-slice inline
+/// parse. Debug-asserts the sub-slice invariant.
+#[inline]
+pub(crate) fn ptr_base(sub: &str, parent: &str) -> usize {
+    debug_assert!(
+        sub.as_ptr() as usize >= parent.as_ptr() as usize
+            && sub.as_ptr() as usize + sub.len() <= parent.as_ptr() as usize + parent.len(),
+        "ptr_base: sub is not a sub-slice of parent"
+    );
+    sub.as_ptr() as usize - parent.as_ptr() as usize
+}
 
 // ---- byte classes ---------------------------------------------------------
 
@@ -237,19 +250,45 @@ const TAG_STOP: &[u8] = &[b'#', b',', b'!', b'?', b'\'', b'"', b':'];
 /// children) where children are Plain runs and page-ref Links (mldoc Hash_tag).
 /// `unescape_plain`: Markdown unescapes the plain runs (`#ab\|` → `ab|`); Org keeps
 /// backslashes literal (`#ab\|` → `ab\|`), matching its no-unescape invariant (C4).
-pub(crate) fn parse_tag_name(s: &str, start: usize, unescape_plain: bool) -> (usize, Vec<Inline>) {
+pub(crate) fn parse_tag_name(
+    s: &str,
+    start: usize,
+    unescape_plain: bool,
+    base: usize,
+) -> (usize, Vec<Inline>) {
     let b = s.as_bytes();
     let n = b.len();
     let mut i = start;
     let mut children: Vec<Inline> = Vec::new();
     let mut plain = String::new();
-    let flush = |plain: &mut String, children: &mut Vec<Inline>| {
-        if !plain.is_empty() {
-            let raw = std::mem::take(plain);
-            let text = if unescape_plain { unescape(&raw) } else { raw };
-            children.push(Inline::Plain { text });
-        }
-    };
+    // Byte offset (within `s`) where the current plain run began. The plain buffer only
+    // accumulates a CONTIGUOUS source range (each push is at the current `i` and advances
+    // it), so the run is `s[plain_buf_start..i]` — UNLESS `unescape` shortened it (md).
+    let mut plain_buf_start = start;
+    macro_rules! flush {
+        () => {{
+            if !plain.is_empty() {
+                let raw = std::mem::take(&mut plain);
+                // A `\`-unescape transform (md) can shorten the text vs. source, so S5
+                // can't hold — drop the span. Org keeps `\` literal → always trackable.
+                let span = if !unescape_plain || !raw.contains('\\') {
+                    Some(Span(base + plain_buf_start, base + i))
+                } else {
+                    None
+                };
+                let text = if unescape_plain { unescape(&raw) } else { raw };
+                children.push(Inline::Plain { text, span });
+            }
+        }};
+    }
+    macro_rules! push_plain {
+        ($pos:expr, $seg:expr) => {{
+            if plain.is_empty() {
+                plain_buf_start = $pos;
+            }
+            plain.push_str($seg);
+        }};
+    }
     loop {
         // (a) main run: non-space/eol, not a tag delim, not '['
         let run_start = i;
@@ -261,7 +300,7 @@ pub(crate) fn parse_tag_name(s: &str, start: usize, unescape_plain: bool) -> (us
             i += char_len(c);
         }
         if i > run_start {
-            plain.push_str(&s[run_start..i]);
+            push_plain!(run_start, &s[run_start..i]);
             continue;
         }
         if i >= n {
@@ -275,13 +314,13 @@ pub(crate) fn parse_tag_name(s: &str, start: usize, unescape_plain: bool) -> (us
             // (b) nested link `[[ …[[ ]]… ]]` (tried before page-ref, mirroring the
             // top-level bracket dispatch) then page ref.
             if let Some((end, content)) = parse_nested_link(s, i) {
-                flush(&mut plain, &mut children);
-                children.push(Inline::NestedLink { content });
+                flush!();
+                children.push(Inline::NestedLink { content, span: Some(Span(base + i, base + end)) });
                 i = end;
                 continue;
             }
             if let Some((end, name, full)) = parse_page_ref(s, i) {
-                flush(&mut plain, &mut children);
+                flush!();
                 children.push(Inline::Link {
                     url: Url::PageRef { v: name },
                     label: vec![],
@@ -289,12 +328,13 @@ pub(crate) fn parse_tag_name(s: &str, start: usize, unescape_plain: bool) -> (us
                     image: false,
                     metadata: String::new(),
                     title: None,
+                    span: Some(Span(base + i, base + end)),
                 });
                 i = end;
                 continue;
             }
             // else '[' is an ordinary tag char (c2)
-            plain.push('[');
+            push_plain!(i, "[");
             i += 1;
             continue;
         }
@@ -310,10 +350,10 @@ pub(crate) fn parse_tag_name(s: &str, start: usize, unescape_plain: bool) -> (us
         if TAG_STOP.contains(&c) {
             break;
         }
-        plain.push_str(&s[i..i + char_len(c)]);
+        push_plain!(i, &s[i..i + char_len(c)]);
         i += char_len(c);
     }
-    flush(&mut plain, &mut children);
+    flush!();
     (i, children)
 }
 
@@ -459,13 +499,14 @@ struct MdLink {
 
 /// Resolver (v0.2) entry: `[label](url)` / `![…](…)` → (node, end). Thin wrapper over the
 /// v1 `parse_md_link` so the resolver reuses its exact label/url/title/metadata semantics.
-pub(crate) fn md_link(s: &str, at: usize, image: bool) -> Option<(Inline, usize)> {
-    parse_md_link(s, at, image).map(|l| (l.node, l.end))
+/// `base` is the absolute byte offset of `s` in the block body (for label-child spans).
+pub(crate) fn md_link(s: &str, at: usize, image: bool, base: usize) -> Option<(Inline, usize)> {
+    parse_md_link(s, at, image, base).map(|l| (l.node, l.end))
 }
 
 /// `[label](url)` markdown link/image starting at `at` (the '['). `image` controls
 /// the `!`-prefixed full_text. Returns None if it isn't a well-formed link.
-fn parse_md_link(s: &str, at: usize, image: bool) -> Option<MdLink> {
+fn parse_md_link(s: &str, at: usize, image: bool, base: usize) -> Option<MdLink> {
     let b = s.as_bytes();
     let n = b.len();
     if b.get(at) != Some(&b'[') {
@@ -492,11 +533,14 @@ fn parse_md_link(s: &str, at: usize, image: bool) -> Option<MdLink> {
     // unescaped (full_text keeps the raw url_text). See DECISIONS.md.
     let (dest, title) = link_destination(&url_text);
     let url = classify_url(&dest);
-    let label = parse_label_inline(&label_text);
+    // The label text is byte-identical to the source slice `s[at+1 .. close]` (parse_label
+    // copies every byte verbatim), so its children index off `base + at + 1`. The Link's own
+    // `span` is set by the resolver (set_inline_span) over the full `[label](url)` extent.
+    let label = parse_label_inline(&label_text, base + at + 1);
     let prefix = if image { "!" } else { "" };
     let full = format!("{}[{}]({}){}", prefix, label_text, url_text, metadata);
     Some(MdLink {
-        node: Inline::Link { url, label, full, image, metadata, title },
+        node: Inline::Link { url, label, full, image, metadata, title, span: None },
         end,
     })
 }
@@ -633,31 +677,41 @@ fn read_link_url(s: &str, at: usize) -> Option<(String, usize)> {
     None
 }
 
-/// Returns (label_text, index_past_')') with the URL string between (label_text, ...).
-/// Wrapper name kept for clarity in callers.
-fn parse_label_inline(label_text: &str) -> Vec<Inline> {
-    // mldoc re-parses each Plain label segment with {emphasis,latex,entity,code,
-    // sub/sup}, consume:All-or-keep-original. For our corpus, labels are plain text
-    // (or contain code spans). We reproduce: try the restricted parse; if it fully
-    // decomposes into non-plain-only nodes, use it, else keep the plain text.
+/// Re-parse the raw `label_text` (byte-identical to its source slice) into inline nodes.
+/// `label_base` = the absolute byte offset of `label_text[0]` in the block body, so each
+/// segment's children index correctly (S2). mldoc re-parses each Plain label segment with
+/// {emphasis,latex,entity,code,sub/sup}, consume:All-or-keep-original. For our corpus,
+/// labels are plain text (or contain code spans). We reproduce: try the restricted parse;
+/// if it fully decomposes into non-plain-only nodes, use it, else keep the plain text.
+fn parse_label_inline(label_text: &str, label_base: usize) -> Vec<Inline> {
     if label_text.is_empty() {
         return vec![];
     }
     // First split off code spans (label_part already turned them into `...`): we
     // re-segment on backticks so code is preserved, and re-parse the rest for
-    // emphasis only.
+    // emphasis only. Each segment carries its byte offset within `label_text`.
     let segs = split_label_segments(label_text);
     let mut out = Vec::new();
-    for seg in segs {
+    for (seg_start, seg) in segs {
         match seg {
-            LabelSeg::Code(t) => out.push(Inline::Code { text: t }),
+            LabelSeg::Code { text, full_len } => out.push(Inline::Code {
+                text,
+                span: Some(Span(label_base + seg_start, label_base + seg_start + full_len)),
+            }),
             LabelSeg::Text(t) => {
-                if let Some(nodes) = reparse_label_text(&t) {
+                if let Some(nodes) = reparse_label_text(&t, label_base + seg_start) {
                     out.extend(nodes);
                 } else {
-                    // label value is unescaped (`\]`→`]`, `\*`→`*`, …) while full_text
-                    // keeps the raw backslash (mldoc). Mirrors page-ref value unescape.
-                    out.push(Inline::Plain { text: unescape(&t) });
+                    // label value is unescaped (`\]`→`]`, `\*`→`*`, …) while full_text keeps
+                    // the raw backslash (mldoc). The unescape can shorten the text vs. source;
+                    // keep a span only when it stayed 1:1 (length preserved ⟹ no `\` removed).
+                    let text = unescape(&t);
+                    let span = if text.len() == t.len() {
+                        Some(Span(label_base + seg_start, label_base + seg_start + t.len()))
+                    } else {
+                        None
+                    };
+                    out.push(Inline::Plain { text, span });
                 }
             }
         }
@@ -667,33 +721,42 @@ fn parse_label_inline(label_text: &str) -> Vec<Inline> {
 
 enum LabelSeg {
     Text(String),
-    Code(String),
+    /// `text` = the code span's inner content (backticks stripped); `full_len` = the code
+    /// span's FULL source byte length (backticks included), for the atom's span extent.
+    Code { text: String, full_len: usize },
 }
 
-fn split_label_segments(s: &str) -> Vec<LabelSeg> {
+/// Split `s` into `(byte_offset_in_s, segment)` pairs: code spans (`` `…` ``) become
+/// `Code`, the rest coalesces into `Text`. Each segment's source range is contiguous, so
+/// `byte_offset_in_s` is the start of `Text` runs / the opening backtick of `Code`.
+fn split_label_segments(s: &str) -> Vec<(usize, LabelSeg)> {
     let b = s.as_bytes();
     let n = b.len();
     let mut out = Vec::new();
     let mut buf = String::new();
+    let mut buf_start = 0usize;
     let mut i = 0;
     while i < n {
         if b[i] == b'`' {
             if let Some(end) = code_span_end_str(s, i) {
                 if !buf.is_empty() {
-                    out.push(LabelSeg::Text(std::mem::take(&mut buf)));
+                    out.push((buf_start, LabelSeg::Text(std::mem::take(&mut buf))));
                 }
-                // strip surrounding backticks for Code content
+                // strip surrounding backticks for Code content; keep the full length.
                 let inner = code_inner(&s[i..end]);
-                out.push(LabelSeg::Code(inner));
+                out.push((i, LabelSeg::Code { text: inner, full_len: end - i }));
                 i = end;
                 continue;
             }
+        }
+        if buf.is_empty() {
+            buf_start = i;
         }
         buf.push_str(&s[i..i + char_len(b[i])]);
         i += char_len(b[i]);
     }
     if !buf.is_empty() {
-        out.push(LabelSeg::Text(buf));
+        out.push((buf_start, LabelSeg::Text(buf)));
     }
     out
 }
@@ -708,14 +771,16 @@ fn code_inner(span: &str) -> String {
 }
 
 /// Re-parse a label text segment with emphasis-only (consume:All). Returns Some if
-/// the whole segment decomposes into emphasis nodes; None to keep it as plain.
-fn reparse_label_text(t: &str) -> Option<Vec<Inline>> {
+/// the whole segment decomposes into emphasis nodes; None to keep it as plain. `base` is
+/// the absolute byte offset of `t[0]` in the block body (so the reparsed nodes' spans are
+/// absolute, S2).
+fn reparse_label_text(t: &str, base: usize) -> Option<Vec<Inline>> {
     // Only emphasis (and the chars it consumes) are honored in labels; a label that
     // isn't pure-emphasis is kept verbatim (matches mldoc keeping Plain on failure).
     if !t.contains(['*', '_', '~', '^', '=']) {
         return None;
     }
-    let nodes = crate::resolver::parse_inline_ctx_emph(t);
+    let nodes = crate::resolver::parse_inline_ctx_emph(t, base);
     // accept only if it produced at least one emphasis and no bare plain leftovers
     let has_emph = nodes
         .iter()
@@ -964,11 +1029,13 @@ pub(crate) fn parse_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
             protocol: Some(protocol),
             link: Some(link),
         },
-        label: vec![Inline::Plain { text: full.clone() }],
+        // synthetic label (== full, no `<>`): no clean source slice → no span.
+        label: vec![Inline::Plain { text: full.clone(), span: None }],
         full,
         image: false,
         metadata: String::new(),
         title: None,
+        span: None,
     };
     Some((j + 1, node))
 }
@@ -999,7 +1066,7 @@ pub(crate) fn parse_email_autolink(s: &str, at: usize) -> Option<(usize, Inline)
     }
     let domain = s[dom_start..j].to_string();
     let val = serde_json::json!({ "local_part": local, "domain": domain });
-    Some((j + 1, Inline::Email { text: val }))
+    Some((j + 1, Inline::Email { text: val, span: None }))
 }
 
 /// Inline raw HTML `<tag ...> ... </tag>` (or self-contained). We capture the same
@@ -1166,11 +1233,13 @@ pub(crate) fn parse_bare_url(s: &str, at: usize) -> Option<(usize, Inline)> {
             protocol: Some(protocol),
             link: Some(link),
         },
-        label: vec![Inline::Plain { text: label_text }],
+        // synthetic label (unescaped url): may differ from source → no span.
+        label: vec![Inline::Plain { text: label_text, span: None }],
         full,
         image: false,
         metadata: String::new(),
         title: None,
+        span: None,
     };
     Some((end, node))
 }
@@ -1450,7 +1519,7 @@ pub(crate) fn parse_latex_backslash_at(s: &str, at: usize) -> Option<(Inline, us
     let body_start = at + 2;
     let end = find_sub(b, body_start, close.as_bytes())?;
     Some((
-        Inline::Latex { mode: mode.to_string(), body: s[body_start..end].to_string() },
+        Inline::Latex { mode: mode.to_string(), body: s[body_start..end].to_string(), span: None },
         end + 2,
     ))
 }
@@ -1465,7 +1534,7 @@ pub(crate) fn parse_latex_dollar_at(s: &str, at: usize) -> Option<(Inline, usize
         let body_start = at + 2;
         let end = find_sub_line(b, body_start, b"$$")?;
         return Some((
-            Inline::Latex { mode: "Displayed".to_string(), body: s[body_start..end].to_string() },
+            Inline::Latex { mode: "Displayed".to_string(), body: s[body_start..end].to_string(), span: None },
             end + 2,
         ));
     }
@@ -1484,7 +1553,7 @@ pub(crate) fn parse_latex_dollar_at(s: &str, at: usize) -> Option<(Inline, usize
         return None;
     }
     Some((
-        Inline::Latex { mode: "Inline".to_string(), body: s[body_start..j].to_string() },
+        Inline::Latex { mode: "Inline".to_string(), body: s[body_start..j].to_string(), span: None },
         j + 1,
     ))
 }
@@ -1512,6 +1581,7 @@ pub(crate) fn parse_block_ref_at(s: &str, at: usize) -> Option<(Inline, usize)> 
             image: false,
             metadata: String::new(),
             title: None,
+            span: None,
         },
         j + 2,
     ))
@@ -1539,7 +1609,7 @@ pub(crate) fn parse_macro_at(s: &str, at: usize) -> Option<(Inline, usize)> {
             continue;
         }
         if let Some((name, args)) = parse_macro(&s[inner_start..j]) {
-            return Some((Inline::Macro { name, args }, j + close.len()));
+            return Some((Inline::Macro { name, args, span: None }, j + close.len()));
         }
     }
     None
@@ -1606,12 +1676,14 @@ pub(crate) fn parse_angle_timestamp(s: &str, at: usize) -> Option<(usize, Inline
             return Some((end2, Inline::Timestamp {
                 ts: "Range".to_string(),
                 date: val,
+                span: None,
             }));
         }
     }
     Some((end1, Inline::Timestamp {
         ts: "Date".to_string(),
         date: ts1,
+        span: None,
     }))
 }
 
@@ -1633,6 +1705,7 @@ pub(crate) fn parse_keyword_timestamp(s: &str, at: usize) -> Option<(usize, Inli
                 return Some((end, Inline::Timestamp {
                     ts: ty.to_string(),
                     date: ts,
+                    span: None,
                 }));
             }
             return None;

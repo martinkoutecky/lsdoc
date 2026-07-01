@@ -318,23 +318,54 @@ pub fn nest_items(flat: Vec<ListItem>) -> Vec<ListItem> {
 #[serde(tag = "k")]
 pub enum Inline {
     #[serde(rename = "plain")]
-    Plain { text: String },
+    Plain {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "code")]
-    Code { text: String },
+    Code {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "verbatim")]
-    Verbatim { text: String },
+    Verbatim {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "break")]
-    Break,
+    Break {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "hardbreak")]
-    HardBreak,
+    HardBreak {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "emphasis")]
-    Emphasis { emph: String, children: Vec<Inline> },
+    Emphasis {
+        emph: String,
+        children: Vec<Inline>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     /// Org `_x_`/`_{x}` subscript and `^x`/`^{x}` superscript (mldoc Subscript/
     /// Superscript). Inline content, re-parsed for nested emphasis/links.
     #[serde(rename = "subscript")]
-    Subscript { children: Vec<Inline> },
+    Subscript {
+        children: Vec<Inline>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "superscript")]
-    Superscript { children: Vec<Inline> },
+    Superscript {
+        children: Vec<Inline>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "link")]
     Link {
         url: Url,
@@ -353,32 +384,73 @@ pub enum Inline {
         /// not unescaped, matching mldoc). Omitted when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
     },
     #[serde(rename = "nested_link")]
-    NestedLink { content: String },
+    NestedLink {
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     /// Org dedicated/radio target `<<name>>` (mldoc `Target`). The destination
     /// anchor for an internal org link; renders as its text.
     #[serde(rename = "target")]
-    Target { text: String },
+    Target {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "tag")]
-    Tag { children: Vec<Inline> },
+    Tag {
+        children: Vec<Inline>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "macro")]
-    Macro { name: String, args: Vec<String> },
+    Macro {
+        name: String,
+        args: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "latex")]
-    Latex { mode: String, body: String },
+    Latex {
+        mode: String,
+        body: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     /// `ts` ∈ {`Date`,`Range`,`Scheduled`,`Deadline`,`Closed`}; `date` is mldoc's
     /// raw date/range record, **declared opaque** for rendering (shape in `AST.md`).
     #[serde(rename = "timestamp")]
-    Timestamp { ts: String, date: serde_json::Value },
+    Timestamp {
+        ts: String,
+        date: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "fnref")]
-    Fnref { name: String },
+    Fnref {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     /// Inline raw HTML, e.g. `<span class="x">…</span>` (mldoc `Inline_Html`).
     #[serde(rename = "inline_html")]
-    InlineHtml { text: String },
+    InlineHtml {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     /// Email autolink `<a@b.com>` (mldoc `Email`); `text` is mldoc's raw address
     /// record, **declared opaque** for rendering (shape in `AST.md`).
     #[serde(rename = "email")]
-    Email { text: serde_json::Value },
+    Email {
+        text: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     /// LaTeX named entity `\Delta` / `\Delta{}` (mldoc `Entity`), resolved from the
     /// 339-entry table in `entities.rs`. Carries mldoc's full entity record.
     #[serde(rename = "entity")]
@@ -389,11 +461,45 @@ pub enum Inline {
         html: String,
         ascii: String,
         unicode: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
     },
     /// Inline Clojure-hiccup vector `[:tag …]` mixed with text (mldoc `Inline_Hiccup`).
     /// `v` is the RAW bracket text verbatim (children unparsed). See `AST.md`.
     #[serde(rename = "hiccup")]
-    Hiccup { v: String },
+    Hiccup {
+        v: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
+}
+
+/// Set the span field on any `Inline` node. Used by resolvers after creation.
+pub(crate) fn set_inline_span(n: &mut Inline, span: Option<Span>) {
+    match n {
+        Inline::Plain { span: s, .. }
+        | Inline::Code { span: s, .. }
+        | Inline::Verbatim { span: s, .. }
+        | Inline::Break { span: s }
+        | Inline::HardBreak { span: s }
+        | Inline::Emphasis { span: s, .. }
+        | Inline::Subscript { span: s, .. }
+        | Inline::Superscript { span: s, .. }
+        | Inline::Link { span: s, .. }
+        | Inline::NestedLink { span: s, .. }
+        | Inline::Target { span: s, .. }
+        | Inline::Tag { span: s, .. }
+        | Inline::Macro { span: s, .. }
+        | Inline::Latex { span: s, .. }
+        | Inline::Timestamp { span: s, .. }
+        | Inline::Fnref { span: s, .. }
+        | Inline::InlineHtml { span: s, .. }
+        | Inline::Email { span: s, .. }
+        | Inline::Entity { span: s, .. }
+        | Inline::Hiccup { span: s, .. } => {
+            *s = span;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

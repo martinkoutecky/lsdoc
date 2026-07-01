@@ -15,7 +15,7 @@
 
 use crate::inline::{char_len, is_underscore_delim, is_ws, is_ws_or_nl};
 use crate::lexer::{Kind, Token};
-use crate::projection::Inline;
+use crate::projection::{Inline, Span};
 
 /// Active Org constructs (mirrors `crate::org::Ctx`; the 4 variants below match mldoc's
 /// top / nested-emphasis / link-label / sub-superscript re-parse contexts exactly). Fields
@@ -229,19 +229,30 @@ pub(crate) fn org_lex(s: &str) -> Vec<Token> {
 }
 
 
-/// Parse an Org inline run at top level.
-pub(crate) fn parse_inline_org(text: &str) -> Vec<Inline> {
-    parse_ctx(text, Ctx::top())
+/// Parse an Org inline run at top level. `base` is the absolute byte offset of `text[0]` in
+/// the block body — every emitted node's `span` is absolute (S2).
+pub(crate) fn parse_inline_org(text: &str, base: usize) -> Vec<Inline> {
+    parse_ctx(text, Ctx::top(), base)
 }
 
-fn parse_ctx(text: &str, ctx: Ctx) -> Vec<Inline> {
+fn parse_ctx(text: &str, ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut toks = org_lex(text);
-    resolve(text, &mut toks, ctx)
+    resolve(text, &mut toks, ctx, base)
 }
 
-fn flush(out: &mut Vec<Inline>, pending: &mut String) {
+/// Flush the pending plain run as a `Plain` node (see the md resolver's `flush` for the
+/// `plain_start`/`plain_end` contract — identical here).
+fn flush(
+    out: &mut Vec<Inline>,
+    pending: &mut String,
+    plain_start: &mut Option<usize>,
+    plain_end: usize,
+) {
     if !pending.is_empty() {
-        out.push(Inline::Plain { text: std::mem::take(pending) });
+        let span = plain_start.take().map(|s| Span(s, plain_end));
+        out.push(Inline::Plain { text: std::mem::take(pending), span });
+    } else {
+        plain_start.take();
     }
 }
 
@@ -251,11 +262,15 @@ fn flush(out: &mut Vec<Inline>, pending: &mut String) {
 /// leaf / bracket sub-steps). `last_plain_char` mirrors mldoc `push_plain`: updated on EVERY
 /// plain append and PERSISTS across nodes/flush (an emphasis node does NOT reset it).
 #[allow(unused_assignments)] // last_plain_char / fresh are running state; final writes may be unread
-fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
+fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let bb = s.as_bytes();
     let mut out: Vec<Inline> = Vec::new();
     let mut pending = String::new();
     let mut last_plain_char: Option<u8> = None;
+    // Span tracking for the pending plain run (see the md resolver): `plain_start` is the
+    // ABSOLUTE start (None once a `\`-transform makes it non-1:1), `plain_end` the end.
+    let mut plain_start: Option<usize> = None;
+    let mut plain_end: usize = 0;
     let mut no_closer = [[false; 2]; 5];
 
     // Bracket-pairing maps (shared with md; computed once when `[` is present) + monotone
@@ -289,9 +304,22 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
     // absorbed as literal text.
     let mut fresh = true;
 
+    // Update the plain-run span for a push of `$len` source bytes starting at `$off` (a
+    // byte offset within `s`). Must be evaluated BEFORE the push (reads `pending.is_empty()`).
+    macro_rules! track {
+        ($off:expr, $len:expr) => {{
+            if pending.is_empty() {
+                plain_start = Some(base + $off);
+            }
+            if plain_start.is_some() {
+                plain_end = base + $off + $len;
+            }
+        }};
+    }
     macro_rules! append {
-        ($seg:expr) => {{
+        ($off:expr, $seg:expr) => {{
             let seg: &str = $seg;
+            track!($off, seg.len());
             if let Some(b) = seg.bytes().next_back() {
                 last_plain_char = Some(b);
             }
@@ -299,8 +327,9 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
         }};
     }
     macro_rules! push_byte {
-        ($c:expr) => {{
+        ($off:expr, $c:expr) => {{
             let c: u8 = $c;
+            track!($off, 1usize);
             pending.push(c as char);
             last_plain_char = Some(c);
         }};
@@ -331,32 +360,39 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                         None
                     })
                     .or_else(|| if ctx.urls { crate::inline::parse_bare_url(s, off) } else { None });
-                    if let Some((end, node)) = leaf {
-                        flush(&mut out, &mut pending);
+                    if let Some((end, mut node)) = leaf {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + end)));
                         out.push(node);
-                        t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, ctx);
+                        t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx);
                         continue;
                     }
                 }
-                append!(&txt);
+                append!(off, &txt);
                 fresh = is_ws;
             }
             Kind::Escape(x) => {
-                append!(x.as_str());
+                // (dead in org — org_lex emits Punct(`\`), not Escape — but a `\`-escape drops
+                // bytes, so mark the run non-1:1.)
+                append!(off, x.as_str());
+                plain_start = None;
                 fresh = false;
             }
             Kind::Newline(c) => {
                 if ctx.breaks {
-                    flush(&mut out, &mut pending);
-                    out.push(Inline::Break);
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    out.push(Inline::Break { span: Some(Span(base + off, base + off + 1)) });
                 } else {
-                    append!(if *c == b'\n' { "\n" } else { "\r" });
+                    append!(off, if *c == b'\n' { "\n" } else { "\r" });
                 }
                 fresh = true;
             }
             Kind::Leaf(node) => {
-                flush(&mut out, &mut pending);
-                out.push(node.clone());
+                flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                let tok_end_val = if t + 1 < toks.len() { toks[t + 1].off } else { s.len() };
+                let mut node = node.clone();
+                crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + tok_end_val)));
+                out.push(node);
                 fresh = true;
             }
             Kind::Delim { ch, .. } => {
@@ -369,26 +405,28 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                     b'^' => (2, "Highlight", false, false, false),
                     _ => unreachable!(),
                 };
-                if let Some((node, end)) = parse_emphasis(
+                if let Some((mut node, end)) = parse_emphasis(
                     s, bb, off, k, kind, fwd_gate, bwd_gate, continue_search, ctx,
-                    last_plain_char, &mut no_closer,
+                    last_plain_char, &mut no_closer, base,
                 ) {
-                    flush(&mut out, &mut pending);
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + end)));
                     out.push(node);
                     fresh = true;
                     t = resync(toks, t, end);
                     continue;
                 }
                 if (ch == b'_' || ch == b'^') && ctx.scripts {
-                    if let Some((node, end)) = try_script(s, bb, off, ch) {
-                        flush(&mut out, &mut pending);
+                    if let Some((mut node, end)) = try_script(s, bb, off, ch, base) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + end)));
                         out.push(node);
                         fresh = true;
                         t = resync(toks, t, end);
                         continue;
                     }
                 }
-                push_byte!(ch); // plain_one; marker is a PLAIN_DELIM → fresh
+                push_byte!(off, ch); // plain_one; marker is a PLAIN_DELIM → fresh
                 fresh = true;
             }
             Kind::Punct(b'\\') => {
@@ -401,18 +439,28 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 };
                 let (bs, end) = org_backslash_at(s, bb, off, ctx, latex_ok);
                 match bs {
-                    Bs::Node(node) => {
-                        flush(&mut out, &mut pending);
+                    Bs::Node(mut node) => {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + end)));
                         out.push(node);
                     }
                     Bs::Plain(text) => {
                         if let Some(b) = text.bytes().next_back() {
                             last_plain_char = Some(b);
                         }
+                        // 1:1 with source iff the pushed text spans the whole consumed extent
+                        // (`\<punct>` and lone `\` keep the `\`); an unknown entity `\foo`
+                        // drops the `\` (text shorter than extent) → S5 can't hold.
+                        let one_to_one = text.len() == end - off;
+                        if one_to_one {
+                            track!(off, text.len());
+                        } else {
+                            plain_start = None;
+                        }
                         pending.push_str(&text);
                     }
                 }
-                t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, ctx);
+                t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx);
                 continue;
             }
             Kind::Punct(c) => {
@@ -421,16 +469,17 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                 let mut hit: Option<usize> = None;
                 match c {
                     b'#' if ctx.tags => {
-                        let (e, children) = crate::inline::parse_tag_name(s, off + 1, false);
+                        let (e, children) = crate::inline::parse_tag_name(s, off + 1, false, base);
                         if e > off + 1 && !children.is_empty() {
-                            flush(&mut out, &mut pending);
-                            out.push(Inline::Tag { children });
+                            flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                            out.push(Inline::Tag { children, span: Some(Span(base + off, base + e)) });
                             hit = Some(e);
                         }
                     }
                     b'$' if ctx.latex => {
-                        if let Some((node, e)) = try_latex_dollar_at(s, bb, off) {
-                            flush(&mut out, &mut pending);
+                        if let Some((mut node, e)) = try_latex_dollar_at(s, bb, off) {
+                            flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                            crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                             out.push(node);
                             hit = Some(e);
                         }
@@ -441,42 +490,47 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                         }
                         if rbracket < bb.len() {
                             let rb_lb = present!(sq_rb_lb, b']', b'[', off);
-                            if let Some((node, e)) = try_bracket_at(
+                            if let Some((mut node, e)) = try_bracket_at(
                                 s, bb, off, ctx, &hiccup_close, &nested_close, &real_dbl,
-                                &mut real_dbl_cur, &mut crlf, rb_lb,
+                                &mut real_dbl_cur, &mut crlf, rb_lb, base,
                             ) {
-                                flush(&mut out, &mut pending);
+                                flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                                crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                                 out.push(node);
                                 hit = Some(e);
                             }
                         }
                     }
                     b'~' if ctx.code && fresh => {
-                        if let Some((node, e)) = try_code_verbatim_at(s, bb, off, b'~') {
-                            flush(&mut out, &mut pending);
+                        if let Some((mut node, e)) = try_code_verbatim_at(s, bb, off, b'~') {
+                            flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                            crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                             out.push(node);
                             hit = Some(e);
                         }
                     }
                     b'=' if ctx.code && fresh => {
-                        if let Some((node, e)) = try_code_verbatim_at(s, bb, off, b'=') {
-                            flush(&mut out, &mut pending);
+                        if let Some((mut node, e)) = try_code_verbatim_at(s, bb, off, b'=') {
+                            flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                            crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                             out.push(node);
                             hit = Some(e);
                         }
                     }
                     b'<' if ctx.angle && fresh => {
                         let html_closer = present!(sq_lt_sl, b'<', b'/', off);
-                        if let Some((node, e)) = try_target_angle_at(s, bb, off, ctx, html_closer) {
-                            flush(&mut out, &mut pending);
+                        if let Some((mut node, e)) = try_target_angle_at(s, bb, off, ctx, html_closer) {
+                            flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                            crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                             out.push(node);
                             hit = Some(e);
                         }
                     }
                     b'{' if ctx.macros && fresh => {
                         if present!(sq_rbrace, b'}', b'}', off) {
-                            if let Some((node, e)) = try_macro_at(s, bb, off) {
-                                flush(&mut out, &mut pending);
+                            if let Some((mut node, e)) = try_macro_at(s, bb, off) {
+                                flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                                crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                                 out.push(node);
                                 hit = Some(e);
                             }
@@ -484,8 +538,9 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                     }
                     b'(' if ctx.block_refs && fresh => {
                         if present!(sq_rr, b')', b')', off) {
-                            if let Some((node, e)) = try_block_ref_at(s, bb, off) {
-                                flush(&mut out, &mut pending);
+                            if let Some((mut node, e)) = try_block_ref_at(s, bb, off) {
+                                flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                                crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                                 out.push(node);
                                 hit = Some(e);
                             }
@@ -494,23 +549,25 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx) -> Vec<Inline> {
                     _ => {}
                 }
                 if let Some(e) = hit {
-                    t = resync_straddle(s, toks, t, e, &mut out, &mut pending, &mut last_plain_char, &mut fresh, ctx);
+                    t = resync_straddle(s, toks, t, e, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx);
                     continue;
                 }
                 // not consumed: plain. `# $ [` are PLAIN_DELIMS (fresh); the swallow bytes
                 // and non-openers (`] ) } > !` …) are absorbed mid-run (not fresh).
-                push_byte!(c);
+                push_byte!(off, c);
                 fresh = matches!(c, b'#' | b'$' | b'[');
             }
             Kind::LatexBs(c) => {
-                push_byte!(b'\\');
-                push_byte!(*c);
+                // both bytes (`\` + c) are kept → 1:1 with source (2 bytes at `off`).
+                let c = *c;
+                push_byte!(off, b'\\');
+                push_byte!(off + 1, c);
                 fresh = false;
             }
         }
         t += 1;
     }
-    flush(&mut out, &mut pending);
+    flush(&mut out, &mut pending, &mut plain_start, plain_end);
     out
 }
 
@@ -527,6 +584,7 @@ fn parse_emphasis(
     ctx: Ctx,
     before: Option<u8>,
     no_closer: &mut [[bool; 2]; 5],
+    base: usize,
 ) -> Option<(Inline, usize)> {
     let n = bb.len();
     let c = bb[open_start];
@@ -566,8 +624,9 @@ fn parse_emphasis(
         }
     };
     let content = s[content_start..closer].to_string();
-    let children = parse_ctx(&content, Ctx::emph());
-    Some((Inline::Emphasis { emph: kind.to_string(), children }, closer + k))
+    let children = parse_ctx(&content, Ctx::emph(), base + content_start);
+    // span set by the caller over [open_start, closer + k).
+    Some((Inline::Emphasis { emph: kind.to_string(), children, span: None }, closer + k))
 }
 
 /// First closing run (len ≥ k) of `c` with a non-ws byte before it (escapes skipped); the
@@ -618,10 +677,10 @@ fn find_closer(bb: &[u8], c: u8, k: usize, from: usize, fwd_gate: bool, continue
 
 /// `_x`/`_{x}` → Subscript, `^x`/`^{x}` → Superscript (mldoc `gen_script`). Returns the node
 /// and the consumed byte extent; `None` if no valid script body.
-fn try_script(s: &str, bb: &[u8], i: usize, c: u8) -> Option<(Inline, usize)> {
+fn try_script(s: &str, bb: &[u8], i: usize, c: u8, base: usize) -> Option<(Inline, usize)> {
     let n = bb.len();
     let after = *bb.get(i + 1)?;
-    let (content, end) = if after == b'{' {
+    let (content, content_start, end) = if after == b'{' {
         let body_start = i + 2;
         let mut j = body_start;
         while j < n && bb[j] != b'}' && bb[j] != b'\n' && bb[j] != b'\r' {
@@ -630,7 +689,7 @@ fn try_script(s: &str, bb: &[u8], i: usize, c: u8) -> Option<(Inline, usize)> {
         if j >= n || bb[j] != b'}' || j == body_start {
             return None;
         }
-        (s[body_start..j].to_string(), j + 1)
+        (s[body_start..j].to_string(), body_start, j + 1)
     } else {
         if is_org_space(after) {
             return None;
@@ -640,13 +699,14 @@ fn try_script(s: &str, bb: &[u8], i: usize, c: u8) -> Option<(Inline, usize)> {
         while j < n && !is_org_space(bb[j]) {
             j += char_len(bb[j]);
         }
-        (s[start..j].to_string(), j)
+        (s[start..j].to_string(), start, j)
     };
-    let children = parse_ctx(&content, Ctx::script());
+    let children = parse_ctx(&content, Ctx::script(), base + content_start);
+    // span set by the caller over [i, end).
     let node = if c == b'_' {
-        Inline::Subscript { children }
+        Inline::Subscript { children, span: None }
     } else {
-        Inline::Superscript { children }
+        Inline::Superscript { children, span: None }
     };
     Some((node, end))
 }
@@ -696,7 +756,7 @@ fn org_backslash_at(s: &str, bb: &[u8], i: usize, ctx: Ctx, latex_ok: bool) -> (
     if ctx.entity {
         match bb.get(i + 1) {
             None => return (Bs::Plain("\\".to_string()), i + 1),
-            Some(b'\n') | Some(b'\r') => return (Bs::Node(Inline::HardBreak), i + 1),
+            Some(b'\n') | Some(b'\r') => return (Bs::Node(Inline::HardBreak { span: None }), i + 1),
             _ => {}
         }
         // `latex_ok` is the caller's closer-floor verdict (a `\)`/`\]` exists ahead). When it
@@ -727,6 +787,7 @@ fn org_backslash_at(s: &str, bb: &[u8], i: usize, ctx: Ctx, latex_ok: bool) -> (
                         html: e.html.to_string(),
                         ascii: e.ascii.to_string(),
                         unicode: e.unicode.to_string(),
+                        span: None,
                     }),
                     j,
                 ),
@@ -757,6 +818,9 @@ fn resync_straddle(
     pending: &mut String,
     last_plain_char: &mut Option<u8>,
     fresh: &mut bool,
+    plain_start: &mut Option<usize>,
+    plain_end: &mut usize,
+    base: usize,
     ctx: Ctx,
 ) -> usize {
     let n = s.len();
@@ -773,14 +837,18 @@ fn resync_straddle(
             && crate::inline::parse_keyword_timestamp(s, end).is_some())
             || (ctx.urls && crate::inline::parse_bare_url(s, end).is_some());
         if leads {
-            flush(out, pending);
-            out.extend(parse_ctx(&s[end..], ctx));
+            flush(out, pending, plain_start, *plain_end);
+            out.extend(parse_ctx(&s[end..], ctx, base + end));
             return toks.len(); // recursion handled the remainder
         }
+        // the tail is pushed RAW (org never unescapes) → 1:1 with source from `end`. pending
+        // is empty here (the caller flushed before pushing its node), so this is a fresh run.
         let tail = &s[end..tok_end(t)];
         if let Some(b) = tail.bytes().next_back() {
             *last_plain_char = Some(b);
         }
+        *plain_start = Some(base + end);
+        *plain_end = base + tok_end(t);
         *fresh = !tail.is_empty() && tail.bytes().all(|b| b == b' ' || b == b'\t');
         pending.push_str(tail);
         t += 1;
@@ -801,7 +869,7 @@ fn try_latex_dollar_at(s: &str, bb: &[u8], i: usize) -> Option<(Inline, usize)> 
     if after == b'$' {
         let body_start = i + 2;
         let end = crate::inline::find_sub_line(bb, body_start, b"$$")?;
-        return Some((Inline::Latex { mode: "Displayed".to_string(), body: s[body_start..end].to_string() }, end + 2));
+        return Some((Inline::Latex { mode: "Displayed".to_string(), body: s[body_start..end].to_string(), span: None }, end + 2));
     }
     if after == b' ' {
         return None;
@@ -817,7 +885,7 @@ fn try_latex_dollar_at(s: &str, bb: &[u8], i: usize) -> Option<(Inline, usize)> 
     if matches!(bb[j - 1], b' ' | b'(' | b'[' | b'{') {
         return None;
     }
-    Some((Inline::Latex { mode: "Inline".to_string(), body: s[body_start..j].to_string() }, j + 1))
+    Some((Inline::Latex { mode: "Inline".to_string(), body: s[body_start..j].to_string(), span: None }, j + 1))
 }
 
 /// `~ … ~` Code / `= … = ` Verbatim (non-empty, no marker / eol inside) — v1 try_code/verbatim.
@@ -831,9 +899,9 @@ fn try_code_verbatim_at(s: &str, bb: &[u8], i: usize, marker: u8) -> Option<(Inl
     if j > start && j < n && bb[j] == marker {
         let body = s[start..j].to_string();
         let node = if marker == b'~' {
-            Inline::Code { text: body }
+            Inline::Code { text: body, span: None }
         } else {
-            Inline::Verbatim { text: body }
+            Inline::Verbatim { text: body, span: None }
         };
         Some((node, j + 1))
     } else {
@@ -856,7 +924,7 @@ fn try_target_angle_at(s: &str, bb: &[u8], i: usize, ctx: Ctx, html_closer: bool
             j += char_len(c);
         }
         if j > inner_start && j + 1 < n && bb[j] == b'>' && bb[j + 1] == b'>' {
-            return Some((Inline::Target { text: s[inner_start..j].to_string() }, j + 2));
+            return Some((Inline::Target { text: s[inner_start..j].to_string(), span: None }, j + 2));
         }
     }
     if let Some((end, node)) = crate::org::parse_org_autolink(s, i) {
@@ -868,7 +936,7 @@ fn try_target_angle_at(s: &str, bb: &[u8], i: usize, ctx: Ctx, html_closer: bool
         }
     }
     if let Some((end, text)) = crate::inline::parse_inline_html_cached(s, i, html_closer) {
-        return Some((Inline::InlineHtml { text }, end));
+        return Some((Inline::InlineHtml { text, span: None }, end));
     }
     if let Some((end, node)) = crate::inline::parse_email_autolink(s, i) {
         return Some((node, end));
@@ -897,7 +965,7 @@ fn try_macro_at(s: &str, bb: &[u8], i: usize) -> Option<(Inline, usize)> {
             continue;
         }
         if let Some((name, args)) = crate::inline::parse_macro(&s[inner_start..j]) {
-            return Some((Inline::Macro { name, args }, j + close.len()));
+            return Some((Inline::Macro { name, args, span: None }, j + close.len()));
         }
     }
     None
@@ -928,6 +996,7 @@ fn try_block_ref_at(s: &str, bb: &[u8], i: usize) -> Option<(Inline, usize)> {
                 image: false,
                 metadata: String::new(),
                 title: None,
+                span: None,
             },
             j + 2,
         ));
@@ -949,21 +1018,22 @@ fn try_bracket_at(
     real_dbl_cur: &mut usize,
     crlf: &mut usize,
     rb_lb_present: bool,
+    base: usize,
 ) -> Option<(Inline, usize)> {
     if ctx.hiccup && bb.get(off + 1) == Some(&b':') && crate::inline::hiccup_head_ok(s, off) {
         if let Some(end) = hiccup_close.get(off).copied().filter(|&e| e != usize::MAX) {
-            return Some((Inline::Hiccup { v: s[off..end].to_string() }, end));
+            return Some((Inline::Hiccup { v: s[off..end].to_string(), span: None }, end));
         }
     }
     if s[off..].starts_with("[[") {
         if rb_lb_present {
-            if let Some((end, node)) = org_link_1_at(s, bb, off) {
+            if let Some((end, node)) = org_link_1_at(s, bb, off, base) {
                 return Some((node, end));
             }
         }
         if nested_close.get(off).is_some_and(|&e| e != usize::MAX) {
             if let Some((end, content)) = crate::inline::parse_nested_link(s, off) {
-                return Some((Inline::NestedLink { content }, end));
+                return Some((Inline::NestedLink { content, span: None }, end));
             }
         }
         while real_dbl.get(*real_dbl_cur).is_some_and(|&p| p < off + 2) {
@@ -974,7 +1044,7 @@ fn try_bracket_at(
                 *crlf = first_crlf(bb, off);
             }
             if d > off + 2 && *crlf > d {
-                if let Some((end, node)) = org_link_2_at(s, bb, off) {
+                if let Some((end, node)) = org_link_2_at(s, bb, off, base) {
                     return Some((node, end));
                 }
             }
@@ -987,14 +1057,14 @@ fn try_bracket_at(
     }
     if ctx.footnotes {
         if let Some((end, name)) = org_footnote_at(s, off) {
-            return Some((Inline::Fnref { name }, end));
+            return Some((Inline::Fnref { name, span: None }, end));
         }
     }
     None
 }
 
 /// `[[url][label]]` — v1 org_link_1.
-fn org_link_1_at(s: &str, bb: &[u8], at: usize) -> Option<(usize, Inline)> {
+fn org_link_1_at(s: &str, bb: &[u8], at: usize, base: usize) -> Option<(usize, Inline)> {
     let n = bb.len();
     let url_start = at + 2;
     let mut j = url_start;
@@ -1022,17 +1092,19 @@ fn org_link_1_at(s: &str, bb: &[u8], at: usize) -> Option<(usize, Inline)> {
     let mut end = close + 2;
     let metadata = read_metadata(s, bb, &mut end);
     let url = crate::org::classify_org_link_1(&url_text, &label_text);
-    let label = parse_ctx(&label_text, Ctx::label());
+    // label_text is a raw slice of `s` starting at `label_start` → children index off that.
+    let label = parse_ctx(&label_text, Ctx::label(), base + label_start);
     let label_first = match label.first() {
-        Some(Inline::Plain { text }) => text.clone(),
+        Some(Inline::Plain { text, .. }) => text.clone(),
         _ => String::new(),
     };
     let full = format!("[[{}][{}]]{}", url_text, label_first, metadata);
-    Some((end, Inline::Link { url, label, full, image: false, metadata, title: None }))
+    // span set by the caller over [at, end).
+    Some((end, Inline::Link { url, label, full, image: false, metadata, title: None, span: None }))
 }
 
 /// `[[url]]` — v1 org_link_2 (single `]` allowed, non-empty, no eol).
-fn org_link_2_at(s: &str, bb: &[u8], at: usize) -> Option<(usize, Inline)> {
+fn org_link_2_at(s: &str, bb: &[u8], at: usize, base: usize) -> Option<(usize, Inline)> {
     let n = bb.len();
     let name_start = at + 2;
     let mut j = name_start;
@@ -1060,11 +1132,13 @@ fn org_link_2_at(s: &str, bb: &[u8], at: usize) -> Option<(usize, Inline)> {
     let name = s[name_start..j].to_string();
     let url = crate::org::classify_org_link_2(&name);
     let full = format!("[[{}]]", name);
+    // the synthetic label (== name) is a raw slice of `s` at `name_start` → span it.
     let label = match &url {
         crate::projection::Url::PageRef { .. } => vec![],
-        _ => vec![Inline::Plain { text: name.clone() }],
+        _ => vec![Inline::Plain { text: name.clone(), span: Some(Span(base + name_start, base + j)) }],
     };
-    Some((j + 2, Inline::Link { url, label, full, image: false, metadata: String::new(), title: None }))
+    // span set by the caller over [at, j + 2).
+    Some((j + 2, Inline::Link { url, label, full, image: false, metadata: String::new(), title: None, span: None }))
 }
 
 /// Closing `]]` of an org-link label, balancing single `[ ]` pairs — v1 find_org_label_end.
@@ -1123,10 +1197,10 @@ fn org_inactive_ts_at(s: &str, bb: &[u8], i: usize) -> Option<(usize, Inline)> {
     if s[end1..].starts_with("--") {
         if let Some((end2, ts2)) = crate::inline::parse_bracket_date(s, end1 + 2, b'[', b']') {
             let val = serde_json::json!({ "start": ts1, "stop": ts2 });
-            return Some((end2, Inline::Timestamp { ts: "Range".to_string(), date: val }));
+            return Some((end2, Inline::Timestamp { ts: "Range".to_string(), date: val, span: None }));
         }
     }
-    Some((end1, Inline::Timestamp { ts: "Date".to_string(), date: ts1 }))
+    Some((end1, Inline::Timestamp { ts: "Date".to_string(), date: ts1, span: None }))
 }
 
 /// `[fn:name]` / `[fn:name:def]` / `[fn::def]` → name — v1 org_footnote_ref.
