@@ -109,18 +109,50 @@ fn block_absorbs(b: &Block) -> bool {
     matches!(b, Block::Quote { .. } | Block::Custom { .. } | Block::Example { .. })
 }
 
-/// One open callout container on the streaming driver's explicit stack. Only re-dispatched
-/// `#+BEGIN_QUOTE`/custom bodies that are CLEAN WINDOWS (indent-0, plain-`\n` body) live
-/// here; de-indented / `>`-quote / list bodies stay transformed sub-recursions. `ctx` is
-/// the child context the PARENT set on push; `absorb` is this body's blank-swallow flag.
+/// Per-line de-indent view: equivalent to `block_code_texts` applied to ONE line, O(1), no
+/// alloc. `strip` = the cumulative first-line indent cleared by all ancestor frames. Leading
+/// ws are ASCII (space/tab) ⇒ byte-safe. Composition:
+/// `strip_view(strip_view(t, A), B) == strip_view(t, A+B)` for all t, A, B (see spec).
+pub(crate) fn strip_view(text: &str, strip: usize) -> &str {
+    if strip == 0 {
+        return text;
+    }
+    let lw = leading_ws(text);
+    if lw >= strip {
+        &text[strip..]
+    } else if text.trim().is_empty() {
+        text
+    } else {
+        text.trim_start()
+    }
+}
+
+/// View line `k` through the cumulative de-indent `strip` (no-op fast path when strip == 0).
+#[inline]
+fn line_text<'a>(lines: &[Line<'a>], k: usize, strip: usize) -> &'a str {
+    strip_view(lines[k].text, strip)
+}
+
+/// One open callout container on the streaming driver's explicit stack. Every re-dispatched
+/// `#+BEGIN_QUOTE`/custom body — whether indent-0+plain-`\n` (clean window) or indented /
+/// `\r`-terminated (strip-view frame) — lives here as a heap `Frame`. `ctx` is the child
+/// context the PARENT set on push; `absorb` is this body's blank-swallow flag.
 struct Frame {
     hi: usize,                    // EXCLUSIVE closer line index; line `hi` is the closer.
     ctx: Ctx,                     // child context (set by the parent on push).
     out: Vec<Block>,              // children of THIS body.
     para: Option<(usize, usize)>, // the open paragraph byte-window for THIS body.
+    // In a `null_spans` (transformed) frame the paragraph's raw byte-window would keep the
+    // per-line indent (only the first line is de-indented) AND any `\r`; so instead we
+    // accumulate the VIEWED (`line_text`) line texts joined with `\n`, which normalizes BOTH
+    // the cumulative indent (via `strip`) and `\r\n`→`\n` in one move. Some IFF a paragraph is
+    // open in a null_spans frame (clean frames keep `para`'s `(start,end)` fast path).
+    para_buf: Option<String>,
     absorb: bool,                 // did this body's last child swallow a following blank?
     builder: Option<Builder>,     // the opener → emitted on pop (None for the root).
     open_span_start: usize,       // byte offset of the opener line start (for the span).
+    strip: usize,       // cumulative de-indent applied to every body-line view (0 = root/clean).
+    null_spans: bool,   // body was transformed (strip>0 or nonstd eol) → null inline spans on pop.
 }
 
 /// Re-parse a transformed body : routes back into
@@ -215,9 +247,12 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
         ctx: root_ctx,
         out: Vec::new(),
         para: None,
+        para_buf: None,
         absorb: false,
         builder: None,
         open_span_start: 0,
+        strip: 0,
+        null_spans: false,
     }];
     let mut collapse_floor = 0usize; // shared & monotone (i is monotone across frames).
     let mut fence_cursor: usize = 0;
@@ -232,7 +267,12 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
         // Close every callout frame ending at line `i` (consuming its `#+END_` closer).
         while stack.len() > 1 && stack.last().unwrap().hi == i {
             let mut f = stack.pop().unwrap();
-            flush_para(&mut f.out, &mut f.para, input, false);
+            flush_para(&mut f.out, &mut f.para, &mut f.para_buf, input, false);
+            // Transformed body (strip > 0 or nonstd eol): inline spans don't map to global
+            // byte-ranges → null them, reproducing what the old streaming_reparse path did.
+            if f.null_spans {
+                crate::parse::none_out_blocks(&mut f.out);
+            }
             let span = Some(Span(f.open_span_start, lines[i].end));
             let block = f.builder.unwrap().finish(f.out, span);
             let absorbs = block_absorbs(&block);
@@ -249,11 +289,14 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
             let top = stack.last_mut().unwrap();
             let hi = top.hi;
             let ctx = top.ctx;
+            let strip = top.strip;
+            let null_spans = top.null_spans;
             dispatch_org_line(
                 i,
                 &mut lines,
                 &mut top.out,
                 &mut top.para,
+                &mut top.para_buf,
                 &mut top.absorb,
                 &mut collapse_floor,
                 &mut fence_cursor,
@@ -266,43 +309,41 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
                 &fence_lines,
                 last_rbracket,
                 input,
+                strip,
+                null_spans,
             )
         };
         match step {
             Step::Next(ni) => i = ni,
             Step::Open { close, builder, child_ctx, indent_strip } => {
+                let top_strip = stack.last().unwrap().strip;
                 {
                     let top = stack.last_mut().unwrap();
                     // Preceding paragraph drops its trailing Break before this container opener
                     // when already inside a list-item / blockquote body (`between_eols`).
-                    flush_para(&mut top.out, &mut top.para, input, top.ctx.in_item || top.ctx.in_quote);
+                    flush_para(&mut top.out, &mut top.para, &mut top.para_buf, input, top.ctx.in_item || top.ctx.in_quote);
                 }
-                // Clean window (indent-0 + plain-`\n` body) ⇒ heap frame, no copy/re-lex
-                // (the O(n²) fix; child spans become global). Else the de-indented body is
-                // a transformed sub-recursion (block_code + reparse) — byte-exact to mldoc.
-                let clean = indent_strip == 0
-                    && body_is_clean_window(&nonstd_eol_lines, &mut nonstd_cursor, i + 1, close);
-                if clean {
-                    stack.push(Frame {
-                        hi: close,
-                        ctx: child_ctx,
-                        out: Vec::new(),
-                        para: None,
-                        absorb: false,
-                        builder: Some(builder),
-                        open_span_start: line_start,
-                    });
-                    i += 1;
-                } else {
-                    let inner = block_code(&lines[i + 1..close]);
-                    let children = streaming_reparse(&inner, child_ctx);
-                    let block = builder.finish(children, Some(Span(line_start, lines[close].end)));
-                    let absorbs = block_absorbs(&block);
-                    let top = stack.last_mut().unwrap();
-                    top.out.push(block);
-                    top.absorb = absorbs;
-                    i = close + 1;
-                }
+                // Always a heap frame — both the clean-window case (indent-0, plain-`\n`
+                // body, strip stays 0, spans are global) and the formerly-copied case
+                // (indent>0 or nonstd eol, strip = parent + indent_strip, spans nulled on
+                // pop). The deleted `block_code + streaming_reparse` sub-recursion is now
+                // a strip-view frame; the `nonstd_cursor` advance is kept (span-null gate).
+                let child_strip = top_strip + indent_strip;
+                let null_spans = child_strip > 0
+                    || !body_is_clean_window(&nonstd_eol_lines, &mut nonstd_cursor, i + 1, close);
+                stack.push(Frame {
+                    hi: close,
+                    ctx: child_ctx,
+                    out: Vec::new(),
+                    para: None,
+                    para_buf: None,
+                    absorb: false,
+                    builder: Some(builder),
+                    open_span_start: line_start,
+                    strip: child_strip,
+                    null_spans,
+                });
+                i += 1;
             }
             Step::Quote { ni, body, span } => {
                 // The `>`-quote nest, built ITERATIVELY (`build_org_quote_streaming`): an
@@ -314,7 +355,7 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
                 // A preceding paragraph drops its trailing Break before this (nested) quote when
                 // already inside a list-item / blockquote body — same `between_eols` rule as the
                 // in-dispatch flushes (mldoc keeps it only at the document level).
-                flush_para(&mut top.out, &mut top.para, input, top.ctx.in_item || top.ctx.in_quote);
+                flush_para(&mut top.out, &mut top.para, &mut top.para_buf, input, top.ctx.in_item || top.ctx.in_quote);
                 let block = build_org_quote_streaming(body, span);
                 top.absorb = block_absorbs(&block);
                 top.out.push(block);
@@ -324,7 +365,7 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
     }
 
     let mut root = stack.pop().unwrap();
-    flush_para(&mut root.out, &mut root.para, input, false);
+    flush_para(&mut root.out, &mut root.para, &mut root.para_buf, input, false);
     root.out
 }
 
@@ -360,6 +401,7 @@ fn dispatch_org_line<'a>(
     lines: &mut [Line<'a>],
     out: &mut Vec<Block>,
     para: &mut Option<(usize, usize)>,
+    para_buf: &mut Option<String>,
     absorb: &mut bool,
     collapse_floor: &mut usize,
     fence_cursor: &mut usize,
@@ -372,12 +414,17 @@ fn dispatch_org_line<'a>(
     fence_lines: &[usize],
     last_rbracket: Option<usize>,
     input: &'a str,
+    strip: usize,
+    null_spans: bool,
 ) -> Step {
     // Copy out the line fields (a `&'a str` + two `usize`s, none borrowing `lines`) so the
     // headline / hiccup splits can REWRITE `lines[i]`/`lines[ri]` in place (steps 3, 13b).
-    let t = lines[i].text;
+    // `t` is the STRIP-VIEWED line text (no-op when strip == 0); `line_content_end` uses the
+    // original text length so `parse_latex_env`'s `line_end` bound is correct.
+    let t = line_text(lines, i, strip);
     let line_start = lines[i].start;
     let line_end = lines[i].end;
+    let line_content_end_orig = line_start + lines[i].text.len(); // for parse_latex_env
     let in_item = ctx.in_item;
     // F4: read + clear the empty-marker ws-drop flag set by the PREVIOUS line. A drop-trigger
     // block (drawer/table/fence/`#+BEGIN`/verbatim/`>`-quote/`$$`/raw-html/hr) drops the empty
@@ -394,6 +441,8 @@ fn dispatch_org_line<'a>(
 
     // blank line: extend an open paragraph, else swallow (if absorbing) or start one.
     if t.trim().is_empty() {
+        // Is a paragraph open OR being started (not swallowed by a preceding block)?
+        let open_para = para.is_some() || !*absorb;
         if let Some((s, _)) = *para {
             *para = Some((s, line_end));
         } else if *absorb {
@@ -401,12 +450,19 @@ fn dispatch_org_line<'a>(
         } else {
             *para = Some((line_start, line_end));
         }
+        // null_spans frame: mirror into the de-indented buffer (blank line ⇒ empty content +
+        // the `\n` Break delimiter; keeps para/para_buf in lockstep).
+        if null_spans && open_para {
+            let b = para_buf.get_or_insert_with(String::new);
+            b.push_str(t); // "" for a truly-blank line; strip-viewed otherwise
+            b.push('\n');
+        }
         return Step::Next(i + 1);
     }
 
     // 1. directive `#+KEY: value` (KEY != BEGIN_…) — not a list-item content block.
     if let Some((name, value)) = directive(t).filter(|_| !in_item) {
-        flush_para(out, para, input, trim);
+        flush_para(out, para, para_buf, input, trim);
         out.push(Block::Directive { name, value, span: Some(Span(line_start, line_end)) });
         *absorb = true;
         return Step::Next(i + 1);
@@ -414,7 +470,7 @@ fn dispatch_org_line<'a>(
 
     // 1b. comment `# text` (mldoc Comment) — IS a valid list-item content block (not gated).
     if let Some(text) = org_comment(t) {
-        flush_para(out, para, input, trim);
+        flush_para(out, para, para_buf, input, trim);
         out.push(Block::Comment { text: text.to_string(), span: Some(Span(line_start, line_end)) });
         *absorb = true;
         return Step::Next(i + 1);
@@ -430,7 +486,7 @@ fn dispatch_org_line<'a>(
                 if was_ws_drop && para_ws_only(para, input) {
                     *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
                 }
-                flush_para(out, para, input, trim);
+                flush_para(out, para, para_buf, input, trim);
                 // mldoc (`drawer.ml`) makes a `Property_Drawer` ONLY when the WHOLE body
                 // parses as `many1 property` — every body line a valid `:key: value` (empty
                 // body allowed). If ANY line fails (plain text, blank, markdown `key:: v`),
@@ -438,20 +494,18 @@ fn dispatch_org_line<'a>(
                 // `Drawer{name:"properties"}` (no props, no directive folding, no value
                 // ref-walking). C3.
                 if name == "properties"
-                    && lines[i + 1..close]
-                        .iter()
-                        .all(|l| drawer_property(l.text).is_some())
+                    && (i + 1..close)
+                        .all(|k| drawer_property(line_text(lines, k, strip)).is_some())
                 {
-                    let mut props: Vec<(String, String)> = lines[i + 1..close]
-                        .iter()
-                        .filter_map(|l| drawer_property(l.text))
+                    let mut props: Vec<(String, String)> = (i + 1..close)
+                        .filter_map(|k| drawer_property(line_text(lines, k, strip)))
                         .collect();
                     // mldoc `Drawer.parse` folds trailing `#+NAME: value` directives into the
                     // same Property_Drawer. Bounded by `hi` (don't cross the frame closer).
                     let mut j = close + 1;
                     let mut folded = false;
                     while j < hi {
-                        if let Some(kv) = directive(lines[j].text) {
+                        if let Some(kv) = directive(line_text(lines, j, strip)) {
                             props.push(kv);
                             folded = true;
                             j += 1;
@@ -497,7 +551,7 @@ fn dispatch_org_line<'a>(
                 fence_cursor,
             )
         {
-            flush_para(out, para, input, trim);
+            flush_para(out, para, para_buf, input, trim);
             out.push(Block::Bullet {
                 level,
                 size: None,
@@ -530,7 +584,7 @@ fn dispatch_org_line<'a>(
             return Step::Next(i);
         }
 
-        flush_para(out, para, input, trim);
+        flush_para(out, para, para_buf, input, trim);
         let mut inline = org_inline(content, crate::inline::ptr_base(content, input));
         let htags = extract_htags(&mut inline);
         let empty_title = inline.is_empty() && htags.is_empty();
@@ -561,10 +615,10 @@ fn dispatch_org_line<'a>(
         if was_ws_drop && para_ws_only(para, input) {
             *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
         }
-        flush_para(out, para, input, trim);
+        flush_para(out, para, para_buf, input, trim);
         let start = i;
         let mut ni = i;
-        while ni < hi && is_table_row(lines[ni].text) {
+        while ni < hi && is_table_row(line_text(lines, ni, strip)) {
             ni += 1;
         }
         out.push(build_table(&lines[start..ni], lines[start].start, lines[ni - 1].end, input));
@@ -574,24 +628,47 @@ fn dispatch_org_line<'a>(
 
     // 4b. LaTeX environment `\begin{X} … \end{X}` (mldoc Latex_env, before Block). CLAMP the
     // `\end{}` search to `&input[..body_end]` so an `\end{X}` outside this body is not taken.
-    let line_content_end = line_start + t.len();
+    // `line_content_end_orig` (set above from the original text length) keeps the closing-brace
+    // search in-bounds even when `t` is a strip-view shorter than the original line.
     if let Some((name, content, consumed_end)) =
-        crate::inline::parse_latex_env(&input[..body_end], line_start, line_content_end)
+        crate::inline::parse_latex_env(&input[..body_end], line_start, line_content_end_orig)
     {
         // latex_env is the ONLY block_content construct that does NOT consume the preceding eol,
         // so inside a `#+BEGIN_X` / `>`-quote body a paragraph KEEPS its trailing Break before it
         // and the eol AFTER it becomes a Break-paragraph (mldoc `Paragraph.sep`-last). Never trim.
-        flush_para(out, para, input, false);
-        out.push(Block::LatexEnv { name, content, span: Some(Span(line_start, consumed_end)) });
-        *absorb = false;
+        flush_para(out, para, para_buf, input, false);
         let mut ni = i + 1;
         while ni < lines.len() && lines[ni].start < consumed_end {
             ni += 1;
         }
+        // In a null_spans frame `content` sliced from raw `input` keeps the per-line indent (and
+        // any `\r`). Re-run parse_latex_env over the VIEWED (de-indented, `\r`-free) body window
+        // to get the reparse-faithful content; the STRUCTURE (name / consumed_end / ni) stays
+        // from the raw pass. O(n): each body line belongs to exactly one leaf construct.
+        let content = if null_spans {
+            let mut s = String::new();
+            for k in i..ni {
+                s.push_str(line_text(lines, k, strip));
+                s.push('\n');
+            }
+            let first_len = line_text(lines, i, strip).len();
+            crate::inline::parse_latex_env(&s, 0, first_len)
+                .map(|(_, c, _)| c)
+                .unwrap_or(content)
+        } else {
+            content
+        };
+        out.push(Block::LatexEnv { name, content, span: Some(Span(line_start, consumed_end)) });
+        *absorb = false;
         if ctx.in_quote {
             let trail_end = if ni < lines.len() { lines[ni].start } else { body_end };
             if consumed_end < trail_end {
                 *para = Some((consumed_end, trail_end));
+                // Keep para/para_buf in lockstep in a null_spans frame: the trailing region is a
+                // line terminator (a single Break); normalize `\r\n`→`\n`.
+                if null_spans {
+                    *para_buf = Some("\n".to_string());
+                }
             }
         }
         return Step::Next(ni);
@@ -605,9 +682,17 @@ fn dispatch_org_line<'a>(
                 if was_ws_drop && para_ws_only(para, input) {
                     *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
                 }
-                flush_para(out, para, input, trim);
+                flush_para(out, para, para_buf, input, trim);
+                // Body lines via line_text: strip-view drops the cumulative indent (= block_code
+                // semantics for strip>0) and is identical to `input[start..end]` for strip==0
+                // (clean-window bodies have only plain-`\n` lines, so text+"\n" == raw slice).
                 let code = if close > i + 1 {
-                    input[lines[i + 1].start..lines[close - 1].end].to_string()
+                    let mut s = String::new();
+                    for k in i + 1..close {
+                        s.push_str(line_text(lines, k, strip));
+                        s.push('\n');
+                    }
+                    s
                 } else {
                     String::new()
                 };
@@ -633,23 +718,30 @@ fn dispatch_org_line<'a>(
                 let lname = name.to_ascii_lowercase();
                 match lname.as_str() {
                     "src" => {
-                        flush_para(out, para, input, trim);
+                        flush_para(out, para, para_buf, input, trim);
                         let lang = begin_lang(t);
-                        let inner = block_code(&lines[i + 1..close]);
+                        // Body via line_text: applies the cumulative strip (matching block_code
+                        // semantics for nested indented bodies; no-op for strip==0).
+                        let texts: Vec<&str> = (i + 1..close).map(|k| line_text(lines, k, strip)).collect();
+                        let inner = block_code_texts(&texts);
                         out.push(Block::Src { lang, code: inner, span: Some(Span(line_start, lines[close].end)) });
                         *absorb = true;
                         return Step::Next(close + 1);
                     }
                     "example" => {
-                        flush_para(out, para, input, trim);
-                        let inner = block_code(&lines[i + 1..close]);
+                        flush_para(out, para, para_buf, input, trim);
+                        let texts: Vec<&str> = (i + 1..close).map(|k| line_text(lines, k, strip)).collect();
+                        let inner = block_code_texts(&texts);
                         out.push(Block::Example { code: inner, span: Some(Span(line_start, lines[close].end)) });
                         *absorb = true;
                         return Step::Next(close + 1);
                     }
                     "quote" => {
+                        // indent_strip: leading ws of the VIEWED first body line (parent strip
+                        // already applied via line_text; child_strip = strip + indent_strip in
+                        // the Step::Open handler).
                         let indent_strip =
-                            if close > i + 1 { leading_ws(lines[i + 1].text) } else { 0 };
+                            if close > i + 1 { leading_ws(line_text(lines, i + 1, strip)) } else { 0 };
                         return Step::Open {
                             close,
                             builder: Builder::Quote,
@@ -659,7 +751,7 @@ fn dispatch_org_line<'a>(
                     }
                     _ => {
                         let indent_strip =
-                            if close > i + 1 { leading_ws(lines[i + 1].text) } else { 0 };
+                            if close > i + 1 { leading_ws(line_text(lines, i + 1, strip)) } else { 0 };
                         // mldoc reparses a custom `#+BEGIN_X` body with `block_content_parsers`
                         // — the SAME grammar as a QUOTE body (omits headline/drawer/footnote)
                         // — so the child context is "in block content" (`in_quote: true`),
@@ -683,12 +775,12 @@ fn dispatch_org_line<'a>(
         if was_ws_drop && para_ws_only(para, input) {
             *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
         }
-        flush_para(out, para, input, trim);
+        flush_para(out, para, para_buf, input, trim);
         let start = i;
         let mut code = String::new();
         let mut ni = i;
-        while ni < hi && is_verbatim_line(lines[ni].text) {
-            code.push_str(verbatim_content(lines[ni].text));
+        while ni < hi && is_verbatim_line(line_text(lines, ni, strip)) {
+            code.push_str(verbatim_content(line_text(lines, ni, strip)));
             code.push('\n');
             ni += 1;
         }
@@ -713,7 +805,7 @@ fn dispatch_org_line<'a>(
         body.push('\n');
         let mut ni = i + 1;
         while ni < hi {
-            match quote_line_content(lines[ni].text) {
+            match quote_line_content(line_text(lines, ni, strip)) {
                 Some(c) => {
                     body.push_str(&c);
                     body.push('\n');
@@ -731,7 +823,7 @@ fn dispatch_org_line<'a>(
         if was_ws_drop && para_ws_only(para, input) {
             *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
         }
-        flush_para(out, para, input, trim);
+        flush_para(out, para, para_buf, input, trim);
         out.push(Block::DisplayedMath { text: math, span: Some(Span(line_start, line_end)) });
         *absorb = false;
         return Step::Next(i + 1);
@@ -742,7 +834,7 @@ fn dispatch_org_line<'a>(
         if was_ws_drop && para_ws_only(para, input) {
             *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
         }
-        flush_para(out, para, input, trim);
+        flush_para(out, para, para_buf, input, trim);
         out.push(Block::RawHtml { text: t.to_string(), span: Some(Span(line_start, line_end)) });
         *absorb = false;
         return Step::Next(i + 1);
@@ -753,11 +845,11 @@ fn dispatch_org_line<'a>(
     // `Footnote`, so `[fn:n] …` there stays a paragraph with an inline footnote ref). The
     // body absorbs following continuation lines (mldoc `many1 l`); bounded by `hi`. F2.
     if let Some((name, content)) = footnote_def(t).filter(|_| !in_item && !ctx.in_quote) {
-        flush_para(out, para, input, trim);
+        flush_para(out, para, para_buf, input, trim);
         let mut body = strip_cr_eol(content, line_has_nl(input, &lines[i])).to_string();
         let mut j = i + 1;
         while j < hi {
-            match footnote_cont(lines[j].text, line_has_nl(input, &lines[j])) {
+            match footnote_cont(line_text(lines, j, strip), line_has_nl(input, &lines[j])) {
                 Some(c) => {
                     body.push('\n');
                     body.push_str(c);
@@ -782,9 +874,9 @@ fn dispatch_org_line<'a>(
     // 12. list — bounded by `hi`; item content re-parsed via `streaming_reparse`. Disabled in
     // list-item content; `collapse_floor` skips list-starts inside an already-collapsed region.
     if !in_item && i >= *collapse_floor && list_marker(t).is_some() {
-        match collect_list(lines, i, hi, Ctx { in_item: true, in_quote: ctx.in_quote }) {
+        match collect_list(lines, i, hi, Ctx { in_item: true, in_quote: ctx.in_quote }, strip) {
             Ok((block, next)) => {
-                flush_para(out, para, input, trim);
+                flush_para(out, para, para_buf, input, trim);
                 out.push(block);
                 *absorb = false;
                 return Step::Next(next);
@@ -792,7 +884,7 @@ fn dispatch_org_line<'a>(
             Err(Collapse { kept, resume, trigger }) => {
                 *collapse_floor = trigger;
                 if let Some(block) = kept {
-                    flush_para(out, para, input, trim);
+                    flush_para(out, para, para_buf, input, trim);
                     out.push(block);
                     *absorb = false;
                     return Step::Next(resume);
@@ -807,7 +899,7 @@ fn dispatch_org_line<'a>(
         if was_ws_drop && para_ws_only(para, input) {
             *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
         }
-        flush_para(out, para, input, trim);
+        flush_para(out, para, para_buf, input, trim);
         out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
         *absorb = false;
         return Step::Next(i + 1);
@@ -839,7 +931,7 @@ fn dispatch_org_line<'a>(
             };
             // A preceding paragraph drops its trailing Break before a Hiccup inside a blockquote
             // body / list item, but keeps it at the document level.
-            flush_para(out, para, input, trim); // no-op after the first
+            flush_para(out, para, para_buf, input, trim); // no-op after the first
             out.push(Block::Hiccup {
                 v: input[rec..cap_end].to_string(),
                 span: Some(Span(cur_start, cap_end)),
@@ -879,6 +971,15 @@ fn dispatch_org_line<'a>(
         Some((s, _)) => (s, line_end),
         None => (line_start, line_end),
     });
+    // null_spans frame: accumulate the VIEWED line text (de-indented, `\r`-free) into the
+    // paragraph buffer, joined with `\n` (the Break delimiter). This is what flush_para parses
+    // instead of the raw byte-window, so continuation lines are de-indented too — not just the
+    // first line — and a `\r\n` body never yields a stray extra Break.
+    if null_spans {
+        let b = para_buf.get_or_insert_with(String::new);
+        b.push_str(t);
+        b.push('\n');
+    }
     *absorb = false;
     Step::Next(i + 1)
 }
@@ -888,7 +989,30 @@ fn dispatch_org_line<'a>(
 /// absorbs the paragraph's trailing eols via mldoc's `between_eols` (its block parsers
 /// are tried before `Paragraph.sep`), whereas at the document level `Paragraph.sep`
 /// claims the eol first and it stays a Break. EOF / end-of-content flushes pass `false`.
-fn flush_para(out: &mut Vec<Block>, para: &mut Option<(usize, usize)>, input: &str, trim_eol: bool) {
+fn flush_para(
+    out: &mut Vec<Block>,
+    para: &mut Option<(usize, usize)>,
+    para_buf: &mut Option<String>,
+    input: &str,
+    trim_eol: bool,
+) {
+    // null_spans frame: the paragraph content lives in `para_buf` (viewed line texts joined by
+    // `\n`), already de-indented and `\r`-free. Parse THAT (span None — the byte-window doesn't
+    // map to the de-indented content, mirroring the old streaming_reparse's nulled spans). Keep
+    // `para` in lockstep by clearing it too.
+    if let Some(mut buf) = para_buf.take() {
+        *para = None;
+        if trim_eol {
+            while buf.ends_with('\n') || buf.ends_with('\r') {
+                buf.pop();
+            }
+        }
+        // Base offset 0: the inline spans are relative to `buf` and get nulled by
+        // none_out_blocks on the frame's pop (every null_spans frame runs it), so they never
+        // reach the output.
+        out.push(Block::Paragraph { inline: org_inline(&buf, 0), span: None });
+        return;
+    }
     if let Some((s, mut e)) = para.take() {
         if trim_eol {
             while e > s && matches!(input.as_bytes()[e - 1], b'\n' | b'\r') {
@@ -1525,13 +1649,14 @@ fn collect_list(
     start: usize,
     hi: usize,
     item_ctx: Ctx,
+    strip: usize,
 ) -> Result<(Block, usize), Collapse> {
     let mut flat: Vec<ListItem> = Vec::new();
     let mut flat_lines: Vec<usize> = Vec::new();
     let mut flat_indents: Vec<u32> = Vec::new();
     let mut i = start;
     while i < hi {
-        let t = lines[i].text;
+        let t = line_text(lines, i, strip);
         // terminators at a would-be marker position: blank line, a col-0 headline, or
         // any non-marker line (mldoc heading-lookahead / `format_checkbox` failure).
         if t.is_empty() || headline_level(t).is_some() {
@@ -1550,7 +1675,7 @@ fn collect_list(
             if j >= hi {
                 break; // EOF / body boundary ends this item's content
             }
-            let cl = lines[j].text;
+            let cl = line_text(lines, j, strip);
             if cl.is_empty() {
                 j += 1; // mldoc `two_eols`: a blank ends the content AND is consumed
                 break;

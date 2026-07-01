@@ -489,6 +489,40 @@ add("empty-marker-drop", "* \n:LOGBOOK:\nx\n:END:");             // bullet, draw
 add("empty-marker-drop", "* \n| a | b |");                       // bullet, table
 add("empty-marker-drop", "* \nplain");                           // bullet, paragraph (real content KEPT)
 
+// viewframe: transformed `#+BEGIN` bodies (indented / `\r\n` / nested) parsed via the
+// zero-copy strip-view frame (no `block_code` copy, no `streaming_reparse`). The fuzz tokens
+// never generate leading indent or `\r\n` inside a block body, so these lock the de-indent /
+// eol-normalization the view path must reproduce byte-for-byte (leaf content built from the
+// VIEWED, `\n`-joined lines, not a raw `input` slice). See lsdoc-viewframe-P1.
+add("viewframe", "#+BEGIN_QUOTE\n  aaa\n  bbb\n#+END_QUOTE\n");                       // indented multi-line para
+add("viewframe", "#+BEGIN_QUOTE\n  [:div hello]\n#+END_QUOTE\n");                    // indented hiccup (lw-offset de-indent)
+add("viewframe", "#+BEGIN_QUOTE\n  x\n  #+BEGIN_QUOTE\n    y\n  #+END_QUOTE\n#+END_QUOTE\n"); // nested indent
+add("viewframe", "#+BEGIN_QUOTE\n  \\begin{eq}\n  a\n  \\end{eq}\n#+END_QUOTE\n");    // indented latex-env content
+add("viewframe", "#+BEGIN_QUOTE\n  text here\n  \\begin{eq}\n  a\n  \\end{eq}\n#+END_QUOTE\n"); // para then latex
+add("viewframe", "#+BEGIN_QUOTE\n  \\begin{eq}\n  a\n  \\end{eq}\n  after\n#+END_QUOTE\n"); // latex then para
+add("viewframe", "#+BEGIN_QUOTE\n  | a | b |\n#+END_QUOTE\n");                        // indented table
+add("viewframe", "#+BEGIN_QUOTE\n  #+BEGIN_SRC\n  code\n  #+END_SRC\n#+END_QUOTE\n"); // indented src
+add("viewframe", "#+BEGIN_QUOTE\r\naaa\r\n#+END_QUOTE\r\n");                          // crlf, no indent
+add("viewframe", "#+BEGIN_QUOTE\r\n  aaa\r\n  bbb\r\n#+END_QUOTE\r\n");                // crlf + indent, multi-line
+add("viewframe", "#+BEGIN_QUOTE\n  - a\n  - b\n#+END_QUOTE\n");                       // indented list
+add("viewframe", "#+BEGIN_QUOTE\n  :PROPERTIES:\n  :k: v\n  :END:\n#+END_QUOTE\n");   // indented drawer/props
+add("viewframe", "#+BEGIN_QUOTE\n x\n  #+BEGIN_QUOTE\n  y\n  #+END_QUOTE\n#+END_QUOTE\n"); // under-indent then nest
+add("viewframe", "#+BEGIN_QUOTE\na\n #+BEGIN_QUOTE\n b\n  #+BEGIN_QUOTE\n  c\n  #+END_QUOTE\n #+END_QUOTE\n#+END_QUOTE\n"); // increasing-indent depth (cumulative strip)
+add("viewframe", "#+BEGIN_QUOTE\n\ta\n\tb\n#+END_QUOTE\n");                           // tab indent
+add("viewframe", "#+BEGIN_QUOTE\n  *bold* x\n  /italic/ y\n#+END_QUOTE\n");           // inline markup de-indented
+add("viewframe", "#+BEGIN_QUOTE\n  a\n  b\n\n  c\n#+END_QUOTE\n");                     // blank line inside para run
+add("viewframe", "#+BEGIN_QUOTE\n  p1\n  #+BEGIN_QUOTE\n    p2\n    #+BEGIN_QUOTE\n      p3\n      q3\n    #+END_QUOTE\n  #+END_QUOTE\n#+END_QUOTE\n"); // 3-deep, para at each level
+add("viewframe", "#+BEGIN_FOO\n  line1\n  line2\n#+END_FOO\n");                       // indented custom
+add("viewframe", "#+BEGIN_QUOTE\n  a\n\n#+END_QUOTE\n");                              // trailing blank
+add("viewframe", "#+BEGIN_QUOTE\n  \\begin{eq}\n  a\n\n  b\n  \\end{eq}\n#+END_QUOTE\n"); // latex content with blank line
+add("viewframe", "#+BEGIN_QUOTE\n  \\begin{a}\n  x\n  \\end{a}\n  \\begin{b}\n  y\n  \\end{b}\n#+END_QUOTE\n"); // two latex envs
+add("viewframe", "#+BEGIN_QUOTE\n  [:div x]\n  para\n#+END_QUOTE\n");                 // hiccup then para
+add("viewframe", "#+BEGIN_QUOTE\n  aaa\nbbb\n#+END_QUOTE\n");                         // under-indented continuation (trim_start)
+add("viewframe", "#+BEGIN_QUOTE\n  [fn:1] note\n  cont\n#+END_QUOTE\n");              // indented footnote fold
+add("viewframe", "#+BEGIN_FOO\n  [:span x]\n  para\n#+END_FOO\n");                    // custom + hiccup + para
+add("viewframe", "#+BEGIN_QUOTE\n  : verb\n#+END_QUOTE\n");                           // indented verbatim `:` line
+add("viewframe", "#+BEGIN_QUOTE\r\n  x\r\n  #+BEGIN_QUOTE\r\n  y\r\n  #+END_QUOTE\r\n#+END_QUOTE\r\n"); // nested crlf
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

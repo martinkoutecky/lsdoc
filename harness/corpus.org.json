@@ -2146,5 +2146,173 @@
   "cat": "empty-marker-drop",
   "input": "* \nplain",
   "format": "org"
+ },
+ {
+  "id": "o358",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  aaa\n  bbb\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o359",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  [:div hello]\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o360",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  x\n  #+BEGIN_QUOTE\n    y\n  #+END_QUOTE\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o361",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  \\begin{eq}\n  a\n  \\end{eq}\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o362",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  text here\n  \\begin{eq}\n  a\n  \\end{eq}\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o363",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  \\begin{eq}\n  a\n  \\end{eq}\n  after\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o364",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  | a | b |\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o365",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  #+BEGIN_SRC\n  code\n  #+END_SRC\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o366",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\r\naaa\r\n#+END_QUOTE\r\n",
+  "format": "org"
+ },
+ {
+  "id": "o367",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\r\n  aaa\r\n  bbb\r\n#+END_QUOTE\r\n",
+  "format": "org"
+ },
+ {
+  "id": "o368",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  - a\n  - b\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o369",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  :PROPERTIES:\n  :k: v\n  :END:\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o370",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n x\n  #+BEGIN_QUOTE\n  y\n  #+END_QUOTE\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o371",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\na\n #+BEGIN_QUOTE\n b\n  #+BEGIN_QUOTE\n  c\n  #+END_QUOTE\n #+END_QUOTE\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o372",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n\ta\n\tb\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o373",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  *bold* x\n  /italic/ y\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o374",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  a\n  b\n\n  c\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o375",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  p1\n  #+BEGIN_QUOTE\n    p2\n    #+BEGIN_QUOTE\n      p3\n      q3\n    #+END_QUOTE\n  #+END_QUOTE\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o376",
+  "cat": "viewframe",
+  "input": "#+BEGIN_FOO\n  line1\n  line2\n#+END_FOO\n",
+  "format": "org"
+ },
+ {
+  "id": "o377",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  a\n\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o378",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  \\begin{eq}\n  a\n\n  b\n  \\end{eq}\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o379",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  \\begin{a}\n  x\n  \\end{a}\n  \\begin{b}\n  y\n  \\end{b}\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o380",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  [:div x]\n  para\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o381",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  aaa\nbbb\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o382",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  [fn:1] note\n  cont\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o383",
+  "cat": "viewframe",
+  "input": "#+BEGIN_FOO\n  [:span x]\n  para\n#+END_FOO\n",
+  "format": "org"
+ },
+ {
+  "id": "o384",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\n  : verb\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o385",
+  "cat": "viewframe",
+  "input": "#+BEGIN_QUOTE\r\n  x\r\n  #+BEGIN_QUOTE\r\n  y\r\n  #+END_QUOTE\r\n#+END_QUOTE\r\n",
+  "format": "org"
  }
 ]
