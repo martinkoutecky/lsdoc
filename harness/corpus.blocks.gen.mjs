@@ -541,6 +541,33 @@ add("begin-nonreg", "#+BEGIN_QUOTE\nquoted\n#+END_QUOTE");       // quote (uncha
 add("begin-nonreg", "#+BEGIN_NOTE\nnote body\n#+END_NOTE");      // custom{note} (unchanged)
 add("begin-nest", "#+BEGIN_QUOTE\n#+BEGIN_SRC\nx\n#+END_SRC\n#+END_QUOTE"); // quote[ src ]
 
+// viewframe: re-bulleted `- #+BEGIN_X` transformed bodies parsed via the zero-copy strip-view
+// frame (P2 — no `block_code_texts` copy, no `reparse_block_content` recursion). The fuzz never
+// generates leading indent or `\r\n` inside a re-bulleted block body, so these lock the de-indent
+// + eol-normalization (leaf content built from the VIEWED, `\n`-joined lines). See lsdoc-viewframe-P2.
+add("viewframe", "- #+BEGIN_QUOTE\n  hello\n  #+END_QUOTE");                          // basic indented
+add("viewframe", "- #+BEGIN_NOTE\n  multi\n  line paragraph\n  #+END_NOTE");          // multi-line para
+add("viewframe", "- #+BEGIN_WARNING\n  first\n\n  second\n  #+END_WARNING");          // blank in para run
+add("viewframe", "- #+BEGIN_QUOTE\n  #+END_QUOTE");                                   // empty body
+add("viewframe", "- #+BEGIN_QUOTE\n  - #+BEGIN_NOTE\n    nested\n    #+END_NOTE\n  #+END_QUOTE"); // nested re-bulleted
+add("viewframe", "- #+BEGIN_FOO\n  a\n  #+END_FOO\n- #+BEGIN_BAR\n  b\n  #+END_BAR");  // siblings
+add("viewframe", "text before\n- #+BEGIN_NOTE\n  body\n  #+END_NOTE\ntext after");    // surrounded
+add("viewframe", "- #+BEGIN_QUOTE\n  \\begin{equation}\n  x^2\n  \\end{equation}\n  #+END_QUOTE"); // latex-env
+add("viewframe", "- #+BEGIN_QUOTE\n  | a | b |\n  | 1 | 2 |\n  #+END_QUOTE");          // table
+add("viewframe", "- #+BEGIN_QUOTE\n  line with [[link]] and #tag\n  #+END_QUOTE");    // refs de-indented
+add("viewframe", "- #+BEGIN_QUOTE\r\n  hello\r\n  #+END_QUOTE\r\n");                   // CRLF
+add("viewframe", "- #+BEGIN_QUOTE\r\n  aaa\r\n  bbb\r\n  #+END_QUOTE\r\n");             // CRLF multi-line
+add("viewframe", "- #+BEGIN_QUOTE\n  - #+BEGIN_NOTE\n    - #+BEGIN_TIP\n      deep\n      body\n      #+END_TIP\n    #+END_NOTE\n  #+END_QUOTE"); // 3-deep
+add("viewframe", "- #+BEGIN_QUOTE\n  aaa\nbbb\n  #+END_QUOTE");                        // under-indented continuation
+add("viewframe", "- #+BEGIN_QUOTE\n  \\begin{eq}\n  a\n  \\end{eq}\n  after\n  #+END_QUOTE"); // latex then para
+add("viewframe", "- #+BEGIN_QUOTE\n  [:div x]\n  para\n  #+END_QUOTE");                // hiccup + para
+add("viewframe", "- #+BEGIN_QUOTE\r\n  - #+BEGIN_NOTE\r\n    x\r\n    #+END_NOTE\r\n  #+END_QUOTE\r\n"); // CRLF nested
+add("viewframe", "- #+BEGIN_QUOTE\n  \\begin{a}\n  x\n  \\end{a}\n  \\begin{b}\n  y\n  \\end{b}\n  #+END_QUOTE"); // two latex
+add("viewframe", "- #+BEGIN_QUOTE\n  a\n\n  #+END_QUOTE");                             // trailing blank
+add("viewframe", "- #+BEGIN_QUOTE\r\n  \\begin{eq}\r\n  a\r\n  \\end{eq}\r\n  #+END_QUOTE\r\n"); // CRLF latex
+add("viewframe", "- #+BEGIN_A\n  - #+BEGIN_B\n    - #+BEGIN_C\n      - #+BEGIN_D\n        z\n        #+END_D\n      #+END_C\n    #+END_B\n  #+END_A"); // 4-deep
+add("viewframe", "- #+BEGIN_QUOTE\r\n  aaa\r\nbbb\r\n  #+END_QUOTE\r\n");               // CRLF + under-indent
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));
