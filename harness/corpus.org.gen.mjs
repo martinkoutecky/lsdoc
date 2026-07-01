@@ -523,6 +523,34 @@ add("viewframe", "#+BEGIN_FOO\n  [:span x]\n  para\n#+END_FOO\n");              
 add("viewframe", "#+BEGIN_QUOTE\n  : verb\n#+END_QUOTE\n");                           // indented verbatim `:` line
 add("viewframe", "#+BEGIN_QUOTE\r\n  x\r\n  #+BEGIN_QUOTE\r\n  y\r\n  #+END_QUOTE\r\n#+END_QUOTE\r\n"); // nested crlf
 
+// quoteframe: `>`-blockquotes parsed as first-class `>`-container stack frames (P3a — no
+// build_org_quote_streaming, no residual `streaming_reparse` for the staircase). Locks the
+// opener-2/continuation-1 asymmetry, single-line ⌈N/2⌉ peel, dynamic-extent staircase, and the
+// §3 lazy de-`>` reparse fallback (fence/#+BEGIN/latex/hiccup in a `>`-body). The fuzz never
+// generates these `>`-nested / `>`-construct shapes. See lsdoc-viewframe-P3-design.
+add("quoteframe", "> > > > x\n");                                    // single-line ⌈4/2⌉ = 2 quotes
+add("quoteframe", "> > > x\n");                                      // single-line ⌈3/2⌉ = 2
+add("quoteframe", "> x\n> y\n");                                     // lazy tail coalesces (one para)
+add("quoteframe", "> a\n\n> b\n");                                   // blank stops run → siblings
+add("quoteframe", "> - list\n");                                     // breaker first line → Paragraph
+add("quoteframe", "> > a\n> > > b\n> > > > c\n");                    // staircase from depth 2
+add("quoteframe", "> a\n> > b\n> c\n");                              // staircase then de-nest
+add("quoteframe", "> > ```\n> > code\n> > ```\n");                   // §3 fence at depth 2 (both-`>`)
+add("quoteframe", "> #+BEGIN_SRC\n> code\n> #+END_SRC\n");           // §3 src callout in quote
+add("quoteframe", "> a\n> \\begin{eq}\n> x\n> \\end{eq}\n> b\n");    // §3 latex mid-quote (para around)
+add("quoteframe", "> [:div [:span x]]\n");                          // §3 nested hiccup
+add("quoteframe", "> a\n```\ncode\n```\n");                          // §3 lazy-no-`>` fence (global index)
+add("quoteframe", "> a\r\n> b\r\n");                                 // CRLF quote
+add("quoteframe", "> a\n> - item\n");                               // breaker continuation stops
+add("quoteframe", "> café 中文 😀 x\n");                             // multibyte in quote
+add("quoteframe", "> #+BEGIN_QUOTE\n> x\n> #+END_QUOTE\n");          // §3 callout-quote in quote
+add("quoteframe", "> a\n>\n> b\n");                                  // middle `>`-blank breaks tail
+add("quoteframe", "- > a\n  > b\n");                                 // quote inside a list item
+add("quoteframe", "> > > a\n> > b\nplain\n");                        // deep staircase then plain
+add("quoteframe", "> [:a][:b]\n");                                   // §3 consecutive block hiccups
+add("quoteframe", "> ```\n> a\n> ```\n> after\n");                   // §3 fence closes then quote continues
+add("quoteframe", "#+BEGIN_QUOTE\n> a\n#+END_QUOTE\n\nx\n");         // quote inside callout, blank after
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

@@ -90,15 +90,25 @@ struct Ctx {
 /// handles the body: it pushes a WINDOW frame when the body is a clean `\n`/indent-0 window,
 /// else falls back to a transformed sub-recursion (`block_code` + `streaming_reparse`) so a
 /// de-indented body stays local.
-enum Step {
+enum Step<'a> {
     Next(usize),
     Open { close: usize, builder: Builder, child_ctx: Ctx, indent_strip: usize },
-    /// A markdown `>`-blockquote opener: the run is `[i, ni)`, `body` is the de-`>`'d body
-    /// (first line via `quote_first_line`, continuations via `quote_line_content`, `\n`-joined
-    /// + trailing `\n`). The driver flushes the open paragraph, builds the (possibly nested)
-    /// Quote via `build_org_quote_streaming` (iterative `>`-peel — O(n) / O(depth) HEAP, NO
-    /// cap), and resumes at `ni`.
-    Quote { ni: usize, body: String, span: Option<Span> },
+    /// A markdown `>`-blockquote opener recognized at line `i` (root-level OR a NESTED opener
+    /// inside a `>`-frame). The driver pushes a Quote `Frame` at `gt_level+1` whose OPENER line
+    /// is `i` — re-dispatched, so `i` does NOT advance — and whose body is bounded DYNAMICALLY by
+    /// the continuation predicate (closes on the first `quote_line_content_slice` `None`).
+    /// `opener_content` = the de-`>`'d (up-to-2 `>`) opener content SLICE; `span_start` = the
+    /// opener line start. Replaces `build_org_quote_streaming` — no `String`, no recursion, so a
+    /// `>`-staircase is iterative frames (each line viewed once at its own depth → O(n)).
+    OpenQuote { opener_content: &'a str, span_start: usize },
+    /// A `>`-frame body line whose de-`>`'d view opens a construct that CANNOT be classified
+    /// copy-free against the global raw-input indexes/scanners (fenced code / `#+BEGIN_X` callout /
+    /// LaTeX env / block hiccup) or needs a raw-input multi-line builder (table / verbatim / list).
+    /// The driver reparses the frame's REMAINING body `[i, end)` — plus any pending copy-free
+    /// paragraph as the reparse PREFIX (so a degraded construct coalesces / a real block trims the
+    /// preceding Break) — ONCE via `streaming_reparse`, then jumps to `end`. Lazy: a pure-quote
+    /// body never trips it, so the staircase stays copy-free.
+    GtFallback,
 }
 
 /// Does this freshly-finished block swallow a following blank line (mldoc's
@@ -133,11 +143,69 @@ fn line_text<'a>(lines: &[Line<'a>], k: usize, strip: usize) -> &'a str {
     strip_view(lines[k].text, strip)
 }
 
+/// Peel `n` blockquote `>`-levels off `s` (CONTINUATION semantics: each level is `trim_start`
+/// then strip one leading `>`; a level with no `>` stops early — the lazy case). O(min(n, #`>`))
+/// = O(len), a single scan. This is the `>`-analogue of `strip_view`'s cumulative indent strip
+/// and composes the same way: `gt_peel` `n` levels == `n` applications of `quote_line_content`'s
+/// peel (minus the breaker/blank `None` checks, which apply only at the FINAL level).
+fn gt_peel(s: &str, n: usize) -> &str {
+    let mut cur = s;
+    for _ in 0..n {
+        let t = cur.trim_start();
+        match t.strip_prefix('>') {
+            Some(rest) => cur = rest, // next iteration's trim_start handles the ws
+            None => return t,         // lazy: no `>` at this level ⇒ stop
+        }
+    }
+    cur
+}
+
+/// Null the inline spans of the DIRECT leaf blocks in `blocks` WITHOUT recursing into container
+/// children (`Quote`/`Custom`/`List`). Used at a `>`-frame's close: that frame's nested `>`-quote
+/// children and its `Step::GtFallback` reparse children are ALREADY fully null'd (each container
+/// nulls its own subtree at close / `streaming_reparse` nulls its output), so re-descending them
+/// is redundant AND — on a deep `>`-staircase (now uncapped ⇒ O(depth) nesting) — an O(depth)
+/// NATIVE-RECURSION stack overflow. Nulling only THIS frame's copy-free leaves keeps the
+/// whole-tree null invariant with O(1) native stack per close ⇒ O(n) total, no overflow.
+fn none_out_frame_leaves(blocks: &mut [Block]) {
+    use crate::parse::none_out_inlines;
+    for b in blocks.iter_mut() {
+        match b {
+            Block::Paragraph { inline, .. }
+            | Block::Heading { inline, .. }
+            | Block::Bullet { inline, .. }
+            | Block::FootnoteDef { inline, .. } => none_out_inlines(inline),
+            Block::Table { header, rows, .. } => {
+                if let Some(h) = header {
+                    for cell in h.iter_mut() {
+                        none_out_inlines(cell);
+                    }
+                }
+                for row in rows.iter_mut() {
+                    for cell in row.iter_mut() {
+                        none_out_inlines(cell);
+                    }
+                }
+            }
+            // Container children are already fully null'd — do NOT recurse (the overflow).
+            _ => {}
+        }
+    }
+}
+
+/// The view of a `>`-frame CONTINUATION line: peel `gt_level` `>`s off the strip-viewed raw line
+/// (`gt_peel` the first `gt_level-1`, then the FINAL peel via `quote_line_content_slice` so the
+/// breaker/`>`-blank/blank boundary is honored). `None` ⇒ the line ends the run (bare blank or a
+/// de-`>`'d breaker) ⇒ the `>`-frame closes. `gt_level >= 1` (only `>`-frames call this).
+fn gt_cont_view(raw: &str, strip: usize, gt_level: usize) -> Option<&str> {
+    quote_line_content_slice(gt_peel(strip_view(raw, strip), gt_level - 1))
+}
+
 /// One open callout container on the streaming driver's explicit stack. Every re-dispatched
 /// `#+BEGIN_QUOTE`/custom body — whether indent-0+plain-`\n` (clean window) or indented /
 /// `\r`-terminated (strip-view frame) — lives here as a heap `Frame`. `ctx` is the child
 /// context the PARENT set on push; `absorb` is this body's blank-swallow flag.
-struct Frame {
+struct Frame<'a> {
     hi: usize,                    // EXCLUSIVE closer line index; line `hi` is the closer.
     ctx: Ctx,                     // child context (set by the parent on push).
     out: Vec<Block>,              // children of THIS body.
@@ -153,6 +221,15 @@ struct Frame {
     open_span_start: usize,       // byte offset of the opener line start (for the span).
     strip: usize,       // cumulative de-indent applied to every body-line view (0 = root/clean).
     null_spans: bool,   // body was transformed (strip>0 or nonstd eol) → null inline spans on pop.
+    // P3 `>`-blockquote container frame (`gt_level == 0` for the root / `#+BEGIN_X` callout
+    // frames). `gt_level` = the cumulative `>`-peel applied to CONTINUATION lines (composes on
+    // top of the indent `strip`); the OPENER line (`open_line`) is instead viewed via
+    // `opener_content` (the up-to-2 `>` peel → the opener-2/continuation-1 asymmetry). A
+    // `>`-frame's extent is DYNAMIC: it closes when a continuation view is `None`, bounded above
+    // by the inherited `hi`. `null_spans` is always true for a `>`-frame (a `>`-body is transformed).
+    gt_level: usize,
+    open_line: usize,
+    opener_content: &'a str,
 }
 
 /// Re-parse a transformed body : routes back into
@@ -235,14 +312,14 @@ fn build_org_indexes(
 /// (local spans; gated by `harness/`). The `>`-quote and list-item content stay sub-recursions
 /// routed through the SAME driver via `streaming_reparse`. `root_ctx` is the document
 /// default `{false,false}` at the top level, or the child ctx of a transformed re-parse.
-fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
+fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
     let mut lines = split_lines(input);
     let last_rbracket = input.rfind(']');
     let (end_trie, drawer_end_idxs, fence_lines, nonstd_eol_lines) =
         build_org_indexes(&lines, input);
     let n = lines.len();
 
-    let mut stack: Vec<Frame> = vec![Frame {
+    let mut stack: Vec<Frame<'a>> = vec![Frame {
         hi: n,
         ctx: root_ctx,
         out: Vec::new(),
@@ -253,6 +330,9 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
         open_span_start: 0,
         strip: 0,
         null_spans: false,
+        gt_level: 0,
+        open_line: 0,
+        opener_content: "",
     }];
     let mut collapse_floor = 0usize; // shared & monotone (i is monotone across frames).
     let mut fence_cursor: usize = 0;
@@ -264,22 +344,57 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
     let mut i = 0;
 
     loop {
-        // Close every callout frame ending at line `i` (consuming its `#+END_` closer).
-        while stack.len() > 1 && stack.last().unwrap().hi == i {
+        // Close frames ending at line `i`. A HARD frame (root / `#+BEGIN_X` callout, `gt_level==0`)
+        // closes when `i` reaches its EXCLUSIVE closer `hi`, CONSUMING that `#+END_` line (`i+=1`).
+        // A `>`-frame (`gt_level>0`) has DYNAMIC extent: it closes when `i` reaches the inherited
+        // `hi` OR — past the opener — when the current line fails the continuation predicate; it
+        // does NOT consume a closer (the line belongs to the parent, `i` unchanged). Each `>`-frame
+        // line is thus viewed once at its own depth ⇒ O(n) (no per-frame run re-scan).
+        while stack.len() > 1 {
+            let (close, consume) = {
+                let top = stack.last().unwrap();
+                if top.gt_level > 0 {
+                    if i >= top.hi {
+                        (true, false)
+                    } else if i <= top.open_line {
+                        (false, false) // the opener line is always dispatched, never closes here
+                    } else {
+                        (gt_cont_view(lines[i].text, top.strip, top.gt_level).is_none(), false)
+                    }
+                } else {
+                    (top.hi == i, true)
+                }
+            };
+            if !close {
+                break;
+            }
             let mut f = stack.pop().unwrap();
             flush_para(&mut f.out, &mut f.para, &mut f.para_buf, input, false);
-            // Transformed body (strip > 0 or nonstd eol): inline spans don't map to global
-            // byte-ranges → null them, reproducing what the old streaming_reparse path did.
+            // Transformed body (strip > 0, nonstd eol, or a `>`-frame): inline spans don't map to
+            // global byte-ranges → null them, reproducing what the old streaming_reparse path did.
+            // A `>`-frame's container children are already null'd (bottom-up), so null only its OWN
+            // leaves NON-recursively — a deep (uncapped) `>`-staircase would overflow the native
+            // stack under the recursive `none_out_blocks`. A callout body is shallow ⇒ recurse.
             if f.null_spans {
-                crate::parse::none_out_blocks(&mut f.out);
+                if f.gt_level > 0 {
+                    none_out_frame_leaves(&mut f.out);
+                } else {
+                    crate::parse::none_out_blocks(&mut f.out);
+                }
             }
-            let span = Some(Span(f.open_span_start, lines[i].end));
+            // Hard frame: line `i` is the `#+END_` closer → span ends at `lines[i].end`. `>`-frame:
+            // line `i` is NOT in the run → the last body line is `i-1` (a `>`-frame closes only for
+            // `i > open_line`, so `i >= 1`).
+            let span_end = if consume { lines[i].end } else { lines[i - 1].end };
+            let span = Some(Span(f.open_span_start, span_end));
             let block = f.builder.unwrap().finish(f.out, span);
             let absorbs = block_absorbs(&block);
             let parent = stack.last_mut().unwrap();
             parent.out.push(block);
             parent.absorb = absorbs; // mldoc: a Quote/Custom swallows a following blank.
-            i += 1;
+            if consume {
+                i += 1;
+            }
         }
         if i >= n {
             break;
@@ -291,6 +406,14 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
             let ctx = top.ctx;
             let strip = top.strip;
             let null_spans = top.null_spans;
+            let gt_level = top.gt_level;
+            // `>`-frame OPENER line ⇒ the up-to-2-`>` peel view (`opener_content`); else `None`
+            // and dispatch computes the `gt_level`-peel continuation view itself.
+            let gt_opener = if gt_level > 0 && i == top.open_line {
+                Some(top.opener_content)
+            } else {
+                None
+            };
             dispatch_org_line(
                 i,
                 &mut lines,
@@ -311,6 +434,8 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
                 input,
                 strip,
                 null_spans,
+                gt_level,
+                gt_opener,
             )
         };
         match step {
@@ -328,6 +453,8 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
                 // (indent>0 or nonstd eol, strip = parent + indent_strip, spans nulled on
                 // pop). The deleted `block_code + streaming_reparse` sub-recursion is now
                 // a strip-view frame; the `nonstd_cursor` advance is kept (span-null gate).
+                // (`#+BEGIN_X` callouts only open at `gt_level==0`: inside a `>`-frame they are a
+                // §3 fallback tell, so a callout frame's `gt_level` is always 0.)
                 let child_strip = top_strip + indent_strip;
                 let null_spans = child_strip > 0
                     || !body_is_clean_window(&nonstd_eol_lines, &mut nonstd_cursor, i + 1, close);
@@ -342,24 +469,81 @@ fn parse_org_streaming(input: &str, root_ctx: Ctx) -> Vec<Block> {
                     open_span_start: line_start,
                     strip: child_strip,
                     null_spans,
+                    gt_level: 0,
+                    open_line: 0,
+                    opener_content: "",
                 });
                 i += 1;
             }
-            Step::Quote { ni, body, span } => {
-                // The `>`-quote nest, built ITERATIVELY (`build_org_quote_streaming`): an
-                // iterative `>`-peel for deep `>`-chains (single-line + multi-line tail) +
-                // a `streaming_reparse` of the SHALLOW residual body — O(n) time, O(depth)
-                // HEAP, NO `>`-depth cap. The open paragraph is flushed first (like
-                // `Step::Open`); a Quote absorbs a following blank (`block_absorbs`).
-                let top = stack.last_mut().unwrap();
-                // A preceding paragraph drops its trailing Break before this (nested) quote when
-                // already inside a list-item / blockquote body — same `between_eols` rule as the
-                // in-dispatch flushes (mldoc keeps it only at the document level).
-                flush_para(&mut top.out, &mut top.para, &mut top.para_buf, input, top.ctx.in_item || top.ctx.in_quote);
-                let block = build_org_quote_streaming(body, span);
-                top.absorb = block_absorbs(&block);
-                top.out.push(block);
-                i = ni;
+            Step::OpenQuote { opener_content, span_start } => {
+                // Push a `>`-Quote container frame (P3): the opener line `i` is RE-DISPATCHED inside
+                // it (`i` unchanged), giving the opener-2 peel via `opener_content` and — if that
+                // still opens a quote — the single-line `⌈N/2⌉` and the multi-line staircase, all as
+                // iterative frames (no `build_org_quote_streaming`, no String, no recursion).
+                let (p_hi, p_strip, p_gt) = {
+                    let t = stack.last().unwrap();
+                    (t.hi, t.strip, t.gt_level)
+                };
+                {
+                    let top = stack.last_mut().unwrap();
+                    // A preceding paragraph drops its trailing Break before this (nested) quote when
+                    // already inside a list-item / blockquote body — same `between_eols` rule as
+                    // `Step::Open` (mldoc keeps it only at the document level).
+                    flush_para(&mut top.out, &mut top.para, &mut top.para_buf, input, top.ctx.in_item || top.ctx.in_quote);
+                }
+                stack.push(Frame {
+                    hi: p_hi, // inherit the enclosing hard bound (a `>`-quote can't cross a callout closer)
+                    ctx: Ctx { in_item: false, in_quote: true },
+                    out: Vec::new(),
+                    para: None,
+                    para_buf: None,
+                    absorb: false,
+                    builder: Some(Builder::Quote),
+                    open_span_start: span_start,
+                    strip: p_strip,   // inherit the ancestor indent strip
+                    null_spans: true, // a `>`-body is transformed ⇒ null inline spans on pop
+                    gt_level: p_gt + 1,
+                    open_line: i,
+                    opener_content,
+                });
+                // i unchanged: the opener line is re-dispatched inside the new frame.
+            }
+            Step::GtFallback => {
+                // §3: the top `>`-frame's remaining body opens a construct that can't be classified
+                // copy-free (fence / callout / latex / hiccup / table / verbatim / list). Reparse
+                // `[i, end)` de-`>`'d ONCE via `streaming_reparse`, PREFIXED by any pending copy-free
+                // paragraph (`para_buf`) so a degraded construct coalesces with it and a real block's
+                // preceding Break is trimmed — byte-identical to a whole-body reparse across the seam.
+                let (p_hi, p_strip, p_gt, p_open, p_oc) = {
+                    let t = stack.last().unwrap();
+                    (t.hi, t.strip, t.gt_level, t.open_line, t.opener_content)
+                };
+                let mut de_gt = {
+                    let top = stack.last_mut().unwrap();
+                    top.para = None;
+                    top.para_buf.take().unwrap_or_default()
+                };
+                let vi = if i == p_open {
+                    p_oc
+                } else {
+                    gt_cont_view(lines[i].text, p_strip, p_gt).unwrap_or("")
+                };
+                de_gt.push_str(vi);
+                de_gt.push('\n');
+                let mut end = i + 1;
+                while end < p_hi {
+                    match gt_cont_view(lines[end].text, p_strip, p_gt) {
+                        Some(v) => {
+                            de_gt.push_str(v);
+                            de_gt.push('\n');
+                            end += 1;
+                        }
+                        None => break,
+                    }
+                }
+                let children = streaming_reparse(&de_gt, Ctx { in_item: false, in_quote: true });
+                stack.last_mut().unwrap().out.extend(children);
+                i = end; // the frame closes next iteration (i == end ⇒ continuation `None` or `hi`)
             }
         }
     }
@@ -416,12 +600,28 @@ fn dispatch_org_line<'a>(
     input: &'a str,
     strip: usize,
     null_spans: bool,
-) -> Step {
+    // P3 `>`-frame context: `gt_level == 0` for a hard (root / callout) frame — behavior is
+    // identical to before. `gt_level > 0` ⇒ the current line is viewed at the frame's cumulative
+    // `>`-peel; `gt_opener` is `Some(opener_content)` on the frame's OPENER line (the up-to-2 peel),
+    // `None` on a continuation (dispatch computes the `gt_level`-peel view itself).
+    gt_level: usize,
+    gt_opener: Option<&'a str>,
+) -> Step<'a> {
     // Copy out the line fields (a `&'a str` + two `usize`s, none borrowing `lines`) so the
     // headline / hiccup splits can REWRITE `lines[i]`/`lines[ri]` in place (steps 3, 13b).
-    // `t` is the STRIP-VIEWED line text (no-op when strip == 0); `line_content_end` uses the
-    // original text length so `parse_latex_env`'s `line_end` bound is correct.
-    let t = line_text(lines, i, strip);
+    // `t` is the line's VIEW: the strip-viewed text for a hard frame, or — inside a `>`-frame —
+    // `opener_content` (opener) / the `gt_level`-peel continuation view. `line_content_end` uses the
+    // original text length so `parse_latex_env`'s `line_end` bound is correct (hard frames only —
+    // a `>`-frame routes latex to the §3 fallback before `parse_latex_env` is reached).
+    let t = if gt_level == 0 {
+        line_text(lines, i, strip)
+    } else if let Some(oc) = gt_opener {
+        oc
+    } else {
+        // Continuation view; the driver's close phase already ensured `Some` (else it closed the
+        // frame instead of dispatching), so `unwrap_or("")` is just a defensive fallback.
+        gt_cont_view(lines[i].text, strip, gt_level).unwrap_or("")
+    };
     let line_start = lines[i].start;
     let line_end = lines[i].end;
     let line_content_end_orig = line_start + lines[i].text.len(); // for parse_latex_env
@@ -458,6 +658,27 @@ fn dispatch_org_line<'a>(
             b.push('\n');
         }
         return Step::Next(i + 1);
+    }
+
+    // P3 §3: inside a `>`-frame, a de-`>`'d view opening a construct whose recognition needs the
+    // literal `>`s stripped from what the GLOBAL raw-input indexes/scanners see — fenced code /
+    // `#+BEGIN_X` callout (`fence_lines`/`EndTrie` never record a `>`-prefixed closer), a LaTeX env
+    // or block hiccup (`parse_latex_env`/`parse_hiccup` scan raw bytes), or a raw-input multi-line
+    // BUILDER (table cells / verbatim / list content read raw `input`) — cannot be handled copy-free.
+    // Hand the frame's remaining body to the bounded de-`>`'d reparse (`Step::GtFallback`). The
+    // single-line leaves (directive/comment/`$$`/raw-html/hr), paragraphs, and NESTED `>`-quotes
+    // stay copy-free below, so a pure-quote staircase never reaches here. (Over-routing is only a
+    // perf cost — the fallback runs the identical ladder — so these tells may be conservative.)
+    if gt_level > 0
+        && (fence_marker(t).is_some()
+            || block_begin(t).is_some()
+            || t.trim_start().starts_with("\\begin{")
+            || t.trim_start().starts_with("[:")
+            || is_table_row(t)
+            || is_verbatim_line(t)
+            || list_marker(t).is_some())
+    {
+        return Step::GtFallback;
     }
 
     // 1. directive `#+KEY: value` (KEY != BEGIN_…) — not a list-item content block.
@@ -789,33 +1010,19 @@ fn dispatch_org_line<'a>(
         return Step::Next(ni);
     }
 
-    // 8. markdown blockquote (`>` …). The run is bounded by `hi` (else the closer line would
-    // be lazily absorbed into the quote body — `quote_line_content("#+END_QUOTE")` is `Some`).
-    // We only collect the run + de-`>`'d body here and hand it back as `Step::Quote`; the
-    // DRIVER builds the (possibly nested) Quote via the iterative-peel
-    // `build_org_quote_streaming` (O(n), uncapped). The open paragraph is flushed by the
-    // driver (like `Step::Open`), so `out`/`para`/`absorb` are untouched here.
-    if let Some(first_content) = quote_first_line(t) {
+    // 8. markdown blockquote (`>` …), P3. The VIEW `t` opening a quote (opener strips up to 2 `>`)
+    // hands the driver a `Step::OpenQuote`: it pushes a `>`-Quote container `Frame` (`gt_level+1`)
+    // whose opener line is `i`, re-dispatched (`i` unchanged). The run is bounded DYNAMICALLY by the
+    // continuation predicate (the frame closes on the first `quote_line_content_slice` `None`),
+    // itself bounded by the frame's inherited `hi` (else the closer line would be lazily absorbed).
+    // The open paragraph is flushed by the driver (like `Step::Open`), so `out`/`para` are untouched
+    // here. This fires at the document root (`gt_level==0`, `t = line_text`) AND for a NESTED opener
+    // inside a `>`-frame (`t` = the frame's view) — the single-line `⌈N/2⌉` and the staircase.
+    if let Some(inner) = quote_first_line_slice(t) {
         if was_ws_drop && para_ws_only(para, input) {
             *para = None; // F4: drop the empty `* ` trailing-ws para (driver flushes the Quote).
         }
-        let start = i;
-        let mut body = String::new();
-        body.push_str(&first_content);
-        body.push('\n');
-        let mut ni = i + 1;
-        while ni < hi {
-            match quote_line_content(line_text(lines, ni, strip)) {
-                Some(c) => {
-                    body.push_str(&c);
-                    body.push('\n');
-                    ni += 1;
-                }
-                None => break,
-            }
-        }
-        let span = Some(Span(lines[start].start, lines[ni - 1].end));
-        return Step::Quote { ni, body, span };
+        return Step::OpenQuote { opener_content: inner, span_start: line_start };
     }
 
     // 9. block-level displayed math `$$ … $$`.
@@ -1317,7 +1524,7 @@ fn verbatim_content(s: &str) -> &str {
 }
 
 fn quote_opens(s: &str) -> bool {
-    quote_first_line(s).is_some()
+    quote_first_line_slice(s).is_some()
 }
 
 /// A de-`>`'d line content that ENDS an Org blockquote run (it starts a new block:
@@ -1331,20 +1538,12 @@ fn quote_line_breaker(s: &str) -> bool {
         || s == "#"
 }
 
-/// First line of an Org blockquote. mldoc enters the quote by stripping one leading `>`
-/// (+ws); the remainder is itself a body line that drops one MORE `>` (+ws) — i.e. up
-/// to TWO `>` on the opener (so N leading `>` ultimately nest ⌈N/2⌉ Quotes). The quote
-/// OPENS only if the result is non-empty and does not start a block construct (a
-/// list/heading/`id::` marker makes mldoc reject the quote entirely, leaving the raw
-/// line a Paragraph). Returns the first body-line content, else None.
-fn quote_first_line(s: &str) -> Option<String> {
-    quote_first_line_slice(s).map(str::to_string)
-}
-
-/// Borrowing core of [`quote_first_line`] — returns the de-`>`'d opener content as a SUFFIX
-/// slice of `s` (no allocation), so the streaming peel (`build_org_quote_streaming`) can strip
-/// `>`-levels in place. `quote_first_line` is exactly `…_slice(s).map(to_string)`, so the two
-/// can never disagree.
+/// First line of an Org blockquote — the de-`>`'d opener content as a SUFFIX slice of `s` (no
+/// allocation). mldoc enters the quote by stripping one leading `>` (+ws); the remainder is itself
+/// a body line that drops one MORE `>` (+ws) — i.e. up to TWO `>` on the opener (so N leading `>`
+/// on ONE line ultimately nest ⌈N/2⌉ Quotes). The quote OPENS only if the result is non-empty and
+/// does not start a block construct (a list/heading/`id::` marker makes mldoc reject the quote
+/// entirely, leaving the raw line a Paragraph). This slice is the P3 `>`-frame's `opener_content`.
 fn quote_first_line_slice(s: &str) -> Option<&str> {
     let r1 = s.trim_start().strip_prefix('>')?.trim_start();
     let content = match r1.strip_prefix('>') {
@@ -1357,16 +1556,10 @@ fn quote_first_line_slice(s: &str) -> Option<&str> {
     Some(content)
 }
 
-/// One CONTINUATION line of an Org blockquote body (mldoc strips ONE `>` + ws, lazy:
-/// a non-`>` line still continues). Returns None to STOP the run (blank line, or a line
-/// that — after stripping one `>` — starts a new block construct).
-fn quote_line_content(s: &str) -> Option<String> {
-    quote_line_content_slice(s).map(str::to_string)
-}
-
-/// Borrowing core of [`quote_line_content`] — returns the de-`>`'d continuation content as a
-/// SUFFIX slice of `s` (the `>`-blank case is the empty slice; a non-`>` blank / breaker is
-/// `None`). `quote_line_content` is `…_slice(s).map(to_string)`, so they can never disagree.
+/// One CONTINUATION line of an Org blockquote body — the de-`>`'d content as a SUFFIX slice of `s`
+/// (mldoc strips ONE `>` + ws, lazy: a non-`>` line still continues). The `>`-blank case is the
+/// empty slice `Some("")`; a non-`>` blank / a de-`>`'d breaker is `None` (STOP the run — the P3
+/// `>`-frame closes). Composed by `gt_cont_view` to view a `>`-frame's continuation lines.
 fn quote_line_content_slice(s: &str) -> Option<&str> {
     let t = s.trim_start();
     let had_gt = t.starts_with('>');
@@ -1378,74 +1571,6 @@ fn quote_line_content_slice(s: &str) -> Option<&str> {
         return None;
     }
     Some(rest)
-}
-
-/// Build the (possibly nested) Org Quote from an already de-`>`'d body — uncapped,
-/// O(n) / O(depth)-HEAP, the sole `>`-quote builder (`parse_org_streaming` calls it). The
-/// recurse-on-body is REMOVED for the deep cases (the `>`-spine peels iteratively below) and
-/// there is NO `>`-depth cap; byte-exact to mldoc (gated by `harness/`).
-///
-/// # The `>`-strip peel (the O(n) core)
-///
-/// The body is a left-spine of Quotes (mldoc's lazy `>`-absorption: a `>`-line OPENS a nested
-/// quote that swallows the rest of the run; opener strips up to 2 `>` via `quote_first_line`,
-/// continuations 1 via `quote_line_content`). We peel that spine ITERATIVELY over the body's
-/// line VIEWS (suffix `&str` slices — NO per-level body copy, NO native recursion), counting
-/// one `Quote` wrapper per peeled level:
-///   - SINGLE-LINE body that opens a quote (`quote_first_line_slice`) → peel 2 `>`, wrap, loop
-///     (the `>`×N-on-one-line case: ⌈N/2⌉ Quotes, exactly like the old single-line peel).
-///   - MULTI-LINE TAIL: the WHOLE body is one nested quote iff its first line opens a quote
-///     AND every continuation continues (no blank/breaker stop). Peel one `>` off the opener
-///     (2) + each continuation (1), wrap, loop. (Encodes the opener-2 / continuation-1
-///     asymmetry: `quote_first_line_slice` on view[0], `quote_line_content_slice` on view[1..].)
-/// The peel STOPS at the first body whose head no longer opens a quote, or whose run is broken
-/// by a blank / breaker continuation (a `>`-blank `Some("")`, a `- `/`# `/`id:: ` after strip).
-/// That residual body is the SHALLOW part — re-dispatched ONCE via the streaming driver
-/// (`streaming_reparse`, `in_quote:true`), which reproduces mldoc's full body grammar
-/// (paragraphs, footnote `>`-absorption, nested non-tail quotes, lists, callouts, …) exactly
-/// as mldoc does. Deep `>`-nesting never reaches that re-dispatch, so the native stack stays
-/// O(1) and there is no `>`-depth cap.
-fn build_org_quote_streaming(body: String, span: Option<Span>) -> Block {
-    // Line VIEWS into `body` (trailing `\n` ⇒ no spurious empty tail line). Every view is
-    // already left-trimmed + de-`>`'d-by-one-level (built by `quote_first_line`/
-    // `quote_line_content` in step 8), so peeling them re-applies the SAME predicates.
-    let mut views: Vec<&str> = body.lines().collect();
-    let mut wrappers = 1usize; // the outer Quote; +1 per peeled spine level.
-    loop {
-        if views.len() == 1 {
-            // `>`×N on one line: peel up to 2 `>` per level (`quote_first_line`).
-            match quote_first_line_slice(views[0]) {
-                Some(inner) => {
-                    views[0] = inner;
-                    wrappers += 1;
-                }
-                None => break,
-            }
-        } else if let Some(inner0) = quote_first_line_slice(views[0]).filter(|_| {
-            // Multi-line TAIL: head opens a quote AND every continuation continues ⇒ the whole
-            // body is one nested quote (lazy absorption). Otherwise a leading paragraph / an
-            // interior blank/breaker stop means the residual is shallow → fall to re-dispatch.
-            views[1..].iter().all(|v| quote_line_content_slice(v).is_some())
-        }) {
-            views[0] = inner0; // opener strips 2 (`quote_first_line_slice` already applied)
-            for v in views[1..].iter_mut() {
-                *v = quote_line_content_slice(v).unwrap(); // continuations strip 1
-            }
-            wrappers += 1;
-        } else {
-            break;
-        }
-    }
-    // Rebuild the residual body string (`\n`-joined views + trailing `\n`) and dispatch it
-    // ONCE through `streaming_reparse`.
-    let mut residual = views.join("\n");
-    residual.push('\n');
-    let children = streaming_reparse(&residual, Ctx { in_item: false, in_quote: true });
-    let mut block = Block::Quote { children, span };
-    for _ in 1..wrappers {
-        block = Block::Quote { children: vec![block], span };
-    }
-    block
 }
 
 /// Org footnote definition `[fn:name] text`. Returns (name, content). Leading
