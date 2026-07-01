@@ -808,10 +808,17 @@ fn org_backslash_at(s: &str, bb: &[u8], i: usize, ctx: Ctx, latex_ok: bool) -> (
 /// entity that consumed into the following ordinary run): advance past `end`, and if it lands
 /// strictly inside a token, push that token's plain tail `s[end..tok_end]` raw (Org never
 /// unescapes; the straddled token is always ordinary Text).
+///
+/// FAST PATH (Phase C, audit bug 2b): the outer `org_lex(s)` already tokenized `[end, n)`, and
+/// Org's lexer has NO non-local construct (backticks are plain; there are no Code/Entity
+/// `Leaf`s — entities are resolver-level), so `toks[t+1..]` is ALWAYS the correct tail. On the
+/// `leads` (keyword-ts / bare-url) case that used to re-lex the whole suffix, re-lex ONLY the
+/// O(1) split token's tail `[end, te)` → one `Text` token, overwrite `toks[t]`, and re-dispatch
+/// via the loop → O(n), no native stack. (The straddled token is always ordinary `Text`.)
 #[allow(clippy::too_many_arguments)]
 fn resync_straddle(
     s: &str,
-    toks: &[Token],
+    toks: &mut [Token],
     mut t: usize,
     end: usize,
     out: &mut Vec<Inline>,
@@ -824,19 +831,30 @@ fn resync_straddle(
     ctx: Ctx,
 ) -> usize {
     let n = s.len();
-    let tok_end = |i: usize| if i + 1 < toks.len() { toks[i + 1].off } else { n };
-    while t < toks.len() && tok_end(t) <= end {
+    while t < toks.len() && (if t + 1 < toks.len() { toks[t + 1].off } else { n }) <= end {
         t += 1;
     }
     if t < toks.len() && toks[t].off < end {
         // straddle: an entity/escape consumed into the following ordinary Text run. The tail
         // is `end`'s fresh dispatch point — if it LEADS a no-opener construct (keyword-ts /
-        // bare-url), re-resolve the remainder from `end`; else push the plain tail raw.
+        // bare-url), re-dispatch the tail from `end`; else push the plain tail raw.
+        let te = if t + 1 < toks.len() { toks[t + 1].off } else { n };
         let leads = (ctx.timestamps
             && matches!(s.as_bytes()[end], b'S' | b'C' | b'D' | b's' | b'c' | b'd')
             && crate::inline::parse_keyword_timestamp(s, end).is_some())
             || (ctx.urls && crate::inline::parse_bare_url(s, end).is_some());
         if leads {
+            // FAST PATH: re-lex ONLY the split token's tail (Org is fully local — see fn doc),
+            // overwrite `toks[t]`, re-dispatch. Falls back to the suffix re-lex only if the
+            // tail is not a single Text/Punct token (defensive; unreachable for Org straddles).
+            let mut retok = org_lex(&s[end..te]);
+            if retok.len() == 1 && matches!(retok[0].kind, Kind::Text(_) | Kind::Punct(_)) {
+                crate::metrics::scan_work(te - end); // O(1): ONLY the split token re-lexed
+                retok[0].off += end; // local → absolute
+                toks[t] = retok.pop().unwrap();
+                *fresh = true; // `end` is a fresh dispatch point
+                return t; // re-dispatch the corrected token in the same loop
+            }
             flush(out, pending, plain_start, *plain_end);
             crate::metrics::scan_work(s.len() - end); // resync re-lexes the whole suffix
             out.extend(parse_ctx(&s[end..], ctx, base + end));
@@ -844,12 +862,12 @@ fn resync_straddle(
         }
         // the tail is pushed RAW (org never unescapes) → 1:1 with source from `end`. pending
         // is empty here (the caller flushed before pushing its node), so this is a fresh run.
-        let tail = &s[end..tok_end(t)];
+        let tail = &s[end..te];
         if let Some(b) = tail.bytes().next_back() {
             *last_plain_char = Some(b);
         }
         *plain_start = Some(base + end);
-        *plain_end = base + tok_end(t);
+        *plain_end = base + te;
         *fresh = !tail.is_empty() && tail.bytes().all(|b| b == b' ' || b == b'\t');
         pending.push_str(tail);
         t += 1;

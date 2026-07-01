@@ -604,12 +604,23 @@ fn first_crlf(bb: &[u8], from: usize) -> usize {
 /// After consuming a construct's byte extent `[_, end)`, advance the token cursor past it
 /// (leftmost-greedy resync — interior tokens discarded). Most constructs end at a clean
 /// token boundary; tag / bare-url end mid-Text (at a ws / tag-delim), so when `end` lands
-/// strictly inside a straddling Text token, re-lex its tail `s[end..token_end]` (re-resolving
-/// escapes) into `pending`. (`end` never lands inside a Punct/Delim/Leaf token.)
+/// strictly inside a straddling token, recover the tail `s[end..token_end]` and re-dispatch.
+///
+/// FAST PATH (Phase C, audit bug 2b): the outer `lex(s)` ALREADY tokenized `[end, n)`. The
+/// lexer's ONLY non-local construct is the backtick Code (and `&…;` Entity) `Leaf` — grouping
+/// that a straddle can invalidate by consuming a Code opener (or promoting a freed escaped
+/// backtick to one), which SHIFTS all downstream backtick pairing. So when the straddled
+/// boundary token is NOT a `Leaf` and the freed byte is not a backtick, `toks[t+1..]` IS the
+/// correct tail: re-lex ONLY the O(1) split token's tail `[end, te)` → one `Punct`/`Text`
+/// token, overwrite `toks[t]`, and re-dispatch via the loop (no recursion, no suffix re-lex).
+/// Escape (`#a\`), plain-tail, keyword-timestamp and bare-url straddles all land here → O(n),
+/// no native stack. `Leaf` + backtick-seam fall through to the byte-exact RECURSE below (they
+/// are the residual `#a\`code\`` O(n²)/SIGABRT family — non-local pairing forbids token reuse;
+/// see subagent-tasks/notes/lsdoc-inline-C-impl.md).
 #[allow(clippy::too_many_arguments)]
 fn resync(
     s: &str,
-    toks: &[Token],
+    toks: &mut [Token],
     mut t: usize,
     end: usize,
     out: &mut Vec<Inline>,
@@ -621,20 +632,31 @@ fn resync(
     base: usize,
 ) -> usize {
     let n = s.len();
-    let tok_end = |i: usize| if i + 1 < toks.len() { toks[i + 1].off } else { n };
-    while t < toks.len() && tok_end(t) <= end {
+    while t < toks.len() && (if t + 1 < toks.len() { toks[t + 1].off } else { n }) <= end {
         t += 1;
     }
     if t < toks.len() && toks[t].off < end {
         // `end` lands strictly inside a straddled token (a tag / bare-url / latex / page-ref
         // whose raw end falls mid-Text or mid-Escape — escape is CONSTRUCT-LOCAL, so the
-        // token boundaries needn't align). If the tail STARTS a fresh construct (e.g. a tag
-        // consumed `\` and left a `#`, or a `\)`-split left a `(`), re-lex+resolve the rest
-        // from `end` (a fresh dispatch point); otherwise the tail is plain — push it raw.
+        // token boundaries needn't align).
         let bb = s.as_bytes();
-        // Straddling a Leaf (a code span the lexer eagerly built but a tag consumed `` ` ``
-        // as a literal char) means the tail spans a region with its own constructs → must
-        // re-dispatch. A plain Text/Escape tail re-dispatches only if it leads a construct.
+        let te = if t + 1 < toks.len() { toks[t + 1].off } else { n };
+        // FAST PATH — reuse the outer tail (see the fn doc). Excludes `Leaf` (consumed Code /
+        // Entity grouping) and a freed escaped-backtick (`bb[end] == '`'` promotes it to a
+        // Code opener): both mutate downstream backtick pairing, so token reuse is unsound.
+        if !matches!(toks[t].kind, Kind::Leaf(_)) && bb.get(end) != Some(&b'`') {
+            let mut retok = lex(&s[end..te]);
+            if retok.len() == 1 && matches!(retok[0].kind, Kind::Text(_) | Kind::Punct(_)) {
+                crate::metrics::scan_work(te - end); // O(1): ONLY the split token re-lexed
+                retok[0].off += end; // local → absolute
+                toks[t] = retok.pop().unwrap();
+                *fresh = true; // `end` is a fresh dispatch point (mldoc post-construct)
+                return t; // re-dispatch the corrected token in the same loop
+            }
+        }
+        // RECURSE (byte-exact, but O(n²)/native): a `Leaf` code/entity span whose opener the
+        // construct consumed, a freed escaped-backtick, or an exotic multi-token tail — the
+        // tail spans a region whose (non-local) backtick pairing differs from the outer stream.
         let recurse = matches!(toks[t].kind, Kind::Leaf(_))
             || bb.get(end).is_some_and(|&c| is_special_lead(c))
             || (ctx.timestamps && crate::inline::parse_keyword_timestamp(s, end).is_some())
@@ -647,9 +669,9 @@ fn resync(
             return toks.len(); // recursion handled the remainder — stop the outer walk
         }
         // the tail bytes are pushed RAW (no unescape) → they map 1:1 to source from `end`.
-        let tail = &s[end..tok_end(t)];
+        let tail = &s[end..te];
         *plain_start = Some(base + end);
-        *plain_end = base + tok_end(t);
+        *plain_end = base + te;
         pending.push_str(tail);
         *fresh = trailing_ws(tail) > 0;
         t += 1;

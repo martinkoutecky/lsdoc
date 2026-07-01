@@ -61,9 +61,20 @@ fn hiccup_unclosed(m: usize) -> String {
     s
 }
 /// Tag straddling into a `\` escape, ×n. O(n²) + O(n) native stack if `resync` recurses over the
-/// whole remaining suffix per unit. (Bug 2b — inline resolver.)
+/// whole remaining suffix per unit. FIXED (C): the fast path reuses the outer tokens (the split
+/// escape's tail re-lexes to a single Punct/Text token — no non-local backtick pairing), so it
+/// re-dispatches in the loop → O(n), O(1) native stack. (Bug 2b — inline resolver.)
 fn resync(n: usize) -> String {
     "#a\\".repeat(n)
+}
+/// Tag straddling into a `` `code` `` LEAF, ×n. STILL O(n²)+native-recurse: backtick Code pairing
+/// is NON-LOCAL — consuming a Code opener re-pairs every downstream backtick (mldoc re-parses from
+/// `end`), so reusing the outer tokens mis-pairs a surviving Code span (`#a` `b`` → mldoc `code(b)`,
+/// token-reuse → plain `` `b` ``; verified vs the oracle). Token reuse therefore cannot fix this
+/// family byte-exactly; only a suffix re-lex (O(n²)) or a delimiter-stack rewrite can. Kept on the
+/// byte-exact recurse path; see subagent-tasks/notes/lsdoc-inline-C-impl.md. (Bug 2b, residual.)
+fn resync_leaf(n: usize) -> String {
+    "#a`#`".repeat(n)
 }
 
 // ---- linear controls (must stay linear) -----------------------------------
@@ -117,16 +128,33 @@ fn complexity_gate() {
         // `close <= body_end` clamp, not a per-opener `parse_hiccup` re-scan to `body_end`.
         assert_linear("hiccup_unclosed", hiccup_unclosed, 3000, "md");
         assert_linear("hiccup_unclosed", hiccup_unclosed, 3000, "org");
+        // C (2b): the inline escape-straddle resync reuses the outer tokens (re-lexes only the
+        // O(1) split boundary token, then re-dispatches in the loop) instead of recursing over the
+        // whole remaining suffix → LINEAR. (The code-LEAF twin stays a target below — non-local
+        // backtick pairing forbids byte-exact token reuse there; see `resync_leaf`.)
+        assert_linear("resync", resync, 1500, "md");
     });
+    // C (2b) no-SIGABRT: the escape-straddle family is now O(1) native stack, so ~64 KB parses on
+    // a SMALL (4 MiB) stack where the old per-unit suffix-recurse overflowed at ~24 KB (on the
+    // default stack). `forget` the flat 22k-tag AST — this guards only the PARSE stack.
+    std::thread::Builder::new()
+        .stack_size(4 * 1024 * 1024)
+        .spawn(|| std::mem::forget(lsdoc::parse(&resync(22_000), "md")))
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 /// The audit's remaining O(n²) family. FAILS today (that is the point — it proves the gate catches
-/// what 1321/1321 byte-exact missed). Moves up into `complexity_gate` as its phase lands: A
-/// (container-prefix walk) + B (hiccup balance index) DONE; 2b → C (inline delimiter stack).
+/// what 1321/1321 byte-exact missed). A (container-prefix walk) + B (hiccup balance index) + C's
+/// escape-straddle half DONE (moved into `complexity_gate`). RESIDUAL: `resync_leaf`, the inline
+/// code-LEAF straddle — NOT byte-exactly fixable by token reuse (non-local backtick Code pairing;
+/// a suffix re-lex or a delimiter-stack rewrite is required — see the C-impl note). Left here as a
+/// documented, known-O(n²) target rather than shipping a byte-inexact "fix".
 #[test]
-#[ignore = "audit O(n^2) target — un-ignore/move to complexity_gate as C fixes it"]
+#[ignore = "audit O(n^2) residual — code-leaf straddle; needs a delimiter-stack rewrite, not token reuse"]
 fn complexity_gate_targets() {
     big_stack(|| {
-        assert_linear("resync", resync, 1500, "md"); // C (2b)
+        assert_linear("resync_leaf", resync_leaf, 1500, "md"); // C (2b) residual
     });
 }
