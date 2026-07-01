@@ -19,6 +19,14 @@ the fuzz floor** (more mldoc parity) — how each fix was verified.
 | D10 | inline_html accepts UNKNOWN tags (mldoc → plain) | OPEN | — |
 | D11 | `<br/>` no-space → inline_html (mldoc → plain) | OPEN | — |
 | D12 | single-line `<b>`/`<i>` phrasing tags → raw_html (mldoc → plain) | OPEN | — |
+| D13 | md link-label doesn't reparse entities/latex (`[\alpha](u)`, `[$x$](u)`) | OPEN | — |
+| D14 | timestamp token order-permissive (`<… +1d 12:00>` accepts both vs mldoc date-only) | OPEN | — |
+| D15 | md drawer name rejects punctuation (`:LOG@BOOK:` → paragraph vs mldoc drawer) | OPEN | — |
+
+D13–D15 were surfaced by the **lsdoc-vs-mldoc structural audit** (`subagent-tasks/notes/lsdoc-vs-mldoc-audit.md`,
+Jul 1) — behavioral drifts confirmed vs the isolated oracle (D13/D14 verified; D15 codex-probed). That
+report also lists structural UNIFICATION opportunities (raw-html one-parser, hiccup quote-parity port,
+list/display-math/bracket-scan dedup) — those are refactors awaiting Martin's approval, not divergences.
 
 D10–D12 are the residual HTML **tag-classification** area (pre-existing; the whole area wants a
 dedicated source pass — see the lsdoc-vs-mldoc audit). D3/D4 were RE-AUDITED faithful vs source.
