@@ -122,9 +122,75 @@ before the Phase-D lazy-code-span refactor, which reuses `code_span` verbatim).
 **Reachability:** a CRLF file with a multi-line double-backtick code span. Uncommon (most graphs
 are LF; single-backtick code stops at the newline so it's double-code-only).
 
-**Fix direction:** normalize `\r\n`→`\n\n` (confirm the exact mldoc rule — `\n\n` vs `\n`) in
-`code_span`'s content extraction for the double-backtick case. SMALL, localized to `inline.rs`.
-Status: **OPEN.** (Lowest priority — the most exotic of the four.)
+**Status: FIXED — commit `c26b8ca`.** The real scope was BROADER than "double-code": mldoc
+normalizes `\r`→`\n` (1:1) during INLINE parsing, so it also hits emphasis / link-label /
+sub-superscript content (breaks-off reparse contexts), not just code. Fix = normalize `\r`→`\n`
+at `parse_ctx` entry when `!ctx.breaks` (resolver.rs + org_resolver.rs) + on code-span text in
+`try_code_span`. NOT global (block-level raw slices keep `\r` — that's what D5/D6 expose). Span-safe.
+
+---
+
+## D5 — a multi-line `$$…$$` is inline latex, not a `displayed_math` block
+
+**Trigger:** `$$…$$` whose content spans a newline. **MD.** (Single-line `$$ab$$` is byte-exact.)
+
+```
+input:  "$$a\nb$$"            (or the block form "$$\na\nb\n$$")
+mldoc:  displayed_math{text:"a\nb"}                          ← a BLOCK, content raw
+lsdoc:  paragraph[ plain "$$a", break, plain "b$$" ]         ← unrecognized → paragraph text
+```
+
+**Root cause:** lsdoc has no block-level multi-line `$$…$$` recognizer; inline `$…$`/`$$…$$` is
+single-line, so a newline inside breaks it and it falls to paragraph. mldoc recognizes a
+display-math BLOCK spanning lines. **Reachable** (a Logseq block body is multi-line; display math
+across lines is normal). **Fix direction:** add a multi-line `$$…$$` display-math block recognizer
+in the block phase — MUST stay single-pass O(n) (scan to the closing `$$` with a monotone cursor,
+no per-line rescan) and add NO cap. Status: **OPEN.**
+
+## D6 — multi-line inline HTML is `inline_html` in a paragraph, not a `raw_html` block
+
+**Trigger:** an HTML tag whose content spans a newline (`<kbd>a\nb</kbd>`, `<div>a\nb</div>`).
+**MD.** (Single-line `<kbd>ab</kbd>` is byte-exact — also inline there, but that matches.)
+
+```
+input:  "<div>a\nb</div>"
+mldoc:  raw_html{text:"<div>a\nb</div>"}                     ← a BLOCK
+lsdoc:  paragraph[ inline_html "<div>a\nb</div>" ]           ← inline in a paragraph
+```
+
+**Root cause:** lsdoc recognizes inline HTML but not a multi-line `raw_html` BLOCK. mldoc promotes
+multi-line HTML to a block. **Reachable** (multi-line HTML in a block body). **Fix direction:**
+block-level multi-line HTML recognizer — single-pass O(n), no cap. Status: **OPEN.**
+
+## D7 — an org `[[url][label]]` link with a newline in the label isn't recognized
+
+**Trigger:** org bracket link whose label spans a newline. **ORG.**
+
+```
+input:  "[[http://x][a\nb]]"
+mldoc:  link{ url:http://x, label:[plain "a\nb"] }           ← recognized; label CR→LF normalized
+lsdoc:  plain "[[", bare-url(http://x), plain "][a", break, plain "b]]"   ← not recognized
+```
+
+**Root cause:** lsdoc's org `[[url][label]]` recognizer requires the whole link on one line; a
+newline in the label breaks it. mldoc allows a multi-line label. **Reachability:** uncommon (org,
+multi-line link label). **Fix direction:** allow a newline inside the org link label scan — stay
+O(n) (no per-link rescan), no cap; once recognized the label reparse already normalizes CR (D4).
+Status: **OPEN.**
+
+## D8 — an org `^{…}` / `_{…}` script with a newline in the body isn't recognized
+
+**Trigger:** org sub/superscript `^{…}`/`_{…}` whose body spans a newline. **ORG.**
+
+```
+input:  "a^{b\nc}"
+mldoc:  plain "a", superscript[plain "{b\nc}"]               ← recognized; body CR→LF normalized
+lsdoc:  plain "a^{b", break, plain "c}"                      ← not recognized
+```
+
+**Root cause:** lsdoc's org `^{…}`/`_{…}` recognizer is single-line. mldoc allows a newline in the
+braced body. **Reachability:** rare (org, multi-line script body). **Fix direction:** allow a
+newline inside the braced-script scan — O(n), no cap. Status: **OPEN.**
 
 ---
 
