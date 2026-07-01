@@ -2506,5 +2506,23 @@
   "cat": "prefixconsume",
   "input": "text\n> > > deep\n",
   "format": "org"
+ },
+ {
+  "id": "o418",
+  "cat": "hiccupbalance",
+  "input": "[:div [:\n[:div [:\n]\n",
+  "format": "org"
+ },
+ {
+  "id": "o419",
+  "cat": "hiccupbalance",
+  "input": "[:a \"]\" x]\n",
+  "format": "org"
+ },
+ {
+  "id": "o420",
+  "cat": "hiccupbalance",
+  "input": "#+BEGIN_QUOTE\n[:div [:x\n#+END_QUOTE\n]\n",
+  "format": "org"
  }
 ]

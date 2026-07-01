@@ -609,6 +609,18 @@ add("prefixconsume", ">>x\n>>>>y\n>>>>>>z\n");                     // depth incr
 add("prefixconsume", "- > > a\n  > > b\n");                        // bullet-lazy nested quote
 add("prefixconsume", ">>>>x\n> y\n");                              // single-line ⌈4/2⌉ then a continuation
 
+// hiccupbalance (B): the block-hiccup close is a precomputed `[:`-balance lookup + `close<=body_end`
+// clamp (not a per-`[:`-line scan to EOF). Lock the clamp (a `]` OUTSIDE a `#+BEGIN` body must not
+// match), the unbalanced-run shape (was the O(n²) 2a), string opacity for `]`, and nesting.
+add("hiccupbalance", "#+BEGIN_QUOTE\n[:div [:x\n#+END_QUOTE\n]\n"); // clamp: outside `]` NOT matched
+add("hiccupbalance", "[:div [:\n[:div [:\n]\n");                   // unbalanced run (the 2a shape)
+add("hiccupbalance", "[:a \"]\" x]\n");                            // string opaque for `]`
+add("hiccupbalance", "[:a [:b \"]\"]]\n");                         // nested + string
+add("hiccupbalance", "[:a \"x\n");                                // unterminated string → not a hiccup
+add("hiccupbalance", "[:a][:b][:c]\n");                            // consecutive hiccups
+add("hiccupbalance", "> [:div [:x\n> ]\n");                        // hiccup inside a `>`-quote body
+add("hiccupbalance", "[:div café 中文 😀]\n");                      // multibyte inside a hiccup
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

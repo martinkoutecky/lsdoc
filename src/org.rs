@@ -322,14 +322,14 @@ fn streaming_reparse(input: &str, ctx: Ctx) -> Vec<Block> {
 
 /// The shared per-construct closer/marker indexes over the WHOLE input (built ONCE, O(n)):
 /// the `#+END_<name>` callout-closer trie, the `:END:` drawer-closer index, the whole-line
-/// fence-marker index, and the list of lines whose terminator is NOT a plain single `\n`
-/// (`\r\n` / lone `\r` / EOF). Both drivers query the first three with a `closer < hi`
-/// bound; the streaming driver uses the last to decide when a callout body is a clean
-/// WINDOW (for all-`\n` input it is empty ⇒ every indent-0 callout is a window frame).
+/// fence-marker index, the list of lines whose terminator is NOT a plain single `\n`
+/// (`\r\n` / lone `\r` / EOF), and the block-hiccup `[:`…`]` balance (`hiccup_close`). Both
+/// drivers query the first three with a `closer < hi` bound; the streaming driver uses the
+/// nonstd list to decide when a callout body is a clean WINDOW.
 fn build_org_indexes(
     lines: &[Line],
     input: &str,
-) -> (EndTrie, Vec<usize>, Vec<usize>, Vec<usize>) {
+) -> (EndTrie, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>) {
     let mut end_trie = EndTrie::new();
     let mut drawer_end_idxs: Vec<usize> = Vec::new(); // `:END:` lines (drawer closers)
     let mut fence_lines: Vec<usize> = Vec::new();
@@ -356,7 +356,17 @@ fn build_org_indexes(
             nonstd_eol_lines.push(idx);
         }
     }
-    (end_trie, drawer_end_idxs, fence_lines, nonstd_eol_lines)
+    // B: the block-hiccup `[:`…`]` balance precomputed ONCE (position-indexed, byte-exact to
+    // `parse_hiccup` — the SAME `build_hiccup_close` the inline path uses). The block-hiccup
+    // dispatch (13b) does an O(1) lookup + `close <= body_end` clamp instead of a per-opener
+    // `parse_hiccup` re-scan to `body_end` (the O(n²) on an unbalanced `[:`-run). Empty `Vec`
+    // when the input has no `[:` (the `.get` lookup then falls to MAX).
+    let hiccup_close = if input.contains("[:") {
+        crate::inline::build_hiccup_close(input)
+    } else {
+        Vec::new()
+    };
+    (end_trie, drawer_end_idxs, fence_lines, nonstd_eol_lines, hiccup_close)
 }
 
 /// The Org block driver: ONE
@@ -371,7 +381,7 @@ fn build_org_indexes(
 fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
     let mut lines = split_lines(input);
     let last_rbracket = input.rfind(']');
-    let (end_trie, drawer_end_idxs, fence_lines, nonstd_eol_lines) =
+    let (end_trie, drawer_end_idxs, fence_lines, nonstd_eol_lines, hiccup_close) =
         build_org_indexes(&lines, input);
     let n = lines.len();
 
@@ -512,6 +522,7 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                 &drawer_end_idxs,
                 &fence_lines,
                 last_rbracket,
+                &hiccup_close,
                 input,
                 strip,
                 null_spans,
@@ -634,6 +645,7 @@ fn dispatch_org_line<'a>(
     drawer_end_idxs: &[usize],
     fence_lines: &[usize],
     last_rbracket: Option<usize>,
+    hiccup_close: &[usize], // B: precomputed block-hiccup `[:`…`]` balance (position-indexed)
     input: &'a str,
     strip: usize,
     null_spans: bool,
@@ -1156,9 +1168,15 @@ fn dispatch_org_line<'a>(
             if !(last_rbracket.is_some_and(|last| rec <= last) && input[rec..].starts_with("[:")) {
                 break;
             }
-            let Some(cap_end) = crate::inline::parse_hiccup(&input[..body_end], rec) else {
+            // B: O(1) precomputed-balance lookup + `close <= body_end` clamp, replacing the
+            // per-opener `parse_hiccup(&input[..body_end], rec)` re-scan (the O(n²) 2a bug).
+            // `hiccup_head_ok` is the tag-validity gate `parse_hiccup` applied internally; the clamp
+            // is byte-exact to the old clamped scan (a global 0-crossing `< body_end` == the clamped
+            // scan's; one `>= body_end` == the clamped scan hitting the bound → None).
+            let cap_end = hiccup_close.get(rec).copied().unwrap_or(usize::MAX);
+            if cap_end == usize::MAX || cap_end > body_end || !crate::inline::hiccup_head_ok(input, rec) {
                 break;
-            };
+            }
             // A preceding paragraph drops its trailing Break before a Hiccup inside a blockquote
             // body / list item, but keeps it at the document level.
             flush_para(out, para, para_buf, input, trim); // no-op after the first

@@ -254,10 +254,11 @@ struct Frame {
 }
 
 /// The shared precompute over the whole input (O(n), built ONCE): the `#+END_<name>`
-/// closer trie, the `:END:` drawer-closer index, and the whole-line fence-marker index.
-/// Both drivers query these with a `closer < hi` bound (the streaming driver) — at the
-/// top level `hi == lines.len()` so the bound is a no-op, identical to legacy.
-fn build_indexes(lines: &[Line]) -> (EndTrie, Vec<usize>, Vec<usize>) {
+/// closer trie, the `:END:` drawer-closer index, the whole-line fence-marker index, and the
+/// block-hiccup `[:`…`]` balance (`hiccup_close`). Both drivers query the first three with a
+/// `closer < hi` bound (the streaming driver) — at the top level `hi == lines.len()` so the bound
+/// is a no-op, identical to legacy.
+fn build_indexes(lines: &[Line], input: &str) -> (EndTrie, Vec<usize>, Vec<usize>, Vec<usize>) {
     // Callout closer index: a trie of `#+END_<name>` line names (see `EndTrie`). A `#+BEGIN_X`
     // opener finds its closer by an O(|X|) trie walk (mldoc's prefix match: `#+END_QUOTEX` closes
     // `QUOTE`), absent ⇒ O(1) — no EOF re-scan, no absence memo. O(n) build / O(n) total, where
@@ -279,7 +280,18 @@ fn build_indexes(lines: &[Line]) -> (EndTrie, Vec<usize>, Vec<usize>) {
             fence_lines.push(idx);
         }
     }
-    (end_trie, drawer_end_idxs, fence_lines)
+    // B: the block-hiccup `[:`…`]` balance, precomputed ONCE (position-indexed `close[opener-`[`]`
+    // = index-just-past the matching `]`, else `usize::MAX`) — the SAME string-aware `[:`-nested
+    // scanner the inline path already uses (`build_hiccup_close`, byte-exact to `parse_hiccup`). The
+    // block-hiccup dispatch then does an O(1) array lookup + a `close <= body_end` clamp, instead of
+    // a per-opener `parse_hiccup` re-scan to `body_end` (the O(n²) on an unbalanced `[:`-run). Only
+    // built when the input actually has a `[:` (else an empty `Vec` — the `.get` lookup falls to MAX).
+    let hiccup_close = if input.contains("[:") {
+        crate::inline::build_hiccup_close(input)
+    } else {
+        Vec::new()
+    };
+    (end_trie, drawer_end_idxs, fence_lines, hiccup_close)
 }
 
 /// The md block driver: ONE left-to-right pass over an explicit container-frame stack. Each input
@@ -294,7 +306,7 @@ fn build_indexes(lines: &[Line]) -> (EndTrie, Vec<usize>, Vec<usize>) {
 fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: bool) -> Vec<Block> {
     let mut lines = split_lines(input);
     let last_rbracket = input.rfind(']');
-    let (end_trie, drawer_end_idxs, fence_lines) = build_indexes(&lines);
+    let (end_trie, drawer_end_idxs, fence_lines, hiccup_close) = build_indexes(&lines, input);
     let n = lines.len();
 
     // Root frame spans the whole input; its `out`/`para` are the document's. Non-root frames
@@ -491,6 +503,7 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
                 &mut fence_cursor,
                 &mut drawer_cursor,
                 last_rbracket,
+                &hiccup_close,
                 input,
                 strip,
                 null_spans,
@@ -592,6 +605,7 @@ fn dispatch_md_line<'a>(
     fence_cursor: &mut usize,
     drawer_cursor: &mut usize,
     last_rbracket: Option<usize>,
+    hiccup_close: &[usize], // B: precomputed block-hiccup `[:`…`]` balance (position-indexed)
     input: &'a str,
     strip: usize,
     null_spans: bool,
@@ -1268,11 +1282,15 @@ fn dispatch_md_line<'a>(
             if !(last_rbracket.is_some_and(|last| rec <= last) && input[rec..].starts_with("[:")) {
                 break;
             }
-            // CLAMP the (to-end-of-input) balanced capture to `&input[..body_end]` so a `]`
-            // outside this body is not captured (verified load-bearing). `rec < body_end`.
-            let Some(cap_end) = crate::inline::parse_hiccup(&input[..body_end], rec) else {
+            // B: O(1) precomputed-balance lookup + `close <= body_end` clamp, replacing the
+            // per-opener `parse_hiccup(&input[..body_end], rec)` re-scan (the O(n²) 2a bug).
+            // `hiccup_head_ok` is the tag-validity gate `parse_hiccup` applied internally; the
+            // clamp is byte-exact to the old clamped scan (global 0-crossing that lands `< body_end`
+            // == the clamped scan's; one `>= body_end` == the clamped scan hitting the bound → None).
+            let cap_end = hiccup_close.get(rec).copied().unwrap_or(usize::MAX);
+            if cap_end == usize::MAX || cap_end > body_end || !crate::inline::hiccup_head_ok(input, rec) {
                 break;
-            };
+            }
             flush_para(out, para, para_buf, input, trim); // no-op after the first (para already flushed)
             out.push(Block::Hiccup {
                 v: input[rec..cap_end].to_string(),

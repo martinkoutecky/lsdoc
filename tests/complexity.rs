@@ -113,18 +113,20 @@ fn complexity_gate() {
         assert_linear("gt_spine", gt_spine, 3000, "md"); // A-md (1a)
         assert_linear("gt_breaker", gt_breaker, 1500, "org"); // A-org (1b)
         assert_linear("gt_breaker", gt_breaker, 1500, "md"); // A-md (1b)
+        // B (2a): the block-hiccup capture is a precomputed `[:`…`]`-balance array lookup +
+        // `close <= body_end` clamp, not a per-opener `parse_hiccup` re-scan to `body_end`.
+        assert_linear("hiccup_unclosed", hiccup_unclosed, 3000, "md");
+        assert_linear("hiccup_unclosed", hiccup_unclosed, 3000, "org");
     });
 }
 
-/// The audit's remaining O(n²) families. FAILS today (that is the point — it proves the gate catches
-/// what 1321/1321 byte-exact missed). Each `assert_linear` moves up into `complexity_gate` as its
-/// phase lands: A (container-prefix walk) DONE; 2a → B (hiccup index), 2b → C (delimiter stack).
+/// The audit's remaining O(n²) family. FAILS today (that is the point — it proves the gate catches
+/// what 1321/1321 byte-exact missed). Moves up into `complexity_gate` as its phase lands: A
+/// (container-prefix walk) + B (hiccup balance index) DONE; 2b → C (inline delimiter stack).
 #[test]
-#[ignore = "audit O(n^2) targets — un-ignore/move to complexity_gate as A/B/C fix each"]
+#[ignore = "audit O(n^2) target — un-ignore/move to complexity_gate as C fixes it"]
 fn complexity_gate_targets() {
     big_stack(|| {
-        assert_linear("hiccup_unclosed", hiccup_unclosed, 3000, "md"); // B (2a)
-        assert_linear("hiccup_unclosed", hiccup_unclosed, 3000, "org"); // B (2a)
         assert_linear("resync", resync, 1500, "md"); // C (2b)
     });
 }

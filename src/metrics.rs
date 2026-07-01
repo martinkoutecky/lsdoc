@@ -1,6 +1,8 @@
 //! Complexity instrumentation — a debug-only thread-local counter of "scan work": the number
 //! of bytes examined by the parser's potentially-re-scanning operations (the `>`-prefix peel,
-//! `property`'s `::` search, the hiccup balanced-bracket scan, the inline `resync` re-lex).
+//! `property`'s `::` search, the inline `resync` re-lex). (The block-hiccup close is no longer a
+//! re-scan — Phase B precomputes the `[:`-balance once, so it does an O(1) lookup, not a per-line
+//! scan; the `hiccup_unclosed` gate family stays linear via `property`'s O(n) charge.)
 //!
 //! # Why this exists
 //! The byte-exact parity gate (`harness/`) verifies WHAT the parser produces, not HOW MUCH work

@@ -1615,55 +1615,6 @@ pub(crate) fn parse_macro_at(s: &str, at: usize) -> Option<(Inline, usize)> {
     None
 }
 
-pub(crate) fn parse_hiccup(s: &str, at: usize) -> Option<usize> {
-    if !hiccup_head_ok(s, at) {
-        return None;
-    }
-    let b = s.as_bytes();
-    let n = b.len();
-    // (3) string-aware, `[:`-nested balanced capture from the outer `[`.
-    let mut depth: i32 = 0;
-    let mut p = at;
-    while p < n {
-        match b[p] {
-            b'[' if p + 1 < n && b[p + 1] == b':' => {
-                depth += 1;
-                p += 2;
-            }
-            b']' => {
-                depth -= 1;
-                p += 1;
-                if depth == 0 {
-                    crate::metrics::scan_work(p - at);
-                    return Some(p);
-                }
-            }
-            b'"' => {
-                // skip a "…" string; `\` escapes the next byte. Unterminated → fail.
-                p += 1;
-                let mut closed = false;
-                while p < n {
-                    match b[p] {
-                        b'\\' => p += 1 + if p + 1 < n { char_len(b[p + 1]) } else { 0 },
-                        b'"' => {
-                            p += 1;
-                            closed = true;
-                            break;
-                        }
-                        c => p += char_len(c),
-                    }
-                }
-                if !closed {
-                    return None;
-                }
-            }
-            c => p += char_len(c),
-        }
-    }
-    crate::metrics::scan_work(p - at); // unbalanced ⇒ scanned to EOF (the O(n²)-per-line risk)
-    None
-}
-
 // ---- timestamps -----------------------------------------------------------
 
 /// `<YYYY-MM-DD WDAY [HH:MM]>` and ranges `<..>--<..>`. active = true (angle).

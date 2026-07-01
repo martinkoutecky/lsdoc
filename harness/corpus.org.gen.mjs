@@ -566,6 +566,11 @@ add("prefixconsume", ">>x\n>>>>y\n>>>>>>z\n");                      // depth inc
 add("prefixconsume", "> > a\n> > id:: 123\n");                     // id:: breaker inside a quote
 add("prefixconsume", "text\n> > > deep\n");                        // paragraph then deep single-line quote
 
+// hiccupbalance (B): org block-hiccup close via the precomputed `[:`-balance + `close<=body_end` clamp.
+add("hiccupbalance", "[:div [:\n[:div [:\n]\n");                   // unbalanced run (the 2a shape)
+add("hiccupbalance", "[:a \"]\" x]\n");                            // string opaque for `]`
+add("hiccupbalance", "#+BEGIN_QUOTE\n[:div [:x\n#+END_QUOTE\n]\n"); // clamp: outside `]` NOT matched
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));
