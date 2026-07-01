@@ -15,6 +15,11 @@ cargo test --test render              # render_html tests
 cargo test --release --test perf -- --ignored   # perf ratio + linearity + stack gates
 ```
 
+**Known-failing perf case (intentional):** `md_hiccup_nested_scales_linearly_heavy` FAILS by
+design — it's a regression lock for a real, un-fixed O(n²) in the inline resolver's handling of
+NESTED hiccup vectors (`[:div [:span x]]`×n). It turns green when that quadratic is fixed. Do
+NOT treat its failure as a regression you introduced; every OTHER perf test must stay green.
+
 The gate compares a **normalized projection** (`harness/lib/normalize.mjs` ↔ `src/projection.rs`);
 the two emitters MUST stay in sync. Any divergence = a real behavior bug, never "rounding".
 

@@ -384,6 +384,41 @@ fn org_deep_quote_scales_linearly_heavy() {
     );
 }
 
+/// BUG REPRODUCTION / regression lock (KNOWN-FAILING on current code — INTENTIONAL).
+///
+/// A run of properly-closed, NESTED hiccup vectors (`[:div [:span x] [:b y]]`×n) is O(n²)
+/// in the inline resolver. The existing hiccup scaling cases in `scaling_pairs`
+/// (`md_hiccup_present` = `[:div `×n + one `]`) are FLAT — an unclosed-opener run — so they
+/// never exercised nesting and the gate missed this. Measured ≈4×/doubling (a clean
+/// quadratic: 5k→10k→20k→40k reps = 241→948→3781→13635 ms). This case makes the perf gate
+/// COVER nested hiccup; it FAILS on the current code by design and turns green once the
+/// nested-hiccup quadratic is fixed. Root-cause analysis + fix proposal live in the
+/// session's analysis notes — the bug is deliberately NOT fixed here.
+///
+/// Base kept small (n≤12k reps) so the quadratic 4n point stays ~1.5 s rather than hanging.
+#[test]
+#[ignore = "hiccup-nested O(n^2) regression lock (KNOWN-FAILING until fixed); run with --ignored"]
+fn md_hiccup_nested_scales_linearly_heavy() {
+    const CAP: f64 = 3.0;
+    const FLOOR_US: f64 = 20_000.0; // 20ms — below this a ratio is just measurement noise
+    let build = |n: usize| "[:div [:span x] [:b y]] ".repeat(n);
+    let base = 3_000usize;
+    let tn = best_us(&build(base), false, 3) as f64;
+    let t2n = best_us(&build(2 * base), false, 3) as f64;
+    let t4n = best_us(&build(4 * base), false, 3) as f64;
+    let r1 = t2n / tn.max(FLOOR_US);
+    let r2 = t4n / t2n.max(FLOOR_US);
+    let ratio = r1.min(r2);
+    assert!(
+        ratio < CAP,
+        "nested hiccup: n={base} {:.1}ms → 2n {:.1}ms → 4n {:.1}ms; doublings {r1:.1}×, {r2:.1}× \
+         — MIN {ratio:.1}× (linear ≈2×; >{CAP}× ⇒ O(n²)) [KNOWN BUG, not yet fixed — see analysis]",
+        tn / 1000.0,
+        t2n / 1000.0,
+        t4n / 1000.0,
+    );
+}
+
 #[test]
 fn perf_smoke() {
     // Fast enough for the default loop; a catastrophic regression still blows the
