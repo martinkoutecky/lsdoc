@@ -1366,7 +1366,9 @@ fn is_hiccup_tag(name: &str) -> bool {
 ///      (`{ [ " ( , : / -` … or a newline) → NOT a hiccup;
 ///   3. a string-aware, `[:`-nested balanced scan to the matching `]`: depth starts at 1
 ///      on the outer `[`, a NESTED `[:` opens a level (+1), a `]` closes (−1, end at 0),
-///      a `"…"` string (with `\`-escapes) is skipped whole. A lone `[` (not `[:`) and any
+///      a `]` inside a `"…"` string is ignored, but `[:` inside the string still opens
+///      a level. A `"` toggles the string state unless the previous byte is `\`
+///      (naive one-byte look-back, not escape pairing). A lone `[` (not `[:`) and any
 ///      `{ }` are literal (NOT balanced). Reaching EOF unbalanced — including an
 ///      unterminated string — → `None`.
 /// Linear in the captured length.
@@ -1393,20 +1395,22 @@ pub(crate) fn hiccup_head_ok(s: &str, at: usize) -> bool {
     matches!(b.get(j), Some(b']') | Some(b' ') | Some(b'\t') | Some(b'.') | Some(b'#'))
 }
 
-/// Pair EVERY `[:`…`]` hiccup vector in `s` in one linear pass (a delimiter stack: a
-/// `[:` pushes, a `]` pops, a `"…"` string is opaque while inside a vector). Returns a
+/// Pair EVERY `[:`…`]` hiccup vector in `s` in one linear pass (a delimiter stack:
+/// a `[:` always pushes, a `]` pops only outside a `"…"` string, and `"` toggles
+/// string state unless the previous byte is `\`). Returns a
 /// position-indexed `Vec` (length `|s|`): `close[opener-`[`-byte]` = index-just-past-the-
 /// matching-`]`, and `usize::MAX` where no hiccup vector opens (NOT a `HashMap<usize,_>` —
 /// the key is a byte position, a perfect array index; see lsdoc/CLAUDE.md). This is the
 /// structural replacement for the per-opener balanced re-scan (and the `rbracket` absence
 /// cache): the inline dispatch does an O(1) array lookup instead. The balance counts every
 /// `[:` regardless of tag validity (tag-validity is applied separately at lookup via
-/// [`hiccup_head_ok`]) — matching `parse_hiccup`'s depth scan exactly.
+/// [`hiccup_head_ok`]) — matching mldoc's depth scan exactly.
 pub(crate) fn build_hiccup_close(s: &str) -> Vec<usize> {
     let b = s.as_bytes();
     let n = b.len();
     let mut close = vec![usize::MAX; n];
     let mut stack: Vec<usize> = Vec::new();
+    let mut in_string = false;
     let mut p = 0;
     while p < n {
         match b[p] {
@@ -1414,27 +1418,17 @@ pub(crate) fn build_hiccup_close(s: &str) -> Vec<usize> {
                 stack.push(p);
                 p += 2;
             }
-            b']' => {
+            b']' if !in_string => {
                 if let Some(o) = stack.pop() {
                     close[o] = p + 1;
                 }
                 p += 1;
             }
-            b'"' if !stack.is_empty() => {
-                // inside a vector a "…" string is opaque (a `]` in it can't close); `\`
-                // escapes the next char. An unterminated string consumes to EOF, leaving
-                // openers unmatched — exactly `parse_hiccup`'s `None`.
-                p += 1;
-                while p < n {
-                    match b[p] {
-                        b'\\' => p += 1 + if p + 1 < n { char_len(b[p + 1]) } else { 0 },
-                        b'"' => {
-                            p += 1;
-                            break;
-                        }
-                        c => p += char_len(c),
-                    }
+            b'"' => {
+                if p == 0 || b[p - 1] != b'\\' {
+                    in_string = !in_string;
                 }
+                p += 1;
             }
             c => p += char_len(c),
         }
