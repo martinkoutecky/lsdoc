@@ -1351,7 +1351,7 @@ fn dispatch_md_line<'a>(
         && i + 1 < hi
         && is_def_opener(lines[i + 1].text)
     {
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, input, false);
         let (item, ni) = build_def_list(lines, i, hi, input);
         out.push(Block::List {
             items: vec![item],
