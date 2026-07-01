@@ -105,6 +105,20 @@ fn display_math_adjacent(n: usize) -> String {
 fn display_math_unclosed_tail(n: usize) -> String {
     format!("$$x\n{}", "tail\n".repeat(n))
 }
+/// Adjacent closed raw-HTML blocks on one physical line. O(n²) if each consumed block
+/// re-runs the block ladder over the whole remaining suffix.
+fn raw_html_adjacent(n: usize) -> String {
+    "<kbd>x</kbd>".repeat(n)
+}
+/// One known-tag raw-HTML opener with no close. O(n²) if the failed opener rescans EOF
+/// from each following line instead of failing once.
+fn raw_html_unclosed_tail(n: usize) -> String {
+    format!("<kbd>x\n{}", "tail\n".repeat(n))
+}
+/// Many unclosed known-tag raw-HTML openers. O(n²) without the block-phase no-close memo.
+fn raw_html_repeated_unclosed(n: usize) -> String {
+    "<kbd>\n".repeat(n)
+}
 
 fn big_stack(f: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()
@@ -129,6 +143,12 @@ fn complexity_gate() {
         assert_linear("display_math_adjacent", display_math_adjacent, 3000, "org");
         assert_linear("display_math_unclosed_tail", display_math_unclosed_tail, 3000, "md");
         assert_linear("display_math_unclosed_tail", display_math_unclosed_tail, 3000, "org");
+        assert_linear("raw_html_adjacent", raw_html_adjacent, 3000, "md");
+        assert_linear("raw_html_adjacent", raw_html_adjacent, 3000, "org");
+        assert_linear("raw_html_unclosed_tail", raw_html_unclosed_tail, 3000, "md");
+        assert_linear("raw_html_unclosed_tail", raw_html_unclosed_tail, 3000, "org");
+        assert_linear("raw_html_repeated_unclosed", raw_html_repeated_unclosed, 3000, "md");
+        assert_linear("raw_html_repeated_unclosed", raw_html_repeated_unclosed, 3000, "org");
         // A (container-prefix consume): both formats now dispatch a `>`-line's content ONCE at the
         // final depth (no per-re-dispatch `property` re-scan — 1a) and close many frames at one
         // interior breaker in O(closed) (no per-frame `gt_cont_view` re-peel — 1b).

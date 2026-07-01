@@ -1084,6 +1084,11 @@ pub(crate) fn parse_inline_html_cached(s: &str, at: usize, closer_possible: bool
     if b.get(at) != Some(&b'<') {
         return None;
     }
+    // Raw_html.parse starts with `peek_string 10`; short remaining inputs fail before the
+    // tag/special-form dispatch. This is why bare `<br />` is plain but longer self-closes parse.
+    if n.saturating_sub(at) < 10 {
+        return None;
+    }
     // tag name
     let mut j = at + 1;
     if j < n && b[j] == b'/' {
@@ -1096,7 +1101,8 @@ pub(crate) fn parse_inline_html_cached(s: &str, at: usize, closer_possible: bool
     if j == name_start || !b[name_start].is_ascii_alphabetic() {
         return None;
     }
-    let name = s[name_start..j].to_ascii_lowercase();
+    let raw_name = &s[name_start..j];
+    let name = raw_name.to_ascii_lowercase();
     // find end of the opening tag '>'
     let open_end = find_sub_line(b, j, b">")?;
     let self_closing = open_end > 0 && b[open_end - 1] == b'/';
@@ -1105,14 +1111,82 @@ pub(crate) fn parse_inline_html_cached(s: &str, at: usize, closer_possible: bool
     }
     // look for matching </name> (skipped when no `</` exists ahead at all).
     if closer_possible {
-        let close_tag = format!("</{}>", name);
-        if let Some(cidx) = find_ci(s, open_end + 1, &close_tag) {
-            let end = cidx + close_tag.len();
-            return Some((end, s[at..end].to_string()));
+        if is_known_html_tag(&name) {
+            let (end, saw_close, self_close) = match_known_inline_html(s, j, raw_name);
+            if let Some(end) = end.or(self_close) {
+                return Some((end, s[at..end].to_string()));
+            }
+            if saw_close {
+                return None;
+            }
+        } else {
+            let close_tag = format!("</{}>", name);
+            if let Some(cidx) = find_ci(s, open_end + 1, &close_tag) {
+                let end = cidx + close_tag.len();
+                return Some((end, s[at..end].to_string()));
+            }
         }
     }
     // no closer: just the opening tag
     Some((open_end + 1, s[at..open_end + 1].to_string()))
+}
+
+fn starts_with_bytes_at(bytes: &[u8], at: usize, needle: &[u8], end: usize) -> bool {
+    at + needle.len() <= end && &bytes[at..at + needle.len()] == needle
+}
+
+fn count_inline_tag_opens(bytes: &[u8], from: usize, end: usize, plain: &[u8], attrs: &[u8]) -> usize {
+    let mut count = 0usize;
+    let mut q = from;
+    while q < end {
+        if starts_with_bytes_at(bytes, q, plain, end) {
+            count += 1;
+            q += plain.len();
+        } else if starts_with_bytes_at(bytes, q, attrs, end) {
+            count += 1;
+            q += attrs.len();
+        } else {
+            q += 1;
+        }
+    }
+    count
+}
+
+fn match_known_inline_html(s: &str, scan_start: usize, raw_name: &str) -> (Option<usize>, bool, Option<usize>) {
+    let bytes = s.as_bytes();
+    let close_tag = format!("</{}>", raw_name);
+    let open_plain = format!("<{}>", raw_name);
+    let open_attrs = format!("<{} ", raw_name);
+    let mut first_self_close = None;
+    let mut p = scan_start;
+    while first_self_close.is_none() {
+        match find_sub(bytes, p, b"/>") {
+            Some(end) => first_self_close = Some(end + 2),
+            None => break,
+        }
+    }
+
+    let mut level = 1isize;
+    let mut chunk_start = scan_start;
+    let mut saw_close = false;
+    while let Some(close_at) = find_ci(s, p, &close_tag) {
+        saw_close = true;
+        level += count_inline_tag_opens(
+            bytes,
+            chunk_start,
+            close_at,
+            open_plain.as_bytes(),
+            open_attrs.as_bytes(),
+        ) as isize;
+        level -= 1;
+        let end = close_at + close_tag.len();
+        if level <= 0 {
+            return (Some(end), saw_close, first_self_close);
+        }
+        p = end;
+        chunk_start = end;
+    }
+    (None, saw_close, first_self_close)
 }
 
 /// Block-level LaTeX environment `\begin{NAME} … \end{NAME}` (mldoc `latex_env.ml`,
@@ -1327,7 +1401,7 @@ pub(crate) fn unescape(s: &str) -> String {
 /// (inline) iff `name` (case-insensitively) is one of these. Derived from mldoc 1.5.7's
 /// source tag set (`Qz`) and cross-checked against the live oracle (every name in / every
 /// HTML5 element not listed out). Keep sorted — `is_hiccup_tag` binary-searches it.
-static HICCUP_TAGS: &[&str] = &[
+pub(crate) static HICCUP_TAGS: &[&str] = &[
     "a", "abbr", "address", "area", "article", "aside", "audio", "b", "base", "bdi", "bdo",
     "blockquote", "body", "br", "button", "canvas", "caption", "cite", "code", "col", "colgroup", "data",
     "datalist", "dd", "del", "details", "dfn", "div", "dl", "dt", "em", "embed", "fieldset",
@@ -1343,17 +1417,26 @@ static HICCUP_TAGS: &[&str] = &[
 /// Case-insensitive membership test against `HICCUP_TAGS`. `name` is ASCII alphanumeric
 /// (the only thing the caller passes), so a lowercased fixed buffer + binary search is
 /// allocation-free. The longest allowed tag is 10 bytes (`blockquote`/`figcaption`).
-fn is_hiccup_tag(name: &str) -> bool {
+pub(crate) fn known_html_tag_index(name: &str) -> Option<usize> {
     let bytes = name.as_bytes();
     if bytes.is_empty() || bytes.len() > 10 {
-        return false;
+        return None;
     }
     let mut buf = [0u8; 10];
     for (k, &c) in bytes.iter().enumerate() {
         buf[k] = c.to_ascii_lowercase();
     }
     let lower = &buf[..bytes.len()];
-    HICCUP_TAGS.binary_search_by(|t| t.as_bytes().cmp(lower)).is_ok()
+    HICCUP_TAGS.binary_search_by(|t| t.as_bytes().cmp(lower)).ok()
+}
+
+/// Case-insensitive membership test against the shared mldoc HTML-element allowlist.
+pub(crate) fn is_known_html_tag(name: &str) -> bool {
+    known_html_tag_index(name).is_some()
+}
+
+fn is_hiccup_tag(name: &str) -> bool {
+    is_known_html_tag(name)
 }
 
 /// Recognize + capture a Clojure-hiccup vector `[:tag …]` starting at byte `at` (which

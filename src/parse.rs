@@ -42,8 +42,9 @@
 // in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
 use crate::block_common::{
     displayed_math_opener, drawer_property, find_displayed_math_close, find_drawer_end,
-    find_matching_fence, is_raw_html, leading_ws, para_ws_only, split_checkbox, split_lines,
-    Builder, EndTrie, Line, GT_FALLBACK_NEST_CAP, MARKERS,
+    find_matching_fence, is_raw_html, leading_ws, para_ws_only, raw_html_block_start,
+    raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
+    Line, RawHtmlScan, GT_FALLBACK_NEST_CAP, MARKERS,
 };
 use crate::projection::{Block, Inline, ListItem, Span};
 
@@ -337,6 +338,7 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
     }];
     let mut fence_cursor: usize = 0; // monotone & shared across the whole pass (`i` is monotone).
     let mut drawer_cursor: usize = 0; // ditto, for `:END:` lookups (find_drawer_end).
+    let mut raw_html_scan = RawHtmlScan::new(); // same discipline for failed known-tag raw HTML.
     // The list-collapse memo (mldoc's recursive list-parser failure bubble): when a list item's
     // deeper continuation is an unparseable list-item shape, the list collapses; `collapse_floor`
     // marks the trigger line so the collapsed region is NOT re-scanned as a list (linearity). One
@@ -516,6 +518,7 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
                 &fence_lines,
                 &mut fence_cursor,
                 &mut drawer_cursor,
+                &mut raw_html_scan,
                 last_rbracket,
                 &hiccup_close,
                 input,
@@ -618,6 +621,7 @@ fn dispatch_md_line<'a>(
     fence_lines: &[usize],
     fence_cursor: &mut usize,
     drawer_cursor: &mut usize,
+    raw_html_scan: &mut RawHtmlScan,
     last_rbracket: Option<usize>,
     hiccup_close: &[usize], // B: precomputed block-hiccup `[:`…`]` balance (position-indexed)
     input: &'a str,
@@ -676,6 +680,7 @@ fn dispatch_md_line<'a>(
             || t.trim_start().starts_with("\\begin{")
             || t.trim_start().starts_with("[:")
             || displayed_math_opener(t).is_some()
+            || raw_html_block_start(t)
             || md_table_row(t)
             || md_marker(t).is_some()
             || (!t.trim_start().is_empty()
@@ -1008,7 +1013,23 @@ fn dispatch_md_line<'a>(
             lines[i] = Line { start: content_off, end: line_end, text: content };
             return Step::Next(i);
         }
-        // (f) raw-HTML opener.
+        // (f) raw-HTML opener (mldoc Raw_html.parse: known tags/special forms may span lines).
+        if raw_html_block_start(content) {
+            let cap = raw_html_raw_capture(lines, i, hi, body_end, input, content, raw_html_scan);
+            if let Some(cap) = cap {
+                flush_para(out, para, para_buf, input, trim);
+                empty_bullet!();
+                out.push(Block::RawHtml {
+                    text: cap.text,
+                    span: Some(Span(cap.span_start, cap.span_end)),
+                });
+                if let Some((ri, start, content_end)) = cap.rewrite {
+                    lines[ri] = Line { start, end: lines[ri].end, text: &input[start..content_end] };
+                }
+                return Step::Next(cap.next);
+            }
+        }
+        // Keep lsdoc's pre-existing broad single-line behavior for out-of-scope raw-HTML quirks.
         if is_raw_html(content) {
             flush_para(out, para, para_buf, input, trim);
             empty_bullet!();
@@ -1175,14 +1196,61 @@ fn dispatch_md_line<'a>(
     // so it never opens a quote. The F4/M3 marker ws-drop before a quote moved to the driver's open
     // loop. The bullet-lazy `- > …` path (step 5b) rewrites its line and re-enters this same consume.
 
-    // 11. raw HTML (single-line, minimal)
+    // 11. raw HTML (mldoc Raw_html.parse: special forms and known tags may span lines).
+    {
+        let mut cur = i;
+        let mut captured = false;
+        let mut rewritten_line = None;
+        loop {
+            if cur >= hi {
+                return Step::Next(cur);
+            }
+            let cur_view = if cur == i && !captured {
+                t
+            } else if rewritten_line == Some(cur) {
+                lines[cur].text
+            } else {
+                line_text(lines, cur, strip)
+            };
+            if !raw_html_block_start(cur_view) {
+                break;
+            }
+            let cap = if null_spans || (cur == i && !captured && view.is_some()) {
+                raw_html_view_capture(lines, cur, hi, strip, cur_view)
+            } else {
+                let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
+                raw_html_raw_capture(lines, cur, hi, body_end, input, cur_view, raw_html_scan)
+            };
+            let Some(cap) = cap else {
+                break;
+            };
+            if !captured {
+                drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blanks.
+                flush_para(out, para, para_buf, input, trim);
+            }
+            out.push(Block::RawHtml {
+                text: cap.text,
+                span: Some(Span(cap.span_start, cap.span_end)),
+            });
+            captured = true;
+            if let Some((ri, start, content_end)) = cap.rewrite {
+                lines[ri] = Line { start, end: lines[ri].end, text: &input[start..content_end] };
+                rewritten_line = Some(ri);
+            } else {
+                rewritten_line = None;
+            }
+            cur = cap.next;
+        }
+        if captured {
+            return Step::Next(cur);
+        }
+    }
+
+    // Keep lsdoc's pre-existing broad single-line behavior for out-of-scope raw-HTML quirks.
     if is_raw_html(t) {
         drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
         flush_para(out, para, para_buf, input, trim);
-        out.push(Block::RawHtml {
-            text: t.to_string(),
-            span: Some(Span(line_start, line_end)),
-        });
+        out.push(Block::RawHtml { text: t.to_string(), span: Some(Span(line_start, line_end)) });
         return Step::Next(i + 1);
     }
 
@@ -2427,6 +2495,16 @@ mod tests {
         }).collect()
     }
 
+    fn raw_html_texts(input: &str) -> Vec<String> {
+        parse(input)
+            .into_iter()
+            .filter_map(|b| match b {
+                Block::RawHtml { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn bullet_heading_size_and_openers() {
         // Gap 1: `- ## Title` carries the heading level as Bullet.size (uncapped).
@@ -2485,6 +2563,34 @@ mod tests {
     fn block_hiccup_runs_terminate() {
         let _ = parse(&"[:div ".repeat(20000)); // unclosed block-hiccup lines
         let _ = parse(&"[:a]".repeat(20000)); // consecutive whole-line hiccups
+    }
+
+    #[test]
+    fn raw_html_multiline_block_capture() {
+        assert_eq!(raw_html_texts("<kbd>a\nb</kbd>"), ["<kbd>a\nb</kbd>"]);
+        assert_eq!(raw_html_texts("<div>a\nb</div>"), ["<div>a\nb</div>"]);
+        assert_eq!(
+            raw_html_texts("<div><span>a\nb</span></div>"),
+            ["<div><span>a\nb</span></div>"]
+        );
+        assert_eq!(
+            raw_html_texts("<div><div>a</div>\nb</div>"),
+            ["<div><div>a</div>\nb</div>"]
+        );
+        assert_eq!(kinds("<div><div>a</div>"), ["paragraph"]);
+        assert_eq!(kinds("<br />"), ["paragraph"]);
+        assert_eq!(raw_html_texts("<img src=\"x\" />"), ["<img src=\"x\" />"]);
+        assert_eq!(kinds("<?php\na?>"), ["paragraph"]);
+        assert_eq!(raw_html_texts("<!DOCTYPE\nhtml>"), ["<!DOCTYPE\nhtml>"]);
+        assert_eq!(raw_html_texts("<div>\na\n</div>"), ["<div>\na\n</div>"]);
+        assert_eq!(raw_html_texts("<!-- c\nd -->"), ["<!-- c\nd -->"]);
+        assert_eq!(kinds("<kbd>a\nb</kbd>\nc"), ["raw_html", "paragraph"]);
+        assert_eq!(kinds("pre\n<kbd>a\nb</kbd>"), ["paragraph", "raw_html"]);
+
+        // D10/D11 and unterminated cases stay on the pre-existing inline/paragraph path.
+        assert_eq!(kinds("<unknown>a\nb</unknown>"), ["paragraph"]);
+        assert_eq!(kinds("<br/>"), ["paragraph"]);
+        assert_eq!(kinds("<div>a\nb"), ["paragraph"]);
     }
 
     #[test]

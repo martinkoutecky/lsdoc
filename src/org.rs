@@ -25,8 +25,10 @@
 // in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
 use crate::block_common::{
     displayed_math_opener, drawer_property, find_displayed_math_close, find_drawer_end,
-    find_matching_fence, is_raw_html, leading_ws, para_ws_only, split_checkbox, split_lines,
-    Builder, EndTrie, Line, GT_FALLBACK_NEST_CAP, MARKERS,
+    find_matching_fence, is_raw_html, leading_ws, para_ws_only, raw_html_block_start,
+    raw_html_end_at,
+    raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
+    Line, RawHtmlScan, GT_FALLBACK_NEST_CAP, MARKERS,
 };
 use crate::inline::{char_len, is_ws_or_nl};
 use crate::projection::{Block, Inline, ListItem, Span, Url};
@@ -410,6 +412,7 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
     let mut collapse_floor = 0usize; // shared & monotone (i is monotone across frames).
     let mut fence_cursor: usize = 0;
     let mut drawer_cursor: usize = 0; // monotone `:END:` cursor (find_drawer_end), shared across the pass.
+    let mut raw_html_scan = RawHtmlScan::new(); // monotone failed known-tag raw-HTML scanner.
     let mut nonstd_cursor: usize = 0; // monotone nonstd-eol cursor (body_is_clean_window), ditto.
     let mut offs: Vec<usize> = Vec::new(); // reused `>`-prefix offset scratch (scan_gt_prefix)
     // F4: set by an empty headline marker (`* ` trailing-ws para), consumed by the NEXT line's
@@ -527,6 +530,7 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                 &mut collapse_floor,
                 &mut fence_cursor,
                 &mut drawer_cursor,
+                &mut raw_html_scan,
                 &mut ws_drop,
                 ctx,
                 hi,
@@ -650,6 +654,7 @@ fn dispatch_org_line<'a>(
     collapse_floor: &mut usize,
     fence_cursor: &mut usize,
     drawer_cursor: &mut usize,
+    raw_html_scan: &mut RawHtmlScan,
     ws_drop: &mut bool,
     ctx: Ctx,
     hi: usize,
@@ -732,6 +737,7 @@ fn dispatch_org_line<'a>(
             || t.trim_start().starts_with("\\begin{")
             || t.trim_start().starts_with("[:")
             || displayed_math_opener(t).is_some()
+            || raw_html_block_start(t)
             || is_table_row(t)
             || is_verbatim_line(t)
             || list_marker(t).is_some())
@@ -828,6 +834,7 @@ fn dispatch_org_line<'a>(
                 end_trie,
                 fence_lines,
                 fence_cursor,
+                raw_html_scan,
             )
         {
             flush_para(out, para, para_buf, input, trim);
@@ -1124,7 +1131,57 @@ fn dispatch_org_line<'a>(
         }
     }
 
-    // 10. raw HTML (single line, complete element).
+    // 10. raw HTML (mldoc Raw_html.parse: special forms and known tags may span lines).
+    {
+        let mut cur = i;
+        let mut captured = false;
+        let mut rewritten_line = None;
+        loop {
+            if cur >= hi {
+                return Step::Next(cur);
+            }
+            let cur_view = if cur == i && !captured {
+                t
+            } else if rewritten_line == Some(cur) {
+                lines[cur].text
+            } else {
+                line_text(lines, cur, strip)
+            };
+            if !raw_html_block_start(cur_view) {
+                break;
+            }
+            let cap = if null_spans || (cur == i && !captured && view.is_some()) {
+                raw_html_view_capture(lines, cur, hi, strip, cur_view)
+            } else {
+                let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
+                raw_html_raw_capture(lines, cur, hi, body_end, input, cur_view, raw_html_scan)
+            };
+            let Some(cap) = cap else {
+                break;
+            };
+            if !captured {
+                if was_ws_drop && para_ws_only(para, input) {
+                    *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
+                }
+                flush_para(out, para, para_buf, input, trim);
+            }
+            out.push(Block::RawHtml { text: cap.text, span: Some(Span(cap.span_start, cap.span_end)) });
+            *absorb = false;
+            captured = true;
+            if let Some((ri, start, content_end)) = cap.rewrite {
+                lines[ri] = Line { start, end: lines[ri].end, text: &input[start..content_end] };
+                rewritten_line = Some(ri);
+            } else {
+                rewritten_line = None;
+            }
+            cur = cap.next;
+        }
+        if captured {
+            return Step::Next(cur);
+        }
+    }
+
+    // Keep lsdoc's pre-existing broad single-line behavior for out-of-scope raw-HTML quirks.
     if is_raw_html(t) {
         if was_ws_drop && para_ws_only(para, input) {
             *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
@@ -1547,6 +1604,7 @@ fn headline_split_opener(
     end_trie: &EndTrie,
     fence_lines: &[usize],
     fence_cursor: &mut usize,
+    raw_html_scan: &mut RawHtmlScan,
 ) -> bool {
     if directive(content).is_some()
         || is_verbatim_line(content)
@@ -1558,6 +1616,8 @@ fn headline_split_opener(
         || displayed_math_opener(content)
             .and_then(|off| find_displayed_math_close(input, content_off + off, body_end))
             .is_some()
+        || (raw_html_block_start(content)
+            && raw_html_end_at(input, content_off, body_end, raw_html_scan).is_some())
         || is_raw_html(content)
         || footnote_def(content).is_some()
         || is_org_hr(content)
@@ -2333,6 +2393,16 @@ mod tests {
             .collect()
     }
 
+    fn raw_html_texts(input: &str) -> Vec<String> {
+        parse(input)
+            .into_iter()
+            .filter_map(|b| match b {
+                Block::RawHtml { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn org_comment_block() {
         assert_eq!(bkinds("# c"), ["comment"]);
@@ -2370,6 +2440,35 @@ mod tests {
     fn org_hiccup_runs_terminate() {
         let _ = parse(&"[:div ".repeat(20000));
         let _ = parse(&"[:a]".repeat(20000));
+    }
+
+    #[test]
+    fn raw_html_multiline_block_capture_org() {
+        assert_eq!(raw_html_texts("<kbd>a\nb</kbd>"), ["<kbd>a\nb</kbd>"]);
+        assert_eq!(raw_html_texts("<div>a\nb</div>"), ["<div>a\nb</div>"]);
+        assert_eq!(
+            raw_html_texts("<div><span>a\nb</span></div>"),
+            ["<div><span>a\nb</span></div>"]
+        );
+        assert_eq!(
+            raw_html_texts("<div><div>a</div>\nb</div>"),
+            ["<div><div>a</div>\nb</div>"]
+        );
+        assert_eq!(bkinds("<div><div>a</div>"), ["paragraph"]);
+        assert_eq!(bkinds("<br />"), ["paragraph"]);
+        assert_eq!(raw_html_texts("<img src=\"x\" />"), ["<img src=\"x\" />"]);
+        assert_eq!(bkinds("<?php\na?>"), ["paragraph"]);
+        assert_eq!(raw_html_texts("<!DOCTYPE\nhtml>"), ["<!DOCTYPE\nhtml>"]);
+        assert_eq!(raw_html_texts("<div>\na\n</div>"), ["<div>\na\n</div>"]);
+        assert_eq!(raw_html_texts("<!-- c\nd -->"), ["<!-- c\nd -->"]);
+        assert_eq!(bkinds("<kbd>a\nb</kbd>\nc"), ["raw_html", "paragraph"]);
+        assert_eq!(bkinds("pre\n<kbd>a\nb</kbd>"), ["paragraph", "raw_html"]);
+        assert_eq!(bkinds("* <kbd>a\nb</kbd>"), ["bullet", "raw_html"]);
+
+        // D10/D11 and unterminated cases stay on the pre-existing inline/paragraph path.
+        assert_eq!(bkinds("<unknown>a\nb</unknown>"), ["paragraph"]);
+        assert_eq!(bkinds("<br/>"), ["paragraph"]);
+        assert_eq!(bkinds("<div>a\nb"), ["paragraph"]);
     }
 
     // ---- headlines --------------------------------------------------------

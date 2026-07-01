@@ -160,6 +160,10 @@ pub(crate) fn find_displayed_math_close(input: &str, opener: usize, body_end: us
 /// is a paragraph; only a line with an opening tag AND a closing `</…>` is Raw_Html.
 pub(crate) fn is_raw_html(s: &str) -> bool {
     let t = s.trim_start();
+    if raw_html_parse_head(t).is_some() {
+        return raw_html_end_in(t, 0, t.len(), None).is_some();
+    }
+
     let b = t.as_bytes();
     if b.len() < 2 || b[0] != b'<' {
         return false;
@@ -180,6 +184,347 @@ pub(crate) fn is_raw_html(s: &str) -> bool {
     }
     // require a closing tag on the line (approximates mldoc's complete-element rule).
     t.contains("</")
+}
+
+/// State for the block raw-HTML scanner. It is intentionally parse-pass local: when a known-tag
+/// opener scans to this body's end and finds neither a matching `</tag>` nor a source-compatible
+/// fallback `/>`, later same-tag openers in the same or a smaller remaining body can fail without
+/// re-scanning to EOF.
+pub(crate) struct RawHtmlScan {
+    no_tag_end_until: Vec<usize>,
+    no_special_until: [usize; 4],
+}
+
+impl RawHtmlScan {
+    pub(crate) fn new() -> Self {
+        Self {
+            no_tag_end_until: vec![0; crate::inline::HICCUP_TAGS.len()],
+            no_special_until: [0; 4],
+        }
+    }
+}
+
+pub(crate) struct RawHtmlCapture {
+    pub(crate) text: String,
+    pub(crate) span_start: usize,
+    pub(crate) span_end: usize,
+    pub(crate) next: usize,
+    pub(crate) rewrite: Option<(usize, usize, usize)>, // line index, new start, content end
+}
+
+#[derive(Clone, Copy)]
+enum RawHtmlHead<'a> {
+    Tag { tag: &'a str, index: usize },
+    Special { opener: &'static str, closer: &'static str, miss: usize },
+}
+
+fn raw_html_head(s: &str) -> Option<(usize, RawHtmlHead<'_>)> {
+    let off = leading_ws(s);
+    let t = s.get(off..)?;
+    let b = t.as_bytes();
+    if b.first() != Some(&b'<') {
+        return None;
+    }
+    if t.starts_with("<?") {
+        return Some((off, RawHtmlHead::Special { opener: "<?", closer: "?>", miss: 0 }));
+    }
+    if t.starts_with("<!--") {
+        return Some((off, RawHtmlHead::Special { opener: "<!--", closer: "-->", miss: 1 }));
+    }
+    if t.starts_with("<![CDATA[") {
+        // Source exact: mldoc 1.5.7 uses "]]" as the strict wrapper closer here.
+        return Some((off, RawHtmlHead::Special { opener: "<![CDATA[", closer: "]]", miss: 2 }));
+    }
+    if t.starts_with("<!") {
+        return Some((off, RawHtmlHead::Special { opener: "<!", closer: ">", miss: 3 }));
+    }
+
+    // mldoc raw_html.ml: after `<`, `take_till1 (is_space || (=) '>')` is the tag token.
+    // Therefore `<br/>` has token `br/` and is NOT a known tag; `<br />` has token `br`
+    // but still needs the later `peek_string 10` gate before Raw_html.parse can accept it.
+    let mut j = 1usize;
+    while j < b.len() && b[j] != b' ' && b[j] != b'\t' && b[j] != b'>' {
+        j += 1;
+    }
+    if j == 1 {
+        return None;
+    }
+    let tag = &t[1..j];
+    let index = crate::inline::known_html_tag_index(tag)?;
+    Some((off, RawHtmlHead::Tag { tag, index }))
+}
+
+pub(crate) fn raw_html_block_start(s: &str) -> bool {
+    raw_html_head(s).is_some()
+}
+
+fn raw_html_parse_head(s: &str) -> Option<(usize, RawHtmlHead<'_>)> {
+    // Raw_html.parse begins with `peek_string 10`. Angstrom fails that parser at EOF when fewer
+    // than 10 bytes remain, before any `<?`, `<!`, or tag branch can run.
+    let off = leading_ws(s);
+    (s.len().saturating_sub(off) >= 10).then_some(())?;
+    raw_html_head(s)
+}
+
+fn starts_with_ci_at(bytes: &[u8], at: usize, needle: &[u8], end: usize) -> bool {
+    at + needle.len() <= end
+        && bytes[at..at + needle.len()]
+            .iter()
+            .zip(needle.iter())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+}
+
+fn starts_with_at(bytes: &[u8], at: usize, needle: &[u8], end: usize) -> bool {
+    at + needle.len() <= end && &bytes[at..at + needle.len()] == needle
+}
+
+fn find_exact_bounded(bytes: &[u8], from: usize, end: usize, needle: &[u8]) -> (Option<usize>, usize) {
+    if needle.is_empty() || from > end || needle.len() > end.saturating_sub(from) {
+        return (None, 0);
+    }
+    let mut p = from;
+    let mut scanned = 0usize;
+    while p + needle.len() <= end {
+        scanned += 1;
+        if &bytes[p..p + needle.len()] == needle {
+            return (Some(p), scanned + needle.len().saturating_sub(1));
+        }
+        p += 1;
+    }
+    (None, scanned)
+}
+
+fn count_tag_opens_in_chunk(
+    bytes: &[u8],
+    from: usize,
+    end: usize,
+    open_plain: &[u8],
+    open_with_attrs: &[u8],
+) -> (usize, usize) {
+    let mut count = 0usize;
+    let mut q = from;
+    let mut scanned = 0usize;
+    while q < end {
+        scanned += 1;
+        if starts_with_at(bytes, q, open_plain, end) {
+            count += 1;
+            q += open_plain.len();
+        } else if starts_with_at(bytes, q, open_with_attrs, end) {
+            count += 1;
+            q += open_with_attrs.len();
+        } else {
+            q += 1;
+        }
+    }
+    (count, scanned)
+}
+
+fn raw_html_end_in(
+    input: &str,
+    opener: usize,
+    body_end: usize,
+    state: Option<&mut RawHtmlScan>,
+) -> Option<usize> {
+    let (head_off, head) = raw_html_parse_head(input.get(opener..body_end)?)?;
+    let opener = opener + head_off;
+    match head {
+        RawHtmlHead::Special { opener: open, closer, miss } => {
+            if state.as_ref().is_some_and(|s| s.no_special_until[miss] >= body_end) {
+                return None;
+            }
+            let from = opener + open.len();
+            let (found, scanned) =
+                find_exact_bounded(input.as_bytes(), from, body_end, closer.as_bytes());
+            crate::metrics::scan_work(scanned);
+            match found {
+                Some(pos) => Some(pos + closer.len()),
+                None => {
+                    if let Some(s) = state {
+                        s.no_special_until[miss] = body_end;
+                    }
+                    None
+                }
+            }
+        }
+        RawHtmlHead::Tag { tag, index } => {
+            if state.as_ref().is_some_and(|s| s.no_tag_end_until[index] >= body_end) {
+                return None;
+            }
+            let after_tag = opener + 1 + tag.len();
+            let bytes = input.as_bytes();
+            let close_tag = format!("</{}>", tag);
+            let open_tag = format!("<{}>", tag);
+            let open_attr = format!("<{} ", tag);
+            let close = close_tag.as_bytes();
+            let open_plain = open_tag.as_bytes();
+            let open_with_attrs = open_attr.as_bytes();
+
+            let mut level = 1isize;
+            let mut p = after_tag;
+            let mut chunk_start = after_tag;
+            let mut scanned = 0usize;
+            let mut saw_close = false;
+            let mut first_self_close = None;
+            while p < body_end {
+                scanned += 1;
+                if first_self_close.is_none() && starts_with_at(bytes, p, b"/>", body_end) {
+                    first_self_close = Some(p + 2);
+                }
+                if starts_with_ci_at(bytes, p, close, body_end) {
+                    let (opens, chunk_scanned) =
+                        count_tag_opens_in_chunk(bytes, chunk_start, p, open_plain, open_with_attrs);
+                    scanned += chunk_scanned;
+                    saw_close = true;
+                    level += opens as isize;
+                    level -= 1;
+                    p += close.len();
+                    chunk_start = p;
+                    if level <= 0 {
+                        crate::metrics::scan_work(scanned);
+                        return Some(p);
+                    }
+                    continue;
+                }
+                p += 1;
+            }
+            crate::metrics::scan_work(scanned);
+            if let Some(end) = first_self_close {
+                return Some(end);
+            }
+            if !saw_close {
+                if let Some(s) = state {
+                    s.no_tag_end_until[index] = body_end;
+                }
+            }
+            None
+        }
+    }
+}
+
+pub(crate) fn raw_html_end_at(
+    input: &str,
+    opener: usize,
+    body_end: usize,
+    state: &mut RawHtmlScan,
+) -> Option<usize> {
+    if opener > body_end {
+        return None;
+    }
+    raw_html_end_in(input, opener, body_end, Some(state))
+}
+
+fn line_view_abs_start(line: &Line<'_>, view: &str) -> usize {
+    debug_assert!(line.text.ends_with(view));
+    line.start + line.text.len() - view.len()
+}
+
+pub(crate) fn raw_html_raw_capture<'a>(
+    lines: &[Line<'a>],
+    cur: usize,
+    hi: usize,
+    body_end: usize,
+    input: &'a str,
+    first_view: &str,
+    state: &mut RawHtmlScan,
+) -> Option<RawHtmlCapture> {
+    let (opener_off, _) = raw_html_head(first_view)?;
+    let opener = line_view_abs_start(&lines[cur], first_view) + opener_off;
+    let close_end = raw_html_end_in(input, opener, body_end, Some(state))?;
+    let mut close_line = cur;
+    while close_line < hi && lines[close_line].start + lines[close_line].text.len() < close_end {
+        close_line += 1;
+    }
+    if close_line >= hi {
+        return None;
+    }
+    let content_end = lines[close_line].start + lines[close_line].text.len();
+    let text = input[opener..close_end].to_string();
+    if close_end < content_end {
+        Some(RawHtmlCapture {
+            text,
+            span_start: opener,
+            span_end: close_end,
+            next: close_line,
+            rewrite: Some((close_line, close_end, content_end)),
+        })
+    } else {
+        let mut next = close_line + 1;
+        let mut span_end = lines[close_line].end;
+        while next < hi && lines[next].text.is_empty() {
+            span_end = lines[next].end;
+            next += 1;
+        }
+        Some(RawHtmlCapture { text, span_start: opener, span_end, next, rewrite: None })
+    }
+}
+
+pub(crate) fn raw_html_view_capture<'a>(
+    lines: &[Line<'a>],
+    cur: usize,
+    hi: usize,
+    strip: usize,
+    first_view: &str,
+) -> Option<RawHtmlCapture> {
+    let (opener_off, _) = raw_html_head(first_view)?;
+    let mut body = String::new();
+    let mut line_starts = Vec::new();
+    let mut k = cur;
+    loop {
+        line_starts.push(body.len());
+        if k == cur {
+            body.push_str(first_view);
+        } else {
+            body.push_str(crate::org::strip_view(lines[k].text, strip));
+        }
+        k += 1;
+        if k >= hi {
+            break;
+        }
+        body.push('\n');
+    }
+    let close_end_view = raw_html_end_in(&body, opener_off, body.len(), None)?;
+    let mut close_line = cur;
+    let mut close_line_view_start = 0usize;
+    for (idx, start) in line_starts.iter().enumerate() {
+        let line_idx = cur + idx;
+        let view_len = if line_idx == cur {
+            first_view.len()
+        } else {
+            crate::org::strip_view(lines[line_idx].text, strip).len()
+        };
+        if close_end_view <= start + view_len {
+            close_line = line_idx;
+            close_line_view_start = *start;
+            break;
+        }
+    }
+    let close_view = if close_line == cur {
+        first_view
+    } else {
+        crate::org::strip_view(lines[close_line].text, strip)
+    };
+    let close_end_in_line = close_end_view - close_line_view_start;
+    let close_abs = line_view_abs_start(&lines[close_line], close_view) + close_end_in_line;
+    let content_end = lines[close_line].start + lines[close_line].text.len();
+    let text = body[opener_off..close_end_view].to_string();
+    let span_start = line_view_abs_start(&lines[cur], first_view) + opener_off;
+    if close_end_in_line < close_view.len() {
+        Some(RawHtmlCapture {
+            text,
+            span_start,
+            span_end: close_abs,
+            next: close_line,
+            rewrite: Some((close_line, close_abs, content_end)),
+        })
+    } else {
+        let mut next = close_line + 1;
+        let mut span_end = lines[close_line].end;
+        while next < hi && lines[next].text.is_empty() {
+            span_end = lines[next].end;
+            next += 1;
+        }
+        Some(RawHtmlCapture { text, span_start, span_end, next, rewrite: None })
+    }
 }
 
 /// Next fence-marker line at/after `from`, advancing the monotone `cursor` (the drivers reach
