@@ -642,6 +642,7 @@ fn resync(
         if recurse {
             flush(out, pending, plain_start, *plain_end);
             // the remainder is re-parsed with its own absolute base `base + end`.
+            crate::metrics::scan_work(s.len() - end); // resync re-lexes the whole suffix
             out.extend(parse_ctx(&s[end..], ctx, base + end));
             return toks.len(); // recursion handled the remainder — stop the outer walk
         }

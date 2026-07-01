@@ -1634,6 +1634,7 @@ pub(crate) fn parse_hiccup(s: &str, at: usize) -> Option<usize> {
                 depth -= 1;
                 p += 1;
                 if depth == 0 {
+                    crate::metrics::scan_work(p - at);
                     return Some(p);
                 }
             }
@@ -1659,6 +1660,7 @@ pub(crate) fn parse_hiccup(s: &str, at: usize) -> Option<usize> {
             c => p += char_len(c),
         }
     }
+    crate::metrics::scan_work(p - at); // unbalanced ⇒ scanned to EOF (the O(n²)-per-line risk)
     None
 }
 

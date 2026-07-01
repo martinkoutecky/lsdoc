@@ -23,6 +23,11 @@ pub(crate) mod block_common;
 pub(crate) mod entities;
 pub(crate) mod inline;
 pub(crate) mod lexer;
+pub(crate) mod metrics;
+/// Debug-only complexity probe: read+reset the "scan work" counter (bytes examined by
+/// re-scanning ops). Used by `tests/complexity.rs`; compiled out in release. See `metrics`.
+#[cfg(debug_assertions)]
+pub use metrics::__scan_work_take;
 pub(crate) mod org;
 pub(crate) mod org_resolver;
 pub(crate) mod parse;

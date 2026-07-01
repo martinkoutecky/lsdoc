@@ -148,9 +148,13 @@ fn gt_peel(s: &str, n: usize) -> &str {
         let t = cur.trim_start();
         match t.strip_prefix('>') {
             Some(rest) => cur = rest, // next iteration's trim_start handles the ws
-            None => return t,         // lazy: no `>` at this level ⇒ stop
+            None => {
+                crate::metrics::scan_work(s.len() - t.len()); // `>`-prefix bytes examined
+                return t; // lazy: no `>` at this level ⇒ stop
+            }
         }
     }
+    crate::metrics::scan_work(s.len() - cur.len());
     cur
 }
 

@@ -13,11 +13,21 @@ node fuzz.mjs 40000 99                # md fuzz floor 555;  append `org` for the
 cargo test --lib                      # unit tests
 cargo test --test render              # render_html tests
 cargo test --release --test perf -- --ignored   # perf ratio + linearity + stack gates
+cargo test --test complexity          # DEBUG op-count gate — the structural O(n) guard (see below)
 ```
 
-All perf tests pass. (`md_hiccup_nested_scales_linearly_heavy` / `org_hiccup_nested` lock the
-block-hiccup remainder loop at O(n); `quote_staircase_uncapped_heavy` locks that the `>`-quote
-staircase parses uncapped after the container-frame rewrite.)
+**The complexity gate is the load-bearing O(n) check** — NOT the perf/parity gates. `src/metrics.rs`
+counts "scan work" (bytes examined by re-scanning ops: the `>`-peel, `property`'s `::` search, the
+hiccup scan, the inline `resync` re-lex); `tests/complexity.rs` asserts scan-work-PER-BYTE stays
+~constant across n/2n/4n. It is **deterministic** (not timed → no flakiness) and shape-independent,
+so it catches O(n²) re-scans that the byte-exact parity gate is structurally blind to (the 2026-07
+audit found four O(n²) families at 1321/1321 green). The counter is `#[cfg(debug_assertions)]` —
+zero cost in release / Tine. `complexity_gate_targets` (`#[ignore]`) holds the audit's not-yet-fixed
+O(n²) families; each moves into `complexity_gate` as its single-pass fix lands. **Any new re-scan
+must be gated here** — add the family to `complexity_gate`.
+
+The `--ignored` perf tests also pass (`quote_staircase_uncapped_heavy` locks the `>`-staircase
+uncapped after the container-frame rewrite).
 
 The gate compares a **normalized projection** (`harness/lib/normalize.mjs` ↔ `src/projection.rs`);
 the two emitters MUST stay in sync. Any divergence = a real behavior bug, never "rounding".

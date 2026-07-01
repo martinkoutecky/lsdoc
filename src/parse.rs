@@ -82,9 +82,13 @@ fn gt_peel(s: &str, n: usize) -> &str {
         let t = cur.trim_start();
         match t.strip_prefix('>') {
             Some(rest) => cur = rest, // next iteration's trim_start handles the ws
-            None => return t,         // lazy: no `>` at this level ⇒ stop
+            None => {
+                crate::metrics::scan_work(s.len() - t.len()); // `>`-prefix bytes examined
+                return t; // lazy: no `>` at this level ⇒ stop
+            }
         }
     }
+    crate::metrics::scan_work(s.len() - cur.len());
     cur
 }
 
@@ -1951,7 +1955,9 @@ fn reparse_item_content(content: &str, in_quote: bool) -> Vec<Block> {
 
 fn property(s: &str) -> Option<(String, String)> {
     let s = s.trim_start(); // property lines may be indented under a block
-    let pos = s.find("::")?;
+    let found = s.find("::");
+    crate::metrics::scan_work(found.map_or(s.len(), |p| p + 2)); // `::` search distance
+    let pos = found?;
     let key = &s[..pos];
     // key has no whitespace and no `:` — the latter rejects URLs like
     // `http://x.com:: y` (mldoc: prose, not a property), since `http:` has a colon.
