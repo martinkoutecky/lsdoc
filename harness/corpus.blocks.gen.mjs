@@ -592,6 +592,23 @@ add("quoteframe", "> > > a\n> > b\nplain\n");                      // deep stair
 add("quoteframe", "> a\n>\n> b\n");                                // middle `>`-blank breaks tail
 add("quoteframe", "> [:a][:b]\n");                                 // §3 consecutive block hiccups
 
+// prefix-consume (A-md): md `>`-quotes via ONE per-line container-prefix walk (no Step::OpenQuote
+// re-dispatch → `property` runs once, killing 1a; O(1) close → killing 1b). Locks the property/quote
+// boundary (step-8 property BEFORE step-10 blockquote at the doc root) + the close/open collapse.
+// See lsdoc-viewframe-A-design / lsdoc-single-pass-audit.
+add("prefixconsume", ">>>>key:: val\n");                            // property (no-space key), NOT a quote
+add("prefixconsume", "> key:: val\n");                             // quote (`> key` has a space → not a property)
+add("prefixconsume", ">key:: val\n");                              // property (1 `>`, no space)
+add("prefixconsume", "#+BEGIN_QUOTE\n>>>>key:: val\n#+END_QUOTE\n"); // in block content → property suppressed → quote
+add("prefixconsume", "> a\n>>>>key:: val\n");                      // property line after a quote line
+add("prefixconsume", ">http://x.com:: y\n");                       // colon-in-key ⇒ not a property ⇒ quote
+add("prefixconsume", "> a\n> > b\n> c\n> > d\n");                  // de-nest then re-nest
+add("prefixconsume", ">>>>>>>>y\n>>- x\n");                        // interior breaker closes many frames
+add("prefixconsume", "> a\n>\n>\n> b\n");                          // double `>`-blank (F6 swallow)
+add("prefixconsume", ">>x\n>>>>y\n>>>>>>z\n");                     // depth increases per line
+add("prefixconsume", "- > > a\n  > > b\n");                        // bullet-lazy nested quote
+add("prefixconsume", ">>>>x\n> y\n");                              // single-line ⌈4/2⌉ then a continuation
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

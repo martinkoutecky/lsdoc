@@ -2218,5 +2218,65 @@
   "id": "b443",
   "cat": "quoteframe",
   "input": "> [:a][:b]\n"
+ },
+ {
+  "id": "b444",
+  "cat": "prefixconsume",
+  "input": ">>>>key:: val\n"
+ },
+ {
+  "id": "b445",
+  "cat": "prefixconsume",
+  "input": "> key:: val\n"
+ },
+ {
+  "id": "b446",
+  "cat": "prefixconsume",
+  "input": ">key:: val\n"
+ },
+ {
+  "id": "b447",
+  "cat": "prefixconsume",
+  "input": "#+BEGIN_QUOTE\n>>>>key:: val\n#+END_QUOTE\n"
+ },
+ {
+  "id": "b448",
+  "cat": "prefixconsume",
+  "input": "> a\n>>>>key:: val\n"
+ },
+ {
+  "id": "b449",
+  "cat": "prefixconsume",
+  "input": ">http://x.com:: y\n"
+ },
+ {
+  "id": "b450",
+  "cat": "prefixconsume",
+  "input": "> a\n> > b\n> c\n> > d\n"
+ },
+ {
+  "id": "b451",
+  "cat": "prefixconsume",
+  "input": ">>>>>>>>y\n>>- x\n"
+ },
+ {
+  "id": "b452",
+  "cat": "prefixconsume",
+  "input": "> a\n>\n>\n> b\n"
+ },
+ {
+  "id": "b453",
+  "cat": "prefixconsume",
+  "input": ">>x\n>>>>y\n>>>>>>z\n"
+ },
+ {
+  "id": "b454",
+  "cat": "prefixconsume",
+  "input": "- > > a\n  > > b\n"
+ },
+ {
+  "id": "b455",
+  "cat": "prefixconsume",
+  "input": ">>>>x\n> y\n"
  }
 ]
