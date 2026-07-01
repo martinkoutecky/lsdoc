@@ -685,16 +685,22 @@ fn find_closer(bb: &[u8], c: u8, k: usize, from: usize, fwd_gate: bool, continue
 fn try_script(s: &str, bb: &[u8], i: usize, c: u8, base: usize) -> Option<(Inline, usize)> {
     let n = bb.len();
     let after = *bb.get(i + 1)?;
-    let (content, content_start, end) = if after == b'{' {
+    let braced = if after == b'{' {
         let body_start = i + 2;
         let mut j = body_start;
         while j < n && bb[j] != b'}' && bb[j] != b'\n' && bb[j] != b'\r' {
             j += 1;
         }
-        if j >= n || bb[j] != b'}' || j == body_start {
-            return None;
+        if j < n && bb[j] == b'}' && j > body_start {
+            Some((s[body_start..j].to_string(), body_start, j + 1))
+        } else {
+            None
         }
-        (s[body_start..j].to_string(), body_start, j + 1)
+    } else {
+        None
+    };
+    let (content, content_start, end) = if let Some(braced) = braced {
+        braced
     } else {
         if is_org_space(after) {
             return None;
@@ -725,7 +731,7 @@ fn run_len(b: &[u8], pos: usize, c: u8) -> usize {
 }
 
 fn is_org_space(c: u8) -> bool {
-    matches!(c, b' ' | b'\t' | 0x0c | 0x1a)
+    matches!(c, b' ' | b'\t')
 }
 
 fn class_idx(c: u8) -> usize {
@@ -1003,7 +1009,7 @@ fn try_block_ref_at(s: &str, bb: &[u8], i: usize) -> Option<(Inline, usize)> {
     }
     let inner_start = i + 2;
     let mut j = inner_start;
-    while j < n && bb[j] != b')' && bb[j] != b'\n' && bb[j] != b'\r' {
+    while j < n && bb[j] != b')' {
         j += 1;
     }
     if j == inner_start {
@@ -1172,9 +1178,6 @@ fn find_org_label_end(bb: &[u8], start: usize) -> Option<usize> {
     let mut depth: i32 = 0;
     while j < n {
         let c = bb[j];
-        if c == b'\n' || c == b'\r' {
-            return None;
-        }
         if c == b'\\' && j + 1 < n {
             j += 1 + char_len(bb[j + 1]);
             continue;

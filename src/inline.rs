@@ -1635,7 +1635,7 @@ pub(crate) fn parse_latex_dollar_at(s: &str, at: usize) -> Option<(Inline, usize
     ))
 }
 
-/// `(( … ))` block ref (inner has no `)`/newline; value unescaped, `full` raw).
+/// `(( … ))` block ref (inner has no `)`; value unescaped, `full` raw).
 pub(crate) fn parse_block_ref_at(s: &str, at: usize) -> Option<(Inline, usize)> {
     let b = s.as_bytes();
     let n = b.len();
@@ -1644,7 +1644,7 @@ pub(crate) fn parse_block_ref_at(s: &str, at: usize) -> Option<(Inline, usize)> 
     }
     let inner_start = at + 2;
     let mut j = inner_start;
-    while j < n && b[j] != b')' && b[j] != b'\n' && b[j] != b'\r' {
+    while j < n && b[j] != b')' {
         j += 1;
     }
     if j == inner_start || j + 1 >= n || b[j] != b')' || b[j + 1] != b')' {
