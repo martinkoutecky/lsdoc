@@ -24,8 +24,9 @@
 // `EndTrie`, fence/drawer lookups, the task-marker table, `Builder`, `GT_FALLBACK_NEST_CAP` — live once
 // in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
 use crate::block_common::{
-    displayed_math, drawer_property, find_drawer_end, find_matching_fence, is_raw_html, leading_ws,
-    para_ws_only, split_checkbox, split_lines, Builder, EndTrie, Line, GT_FALLBACK_NEST_CAP, MARKERS,
+    displayed_math_opener, drawer_property, find_displayed_math_close, find_drawer_end,
+    find_matching_fence, is_raw_html, leading_ws, para_ws_only, split_checkbox, split_lines,
+    Builder, EndTrie, Line, GT_FALLBACK_NEST_CAP, MARKERS,
 };
 use crate::inline::{char_len, is_ws_or_nl};
 use crate::projection::{Block, Inline, ListItem, Span, Url};
@@ -730,6 +731,7 @@ fn dispatch_org_line<'a>(
             || block_begin(t).is_some()
             || t.trim_start().starts_with("\\begin{")
             || t.trim_start().starts_with("[:")
+            || displayed_math_opener(t).is_some()
             || is_table_row(t)
             || is_verbatim_line(t)
             || list_marker(t).is_some())
@@ -1071,15 +1073,55 @@ fn dispatch_org_line<'a>(
     // already fully de-`>`'d content, so it never opens a quote. The F4 ws-drop before a quote moved
     // to the driver's open loop.
 
-    // 9. block-level displayed math `$$ … $$`.
-    if let Some(math) = displayed_math(t) {
-        if was_ws_drop && para_ws_only(para, input) {
-            *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
+    // 9. block-level displayed math `$$ … $$`: first matching close, may span
+    // lines, and same-line remainder re-enters block parsing.
+    {
+        let mut cur = i;
+        let mut captured = false;
+        let mut rewritten_line = None;
+        loop {
+            if cur >= hi {
+                return Step::Next(cur);
+            }
+            let cur_view = if cur == i && !captured {
+                t
+            } else if rewritten_line == Some(cur) {
+                lines[cur].text
+            } else {
+                line_text(lines, cur, strip)
+            };
+            let Some(opener_off) = displayed_math_opener(cur_view) else {
+                break;
+            };
+            let cap = if null_spans || (cur == i && !captured && view.is_some()) {
+                displayed_math_view_capture(lines, cur, hi, strip, cur_view, opener_off)
+            } else {
+                let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
+                displayed_math_raw_capture(lines, cur, hi, body_end, input, opener_off)
+            };
+            let Some(cap) = cap else {
+                break;
+            };
+            if !captured {
+                if was_ws_drop && para_ws_only(para, input) {
+                    *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
+                }
+                flush_para(out, para, para_buf, input, trim);
+            }
+            out.push(Block::DisplayedMath { text: cap.text, span: Some(Span(cap.span_start, cap.span_end)) });
+            *absorb = false;
+            captured = true;
+            if let Some((ri, start, content_end)) = cap.rewrite {
+                lines[ri] = Line { start, end: lines[ri].end, text: &input[start..content_end] };
+                rewritten_line = Some(ri);
+            } else {
+                rewritten_line = None;
+            }
+            cur = cap.next;
         }
-        flush_para(out, para, para_buf, input, trim);
-        out.push(Block::DisplayedMath { text: math, span: Some(Span(line_start, line_end)) });
-        *absorb = false;
-        return Step::Next(i + 1);
+        if captured {
+            return Step::Next(cur);
+        }
     }
 
     // 10. raw HTML (single line, complete element).
@@ -1243,6 +1285,132 @@ fn dispatch_org_line<'a>(
     Step::Next(i + 1)
 }
 
+struct MathCapture {
+    text: String,
+    span_start: usize,
+    span_end: usize,
+    next: usize,
+    rewrite: Option<(usize, usize, usize)>, // line index, new start, content end
+}
+
+fn displayed_math_raw_capture<'a>(
+    lines: &[Line<'a>],
+    cur: usize,
+    hi: usize,
+    body_end: usize,
+    input: &'a str,
+    opener_off: usize,
+) -> Option<MathCapture> {
+    let opener = lines[cur].start + opener_off;
+    let close = find_displayed_math_close(input, opener, body_end)?;
+    let close_end = close + 2;
+    let mut close_line = cur;
+    while close_line < hi && lines[close_line].start + lines[close_line].text.len() < close_end {
+        close_line += 1;
+    }
+    if close_line >= hi {
+        return None;
+    }
+    let content_end = lines[close_line].start + lines[close_line].text.len();
+    let text = input[opener + 2..close].to_string();
+    if close_end < content_end {
+        Some(MathCapture {
+            text,
+            span_start: lines[cur].start,
+            span_end: close_end,
+            next: close_line,
+            rewrite: Some((close_line, close_end, content_end)),
+        })
+    } else {
+        let mut next = close_line + 1;
+        let mut span_end = lines[close_line].end;
+        while next < hi && lines[next].text.is_empty() {
+            span_end = lines[next].end;
+            next += 1;
+        }
+        Some(MathCapture {
+            text,
+            span_start: lines[cur].start,
+            span_end,
+            next,
+            rewrite: None,
+        })
+    }
+}
+
+fn find_displayed_math_close_in_view(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut p = 0usize;
+    while p + 1 < bytes.len() {
+        if bytes[p] == b'$' && bytes[p + 1] == b'$' {
+            crate::metrics::scan_work(p + 2);
+            return Some(p);
+        }
+        p += 1;
+    }
+    crate::metrics::scan_work(bytes.len());
+    None
+}
+
+fn view_abs_start(line: &Line<'_>, view: &str) -> usize {
+    debug_assert!(line.text.ends_with(view));
+    line.start + line.text.len() - view.len()
+}
+
+fn displayed_math_view_capture<'a>(
+    lines: &[Line<'a>],
+    cur: usize,
+    hi: usize,
+    strip: usize,
+    first_view: &str,
+    opener_off: usize,
+) -> Option<MathCapture> {
+    let mut text = String::new();
+    let mut k = cur;
+    let mut view = first_view;
+    let mut start = opener_off + 2;
+    loop {
+        let tail = &view[start..];
+        if let Some(close) = find_displayed_math_close_in_view(tail) {
+            text.push_str(&tail[..close]);
+            let close_end_view = start + close + 2;
+            let vstart = view_abs_start(&lines[k], view);
+            if close_end_view < view.len() {
+                let close_end = vstart + close_end_view;
+                let content_end = lines[k].start + lines[k].text.len();
+                return Some(MathCapture {
+                    text,
+                    span_start: lines[cur].start,
+                    span_end: close_end,
+                    next: k,
+                    rewrite: Some((k, close_end, content_end)),
+                });
+            }
+            let mut next = k + 1;
+            let mut span_end = lines[k].end;
+            while next < hi && lines[next].text.is_empty() {
+                span_end = lines[next].end;
+                next += 1;
+            }
+            return Some(MathCapture {
+                text,
+                span_start: lines[cur].start,
+                span_end,
+                next,
+                rewrite: None,
+            });
+        }
+        text.push_str(tail);
+        k += 1;
+        if k >= hi {
+            return None;
+        }
+        text.push('\n');
+        view = line_text(lines, k, strip);
+        start = 0;
+    }
+}
+
 /// Flush the open paragraph. `trim_eol` drops trailing newline(s) from the slice
 /// (so no trailing `Break_Line`): in list-item content (`in_item`) a *following block*
 /// absorbs the paragraph's trailing eols via mldoc's `between_eols` (its block parsers
@@ -1387,7 +1555,9 @@ fn headline_split_opener(
         // frame is not a split. At the top level `body_end == input.len()` (no-op there).
         || crate::inline::parse_latex_env(&input[..body_end], content_off, content_off + content.len()).is_some()
         || quote_opens(content)
-        || displayed_math(content).is_some()
+        || displayed_math_opener(content)
+            .and_then(|off| find_displayed_math_close(input, content_off + off, body_end))
+            .is_some()
         || is_raw_html(content)
         || footnote_def(content).is_some()
         || is_org_hr(content)
@@ -2284,6 +2454,30 @@ mod tests {
         assert_eq!(bkinds("* \\begin{x}"), ["bullet", "latex_env"]); // latex consumes to EOF
         assert_eq!(bkinds("* ```\ncode\n```"), ["bullet", "src"]); // markdown fence
         assert_eq!(bkinds("* ~~~\nx\n~~~"), ["bullet", "src"]);
+    }
+
+    #[test]
+    fn displayed_math_first_match_multiline_org() {
+        let math_texts = |s: &str| {
+            parse(s)
+                .into_iter()
+                .filter_map(|b| match b {
+                    Block::DisplayedMath { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(math_texts("$$a\nb$$"), ["a\nb"]);
+        assert_eq!(math_texts("$$\na\nb\n$$"), ["\na\nb\n"]);
+        assert_eq!(math_texts("  $$a\nb$$"), ["a\nb"]);
+        assert_eq!(math_texts("\t$$a\nb$$"), ["a\nb"]);
+        assert_eq!(bkinds("$$ab$$x"), ["displayed_math", "paragraph"]);
+        assert_eq!(math_texts("$$a$$ $$b$$"), ["a", "b"]);
+        assert_eq!(bkinds("$$a\nb$$\nc"), ["displayed_math", "paragraph"]);
+        assert_eq!(bkinds("x$$a\nb$$"), ["paragraph"]);
+        assert_eq!(bkinds("$$ab"), ["paragraph"]);
+        assert_eq!(bkinds("* $$x"), ["bullet"]);
+        assert_eq!(bkinds("* $$x\ny$$"), ["bullet", "displayed_math"]);
     }
 
     #[test]

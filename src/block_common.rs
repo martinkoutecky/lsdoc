@@ -128,14 +128,31 @@ pub(crate) fn drawer_property(s: &str) -> Option<(String, String)> {
     Some((key.to_string(), value.to_string()))
 }
 
-/// `$$…$$` displayed-math line → inner text, when the line is exactly a `$$`-delimited block.
-pub(crate) fn displayed_math(s: &str) -> Option<String> {
-    let t = s.trim();
-    if t.len() >= 4 {
-        t.strip_prefix("$$")?.strip_suffix("$$").map(str::to_string)
-    } else {
-        None
+/// Byte offset of a block-level `$$` opener in a line view: arbitrary leading
+/// spaces/tabs are indentation, but trailing bytes after the closing delimiter
+/// are a separate block.
+pub(crate) fn displayed_math_opener(s: &str) -> Option<usize> {
+    let off = leading_ws(s);
+    s[off..].starts_with("$$").then_some(off)
+}
+
+/// First `$$` after a block-level opener, bounded to this block body's byte
+/// window. This is intentionally a single monotone byte walk: no per-line
+/// restart and no backtracking.
+pub(crate) fn find_displayed_math_close(input: &str, opener: usize, body_end: usize) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut p = opener + 2;
+    let mut scanned = 0usize;
+    while p + 1 < body_end {
+        scanned += 1;
+        if bytes[p] == b'$' && bytes[p + 1] == b'$' {
+            crate::metrics::scan_work(scanned + 1);
+            return Some(p);
+        }
+        p += 1;
     }
+    crate::metrics::scan_work(scanned);
+    None
 }
 
 /// Is `s` a raw-HTML block line — `<tag …>…</tag>`, a real HTML element, NOT an autolink

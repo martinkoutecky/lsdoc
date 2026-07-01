@@ -96,6 +96,15 @@ fn staircase(d: usize) -> String {
 fn emph_alt(n: usize) -> String {
     format!("{}x{}", "*_".repeat(n), "_*".repeat(n))
 }
+/// Adjacent display-math blocks on one physical line. O(n²) if each remainder re-runs
+/// the whole block ladder on a shrinking suffix instead of being consumed locally.
+fn display_math_adjacent(n: usize) -> String {
+    "$$x$$".repeat(n)
+}
+/// One block-level `$$` opener with no close. O(n²) if failed openers rescan EOF per line.
+fn display_math_unclosed_tail(n: usize) -> String {
+    format!("$$x\n{}", "tail\n".repeat(n))
+}
 
 fn big_stack(f: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()
@@ -116,6 +125,10 @@ fn complexity_gate() {
         assert_linear("staircase", staircase, 700, "org");
         assert_linear("emph_alt", emph_alt, 3000, "md");
         assert_linear("emph_alt", emph_alt, 3000, "org");
+        assert_linear("display_math_adjacent", display_math_adjacent, 3000, "md");
+        assert_linear("display_math_adjacent", display_math_adjacent, 3000, "org");
+        assert_linear("display_math_unclosed_tail", display_math_unclosed_tail, 3000, "md");
+        assert_linear("display_math_unclosed_tail", display_math_unclosed_tail, 3000, "org");
         // A (container-prefix consume): both formats now dispatch a `>`-line's content ONCE at the
         // final depth (no per-re-dispatch `property` re-scan — 1a) and close many frames at one
         // interior breaker in O(closed) (no per-frame `gt_cont_view` re-peel — 1b).
