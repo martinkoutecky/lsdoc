@@ -183,22 +183,29 @@ fn none_out_frame_leaves(blocks: &mut [Block]) {
     }
 }
 
+#[inline]
+fn line_has_eol(line: &Line) -> bool {
+    line.end > line.start + line.text.len()
+}
+
 /// The view of a `>`-frame CONTINUATION line: peel `gt_level` `>`s off the strip-viewed raw line
-/// (`gt_peel` the first `gt_level-1`, then the FINAL peel via `quote_line_content_slice` so the
-/// breaker/`>`-blank/blank boundary is honored). `None` ⇒ the line ends the run (bare blank or a
-/// de-`>`'d breaker) ⇒ the `>`-frame closes. `gt_level >= 1`. Now used ONLY by the §3 fallback
-/// (`Step::GtFallback`) — the per-line close/open walk uses `scan_gt_prefix` + `offs[·]` slices.
-fn gt_cont_view(raw: &str, strip: usize, gt_level: usize) -> Option<&str> {
-    quote_line_content_slice(gt_peel(strip_view(raw, strip), gt_level - 1))
+/// (`gt_peel` the first `gt_level-1`, then the FINAL peel via `quote_line_content_line_slice` so the
+/// breaker/`>`-blank/blank boundary is honored). `None` ⇒ the line ends the run (bare blank, EOF
+/// bare `>`, or a de-`>`'d breaker) ⇒ the `>`-frame closes. `gt_level >= 1`.
+fn gt_cont_line_view<'a>(line: &Line<'a>, strip: usize, gt_level: usize) -> Option<&'a str> {
+    quote_line_content_line_slice(
+        gt_peel(strip_view(line.text, strip), gt_level - 1),
+        line_has_eol(line),
+    )
 }
 
 /// A-org single prefix consume: walk `line2`'s leading `>`-prefix ONCE (the enclosing indent
 /// already removed via `strip_view`), recording `offs[j]` = the byte offset into `line2` where
 /// `gt_peel(line2, j)` begins, for j = 0..=g. So `&line2[offs[j]..] == gt_peel(line2, j)`, and
-/// `quote_line_content_slice` / `quote_first_line_slice` on those slices reproduce the per-level
+/// `quote_line_content_line_slice` / `quote_first_line_slice` on those slices reproduce the per-level
 /// continuation / opener views with NO re-scan (each peels only 1 / ≤2 `>` — O(1)). Returns `g`
 /// (the `>`-count) and charges `crate::metrics::scan_work` EXACTLY once (the `>`-prefix bytes) —
-/// the single walk that replaces every per-frame `gt_cont_view` re-peel and every `Step::OpenQuote`
+/// the single walk that replaces every per-frame `gt_cont_line_view` re-peel and every `Step::OpenQuote`
 /// re-dispatch. `offs` is a reused scratch (cleared, not realloc'd).
 fn scan_gt_prefix(line2: &str, offs: &mut Vec<usize>) -> usize {
     offs.clear();
@@ -439,10 +446,13 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
 
             // Phase 2a: close `>`-frames whose continuation view is `None` (all `i < hi` now ⇒ no
             // `i`-advance). `offs[min(L-1, g)]` is the pre-scanned `gt_peel(line2, L-1)` slice, so
-            // `quote_line_content_slice` on it is byte-identical to `gt_cont_view`, at O(1) per pop.
+            // `quote_line_content_line_slice` on it is byte-identical to `gt_cont_line_view`, at O(1)
+            // per pop.
             while stack.len() > 1 && stack.last().unwrap().gt_level > 0 {
                 let l = stack.last().unwrap().gt_level;
-                if quote_line_content_slice(&line2[offs[(l - 1).min(g)]..]).is_some() {
+                if quote_line_content_line_slice(&line2[offs[(l - 1).min(g)]..], line_has_eol(&lines[i]))
+                    .is_some()
+                {
                     break;
                 }
                 close_top(&mut stack, &lines, input, i, false);
@@ -457,7 +467,8 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
             let mut cur = if h == 0 {
                 line2
             } else {
-                quote_line_content_slice(&line2[offs[(h - 1).min(g)]..]).unwrap_or("")
+                quote_line_content_line_slice(&line2[offs[(h - 1).min(g)]..], line_has_eol(&lines[i]))
+                    .unwrap_or("")
             };
             let mut opened_any = false;
             while let Some(inner) = quote_first_line_slice(cur) {
@@ -580,7 +591,7 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                 de_gt.push('\n');
                 let mut end = i + 1;
                 while end < p_hi {
-                    match gt_cont_view(lines[end].text, strip, p_gt) {
+                    match gt_cont_line_view(&lines[end], strip, p_gt) {
                         Some(v) => {
                             de_gt.push_str(v);
                             de_gt.push('\n');
@@ -1591,14 +1602,14 @@ fn quote_first_line_slice(s: &str) -> Option<&str> {
 
 /// One CONTINUATION line of an Org blockquote body — the de-`>`'d content as a SUFFIX slice of `s`
 /// (mldoc strips ONE `>` + ws, lazy: a non-`>` line still continues). The `>`-blank case is the
-/// empty slice `Some("")`; a non-`>` blank / a de-`>`'d breaker is `None` (STOP the run — the P3
-/// `>`-frame closes). Composed by `gt_cont_view` to view a `>`-frame's continuation lines.
-fn quote_line_content_slice(s: &str) -> Option<&str> {
+/// empty slice `Some("")` only when it has an eol; a non-`>` blank / EOF bare `>` / a de-`>`'d
+/// breaker is `None` (STOP the run — the P3 `>`-frame closes).
+fn quote_line_content_line_slice(s: &str, has_eol: bool) -> Option<&str> {
     let t = s.trim_start();
     let had_gt = t.starts_with('>');
     let rest = if had_gt { t[1..].trim_start() } else { t };
     if rest.is_empty() {
-        return if had_gt { Some("") } else { None };
+        return if had_gt && has_eol { Some("") } else { None };
     }
     if quote_line_breaker(rest) {
         return None;

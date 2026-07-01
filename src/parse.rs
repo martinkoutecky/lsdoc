@@ -92,12 +92,20 @@ fn gt_peel(s: &str, n: usize) -> &str {
     cur
 }
 
+#[inline]
+fn line_has_eol(line: &Line) -> bool {
+    line.end > line.start + line.text.len()
+}
+
 /// The view of a `>`-frame CONTINUATION line: peel `gt_level` `>`s off the strip-viewed raw line
-/// (`gt_peel` the first `gt_level-1`, the FINAL peel via `md_quote_cont_slice` so the breaker /
-/// `>`-blank / blank boundary is honored). `None` ⇒ the line ends the run (bare blank or a de-`>`'d
-/// breaker) ⇒ the `>`-frame closes. `gt_level >= 1` (only `>`-frames call this).
-fn gt_cont_view(raw: &str, strip: usize, gt_level: usize) -> Option<&str> {
-    md_quote_cont_slice(gt_peel(crate::org::strip_view(raw, strip), gt_level - 1))
+/// (`gt_peel` the first `gt_level-1`, the FINAL peel via `md_quote_cont_line_slice` so the breaker /
+/// `>`-blank / blank boundary is honored). `None` ⇒ the line ends the run (bare blank, EOF bare
+/// `>`, or a de-`>`'d breaker) ⇒ the `>`-frame closes. `gt_level >= 1` (only `>`-frames call this).
+fn gt_cont_line_view<'a>(line: &Line<'a>, strip: usize, gt_level: usize) -> Option<&'a str> {
+    md_quote_cont_line_slice(
+        gt_peel(crate::org::strip_view(line.text, strip), gt_level - 1),
+        line_has_eol(line),
+    )
 }
 
 /// Null the inline spans of the DIRECT leaf blocks WITHOUT recursing into container children
@@ -130,15 +138,16 @@ fn none_out_frame_leaves(blocks: &mut [Block]) {
     }
 }
 
+
 /// A-md single prefix consume (the md twin of org's `scan_gt_prefix`): walk `line2`'s leading
 /// `>`-prefix ONCE (the enclosing indent already removed via `strip_view`), recording `offs[j]` =
 /// the byte offset into `line2` where `gt_peel(line2, j)` begins, for j = 0..=g. So `&line2[offs[j]..]
-/// == gt_peel(line2, j)`, and `md_quote_cont_slice` / `md_quote_first_slice` on those slices
+/// == gt_peel(line2, j)`, and `md_quote_cont_line_slice` / `md_quote_first_slice` on those slices
 /// reproduce the per-level continuation / opener views with NO re-scan (each peels only 1 / ≤2 `>`
 /// — O(1)). Returns `g` (the `>`-count) and charges `crate::metrics::scan_work` EXACTLY once (the
-/// `>`-prefix bytes) — the single walk that replaces every per-frame `gt_cont_view` re-peel AND —
-/// because content now dispatches ONCE at the final depth — the per-re-dispatch `property` re-scan
-/// (md bug 1a). `offs` is a reused scratch (cleared, not realloc'd).
+/// `>`-prefix bytes) — the single walk that replaces every per-frame `gt_cont_line_view` re-peel
+/// AND — because content now dispatches ONCE at the final depth — the per-re-dispatch `property`
+/// re-scan (md bug 1a). `offs` is a reused scratch (cleared, not realloc'd).
 fn scan_gt_prefix(line2: &str, offs: &mut Vec<usize>) -> usize {
     offs.clear();
     offs.push(0); // offs[0] = gt_peel(line2, 0) = line2 itself
@@ -377,11 +386,14 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
             let g = scan_gt_prefix(line2, &mut offs); // ONE `>`-prefix walk; charges scan_work once
 
             // Phase 2a: close `>`-frames whose continuation view is `None` (all `i < hi` now ⇒ no
-            // `i`-advance). O(1) per pop via `md_quote_cont_slice` on the pre-scanned `offs[·]` slice.
+            // `i`-advance). O(1) per pop via `md_quote_cont_line_slice` on the pre-scanned `offs[·]`
+            // slice.
             let mut gt_closed = false;
             while stack.len() > 1 && stack.last().unwrap().gt_level > 0 {
                 let l = stack.last().unwrap().gt_level;
-                if md_quote_cont_slice(&line2[offs[(l - 1).min(g)]..]).is_some() {
+                if md_quote_cont_line_slice(&line2[offs[(l - 1).min(g)]..], line_has_eol(&lines[i]))
+                    .is_some()
+                {
                     break;
                 }
                 close_top(&mut stack, &lines, input, i, false);
@@ -403,7 +415,7 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
                 let before = i;
                 while i < top_hi
                     && (lines[i].text.is_empty()
-                        || (top_gt > 0 && gt_cont_view(lines[i].text, top_strip, top_gt) == Some("")))
+                        || (top_gt > 0 && gt_cont_line_view(&lines[i], top_strip, top_gt) == Some("")))
                 {
                     i += 1;
                 }
@@ -436,7 +448,8 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
                 let mut cur = if h == 0 {
                     line2
                 } else {
-                    md_quote_cont_slice(&line2[offs[(h - 1).min(g)]..]).unwrap_or("")
+                    md_quote_cont_line_slice(&line2[offs[(h - 1).min(g)]..], line_has_eol(&lines[i]))
+                        .unwrap_or("")
                 };
                 let mut opened_any = false;
                 while let Some(inner) = md_quote_first_slice(cur) {
@@ -558,7 +571,7 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
                 de_gt.push('\n');
                 let mut end = i + 1;
                 while end < p_hi {
-                    match gt_cont_view(lines[end].text, strip, p_gt) {
+                    match gt_cont_line_view(&lines[end], strip, p_gt) {
                         Some(v) => {
                             de_gt.push_str(v);
                             de_gt.push('\n');
@@ -665,7 +678,7 @@ fn dispatch_md_line<'a>(
             || md_marker(t).is_some()
             || (!t.trim_start().is_empty()
                 && i + 1 < hi
-                && gt_cont_view(lines[i + 1].text, strip, gt_level).is_some_and(is_def_opener)))
+                && gt_cont_line_view(&lines[i + 1], strip, gt_level).is_some_and(is_def_opener)))
     {
         return Step::GtFallback;
     }
@@ -1944,16 +1957,16 @@ fn md_quote_first_slice(s: &str) -> Option<&str> {
 }
 
 /// One CONTINUATION line of a markdown blockquote body (mldoc `lines_while`): a `>`(+ws)-only
-/// line → `Some("")` (an empty body line); else strip ONE optional `>` (+ws) and keep the rest
-/// (lazy — a non-`>` line still continues). `None` STOPS the run: a blank line (no `>`), or a
-/// de-`>`'d line that starts a new block. Strips exactly ONE `>` (the F5 fix vs the old
-/// recursive flatten). Borrowing suffix slice. F1/F5.
-fn md_quote_cont_slice(s: &str) -> Option<&str> {
+/// line → `Some("")` (an empty body line) only when it has an eol; else strip ONE optional `>` (+ws)
+/// and keep the rest (lazy — a non-`>` line still continues). `None` STOPS the run: a blank line
+/// (no `>`), EOF bare `>`, or a de-`>`'d line that starts a new block. Strips exactly ONE `>` (the F5
+/// fix vs the old recursive flatten). Borrowing suffix slice. F1/F5.
+fn md_quote_cont_line_slice(s: &str, has_eol: bool) -> Option<&str> {
     let t = s.trim_start();
     let had_gt = t.starts_with('>');
     let rest = if had_gt { t[1..].trim_start() } else { t };
     if rest.is_empty() {
-        return if had_gt { Some("") } else { None };
+        return if had_gt && has_eol { Some("") } else { None };
     }
     if quote_para_trigger(rest) {
         return None;
@@ -2831,4 +2844,3 @@ fn build_table_from_texts(rows: &[&str], start: usize, end: usize, input: &str) 
         span: Some(Span(start, end)),
     }
 }
-
