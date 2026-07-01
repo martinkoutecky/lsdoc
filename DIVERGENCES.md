@@ -1,11 +1,29 @@
-# Known byte-exact divergences from mldoc@1.5.7 — to be dealt with
+# Known byte-exact divergences from mldoc@1.5.7 — status
 
-Cases where lsdoc's AST differs from mldoc's. **All three are pre-existing** (verified
-byte-identical on the pre-change tree — none was introduced by the 2026-07 container-frame
-rewrite or the O(n) audit; the audit/rewrite merely *surfaced* them via targeted probes). All
-three are currently absorbed by the fuzz floors (`node fuzz.mjs … ` md=555 / org=1522) — i.e.
-they are among the "known non-matching" adversarial inputs the floor tolerates, so they do **not**
-fail the gate. **Fixing each LOWERS the floor** (more mldoc parity), which is how we'll verify a fix.
+Cases where lsdoc's AST differs from mldoc's. All were pre-existing (verified — none introduced by
+the container-frame rewrite / O(n) audit; the audit merely *surfaced* them). **Fixing each LOWERS
+the fuzz floor** (more mldoc parity) — how each fix was verified.
+
+## Status (Jul 1 2026)
+| # | divergence | status | commit |
+|---|---|---|---|
+| D1 | trailing bare `>` at EOF → paragraph | **FIXED** | `46baefa` |
+| D2 | def-list-after-para keeps the break (block content) | **FIXED** | `43c8c6d` |
+| D3 | count `[:` inside hiccup strings (naive quote escape) | **FIXED** | `413f996` |
+| D4 | CR→LF in inline literal-break + code text | **FIXED** | `c26b8ca` |
+| D5 | multi-line `$$…$$` → display-math block | **FIXED** | `912b1bd` |
+| D6 | multi-line HTML → raw_html block | **FIXED** | `2fa647a` |
+| D7 | org `[[url][label]]` label spans a newline | **FIXED** | `65df867` |
+| D8 | org `^{…}`/`_{…}` script non-space fallback | **FIXED** | `65df867` |
+| D9 | block-ref `((…))` content spans a newline | **FIXED** | `65df867` |
+| D10 | inline_html accepts UNKNOWN tags (mldoc → plain) | OPEN | — |
+| D11 | `<br/>` no-space → inline_html (mldoc → plain) | OPEN | — |
+| D12 | single-line `<b>`/`<i>` phrasing tags → raw_html (mldoc → plain) | OPEN | — |
+
+D10–D12 are the residual HTML **tag-classification** area (pre-existing; the whole area wants a
+dedicated source pass — see the lsdoc-vs-mldoc audit). D3/D4 were RE-AUDITED faithful vs source.
+Verify any divergence probe with `node harness/vdiff_iso.mjs` (ISOLATED — mldoc leaks batched state).
+The prose entries below are the original diagnoses (D1–D9 now fixed; their commits have the exact ports).
 
 Status legend: `OPEN` = diagnosed, not yet fixed. Each has a root cause in real code and a fix
 direction; none is blocked on understanding.
