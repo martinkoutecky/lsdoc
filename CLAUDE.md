@@ -32,6 +32,16 @@ uncapped after the container-frame rewrite).
 The gate compares a **normalized projection** (`harness/lib/normalize.mjs` ↔ `src/projection.rs`);
 the two emitters MUST stay in sync. Any divergence = a real behavior bug, never "rounding".
 
+**⚠ The oracle leaks global state across parses in ONE process.** `oracle.mjs` loads `mldoc` once
+and calls `Mldoc.parseJson` per input, so a prior parse can contaminate a later one — e.g. `$$$`
+before `$$$$` flips `$$$$` from `displayed_math("")` (its true, isolated value) to `paragraph`.
+`run.mjs`/`fuzz.mjs` parse batched, so the curated corpus is kept **contamination-clean** (that's
+what 1362/1362 verifies) — but a hand-written probe run through `oracle.mjs` batched can show FALSE
+divergences (and mask real ones). lsdoc is stateless (fresh per parse) and must match mldoc's
+**isolated** behavior. So VERIFY probes with **`node harness/vdiff_iso.mjs <probe.json>`**, which
+parses each input in a fresh oracle process (no leak) and diffs vs lsdoc. Use it for any ad-hoc
+byte-exactness check; never trust a batched probe for a contamination-prone construct.
+
 ## Performance principle — avoid hashes if an array would do
 
 **Prefer a deterministic array / direct-index** (or a small sorted `Vec`, a perfect hash for a
