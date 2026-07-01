@@ -86,6 +86,11 @@ pub(crate) fn parse_inline_ctx_emph(text: &str, base: usize) -> Vec<Inline> {
 }
 
 fn parse_ctx(text: &str, ctx: Ctx, base: usize) -> Vec<Inline> {
+    if !ctx.breaks && text.as_bytes().contains(&b'\r') {
+        let text = text.replace('\r', "\n");
+        let mut toks = lex(&text);
+        return resolve(&text, &mut toks, ctx, base);
+    }
     let mut toks = lex(text);
     resolve(text, &mut toks, ctx, base)
 }
@@ -117,6 +122,11 @@ fn class_idx(ch: u8) -> usize {
 /// as a multi-byte `Leaf`. A backtick consumed by a construct is then never dispatched → no straddle.
 fn try_code_span(s: &str, off: usize, base: usize) -> Option<(Inline, usize)> {
     let (mut node, end) = crate::lexer::code_span(s, off)?;
+    if let Inline::Code { text, .. } = &mut node {
+        if text.as_bytes().contains(&b'\r') {
+            *text = text.replace('\r', "\n");
+        }
+    }
     crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + end)));
     Some((node, end))
 }

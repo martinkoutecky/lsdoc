@@ -236,6 +236,11 @@ pub(crate) fn parse_inline_org(text: &str, base: usize) -> Vec<Inline> {
 }
 
 fn parse_ctx(text: &str, ctx: Ctx, base: usize) -> Vec<Inline> {
+    if !ctx.breaks && text.as_bytes().contains(&b'\r') {
+        let text = text.replace('\r', "\n");
+        let mut toks = org_lex(&text);
+        return resolve(&text, &mut toks, ctx, base);
+    }
     let mut toks = org_lex(text);
     resolve(text, &mut toks, ctx, base)
 }
