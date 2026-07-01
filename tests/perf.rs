@@ -259,6 +259,11 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         // R2-P5: hiccup `[:div `×n + a single trailing `]` defeated the rbracket caches.
         ("md_hiccup_present", false, 25_000, |n| "[:div ".repeat(n) + "]"),
         ("org_hiccup_present", true, 25_000, |n| "[:div ".repeat(n) + "]"),
+        // F2: consecutive CLOSED, nested hiccup vectors — the org 13b remainder loop, which (like
+        // md 11d') re-dispatched the whole shrinking line per vector and re-ran `property`-style
+        // O(len) predicates on the tail → O(n²). Now consumed in one local pass. (md is locked
+        // separately in `md_hiccup_nested_scales_linearly_heavy`.)
+        ("org_hiccup_nested", true, 8_000, |n| "[:div [:span x] [:b y]] ".repeat(n)),
         // Nested-emphasis reparse guard (design-review concern): content is re-scanned on a
         // shrinking substring. mldoc's first-valid-closer pairs the NEAREST closer, so nesting
         // depth is bounded (~5 distinct markers) → this is O(n), measured ≈2×/doubling. The
@@ -384,25 +389,23 @@ fn org_deep_quote_scales_linearly_heavy() {
     );
 }
 
-/// BUG REPRODUCTION / regression lock (KNOWN-FAILING on current code — INTENTIONAL).
-///
-/// A run of properly-closed, NESTED hiccup vectors (`[:div [:span x] [:b y]]`×n) is O(n²)
-/// in the inline resolver. The existing hiccup scaling cases in `scaling_pairs`
-/// (`md_hiccup_present` = `[:div `×n + one `]`) are FLAT — an unclosed-opener run — so they
-/// never exercised nesting and the gate missed this. Measured ≈4×/doubling (a clean
-/// quadratic: 5k→10k→20k→40k reps = 241→948→3781→13635 ms). This case makes the perf gate
-/// COVER nested hiccup; it FAILS on the current code by design and turns green once the
-/// nested-hiccup quadratic is fixed. Root-cause analysis + fix proposal live in the
-/// session's analysis notes — the bug is deliberately NOT fixed here.
-///
-/// Base kept small (n≤12k reps) so the quadratic 4n point stays ~1.5 s rather than hanging.
+/// Regression lock: a run of properly-closed, consecutive+nested hiccup vectors
+/// (`[:div [:span x] [:b y]]`×n) must scale ~linearly. This WAS O(n²) — and NOT in the inline
+/// resolver (a `[:…]` line becomes a RAW `Block::Hiccup`, never inline-parsed): the block parser's
+/// step 11d' re-dispatched the whole SHRINKING remainder line once per vector, re-running every
+/// earlier ladder predicate on the tail each time — notably `property`'s O(line) `find("::")` —
+/// so N vectors cost Σ O(remaining) = O(n²) (measured ≈4×/doubling: 5k→10k→20k→40k reps =
+/// 241→948→3781→13635 ms). FIXED by consuming consecutive block hiccups in ONE local loop in 11d'
+/// (each ladder predicate now runs O(1)× per source line). The gate originally MISSED it because
+/// the other hiccup cases (`md_hiccup_present` = `[:div `×n + one `]`) are FLAT unclosed runs that
+/// never trigger the remainder loop. Guards against reintroducing the per-vector re-dispatch.
 #[test]
-#[ignore = "hiccup-nested O(n^2) regression lock (KNOWN-FAILING until fixed); run with --ignored"]
+#[ignore = "hiccup-nested O(n) regression lock; run with: cargo test --release --test perf -- --ignored"]
 fn md_hiccup_nested_scales_linearly_heavy() {
     const CAP: f64 = 3.0;
     const FLOOR_US: f64 = 20_000.0; // 20ms — below this a ratio is just measurement noise
     let build = |n: usize| "[:div [:span x] [:b y]] ".repeat(n);
-    let base = 3_000usize;
+    let base = 25_000usize;
     let tn = best_us(&build(base), false, 3) as f64;
     let t2n = best_us(&build(2 * base), false, 3) as f64;
     let t4n = best_us(&build(4 * base), false, 3) as f64;

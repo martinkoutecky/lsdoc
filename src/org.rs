@@ -815,43 +815,62 @@ fn dispatch_org_line<'a>(
 
     // 13b. block-level Clojure-hiccup `[:tag …]` at BOL. The balanced capture is CLAMPed to
     // `&input[..body_end]`; the remainder past the `]` re-enters block parsing at BOL.
+    // Consecutive block hiccups (`[:a][:b]…`) are consumed in ONE LOCAL LOOP, not by
+    // re-dispatching the whole shrinking remainder line through the full ladder per vector (which
+    // re-ran every earlier predicate on the tail each time → O(n²); the md twin is parse.rs 11d').
+    // Control returns to the main loop exactly ONCE: at the frame boundary, or for the first
+    // non-hiccup remainder.
     {
-        let lw = leading_ws(t);
-        let rec = line_start + lw;
-        if last_rbracket.is_some_and(|last| rec <= last) && input[rec..].starts_with("[:") {
-            if let Some(cap_end) = crate::inline::parse_hiccup(&input[..body_end], rec) {
-                // A preceding paragraph drops its trailing Break before a Hiccup inside a
-                // blockquote body / list item, but keeps it at the document level.
-                flush_para(out, para, input, trim);
-                out.push(Block::Hiccup {
-                    v: input[rec..cap_end].to_string(),
-                    span: Some(Span(line_start, cap_end)),
-                });
-                *absorb = false;
-                // Resume after the `]`, absorbing consecutive eols (mldoc `<* optional eols`).
-                // The eol run stops at the closer line (`#+END_…` is non-eol), so it never
-                // crosses into the enclosing body.
-                let bytes = input.as_bytes();
-                let mut resume = cap_end;
-                while resume < bytes.len() && matches!(bytes[resume], b'\n' | b'\r') {
-                    resume += 1;
-                }
-                if resume >= bytes.len() {
-                    return Step::Next(lines.len()); // captured to EOF (+ trailing eols)
-                }
-                let mut ri = i;
-                while ri < lines.len() && lines[ri].end <= resume {
-                    ri += 1;
-                }
-                if ri >= lines.len() {
-                    return Step::Next(lines.len()); // defensive (resume < len ⇒ unreachable)
-                }
-                if resume > lines[ri].start {
-                    let content_end = lines[ri].start + lines[ri].text.len();
-                    lines[ri] = Line { start: resume, end: lines[ri].end, text: &input[resume..content_end] };
-                }
-                return Step::Next(ri);
+        let mut cur = i;
+        let mut captured = false;
+        loop {
+            if cur >= hi {
+                return Step::Next(cur);
             }
+            let cur_start = lines[cur].start;
+            let cur_text = lines[cur].text;
+            let lw = leading_ws(cur_text);
+            let rec = cur_start + lw;
+            if !(last_rbracket.is_some_and(|last| rec <= last) && input[rec..].starts_with("[:")) {
+                break;
+            }
+            let Some(cap_end) = crate::inline::parse_hiccup(&input[..body_end], rec) else {
+                break;
+            };
+            // A preceding paragraph drops its trailing Break before a Hiccup inside a blockquote
+            // body / list item, but keeps it at the document level.
+            flush_para(out, para, input, trim); // no-op after the first
+            out.push(Block::Hiccup {
+                v: input[rec..cap_end].to_string(),
+                span: Some(Span(cur_start, cap_end)),
+            });
+            *absorb = false;
+            captured = true;
+            // Resume after the `]`, absorbing consecutive eols (mldoc `<* optional eols`). The eol
+            // run stops at the closer line (`#+END_…` is non-eol), so it never crosses the body.
+            let bytes = input.as_bytes();
+            let mut resume = cap_end;
+            while resume < bytes.len() && matches!(bytes[resume], b'\n' | b'\r') {
+                resume += 1;
+            }
+            if resume >= bytes.len() {
+                return Step::Next(lines.len()); // captured to EOF (+ trailing eols)
+            }
+            let mut ri = cur;
+            while ri < lines.len() && lines[ri].end <= resume {
+                ri += 1;
+            }
+            if ri >= lines.len() {
+                return Step::Next(lines.len()); // defensive (resume < len ⇒ unreachable)
+            }
+            if resume > lines[ri].start {
+                let content_end = lines[ri].start + lines[ri].text.len();
+                lines[ri] = Line { start: resume, end: lines[ri].end, text: &input[resume..content_end] };
+            }
+            cur = ri;
+        }
+        if captured {
+            return Step::Next(cur);
         }
     }
 

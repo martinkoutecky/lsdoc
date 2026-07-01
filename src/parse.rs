@@ -921,52 +921,80 @@ fn dispatch_md_line<'a>(
     // span lines, and the remainder past the `]` re-enters block parsing at BOL
     // (`[:div]x` → [Hiccup, Paragraph x]; `[:a][:b]` → two Hiccups). Tried before the
     // def-list / paragraph fallbacks (a hiccup wins: `[:div]\n: def` → [Hiccup, Para]).
+    // A run of consecutive block hiccups (`[:a][:b]…`, or one that spills onto later lines) is
+    // consumed in ONE LOCAL LOOP here, NOT by re-dispatching the whole shrinking remainder line
+    // through the full ladder once per vector. The old per-vector `Step::Next(remainder)` re-ran
+    // every earlier ladder predicate on the tail each time — and `property` (step 8) does an
+    // O(line) `find("::")` — so N vectors cost Σ O(remaining) = O(n²). Capturing them locally
+    // makes each ladder predicate run O(1) times per source line ⇒ O(n). We hand control back to
+    // the main loop exactly ONCE: at the frame boundary (so it pops + absorbs trailing eols) or
+    // for the first NON-hiccup remainder (so it goes through def-list / paragraph normally).
     {
-        let lw = leading_ws(t);
-        let rec = line_start + lw;
-        if last_rbracket.is_some_and(|last| rec <= last) && input[rec..].starts_with("[:") {
+        let mut cur = i; // line index whose leading `[:…]` we are trying to consume
+        let mut captured = false;
+        loop {
+            // At/after the frame's closer line: defer to the main loop (frame pop + eol absorb).
+            // `i < hi` always holds on entry, so the first iteration never trips this.
+            if cur >= hi {
+                return Step::Next(cur);
+            }
+            let cur_start = lines[cur].start;
+            let cur_text = lines[cur].text;
+            let lw = leading_ws(cur_text);
+            let rec = cur_start + lw;
+            if !(last_rbracket.is_some_and(|last| rec <= last) && input[rec..].starts_with("[:")) {
+                break;
+            }
             // CLAMP the (to-end-of-input) balanced capture to `&input[..body_end]` so a `]`
             // outside this body is not captured (verified load-bearing). `rec < body_end`.
-            if let Some(cap_end) = crate::inline::parse_hiccup(&input[..body_end], rec) {
-                flush_para(out, para, input, trim);
-                out.push(Block::Hiccup {
-                    v: input[rec..cap_end].to_string(),
-                    span: Some(Span(line_start, cap_end)),
-                });
-                // Resume after the `]`, first absorbing consecutive eols (mldoc's
-                // `<* optional eols`: `[:div]\n\nx` → [Hiccup, Para "x"], i.e. blank
-                // lines after a whole-line hiccup are swallowed — but a same-line
-                // remainder `[:div]x\n\ny` is NOT, so skip only `\n`/`\r` bytes). The eol
-                // run stops at `body_end` (the closer line starts with `#`/`:`, non-eol),
-                // so it never crosses into the enclosing body.
-                let bytes = input.as_bytes();
-                let mut resume = cap_end;
-                while resume < bytes.len() && matches!(bytes[resume], b'\n' | b'\r') {
-                    resume += 1;
-                }
-                if resume >= bytes.len() {
-                    return Step::Next(lines.len()); // captured to EOF (+ trailing eols)
-                }
-                // Find the line containing `resume`; process it as-is when `resume` is
-                // at its start, else rewrite it to the remainder slice.
-                let mut ri = i;
-                while ri < lines.len() && lines[ri].end <= resume {
-                    ri += 1;
-                }
-                if ri >= lines.len() {
-                    return Step::Next(lines.len()); // defensive (resume < len ⇒ unreachable)
-                }
-                if resume > lines[ri].start {
-                    let content_end = lines[ri].start + lines[ri].text.len();
-                    lines[ri] = Line {
-                        start: resume,
-                        end: lines[ri].end,
-                        text: &input[resume..content_end],
-                    };
-                }
-                return Step::Next(ri);
+            let Some(cap_end) = crate::inline::parse_hiccup(&input[..body_end], rec) else {
+                break;
+            };
+            flush_para(out, para, input, trim); // no-op after the first (para already flushed)
+            out.push(Block::Hiccup {
+                v: input[rec..cap_end].to_string(),
+                span: Some(Span(cur_start, cap_end)),
+            });
+            captured = true;
+            // Resume after the `]`, first absorbing consecutive eols (mldoc's `<* optional eols`:
+            // `[:div]\n\nx` → [Hiccup, Para "x"] — blank lines after a whole-line hiccup are
+            // swallowed — but a same-line remainder `[:div]x\n\ny` is NOT, so skip only `\n`/`\r`).
+            // The eol run stops at `body_end` (the closer line starts with `#`/`:`), never crossing
+            // into the enclosing body.
+            let bytes = input.as_bytes();
+            let mut resume = cap_end;
+            while resume < bytes.len() && matches!(bytes[resume], b'\n' | b'\r') {
+                resume += 1;
             }
+            if resume >= bytes.len() {
+                return Step::Next(lines.len()); // captured to EOF (+ trailing eols)
+            }
+            // Find the line containing `resume`; leave it as-is when `resume` is at its start,
+            // else rewrite it to the remainder slice — then loop to try the next vector at it.
+            let mut ri = cur;
+            while ri < lines.len() && lines[ri].end <= resume {
+                ri += 1;
+            }
+            if ri >= lines.len() {
+                return Step::Next(lines.len()); // defensive (resume < len ⇒ unreachable)
+            }
+            if resume > lines[ri].start {
+                let content_end = lines[ri].start + lines[ri].text.len();
+                lines[ri] = Line {
+                    start: resume,
+                    end: lines[ri].end,
+                    text: &input[resume..content_end],
+                };
+            }
+            cur = ri;
         }
+        if captured {
+            // First non-hiccup remainder (or frame boundary handled above): re-dispatch it ONCE
+            // through the full ladder — identical to the old per-vector hand-off, minus the
+            // O(n²) repetition.
+            return Step::Next(cur);
+        }
+        // Not a block hiccup at all → fall through to def-list / paragraph.
     }
 
     // 11d. markdown definition list (mldoc `lists0.ml` `md_definition`, the Lists
