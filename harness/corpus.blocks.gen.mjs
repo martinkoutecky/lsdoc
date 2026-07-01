@@ -568,6 +568,30 @@ add("viewframe", "- #+BEGIN_QUOTE\r\n  \\begin{eq}\r\n  a\r\n  \\end{eq}\r\n  #+
 add("viewframe", "- #+BEGIN_A\n  - #+BEGIN_B\n    - #+BEGIN_C\n      - #+BEGIN_D\n        z\n        #+END_D\n      #+END_C\n    #+END_B\n  #+END_A"); // 4-deep
 add("viewframe", "- #+BEGIN_QUOTE\r\n  aaa\r\nbbb\r\n  #+END_QUOTE\r\n");               // CRLF + under-indent
 
+// quoteframe: md `>`-blockquotes parsed as first-class `>`-container stack frames (P3c — no
+// build_md_quote, no residual reparse for the staircase; both the normal and bullet-lazy entry
+// points push a frame). Locks the opener-2/continuation-1 asymmetry, single-line ⌈N/2⌉, dynamic
+// staircase, and the §3 lazy de-`>` reparse fallback. Fuzz never generates these shapes.
+add("quoteframe", "> > > > x\n");                                   // single-line ⌈4/2⌉ = 2 quotes
+add("quoteframe", "> x\n> y\n");                                    // lazy tail coalesces (one para)
+add("quoteframe", "> - list\n");                                    // breaker first line → Paragraph
+add("quoteframe", "> > a\n> > > b\n> > > > c\n");                   // staircase from depth 2
+add("quoteframe", "> > ```\n> > code\n> > ```\n");                  // §3 fence at depth 2 (both-`>`)
+add("quoteframe", "> #+BEGIN_NOTE\n> x\n> #+END_NOTE\n");           // §3 callout in quote
+add("quoteframe", "> a\n> \\begin{eq}\n> x\n> \\end{eq}\n> b\n");   // §3 latex mid-quote
+add("quoteframe", "> [:div [:span x]]\n");                         // §3 nested hiccup
+add("quoteframe", "> a\n```\ncode\n```\n");                         // §3 lazy-no-`>` fence (global index)
+add("quoteframe", "- > a\n  > > b\n");                             // bullet-lazy nested quote
+add("quoteframe", "> a\r\n> b\r\n");                               // CRLF quote
+add("quoteframe", "> café 中文 😀 x\n");                            // multibyte in quote
+add("quoteframe", "> a\n\n> b\n");                                 // blank stops run → siblings
+add("quoteframe", "> a\n\nplain\n");                              // blank then plain (swallow parity)
+add("quoteframe", "> term\n> : def\n");                           // bare def-list in quote (byte-exact)
+add("quoteframe", "- > ```\n  > code\n  > ```\n");                 // §3 fence in a bullet-lazy quote
+add("quoteframe", "> > > a\n> > b\nplain\n");                      // deep staircase then plain
+add("quoteframe", "> a\n>\n> b\n");                                // middle `>`-blank breaks tail
+add("quoteframe", "> [:a][:b]\n");                                 // §3 consecutive block hiccups
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));
