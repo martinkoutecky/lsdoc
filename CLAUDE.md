@@ -16,8 +16,8 @@ cargo test --release --test perf -- --ignored   # perf ratio + linearity + stack
 ```
 
 All perf tests pass. (`md_hiccup_nested_scales_linearly_heavy` / `org_hiccup_nested` lock the
-block-hiccup remainder loop at O(n) — it was once O(n²) via a per-vector re-dispatch that re-ran
-`property`'s O(line) `find("::")` on the shrinking tail; fixed in parse.rs 11d' / org.rs 13b.)
+block-hiccup remainder loop at O(n); `quote_staircase_uncapped_heavy` locks that the `>`-quote
+staircase parses uncapped after the container-frame rewrite.)
 
 The gate compares a **normalized projection** (`harness/lib/normalize.mjs` ↔ `src/projection.rs`);
 the two emitters MUST stay in sync. Any divergence = a real behavior bug, never "rounding".
@@ -44,8 +44,20 @@ factor is invisible. The reason to follow it is a measurably faster, collision-p
 ## O(n) by construction
 
 The block phase classifies each line once (monotone `i`, no re-scan); closer/fence/drawer lookups
-use **monotone cursors** (advance-only), not binary search. Verify O(n) by a *structural* audit
-(no `.sort` / `partition_point` / `binary_search` / `HashMap` left on the hot path), not by a perf
-ratio — the perf gate's ~2×/doubling can't distinguish O(n) from O(n log n). The one allowed
-O(R log R) corner is `refs.rs`'s sort+dedup (R = ref occurrences ≤ n; also the canonical output
-order the order-sensitive gate requires) — documented, not a regression.
+use **monotone cursors** (advance-only), not binary search. Container bodies are **frames on an
+explicit heap stack**, never copied or re-lexed: `#+BEGIN_X` bodies are zero-copy strip-view frames
+(the de-indent is a lazy per-line `strip_view`; nested strips fold cumulatively), and `>`-quotes are
+`>`-container frames (the staircase unrolls iteratively, each line viewed once at its own `gt_level`).
+So deep nesting is O(depth) HEAP + O(n) time with NO depth cap on any realistic shape. Verify O(n) by
+a *structural* audit (no `.sort` / `partition_point` / `binary_search` / `HashMap` left on the hot
+path, no per-level body copy, no unbounded native re-dispatch), not by a perf ratio — the gate's
+~2×/doubling can't distinguish O(n) from O(n log n).
+
+Two deliberate exceptions, both documented and neither a regression:
+- **`refs.rs` sort+dedup** — O(R log R), R = ref occurrences ≤ n; also the canonical output order the
+  order-sensitive gate requires.
+- **`GT_FALLBACK_NEST_CAP` (= 64)** — an anti-SIGABRT recursion floor on the SOLE remaining native
+  re-dispatch: the de-`>` reparse of a `>`-quote body containing a fence / `#+BEGIN` / LaTeX env /
+  hiccup (recognizers that can't see through literal `>`s). It bounds ONLY construct-in-`>`-quote
+  nesting (needs ~quadratic input for linear depth, fuzz-unreachable, where mldoc itself SIGABRTs);
+  lsdoc degrades it to a flat Paragraph rather than crashing. It does NOT bound any realistic parse.

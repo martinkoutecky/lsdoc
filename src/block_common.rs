@@ -14,12 +14,23 @@
 use crate::projection::{Block, Span};
 use std::cell::Cell;
 
-/// Anti-SIGABRT depth cap on the two block drivers' residual native recursion (md
-/// `build_md_quote`'s `>`-re-dispatch, org `streaming_reparse`). 64 is far above any reachable
-/// nesting (deepest gated/realistic/fuzz input is depth ~3); the input shapes that would exceed
-/// it are mldoc-O(n²)+stack-overflow shapes with no defined byte-target past a modest depth.
-/// Each driver keeps its OWN thread-local depth counter; only this constant is shared.
-pub(crate) const BLOCK_NEST_CAP: usize = 64;
+/// Anti-SIGABRT recursion floor on the ONE remaining native re-dispatch: the de-`>`'d reparse
+/// FALLBACK for a `>`-quote body that contains a fenced-code / `#+BEGIN_X` callout / LaTeX env /
+/// block hiccup — the four constructs whose recognizers use raw-input global closer indexes or
+/// raw byte scans that literal `>`s defeat, so (unlike a whitespace strip, which every predicate
+/// `trim_start`s through) they can't be recognized copy-free on the frame view and take a one-shot
+/// de-`>` reparse (org `streaming_reparse` / md `reparse_block_content`, non-`in_item` branch).
+///
+/// This floor NO LONGER bounds any realistic parse. The former block/quote nesting cap is gone:
+/// `#+BEGIN_X` bodies are zero-copy strip-view frames (P1/P2) and the `>`-quote staircase is
+/// iterative `>`-container frames (P3) — both uncapped and O(n). The only thing that still
+/// native-recurses is the fallback above, and only for *construct-in-`>`-quote* nesting, which
+/// needs ~quadratic input for linear depth (each level costs a `>` AND a fenced/callout construct),
+/// never occurs in real content, and which mldoc itself only handles by stack-overflowing (~1000).
+/// lsdoc degrades it gracefully to a flat Paragraph at 64 rather than SIGABRT-ing at parse time —
+/// a parser Tine embeds must not crash on malformed input. Each driver keeps its OWN thread-local
+/// depth counter; only this constant is shared.
+pub(crate) const GT_FALLBACK_NEST_CAP: usize = 64;
 
 /// One source line: byte window `[start, end)` (end is just past the trailing terminator, or
 /// EOF) plus the content text WITHOUT the trailing `\n`/`\r\n`.

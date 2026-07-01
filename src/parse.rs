@@ -38,21 +38,21 @@
 
 // The md (`parse.rs`) and org (`org.rs`) block loops are intentionally PARALLEL implementations
 // (different grammars); the leaf predicates + infrastructure they both use — `split_lines`,
-// `EndTrie`, fence/drawer lookups, the task-marker table, `Builder`, `BLOCK_NEST_CAP` — live once
+// `EndTrie`, fence/drawer lookups, the task-marker table, `Builder`, `GT_FALLBACK_NEST_CAP` — live once
 // in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
 use crate::block_common::{
     displayed_math, drawer_property, find_drawer_end, find_matching_fence, is_raw_html, leading_ws,
-    para_ws_only, split_checkbox, split_lines, Builder, EndTrie, Line, BLOCK_NEST_CAP, MARKERS,
+    para_ws_only, split_checkbox, split_lines, Builder, EndTrie, Line, GT_FALLBACK_NEST_CAP, MARKERS,
 };
 use crate::projection::{Block, Inline, ListItem, Span};
 
-// Depth guard for the ONE md re-dispatch (`build_md_quote`'s residual reparse). The F1/F5
-// `>`-quote nesting makes a `>`-on-continuation open a child Quote re-dispatched through the
-// driver; an adversarial increasing-`>`-per-line spine (O(d²) INPUT, fuzz-unreachable, where
-// mldoc itself is O(n²)+stack-overflow) would otherwise recurse to depth = #lines and SIGABRT.
-// Counts that md re-dispatch depth; capped at the shared `block_common::BLOCK_NEST_CAP`, which
-// degrades gracefully to a flat Paragraph. Unreachable by any gated / realistic / fuzz input
-// (deepest is depth ~3).
+// Depth guard for the ONE md re-dispatch that still native-recurses: the §3 `>`-quote fallback
+// (`reparse_block_content`). The `>`-quote staircase and re-bulleted `#+BEGIN` bodies are now
+// frames (P2/P3c) and never reach it. Only a `>`-quote body containing a fence / `#+BEGIN` /
+// LaTeX env / hiccup is de-`>`'d and reparsed, and construct-in-`>`-quote nesting recurses one
+// level per such body (O(d²) INPUT, fuzz-unreachable, where mldoc itself SIGABRTs). Counts that
+// depth against the shared `block_common::GT_FALLBACK_NEST_CAP`, which degrades gracefully to a
+// flat Paragraph rather than SIGABRT-ing. Unreachable by any gated / realistic / fuzz input.
 std::thread_local! {
     static MD_BLOCK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -351,7 +351,6 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
         if i >= n {
             break;
         }
-        let line_start = lines[i].start; // copied before the `&mut` dispatch borrows.
         let step = {
             let top = stack.last_mut().unwrap();
             let hi = top.hi;
@@ -1902,16 +1901,16 @@ fn md_quote_cont_slice(s: &str) -> Option<&str> {
     Some(rest)
 }
 
-/// Re-dispatch an in-block-content body (a `>`-quote residual OR a re-bulleted `#+BEGIN_X`
-/// Quote/Custom body — mldoc reparses both with `block_content_parsers`) through the md driver
-/// with `in_quote = true`, under the `BLOCK_NEST_CAP` depth guard (the org `streaming_reparse`
-/// analog). For `>`-quotes the iterative `>`-peel above handles single-line `>`×n and the
-/// all-continue multi-line tail with NO recursion, so only the adversarial increasing-`>`-per-line
-/// spine reaches this deeply; for re-bulleted callouts the body is the dedented bullet content.
-/// The guard bounds depth (graceful flat-Paragraph degradation) — mldoc-overflows-too, consumer-capped.
+/// The §3 `>`-quote fallback (org `streaming_reparse` analog): a `>`-quote body containing a
+/// fence / `#+BEGIN_X` callout / LaTeX env / block hiccup — constructs whose recognizers don't
+/// tolerate literal `>`s — is de-`>`'d and reparsed once through the md driver with
+/// `in_quote = true`. Re-bulleted `#+BEGIN_X` bodies (P2) and the `>`-quote staircase (P3c) are
+/// now frames and no longer reach here. Guarded by `GT_FALLBACK_NEST_CAP` so construct-in-`>`-quote
+/// nesting degrades gracefully (flat Paragraph past 64) instead of a parse-time SIGABRT — mldoc
+/// overflows on the same shape. See the const's doc.
 fn reparse_block_content(residual: &str) -> Vec<Block> {
     let depth = MD_BLOCK_DEPTH.with(|c| c.get());
-    let mut out = if depth >= BLOCK_NEST_CAP {
+    let mut out = if depth >= GT_FALLBACK_NEST_CAP {
         if residual.is_empty() {
             Vec::new()
         } else {

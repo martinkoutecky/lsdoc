@@ -21,11 +21,11 @@
 
 // The org (`org.rs`) and md (`parse.rs`) block loops are intentionally PARALLEL implementations
 // (different grammars); the leaf predicates + infrastructure they both use — `split_lines`,
-// `EndTrie`, fence/drawer lookups, the task-marker table, `Builder`, `BLOCK_NEST_CAP` — live once
+// `EndTrie`, fence/drawer lookups, the task-marker table, `Builder`, `GT_FALLBACK_NEST_CAP` — live once
 // in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
 use crate::block_common::{
     displayed_math, drawer_property, find_drawer_end, find_matching_fence, is_raw_html, leading_ws,
-    para_ws_only, split_checkbox, split_lines, Builder, EndTrie, Line, BLOCK_NEST_CAP, MARKERS,
+    para_ws_only, split_checkbox, split_lines, Builder, EndTrie, Line, GT_FALLBACK_NEST_CAP, MARKERS,
 };
 use crate::inline::{char_len, is_ws_or_nl};
 use crate::projection::{Block, Inline, ListItem, Span, Url};
@@ -34,34 +34,28 @@ use crate::projection::{Block, Inline, ListItem, Span, Url};
 // Block segmentation
 // ===========================================================================
 
-// Graceful anti-SIGABRT guard on `streaming_reparse`'s residual NATIVE recursion. This is
-// **NOT a parity cap**: every gated / fuzz-reachable / realistic Org shape parses UNCAPPED in
-// O(n) — clean-window `#+BEGIN_X`/quote bodies are heap `Frame`s on the explicit stack, and
-// the `>`-spine peels iteratively in `build_org_quote_streaming`; neither path ever touches
-// this cap. It bounds ONLY the TWO fuzz-unreachable residual re-dispatches that
-// `streaming_reparse` still resolves by native recursion:
-//   (a) the increasing-`>`-per-line shape (`>a\n>>b\n>>>c`…): a non-tail `>`-spine whose
-//       shallow residual re-enters the driver once per level — reaching depth d needs O(d²)
-//       input bytes, so the fuzz/corpus never gets there.
-//   (b) deeply-INDENTED / `\r\n`-terminated callout bodies: de-indented (or non-plain-`\n`),
-//       so NOT a clean line window ⇒ they take the `block_code` + `streaming_reparse`
-//       sub-recursion instead of a heap frame.
-// Both are mldoc-O(n²)+stack-overflow shapes with no defined byte-target past a modest depth,
-// and the recursive AST consumer (drop / project / serialize, ~6k deep on an 8 MiB stack)
-// already bounds them regardless; this cap merely stops the PARSER from SIGABRT-ing first.
-// The shared cap `block_common::BLOCK_NEST_CAP` (= 64) is far above any reachable nesting.
-// (Kept deliberately — removing it for good is the deferred view-frame work the owner chose
-// not to do here.) This thread-local counts the residual Org re-dispatch depth against it.
+// Graceful anti-SIGABRT guard on `streaming_reparse`'s ONE remaining native re-dispatch — the
+// §3 `>`-quote fallback. This is **NOT a parity cap**: every gated / fuzz-reachable / realistic
+// Org shape parses UNCAPPED in O(n). Indented / `\r\n` `#+BEGIN_X`/quote bodies are zero-copy
+// strip-view `Frame`s (P1) and the `>`-quote staircase is iterative `>`-container frames (P3) —
+// none touch this cap. It bounds ONLY the fuzz-unreachable residual re-dispatch that remains: a
+// `>`-quote body containing a fence / `#+BEGIN` / LaTeX env / hiccup (constructs whose recognizers
+// can't see through literal `>`s) is de-`>`'d and reparsed once, and construct-in-`>`-quote nesting
+// recurses one level per such body — reaching depth d needs O(d²) input bytes (each level costs a
+// `>` AND a construct), so the fuzz/corpus never gets there. That shape is an mldoc-stack-overflow
+// shape with no defined byte-target past a modest depth; lsdoc degrades it to a flat Paragraph at
+// `GT_FALLBACK_NEST_CAP` (= 64) rather than SIGABRT-ing at parse time. This thread-local counts
+// that residual Org re-dispatch depth against the cap.
 std::thread_local! {
     static BLOCK_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 pub fn parse(input: &str) -> Vec<Block> {
     // Single-pass streaming Org block driver: O(n) time, O(depth) HEAP (the explicit container
-    // `Frame` stack + the iterative `>`-peel), NO native top-level recursion and NO parity cap.
-    // Byte-exact to mldoc (gated by `harness/`). The legacy recurse-on-body driver — mldoc's
-    // O(n²) + stack-overflow on deep callouts/`>` — is gone; the depth guard now lives ONLY
-    // inside `streaming_reparse` (see `BLOCK_NEST_CAP`).
+    // `Frame` stack — `#+BEGIN_X` strip-view frames + `>`-container quote frames), NO native
+    // top-level recursion and NO parity cap. Byte-exact to mldoc (gated by `harness/`). The legacy
+    // recurse-on-body driver — mldoc's O(n²) + stack-overflow on deep callouts/`>` — is gone; the
+    // depth guard now lives ONLY inside `streaming_reparse`'s §3 fallback (`GT_FALLBACK_NEST_CAP`).
     parse_org_streaming(input, Ctx { in_item: false, in_quote: false })
 }
 
@@ -232,22 +226,23 @@ struct Frame<'a> {
     opener_content: &'a str,
 }
 
-/// Re-parse a transformed body : routes back into
-/// `parse_org_streaming` with the child `ctx` carrying `in_quote` (no thread-local needed).
-/// For a callout / `>`-quote body it applies the `BLOCK_NEST_CAP` depth guard so the residual
-/// NATIVE recursion (deeply-INDENTED / `\r\n` callout bodies; the increasing-`>`-per-line
-/// non-tail spine) can't SIGABRT — clean-window callouts are heap frames and the `>`-spine
-/// peels iteratively, so neither reaches this guard. List-item content is depth-1 (list
-/// re-entry disabled by `in_item`) so it skips the guard.
+/// Re-parse a transformed (folded) body: routes back into `parse_org_streaming` with the child
+/// `ctx`. Two callers remain (callouts and the `>`-quote staircase are now frames — P1/P3):
+///   - **list-item content** (`in_item: true`): depth-1 — list re-entry is disabled by `in_item`,
+///     so it can't nest into itself; skips the guard, uncapped.
+///   - **the §3 `>`-quote fallback** (`in_item: false`): a `>`-body containing a fence / `#+BEGIN` /
+///     LaTeX env / hiccup, de-`>`'d and reparsed once (those recognizers don't tolerate literal
+///     `>`s). Guarded by `GT_FALLBACK_NEST_CAP` so construct-in-`>`-quote nesting can't SIGABRT
+///     (graceful flat-Paragraph degradation past 64; see the const's doc).
 fn streaming_reparse(input: &str, ctx: Ctx) -> Vec<Block> {
-    // Every `streaming_reparse` input is a FOLDED buffer (a `\n`-joined list-item content, a
-    // dedented `#+BEGIN_X` body, or a de-`>`'d quote residual) whose byte positions don't map
-    // to the enclosing block body, so the reparsed INLINE spans are meaningless → null them.
+    // Every `streaming_reparse` input is a FOLDED buffer (a `\n`-joined list-item content or a
+    // de-`>`'d quote-fallback body) whose byte positions don't map to the enclosing block body,
+    // so the reparsed INLINE spans are meaningless → null them.
     let mut out = if ctx.in_item {
         parse_org_streaming(input, ctx)
     } else {
         let depth = BLOCK_DEPTH.with(|c| c.get());
-        if depth >= BLOCK_NEST_CAP {
+        if depth >= GT_FALLBACK_NEST_CAP {
             if input.is_empty() {
                 Vec::new()
             } else {
@@ -1454,14 +1449,6 @@ fn block_begin(s: &str) -> Option<String> {
 pub(crate) fn begin_lang(s: &str) -> String {
     let t = s.trim_start();
     t[8..].split_whitespace().nth(1).unwrap_or("").to_string()
-}
-
-/// Inner code/content of a `#+BEGIN_X … #+END_X` block, joined with one `\n` per
-/// line plus a trailing `\n`, with the common indent (the first line's leading
-/// whitespace) stripped from each line (mldoc `block0.ml` "clear indents").
-fn block_code(inner: &[Line]) -> String {
-    let texts: Vec<&str> = inner.iter().map(|l| l.text).collect();
-    block_code_texts(&texts)
 }
 
 /// The raw-body builder for a `#+BEGIN_SRC`/`#+BEGIN_EXAMPLE` block, over the body lines'

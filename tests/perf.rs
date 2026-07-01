@@ -511,3 +511,52 @@ fn render_html_nested_callout_is_linear_heavy() {
         .join()
         .unwrap();
 }
+
+/// P4 cap-removal gate: the `>`-quote STAIRCASE (`> x\n> > x\n> > > x…`) — the exact shape the
+/// former `BLOCK_NEST_CAP=64` bounded — is now iterative `>`-container frames (P3), so it parses
+/// to FULL depth uncapped. A staircase far past 64 must nest that many `Quote`s, NOT degrade to a
+/// flat Paragraph at 64. The parse itself is O(depth) HEAP (no native recursion); we build/walk/
+/// drop the deep tree on a big stack because the AST is recursive (a downstream consumer property,
+/// not the parser's). Locks that the staircase can never silently re-acquire a depth cap.
+#[test]
+#[ignore = "P4 staircase-uncapped gate; run with: cargo test --release --test perf -- --ignored"]
+fn quote_staircase_uncapped_heavy() {
+    use lsdoc::ast::Block;
+    fn quote_depth(blocks: &[Block]) -> usize {
+        blocks
+            .iter()
+            .map(|b| match b {
+                Block::Quote { children, .. } => 1 + quote_depth(children),
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+    fn staircase(d: usize) -> String {
+        let mut s = String::new();
+        for k in 1..=d {
+            for _ in 0..k {
+                s.push_str("> ");
+            }
+            s.push_str("x\n");
+        }
+        s
+    }
+    let d = 256usize; // 4× past the old cap (64)
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            for fmt in ["md", "org"] {
+                let got = quote_depth(&lsdoc::parse(&staircase(d), fmt));
+                assert!(
+                    got > 64,
+                    "{fmt}: `>`-staircase nested only {got} deep at input depth {d} — the old \
+                     BLOCK_NEST_CAP=64 (now GT_FALLBACK_NEST_CAP, §3-fallback only) must NOT bound \
+                     the staircase; it is iterative `>`-container frames (P3)"
+                );
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
