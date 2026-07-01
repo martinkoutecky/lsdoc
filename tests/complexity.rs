@@ -108,19 +108,21 @@ fn complexity_gate() {
         assert_linear("emph_alt", emph_alt, 3000, "org");
         // gt_spine is linear in ORG (no `property` re-scan there) — a control until A fixes MD.
         assert_linear("gt_spine", gt_spine, 3000, "org");
+        // A-org (1b): the container-prefix consume closes many frames at one interior breaker line
+        // in O(closed) — the per-frame `gt_cont_view` re-peel is gone. (md 1b is A-md, still red.)
+        assert_linear("gt_breaker", gt_breaker, 1500, "org");
     });
 }
 
-/// The audit's four O(n²) families. FAILS today (that is the point — it proves the gate catches
+/// The audit's remaining O(n²) families. FAILS today (that is the point — it proves the gate catches
 /// what 1321/1321 byte-exact missed). Each `assert_linear` moves up into `complexity_gate` as its
-/// phase lands: 1a/1b → A (container-prefix walk), 2a → B (hiccup index), 2b → C (delimiter stack).
+/// phase lands: 1a/1b(md) → A (container-prefix walk), 2a → B (hiccup index), 2b → C (delimiter stack).
 #[test]
 #[ignore = "audit O(n^2) targets — un-ignore/move to complexity_gate as A/B/C fix each"]
 fn complexity_gate_targets() {
     big_stack(|| {
-        assert_linear("gt_spine", gt_spine, 3000, "md"); // A (1a)
-        assert_linear("gt_breaker", gt_breaker, 1500, "md"); // A (1b)
-        assert_linear("gt_breaker", gt_breaker, 1500, "org"); // A (1b)
+        assert_linear("gt_spine", gt_spine, 3000, "md"); // A-md (1a)
+        assert_linear("gt_breaker", gt_breaker, 1500, "md"); // A-md (1b)
         assert_linear("hiccup_unclosed", hiccup_unclosed, 3000, "md"); // B (2a)
         assert_linear("hiccup_unclosed", hiccup_unclosed, 3000, "org"); // B (2a)
         assert_linear("resync", resync, 1500, "md"); // C (2b)

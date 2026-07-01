@@ -551,6 +551,21 @@ add("quoteframe", "> [:a][:b]\n");                                   // §3 cons
 add("quoteframe", "> ```\n> a\n> ```\n> after\n");                   // §3 fence closes then quote continues
 add("quoteframe", "#+BEGIN_QUOTE\n> a\n#+END_QUOTE\n\nx\n");         // quote inside callout, blank after
 
+// prefix-consume (A-org): `>`-quotes via ONE per-line container-prefix walk (no Step::OpenQuote
+// re-dispatch, no per-frame close re-peel). Locks the close/open collapse: de-nest→re-nest,
+// interior breakers closing many frames, varying `>`-depth per line, `>`-blank/id::/nospace edges.
+// See lsdoc-viewframe-A-design / lsdoc-single-pass-audit.
+add("prefixconsume", "> a\n> > b\n> c\n> > d\n");                     // de-nest then re-nest
+add("prefixconsume", "> a\n> > b\n> > > c\n> > - stop\n> > e\n");     // interior breaker mid-run
+add("prefixconsume", "> > > a\n> - x\n> > > b\n> - y\n");            // multiple interior breakers
+add("prefixconsume", "> > > > x\n> y\n");                           // single-line ⌈4/2⌉ then continuation
+add("prefixconsume", ">>>>>>>>x\n>>- stop\n");                      // deep single-line + breaker close
+add("prefixconsume", "> a\n>> b\n> c\n");                           // no-space `>>` depth varies
+add("prefixconsume", "> a\n>\nplain\n");                            // `>`-blank then plain (close+swallow)
+add("prefixconsume", ">>x\n>>>>y\n>>>>>>z\n");                      // depth increases per line, no shared open
+add("prefixconsume", "> > a\n> > id:: 123\n");                     // id:: breaker inside a quote
+add("prefixconsume", "text\n> > > deep\n");                        // paragraph then deep single-line quote
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

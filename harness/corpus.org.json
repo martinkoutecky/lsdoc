@@ -2446,5 +2446,65 @@
   "cat": "quoteframe",
   "input": "#+BEGIN_QUOTE\n> a\n#+END_QUOTE\n\nx\n",
   "format": "org"
+ },
+ {
+  "id": "o408",
+  "cat": "prefixconsume",
+  "input": "> a\n> > b\n> c\n> > d\n",
+  "format": "org"
+ },
+ {
+  "id": "o409",
+  "cat": "prefixconsume",
+  "input": "> a\n> > b\n> > > c\n> > - stop\n> > e\n",
+  "format": "org"
+ },
+ {
+  "id": "o410",
+  "cat": "prefixconsume",
+  "input": "> > > a\n> - x\n> > > b\n> - y\n",
+  "format": "org"
+ },
+ {
+  "id": "o411",
+  "cat": "prefixconsume",
+  "input": "> > > > x\n> y\n",
+  "format": "org"
+ },
+ {
+  "id": "o412",
+  "cat": "prefixconsume",
+  "input": ">>>>>>>>x\n>>- stop\n",
+  "format": "org"
+ },
+ {
+  "id": "o413",
+  "cat": "prefixconsume",
+  "input": "> a\n>> b\n> c\n",
+  "format": "org"
+ },
+ {
+  "id": "o414",
+  "cat": "prefixconsume",
+  "input": "> a\n>\nplain\n",
+  "format": "org"
+ },
+ {
+  "id": "o415",
+  "cat": "prefixconsume",
+  "input": ">>x\n>>>>y\n>>>>>>z\n",
+  "format": "org"
+ },
+ {
+  "id": "o416",
+  "cat": "prefixconsume",
+  "input": "> > a\n> > id:: 123\n",
+  "format": "org"
+ },
+ {
+  "id": "o417",
+  "cat": "prefixconsume",
+  "input": "text\n> > > deep\n",
+  "format": "org"
  }
 ]
