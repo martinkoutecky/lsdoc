@@ -51,7 +51,11 @@ fn main() {
                 input: c.input,
             })
             .collect();
-        let json = serde_json::to_string_pretty(&out).expect("serialize output");
+        // Compact, NOT to_string_pretty: the pretty-printer indents each JSON line by the
+        // current nesting depth, so a depth-k nested projection serializes to Σdepth = O(k²)
+        // bytes (measured: an 83KB depth-3200 callout nest → 205MB pretty vs 210KB compact).
+        // Every consumer JSON.parses this file; formatting carries no information.
+        let json = serde_json::to_string(&out).expect("serialize output");
         fs::write(&out_path, json).unwrap_or_else(|e| panic!("write {out_path}: {e}"));
         println!("lsdoc: wrote {} inline runs to {out_path}", out.len());
         return;
@@ -66,7 +70,8 @@ fn main() {
         })
         .collect();
 
-    let json = serde_json::to_string_pretty(&out).expect("serialize output");
+    // Compact for the same O(k²)-pretty-indentation reason as the inline path above.
+    let json = serde_json::to_string(&out).expect("serialize output");
     fs::write(&out_path, json).unwrap_or_else(|e| panic!("write {out_path}: {e}"));
     println!("lsdoc: wrote {} projections to {out_path}", out.len());
 }
