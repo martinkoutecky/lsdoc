@@ -5,7 +5,7 @@ must have exactly one owner: constant/local, consume-on-match, suffix-absence mi
 invalidating cursor, precomputed map, or boundary-run map. A new unfloored scan in these
 paths is a bug.
 
-Line numbers were rechecked against the current tree after the C3 timestamp port.
+Line numbers were rechecked against the current tree after the C5 scripts/entity/latex port.
 
 | scan @ file:line | owner | argument |
 |---|---|---|
@@ -14,6 +14,8 @@ Line numbers were rechecked against the current tree after the C3 timestamp port
 | Markdown hiccup/nested close lookup @ `src/resolver.rs:199` | precomputed-map | `build_hiccup_close` and `build_nested_close` give O(1) close checks. |
 | Markdown md-link `](`/`)` floors @ `src/resolver.rs:1079`, `src/resolver.rs:1227`, `src/resolver.rs:1673` | invalidating-cursor | `lbp_cur`, `crlf`, and `rparen` advance only forward before `md_link`. |
 | Markdown emphasis body parser @ `src/resolver.rs:255`, dispatch @ `src/resolver.rs:432` | consume-on-match + suffix-absence miss-cache | mldoc `md_em_parser` consumes each body byte once per bounded nesting phase; `no_closer[class][k]` floors EOF/no-closer failures. |
+| Markdown script braced scan @ `src/resolver.rs:825`, body reparse @ `src/resolver.rs:850` | `}`-before-eol invalidating-cursor + bounded body | Braced `_`/`^` dispatch is gated by `ByteBeforeEolScan` at label, nested, and top-level call sites; accepted script bodies are disjoint consumed spans and body reparse is bounded by that span. |
+| Markdown entity lexer @ `src/lexer.rs:173` | consume-on-match | `\` plus the maximal ASCII-letter run and optional `{}` are consumed once; known names emit `Entity`, unknown names emit the same consumed bare name as `Plain`. |
 | Markdown tag dispatch @ `src/resolver.rs:292`, `src/inline.rs:219` | boundary-run | delimiter-run termination is precomputed once by `build_tag_boundary_runs`. |
 | Markdown macro dispatch @ `src/resolver.rs:846`, `src/inline.rs:1844` | suffix-absence miss-cache + invalidating-cursor | `}}` floor proves close presence; first lone `}` cursor prevents repeated invalid misses. |
 | Markdown block-ref dispatch @ `src/resolver.rs:860`, `src/inline.rs:1809` | suffix-absence miss-cache + invalidating-cursor | `))` floor proves close presence; first lone `)` cursor owns body-invalid failures. |
@@ -38,6 +40,8 @@ Line numbers were rechecked against the current tree after the C3 timestamp port
 | Org email domain @ `src/org_resolver.rs:975`, `src/inline.rs:1288` | suffix-absence miss-cache + invalidating-cursor | same email `@` floor plus domain boundary cursor as Markdown. |
 | Org bare URL dispatch/resync @ `src/org_resolver.rs:367`, `src/org_resolver.rs:860` | consume-on-match + suffix-absence miss-cache | accepted URLs consume; resync lead probes share `BareUrlScan`. |
 | Org emphasis body parser @ `src/org_resolver.rs:370`, dispatch @ `src/org_resolver.rs:486` | consume-on-match + suffix-absence miss-cache | Org uses the same mldoc body parser with `include_md_code=false`; `no_closer[class][k]` floors EOF/no-closer failures. |
+| Org script braced scan/fallback @ `src/org_resolver.rs:1026`, body reparse @ `src/org_resolver.rs:1075` | `}`-before-eol invalidating-cursor + consume-on-match | Braced `_`/`^` attempts are gated by `ByteBeforeEolScan`; when absent, Org falls straight to the p1 `non_space` run. Accepted braced or p1 spans bound the body reparse. |
+| Org entity dispatch @ `src/org_resolver.rs:1108`, top-level @ `src/org_resolver.rs:1170` | consume-on-match | Entity handling consumes the maximal ASCII-letter run and optional `{}` for both known and unknown names; unknown names consume the run and emit bare `Plain(name)`. |
 | `parse_tag_name` body @ `src/inline.rs:390` | consume-on-match + boundary-run | main bytes are consumed into the tag; delimiter suffixes use the boundary map. |
 | Tag nested/page refs @ `src/inline.rs:454` | precomputed-map at top level, consume-on-match in tag | successful refs advance tag cursor; top-level bracket retries are gated by maps. |
 | Macro arg scans @ `src/inline.rs:569` | consume-on-match | scans are limited to an already accepted macro body. |
@@ -55,7 +59,7 @@ Line numbers were rechecked against the current tree after the C3 timestamp port
 | Autolink parser body @ `src/inline.rs:1143` | invalidating-cursor owned by caller | parser may scan to `>`/ws, but dispatch only calls it after the shared boundary cursor succeeds. |
 | Email parser body @ `src/inline.rs:1288` | suffix-absence miss-cache + invalidating-cursor | cached entry point owns both local `@` absence and domain boundary. |
 | Bare URL path balance @ `src/inline.rs:1492` | consume-on-match | the balanced tail is part of the emitted URL span. |
-| LaTeX backslash/dollar @ `src/inline.rs:1759`, `src/inline.rs:1776` | invalidating-cursor / current-line | backslash closers are gated by resolver `\)`/`\]` cursors; dollar scans stop at current line and consume on success. |
+| LaTeX backslash/dollar @ `src/inline.rs:1997`, `src/inline.rs:2018` | invalidating-cursor / `$`-before-eol invalidating-cursor | Backslash closers are gated by resolver `\)`/`\]` cursors; top-level dollar dispatch is gated by `ByteBeforeEolScan` and successful dollar spans consume through their closer. Label reparses are bounded by the accepted label span. |
 | Timestamp body slots @ `src/inline.rs:2177`, token boundary cursor @ `src/inline.rs:231` | invalidating-cursor owned by caller | after a cursor-owned close candidate, delimiter-specific token-boundary cursors own the date/time/repetition slot scans; exact body spacing and two-slot interpretation are bounded local work with no `split_whitespace` suffix rescans or caps. |
 | Raw HTML head @ `src/block_common.rs:406` | constant | known tag token scan is bounded by `MAX_HTML_TAG_LEN = 10`. |
 | Raw HTML special closer @ `src/block_common.rs:497`, `src/block_common.rs:530` | suffix-absence miss-cache | missing special closers update `RawHtmlScan.no_special_until`. |

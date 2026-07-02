@@ -17,8 +17,8 @@ use crate::inline::{char_len, is_ws, is_ws_or_nl};
 use crate::lexer::{Kind, Token};
 use crate::projection::{Inline, Span};
 
-/// Active Org constructs (mirrors `crate::org::Ctx`; the 4 variants below match mldoc's
-/// top / nested-emphasis / link-label / sub-superscript re-parse contexts exactly). Fields
+/// Active Org constructs (mirrors `crate::org::Ctx`; the variants below match mldoc's
+/// top / nested-emphasis / link-label re-parse contexts exactly). Fields
 /// are read as each construct family lands in later M6 sub-steps.
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
@@ -99,27 +99,6 @@ impl Ctx {
             urls: false,
             timestamps: false,
             angle: false,
-            breaks: false,
-            footnotes: false,
-            hiccup: false,
-        }
-    }
-    /// Sub/superscript body re-parse (`gen_script`): emphasis + entity only.
-    #[allow(dead_code)]
-    fn script() -> Ctx {
-        Ctx {
-            use_state: false,
-            entity: true,
-            scripts: false,
-            links: false,
-            tags: false,
-            block_refs: false,
-            macros: false,
-            latex: false,
-            urls: false,
-            timestamps: false,
-            angle: false,
-            code: false,
             breaks: false,
             footnotes: false,
             hiccup: false,
@@ -584,6 +563,7 @@ fn parse_nested_plain_org(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
     let mut out = Vec::new();
     let mut i = 0usize;
     let mut no_closer = [[false; 2]; 5];
+    let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
     while i < bb.len() {
         if matches!(bb[i], b'*' | b'_' | b'/' | b'+' | b'^') {
             if let Ok(hit) = org_emphasis_at(text, i, None, &mut no_closer, base) {
@@ -593,7 +573,9 @@ fn parse_nested_plain_org(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
             }
         }
         if matches!(bb[i], b'_' | b'^') {
-            if let Some((mut node, end)) = try_script(text, bb, i, bb[i], base) {
+            let braced_close = bb.get(i + 1) == Some(&b'{')
+                && script_rbrace_scan.has_before_eol(bb, i + 2);
+            if let Some((mut node, end)) = try_script(text, bb, i, bb[i], braced_close, base) {
                 crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
                 out.push(node);
                 i = end;
@@ -755,6 +737,8 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     // a `\(`×n run (no closer) stays O(n) instead of an EOF re-scan per `\(` (mirrors resolver.rs).
     let mut bs_paren = first_seq(bb, b'\\', b')', 0); // \)
     let mut bs_brack = first_seq(bb, b'\\', b']', 0); // \]
+    let mut dollar_scan = crate::inline::ByteBeforeEolScan::new(b'$');
+    let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
     // `fresh` = a dispatch point (mldoc `plain_run` stops at PLAIN_DELIMS `\ _ ^ [ * / + $ #`
     // + ws/eol). The SWALLOW openers `~ = < { (` fire only when fresh; mid-plain-run they are
     // absorbed as literal text.
@@ -868,7 +852,9 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     continue;
                 }
                 if (ch == b'_' || ch == b'^') && ctx.scripts {
-                    if let Some((mut node, end)) = try_script(s, bb, off, ch, base) {
+                    let braced_close = bb.get(off + 1) == Some(&b'{')
+                        && script_rbrace_scan.has_before_eol(bb, off + 2);
+                    if let Some((mut node, end)) = try_script(s, bb, off, ch, braced_close, base) {
                         flush(&mut out, &mut pending, &mut plain_start, plain_end);
                         crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + end)));
                         out.push(node);
@@ -934,11 +920,13 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         }
                     }
                     b'$' if ctx.latex => {
-                        if let Some((mut node, e)) = try_latex_dollar_at(s, bb, off) {
-                            flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                            crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
-                            out.push(node);
-                            hit = Some(e);
+                        if dollar_scan.has_before_eol(bb, off + 2) {
+                            if let Some((mut node, e)) = crate::inline::parse_latex_dollar_at(s, off) {
+                                flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                                crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
+                                out.push(node);
+                                hit = Some(e);
+                            }
                         }
                     }
                     b'[' if ctx.links => {
@@ -1038,10 +1026,17 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
 
 /// `_x`/`_{x}` → Subscript, `^x`/`^{x}` → Superscript (mldoc `gen_script`). Returns the node
 /// and the consumed byte extent; `None` if no valid script body.
-fn try_script(s: &str, bb: &[u8], i: usize, c: u8, base: usize) -> Option<(Inline, usize)> {
+fn try_script(
+    s: &str,
+    bb: &[u8],
+    i: usize,
+    c: u8,
+    braced_close: bool,
+    base: usize,
+) -> Option<(Inline, usize)> {
     let n = bb.len();
     let after = *bb.get(i + 1)?;
-    let braced = if after == b'{' {
+    let braced = if after == b'{' && braced_close {
         let body_start = i + 2;
         let mut j = body_start;
         while j < n && bb[j] != b'}' && bb[j] != b'\n' && bb[j] != b'\r' {
@@ -1068,7 +1063,7 @@ fn try_script(s: &str, bb: &[u8], i: usize, c: u8, base: usize) -> Option<(Inlin
         }
         (s[start..j].to_string(), start, j)
     };
-    let children = parse_ctx(&content, Ctx::script(), base + content_start);
+    let children = parse_org_script_body(&content, base + content_start);
     // span set by the caller over [i, end).
     let node = if c == b'_' {
         Inline::Subscript { children, span: None }
@@ -1078,8 +1073,73 @@ fn try_script(s: &str, bb: &[u8], i: usize, c: u8, base: usize) -> Option<(Inlin
     Some((node, end))
 }
 
+/// Port of the body parser inside mldoc `gen_script`:
+/// `many1 (choice [ emphasis; plain; whitespaces; entity ])`.
+fn parse_org_script_body(text: &str, base: usize) -> Vec<Inline> {
+    let bb = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let mut no_closer = [[false; 2]; 5];
+    while i < bb.len() {
+        if matches!(bb[i], b'*' | b'_' | b'/' | b'+' | b'^') {
+            if let Ok(hit) = org_emphasis_at(text, i, None, &mut no_closer, base) {
+                out.push(hit.node);
+                i = hit.end;
+                continue;
+            }
+        }
+        if let Some((node, end)) = org_plain_at(text, i, base) {
+            out.push(node);
+            i = end;
+            continue;
+        }
+        if bb[i] == b'\\' {
+            if let Some((node, end)) = org_entity_at(text, bb, i, base) {
+                out.push(node);
+                i = end;
+                continue;
+            }
+        }
+        return vec![Inline::Plain {
+            text: text.to_string(),
+            span: Some(Span(base, base + text.len())),
+        }];
+    }
+    concat_plains_without_pos(out)
+}
+
+fn org_entity_at(s: &str, bb: &[u8], i: usize, base: usize) -> Option<(Inline, usize)> {
+    if bb.get(i) != Some(&b'\\') || !bb.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let start = i + 1;
+    let mut end = start;
+    while end < bb.len() && bb[end].is_ascii_alphabetic() {
+        end += 1;
+    }
+    let name = &s[start..end];
+    if s[end..].starts_with("{}") {
+        end += 2;
+    }
+    match crate::entities::find(name) {
+        Some(e) => Some((
+            Inline::Entity {
+                name: e.name.to_string(),
+                latex: e.latex.to_string(),
+                latex_mathp: e.latex_mathp,
+                html: e.html.to_string(),
+                ascii: e.ascii.to_string(),
+                unicode: e.unicode.to_string(),
+                span: Some(Span(base + i, base + end)),
+            },
+            end,
+        )),
+        None => Some((Inline::Plain { text: name.to_string(), span: None }, end)),
+    }
+}
+
 fn is_org_space(c: u8) -> bool {
-    matches!(c, b' ' | b'\t')
+    matches!(c, b' ' | b'\t' | 0x1a | 0x0c)
 }
 
 fn class_idx(c: u8) -> usize {
@@ -1242,32 +1302,6 @@ fn resync_straddle(
 
 // ---- leaf / bracket constructs (byte-based;
 // shared free predicates reused from `crate::inline` / `crate::org`) -----------------------
-
-/// `$ … $` (Inline) / `$$ … $$` (Displayed) — v1 `try_latex_dollar`.
-fn try_latex_dollar_at(s: &str, bb: &[u8], i: usize) -> Option<(Inline, usize)> {
-    let n = bb.len();
-    let after = *bb.get(i + 1)?;
-    if after == b'$' {
-        let body_start = i + 2;
-        let end = crate::inline::find_sub_line(bb, body_start, b"$$")?;
-        return Some((Inline::Latex { mode: "Displayed".to_string(), body: s[body_start..end].to_string(), span: None }, end + 2));
-    }
-    if after == b' ' {
-        return None;
-    }
-    let body_start = i + 1;
-    let mut j = body_start;
-    while j < n && bb[j] != b'$' && bb[j] != b'\n' && bb[j] != b'\r' {
-        j += 1;
-    }
-    if j >= n || bb[j] != b'$' {
-        return None;
-    }
-    if matches!(bb[j - 1], b' ' | b'(' | b'[' | b'{') {
-        return None;
-    }
-    Some((Inline::Latex { mode: "Inline".to_string(), body: s[body_start..j].to_string(), span: None }, j + 1))
-}
 
 /// `~ … ~` Code / `= … = ` Verbatim (non-empty, no marker / eol inside) — v1 try_code/verbatim.
 fn try_code_verbatim_at(s: &str, bb: &[u8], i: usize, marker: u8) -> Option<(Inline, usize)> {

@@ -73,6 +73,61 @@ pub(crate) fn char_len(first: u8) -> usize {
     }
 }
 
+/// Monotone current-line floor: answers whether `byte` occurs at/after `from`
+/// before the next CR/LF. Used by callers that otherwise would retry a
+/// delimiter-to-EOL scan from every opener on the same line.
+pub(crate) struct ByteBeforeEolScan {
+    byte: u8,
+    hit: usize,
+    eol: usize,
+    initialized: bool,
+}
+
+impl ByteBeforeEolScan {
+    pub(crate) fn new(byte: u8) -> Self {
+        Self { byte, hit: 0, eol: 0, initialized: false }
+    }
+
+    pub(crate) fn has_before_eol(&mut self, bb: &[u8], from: usize) -> bool {
+        if !self.initialized || from > self.eol {
+            self.eol = first_crlf_for_scan(bb, from);
+            self.hit = first_byte_for_scan(bb, from, self.byte);
+            self.initialized = true;
+        } else if self.hit < from {
+            self.hit = first_byte_for_scan(bb, from, self.byte);
+        }
+        self.hit < self.eol
+    }
+}
+
+fn first_byte_for_scan(bb: &[u8], from: usize, byte: u8) -> usize {
+    let mut p = from;
+    let mut scanned = 0usize;
+    while p < bb.len() && bb[p] != byte {
+        scanned += 1;
+        p += 1;
+    }
+    if p < bb.len() {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
+    p
+}
+
+fn first_crlf_for_scan(bb: &[u8], from: usize) -> usize {
+    let mut p = from;
+    let mut scanned = 0usize;
+    while p < bb.len() && bb[p] != b'\n' && bb[p] != b'\r' {
+        scanned += 1;
+        p += 1;
+    }
+    if p < bb.len() {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
+    p
+}
+
 /// First index of `needle` in `b[from..]`, or None. (No newline restriction.)
 pub(crate) fn find_sub(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || from > b.len() {
@@ -1954,8 +2009,12 @@ pub(crate) fn parse_latex_backslash_at(s: &str, at: usize) -> Option<(Inline, us
     ))
 }
 
-/// `$$ … $$` (Displayed) / `$ … $` (Inline) latex span (no `$`/newline in the body; the
-/// inline form can't start with a space nor end with ` ( [ {`).
+/// `$$ … $$` (Displayed) / `$ … $` (Inline) latex span.
+///
+/// mldoc's inline `$...$` grammar reads the first body byte separately: only an
+/// immediate ASCII space is rejected at the start, and the end reject checks the
+/// tail after that first byte. Thus `$($`, `$[$`, `${$`, and `$\n$` are valid,
+/// while `$x($`, `$x[$`, `$x{$`, and `$x $` are not.
 pub(crate) fn parse_latex_dollar_at(s: &str, at: usize) -> Option<(Inline, usize)> {
     let b = s.as_bytes();
     let n = b.len();
@@ -1971,19 +2030,19 @@ pub(crate) fn parse_latex_dollar_at(s: &str, at: usize) -> Option<(Inline, usize
     if after == b' ' {
         return None;
     }
-    let body_start = at + 1;
-    let mut j = body_start;
+    let tail_start = at + 2;
+    let mut j = tail_start;
     while j < n && b[j] != b'$' && b[j] != b'\n' && b[j] != b'\r' {
         j += 1;
     }
     if j >= n || b[j] != b'$' {
         return None;
     }
-    if matches!(b[j - 1], b' ' | b'(' | b'[' | b'{') {
+    if j > tail_start && matches!(b[j - 1], b' ' | b'(' | b'[' | b'{') {
         return None;
     }
     Some((
-        Inline::Latex { mode: "Inline".to_string(), body: s[body_start..j].to_string(), span: None },
+        Inline::Latex { mode: "Inline".to_string(), body: s[at + 1..j].to_string(), span: None },
         j + 1,
     ))
 }

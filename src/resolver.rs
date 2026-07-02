@@ -72,6 +72,7 @@ pub(crate) fn parse_inline_ctx_md_label(text: &str, base: usize) -> Option<Vec<I
     let mut out = Vec::new();
     let mut i = 0usize;
     let mut no_closer = [[false; 3]; 5];
+    let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
     while i < bb.len() {
         if matches!(bb[i], b'*' | b'_' | b'~' | b'^' | b'=') {
             if let Ok(hit) = nested_emphasis_at_md(text, i, None, &mut no_closer, base) {
@@ -96,10 +97,14 @@ pub(crate) fn parse_inline_ctx_md_label(text: &str, base: usize) -> Option<Vec<I
             continue;
         }
         if matches!(bb[i], b'_' | b'^') {
-            if let Some((node, end)) = try_markdown_script_at(text, bb, i, base) {
-                out.push(node);
-                i = end;
-                continue;
+            if bb.get(i + 1) == Some(&b'{')
+                && script_rbrace_scan.has_before_eol(bb, i + 2)
+            {
+                if let Some((node, end)) = try_markdown_script_at(text, bb, i, base) {
+                    out.push(node);
+                    i = end;
+                    continue;
+                }
             }
         }
         return None;
@@ -696,6 +701,7 @@ fn parse_nested_plain_md(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
     let mut out = Vec::new();
     let mut i = 0usize;
     let mut no_closer = [[false; 3]; 5];
+    let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
     while i < bb.len() {
         if matches!(bb[i], b'*' | b'_' | b'~' | b'^' | b'=') {
             if let Ok(hit) = markdown_emphasis_at(text, i, None, &mut no_closer, base) {
@@ -705,10 +711,14 @@ fn parse_nested_plain_md(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
             }
         }
         if matches!(bb[i], b'_' | b'^') {
-            if let Some((node, end)) = try_markdown_script_at(text, bb, i, base) {
-                out.push(node);
-                i = end;
-                continue;
+            if bb.get(i + 1) == Some(&b'{')
+                && script_rbrace_scan.has_before_eol(bb, i + 2)
+            {
+                if let Some((node, end)) = try_markdown_script_at(text, bb, i, base) {
+                    out.push(node);
+                    i = end;
+                    continue;
+                }
             }
         }
         if bb[i] == b'[' {
@@ -850,6 +860,11 @@ fn parse_markdown_script_body(text: &str, base: usize) -> Vec<Inline> {
                 continue;
             }
         }
+        if let Some((node, end)) = markdown_plain_at(text, i, base) {
+            out.push(node);
+            i = end;
+            continue;
+        }
         if bb[i] == b'\\' {
             if let Some((node, end)) = markdown_entity_or_plain_at(text, i, base) {
                 out.push(node);
@@ -857,11 +872,7 @@ fn parse_markdown_script_body(text: &str, base: usize) -> Vec<Inline> {
                 continue;
             }
         }
-        let Some((node, end)) = markdown_plain_at(text, i, base) else {
-            break;
-        };
-        out.push(node);
-        i = end;
+        break;
     }
     concat_plains_without_pos(out)
 }
@@ -1009,6 +1020,8 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     // monotone next-`\)` / `\]` (latex-backslash closer floors: a `\(`×n run stays linear).
     let mut bs_paren = first_seq(bb, b'\\', b')', 0);
     let mut bs_brack = first_seq(bb, b'\\', b']', 0);
+    let mut dollar_scan = crate::inline::ByteBeforeEolScan::new(b'$');
+    let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
 
     // `fresh` = at a fresh dispatch point (BOL, or after ws / a marker-delim / a construct /
     // a Break). A SWALLOW opener (`! ( { <`) tries its construct only when `fresh`; mid-plain-
@@ -1131,11 +1144,13 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             let off = toks[t].off;
             let mut end = None;
             if c == b'$' && ctx.latex {
-                if let Some((mut node, e)) = crate::inline::parse_latex_dollar_at(s, off) {
-                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
-                    out.push(node);
-                    end = Some(e);
+                if dollar_scan.has_before_eol(bb, off + 2) {
+                    if let Some((mut node, e)) = crate::inline::parse_latex_dollar_at(s, off) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
+                        out.push(node);
+                        end = Some(e);
+                    }
                 }
             } else if c == b'#' && ctx.tags {
                 let (e, children) = crate::inline::parse_tag_name(
@@ -1426,6 +1441,19 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             }
             fresh = true;
             continue;
+        }
+        if matches!(ch, b'_' | b'^') {
+            if bb.get(off + 1) == Some(&b'{')
+                && script_rbrace_scan.has_before_eol(bb, off + 2)
+            {
+                if let Some((node, end)) = try_markdown_script_at(s, bb, off, base) {
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    out.push(node);
+                    t = resync(s, toks, t, end, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan);
+                    fresh = true;
+                    continue;
+                }
+            }
         }
         if pending.is_empty() { plain_start = Some(base + off); }
         if plain_start.is_some() { plain_end = base + off + 1; }
