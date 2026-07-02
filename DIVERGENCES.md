@@ -26,6 +26,8 @@ the fuzz floor** (more mldoc parity) — how each fix was verified.
 | D17 | md `data:` image parses as Search instead of `Embed_data` | **FIXED** | `2c77af8` |
 | D18 | org `[[u][a]b]]` treats single `]` as terminator instead of label text | **FIXED** | `2c77af8` |
 | D19 | emphasis close-guard: 1.5.7 artifact never closes right after an ABSORBED marker (`*a **` → It("a ")+`*`, not It("a *")); provenance-tracked back-off to the run start; published source (1.5.5==1.5.8) lacks the guard — oracle wins | **FIXED** | `30d0842` |
+| D20 | inline displayed `$$…$$` body allows lone `$` + `\$` escape (mldoc: `take_while(∉{$,CR,LF})` then literal `$$` or fail → plain-`$` fallback: `$$$a$$` → `$`+Displayed("a"), `$$a$b$$` → `$`+Inline("a")+plain; `inline.ml:534-541`) | **FIXED** | see log |
+| D21 | md property value kept raw after one `":: "` space (mldoc: `Parsers.spaces` skip {sp,tab,SUB,FF} + `String.trim` both ends {sp,tab,LF,CR,FF}; only_key `k::`+spaces+EOL → `""`; `markdown_property.ml`) | **FIXED** | see log |
 
 D16 surfaced during Phase B verification (pre-existing — fuzz floors held exactly across the perf-only
 change); fix belongs to the `<`-family construct port (inline-restructure-SPEC Phase C4).

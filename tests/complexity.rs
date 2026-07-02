@@ -180,6 +180,12 @@ fn tag_word_interleave(n: usize) -> String {
 fn bare_url_interleave(n: usize) -> String {
     "*a*httpx".repeat(n / 8)
 }
+fn latex_dollar_failure_interleave(n: usize) -> String {
+    "*a*$$x$z ".repeat(n / 9)
+}
+fn org_latex_dollar_failure_interleave(n: usize) -> String {
+    "/a/$$x$z ".repeat(n / 9)
+}
 
 fn big_stack(f: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()
@@ -231,6 +237,8 @@ fn complexity_gate() {
         assert_linear("tag_hash_run", tag_hash_run, 6000, "md");
         assert_linear("tag_word_interleave", tag_word_interleave, 6000, "md");
         assert_linear("bare_url_interleave", bare_url_interleave, 6000, "md");
+        assert_linear("latex_dollar_failure_interleave", latex_dollar_failure_interleave, 6000, "md");
+        assert_linear("org_latex_dollar_failure_interleave", org_latex_dollar_failure_interleave, 6000, "org");
         // A (container-prefix consume): both formats now dispatch a `>`-line's content ONCE at the
         // final depth (no per-re-dispatch `property` re-scan — 1a) and close many frames at one
         // interior breaker in O(closed) (no per-frame `gt_cont_view` re-peel — 1b).

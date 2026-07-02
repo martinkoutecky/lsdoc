@@ -2247,24 +2247,64 @@ fn reparse_item_content(content: &str, in_quote: bool) -> Vec<Block> {
     out
 }
 
+/// Markdown `key:: value` property, matching mldoc `lib/syntax/markdown_property.ml`.
+///
+/// The valued rule uses literal `":: "`, then `Parsers.spaces *> take_till is_eol`,
+/// and trims the captured value with OCaml `String.trim` before refs are computed.
+/// The key and only-key rules use `Parsers.spaces` / `non_space_eol` from
+/// `lib/parsers.ml`: spaces are space, tab, SUB (`0x1a`), and form feed (`0x0c`);
+/// `String.trim` trims space, tab, LF, CR, and form feed, but not SUB.
 fn property(s: &str) -> Option<(String, String)> {
-    let s = s.trim_start(); // property lines may be indented under a block
+    let start = skip_md_property_spaces(s.as_bytes(), 0);
+    let s = &s[start..];
     let found = s.find("::");
     crate::metrics::scan_work(found.map_or(s.len(), |p| p + 2)); // `::` search distance
     let pos = found?;
     let key = &s[..pos];
-    // key has no whitespace and no `:` — the latter rejects URLs like
-    // `http://x.com:: y` (mldoc: prose, not a property), since `http:` has a colon.
-    if key.is_empty() || key.contains(' ') || key.contains('\t') || key.contains(':') {
+    if key.is_empty() || key.as_bytes().iter().any(|&b| b == b':' || !md_property_non_space_eol(b)) {
         return None;
     }
     let rest = &s[pos + 2..];
-    // `::` must be followed by a space or end-of-line ("a::b mid line" is prose).
-    if !(rest.is_empty() || rest.starts_with(' ')) {
-        return None;
+    if let Some(value) = rest.strip_prefix(' ') {
+        let value = &value[skip_md_property_spaces(value.as_bytes(), 0)..];
+        return Some((key.to_string(), trim_md_property_value(value).to_string()));
     }
-    let value = rest.strip_prefix(' ').unwrap_or(rest);
-    Some((key.to_string(), value.to_string()))
+    rest.as_bytes().iter().all(|&b| md_property_space(b)).then(|| (key.to_string(), String::new()))
+}
+
+#[inline]
+fn md_property_space(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | 0x1a | 0x0c)
+}
+
+#[inline]
+fn md_property_non_space_eol(b: u8) -> bool {
+    !md_property_space(b) && b != b'\n' && b != b'\r'
+}
+
+fn skip_md_property_spaces(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && md_property_space(bytes[i]) {
+        i += 1;
+    }
+    i
+}
+
+fn trim_md_property_value(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    let mut start = 0usize;
+    let mut end = bytes.len();
+    while start < end && md_property_trim(bytes[start]) {
+        start += 1;
+    }
+    while end > start && md_property_trim(bytes[end - 1]) {
+        end -= 1;
+    }
+    &s[start..end]
+}
+
+#[inline]
+fn md_property_trim(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0c)
 }
 
 fn footnote_def(s: &str) -> Option<(String, &str)> {
@@ -2495,6 +2535,13 @@ mod tests {
             .collect()
     }
 
+    fn prop_pairs(input: &str) -> Vec<(String, String)> {
+        match parse(input).first() {
+            Some(Block::Properties { props, .. }) => props.clone(),
+            _ => Vec::new(),
+        }
+    }
+
     #[test]
     fn bullet_heading_size_and_openers() {
         // Gap 1: `- ## Title` carries the heading level as Bullet.size (uncapped).
@@ -2643,6 +2690,20 @@ mod tests {
         assert_eq!(kinds("<https://x.com>"), ["paragraph"]); // autolink, not html
         assert_eq!(kinds("a\nb\n\nc"), ["paragraph"]); // text coalesces across blanks
         assert_eq!(kinds(""), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn markdown_property_mldoc_spaces_and_trim() {
+        assert_eq!(prop_pairs("k::  v"), vec![("k".into(), "v".into())]);
+        assert_eq!(prop_pairs("k:: \tv"), vec![("k".into(), "v".into())]);
+        assert_eq!(prop_pairs("k::  v  "), vec![("k".into(), "v".into())]);
+        assert_eq!(prop_pairs("k:: \x0cvalue\x0c"), vec![("k".into(), "value".into())]);
+        assert_eq!(prop_pairs("k:: \x1av"), vec![("k".into(), "v".into())]);
+        assert_eq!(prop_pairs("k:: v\x1a"), vec![("k".into(), "v\x1a".into())]);
+        assert_eq!(prop_pairs("k::\t\n"), vec![("k".into(), String::new())]);
+        assert_eq!(kinds("k::\tv"), ["paragraph"]);
+        assert_eq!(kinds("a\x0cb:: v"), ["paragraph"]);
+        assert_eq!(kinds("a\x1ab:: v"), ["paragraph"]);
     }
 
     #[test]

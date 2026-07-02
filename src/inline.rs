@@ -2148,6 +2148,10 @@ pub(crate) fn parse_latex_backslash_at(s: &str, at: usize) -> Option<(Inline, us
 
 /// `$$ … $$` (Displayed) / `$ … $` (Inline) latex span.
 ///
+/// mldoc `lib/syntax/inline.ml:534-541`: after `$$`, displayed math is
+/// `take_while (c <> '$' && c <> '\r' && c <> '\n') <* string "$$"`.
+/// A lone `$` in the body fails the displayed arm; there is no `\$` escape.
+///
 /// mldoc's inline `$...$` grammar reads the first body byte separately: only an
 /// immediate ASCII space is rejected at the start, and the end reject checks the
 /// tail after that first byte. Thus `$($`, `$[$`, `${$`, and `$\n$` are valid,
@@ -2158,7 +2162,7 @@ pub(crate) fn parse_latex_dollar_at(s: &str, at: usize) -> Option<(Inline, usize
     let after = *b.get(at + 1)?;
     if after == b'$' {
         let body_start = at + 2;
-        let end = find_sub_line(b, body_start, b"$$")?;
+        let end = latex_display_body_end(b, body_start)?;
         return Some((
             Inline::Latex { mode: "Displayed".to_string(), body: s[body_start..end].to_string(), span: None },
             end + 2,
@@ -2182,6 +2186,27 @@ pub(crate) fn parse_latex_dollar_at(s: &str, at: usize) -> Option<(Inline, usize
         Inline::Latex { mode: "Inline".to_string(), body: s[at + 1..j].to_string(), span: None },
         j + 1,
     ))
+}
+
+fn latex_display_body_end(b: &[u8], body_start: usize) -> Option<usize> {
+    let mut j = body_start;
+    let mut scanned = 0usize;
+    while j < b.len() {
+        scanned += 1;
+        match b[j] {
+            b'$' => {
+                crate::metrics::scan_work(scanned);
+                return (j + 1 < b.len() && b[j + 1] == b'$').then_some(j);
+            }
+            b'\n' | b'\r' => {
+                crate::metrics::scan_work(scanned);
+                return None;
+            }
+            _ => j += 1,
+        }
+    }
+    crate::metrics::scan_work(scanned);
+    None
 }
 
 /// `(( … ))` block ref (inner has no `)`; value unescaped, `full` raw).
