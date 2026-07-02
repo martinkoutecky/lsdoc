@@ -85,6 +85,7 @@ Markdown and Org produce the **same** AST.
 | `macro` | `name: string`, `args: string[]` | `{{name arg1, arg2}}` (incl. `{{embed …}}`, `{{query …}}`) |
 | `latex` | `mode: string`, `body: string` | `mode` ∈ {`"Inline"`, `"Displayed"`}; `$x$` / `$$x$$` / `\(x\)` / `\[x\]` |
 | `timestamp` | `ts: string`, `date: Value` | `ts` ∈ {`"Date"`,`"Range"`,`"Scheduled"`,`"Deadline"`,`"Closed"`,`"Clock"`}; `date` = opaque (see below) |
+| `cookie` | `kind: string`, `value: number`, **opt** `total: number` | statistics cookie; `kind` ∈ {`"Absolute"`,`"Percent"`}; `total` only for absolute cookies |
 | `fnref` | `name: string` | footnote reference `[^id]` / `[fn:id]` |
 | `inline_html` | `text: string` | inline raw HTML `<span>…` (org `@@html:` etc.) |
 | `email` | `text: Value` | `<a@b.com>` autolink; `text` opaque (see below) |

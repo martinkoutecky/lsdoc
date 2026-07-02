@@ -130,6 +130,9 @@ mod span_tests {
     fn parse_md(s: &str) -> Vec<Inline> {
         crate::resolver::parse_inline(s, 0)
     }
+    fn parse_org(s: &str) -> Vec<Inline> {
+        crate::org_resolver::parse_inline_org(s, 0)
+    }
 
     /// S5: `block_body[span] == text` for every `plain` node (recursing into children/labels).
     fn assert_s5(input: &str, inlines: &[Inline]) {
@@ -359,6 +362,44 @@ mod span_tests {
                 "<blockquote>a</blockquote>",
             );
         }
+    }
+
+    #[test]
+    fn test_c4_email_optional_closer_and_suffix() {
+        let out = parse_md("x <a@b co>");
+        assert_eq!(out.len(), 3);
+        assert!(matches!(&out[0], Inline::Plain { text, .. } if text == "x "));
+        let Inline::Email { text, span } = &out[1] else { panic!("expected email") };
+        assert_eq!(text.get("local_part").and_then(|v| v.as_str()), Some("a"));
+        assert_eq!(text.get("domain").and_then(|v| v.as_str()), Some("b"));
+        assert_eq!(*span, Some(Span(2, 6)));
+        assert!(matches!(&out[2], Inline::Plain { text, span } if text == " co>" && *span == Some(Span(6, 10))));
+
+        let out = parse_md("x <a@b.co");
+        assert!(matches!(&out[..], [
+            Inline::Plain { text: a, .. },
+            Inline::Email { text, .. },
+        ] if a == "x " && text.get("domain").and_then(|v| v.as_str()) == Some("b.co")));
+    }
+
+    #[test]
+    fn test_c4_org_target_shadows_radio_target() {
+        let out = parse_org("x <<<r>>>");
+        assert!(matches!(&out[..], [
+            Inline::Plain { text: a, .. },
+            Inline::Target { text: target, .. },
+            Inline::Plain { text: tail, .. },
+        ] if a == "x " && target == "<r" && tail == ">"));
+    }
+
+    #[test]
+    fn test_c4_statistics_cookie_scanf_prefix() {
+        let out = parse_md("[1/2%] [50%%] [1//2]");
+        assert!(matches!(&out[0],
+            Inline::Cookie { kind, value: 1, total: Some(2), .. } if kind == "Absolute"));
+        assert!(matches!(&out[2],
+            Inline::Cookie { kind, value: 50, total: None, .. } if kind == "Percent"));
+        assert!(matches!(&out[3], Inline::Plain { text, .. } if text == " [1//2]"));
     }
 
     #[test]

@@ -55,8 +55,15 @@ export function normInline(seg) {
     case "Macro": return { k: "macro", name: seg[1]?.name, args: seg[1]?.arguments ?? [] };
     case "Latex_Fragment": return { k: "latex", mode: seg[1]?.[0], body: seg[1]?.[1] };
     case "Timestamp": return { k: "timestamp", ts: seg[1]?.[0], date: seg[1]?.[1] };
+    case "Cookie": {
+      const c = seg[1] ?? [];
+      const r = { k: "cookie", kind: c[0], value: c[1] };
+      if (c[0] === "Absolute") r.total = c[2];
+      return r;
+    }
     case "Footnote_Reference": return { k: "fnref", name: seg[1]?.name };
     case "Target": return { k: "target", text: seg[1] };
+    case "Radio_Target": return { k: "target", text: seg[1] };
     case "Email": return { k: "email", text: seg[1] };
     case "Inline_Hiccup": return { k: "hiccup", v: seg[1] };
     case "Inline_Html": return { k: "inline_html", text: seg[1] };

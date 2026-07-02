@@ -3,8 +3,8 @@
 //! A from-scratch Org parser, behavior-equivalent to mldoc 1.5.7's Org config
 //! (`format:"Org"`), verified against the live oracle. This module is the line-based
 //! block segmenter (`parse`); inline markup is resolved by the lexer+resolver in
-//! [`crate::org_resolver`]. A few Org-specific inline leaf predicates (autolink,
-//! `[[…]]`/`[[…][…]]` link classification) live here and are reused by the resolver;
+//! [`crate::org_resolver`]. Org-specific `[[…]]`/`[[…][…]]` link classification lives here
+//! and is reused by the resolver;
 //! other format-agnostic leaf helpers come from `crate::inline`.
 //!
 //! Key Org-vs-Markdown differences (all probed against mldoc, see DECISIONS.md):
@@ -30,7 +30,6 @@ use crate::block_common::{
     raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
     Line, RawHtmlScan, GT_FALLBACK_NEST_CAP, MARKERS,
 };
-use crate::inline::{char_len, is_ws_or_nl};
 use crate::projection::{Block, Inline, ListItem, Span, Url};
 
 // ===========================================================================
@@ -2203,59 +2202,6 @@ pub(crate) fn org_inline(text: &str, base: usize) -> Vec<Inline> {
 }
 
 
-// ---- inline helpers -------------------------------------------------------
-
-/// `<scheme:rest>` autolink (mldoc `quick_link`): scheme letters/digits, `:`, optional
-/// `//`, then non-space rest; ANY `:` makes it a link (so `<a:b>` works).
-pub(crate) fn parse_org_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
-    let b = s.as_bytes();
-    let n = b.len();
-    if b.get(at) != Some(&b'<') {
-        return None;
-    }
-    let p0 = at + 1;
-    let mut j = p0;
-    while j < n && b[j].is_ascii_alphanumeric() {
-        j += 1;
-    }
-    if j == p0 || j >= n || b[j] != b':' {
-        return None;
-    }
-    let protocol = s[p0..j].to_string();
-    j += 1;
-    let mut slashes = "";
-    if s[j..].starts_with("//") {
-        slashes = "//";
-        j += 2;
-    }
-    let link_start = j;
-    let mut scanned = 0usize;
-    while j < n && !is_ws_or_nl(b[j]) && b[j] != b'>' {
-        scanned += 1;
-        j += char_len(b[j]);
-    }
-    if j < n {
-        scanned += 1;
-    }
-    crate::metrics::scan_work(scanned);
-    if j >= n || b[j] != b'>' || j == link_start {
-        return None;
-    }
-    let link = s[link_start..j].to_string();
-    let full = format!("{}:{}{}", protocol, slashes, link);
-    let node = Inline::Link {
-        url: Url::Complex { protocol: Some(protocol), link: Some(link) },
-        // synthetic label (== full, no `<>`): no clean source slice → no span.
-        label: vec![Inline::Plain { text: full.clone(), span: None }],
-        full,
-        image: false,
-        metadata: String::new(),
-        title: None,
-        span: None,
-    };
-    Some((j + 1, node))
-}
-
 /// Classify an `[[url][label]]` destination (mldoc `org_link_1`): `file:` → File;
 /// empty label → Search; `proto:link` (single colon, strip leading `//`) → Complex;
 /// else Search.
@@ -2331,6 +2277,10 @@ mod tests {
             Inline::Latex { mode, body, .. } => format!("latex({mode}:{body})"),
             Inline::Fnref { name, .. } => format!("fn({name})"),
             Inline::Timestamp { ts, .. } => format!("ts({ts})"),
+            Inline::Cookie { kind, value, total, .. } => match total {
+                Some(total) => format!("cookie({kind}:{value}/{total})"),
+                None => format!("cookie({kind}:{value})"),
+            },
             Inline::InlineHtml { text, .. } => format!("html({text})"),
             Inline::Email { .. } => "email".into(),
             Inline::Entity { unicode, .. } => format!("entity({unicode})"),

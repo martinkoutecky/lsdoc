@@ -46,6 +46,16 @@ pub(crate) fn is_ws(c: u8) -> bool {
 pub(crate) fn is_ws_or_nl(c: u8) -> bool {
     is_ws(c) || c == b'\n' || c == b'\r'
 }
+
+#[inline]
+fn email_local_forbidden(c: u8) -> bool {
+    matches!(c, b'<' | b'>' | b'@' | b',') || is_ws_or_nl(c)
+}
+
+#[inline]
+fn email_domain_forbidden(c: u8) -> bool {
+    email_local_forbidden(c) || matches!(c, b'\'' | b'"')
+}
 // ---- shared helpers -------------------------------------------------------
 
 #[inline]
@@ -140,15 +150,45 @@ impl AutolinkScan {
 
 pub(crate) struct EmailAutolinkScan {
     no_at_from: usize,
-    domain_boundary: AngleBoundaryScan,
+    domain_boundary: EmailDomainBoundaryScan,
 }
 
 impl EmailAutolinkScan {
     pub(crate) fn new() -> Self {
         Self {
             no_at_from: usize::MAX,
-            domain_boundary: AngleBoundaryScan::new(),
+            domain_boundary: EmailDomainBoundaryScan::new(),
         }
+    }
+}
+
+#[derive(Default)]
+struct EmailDomainBoundaryScan {
+    next: usize,
+    initialized: bool,
+}
+
+impl EmailDomainBoundaryScan {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn first_from(&mut self, b: &[u8], from: usize) -> usize {
+        if !self.initialized || self.next < from {
+            let mut p = from;
+            let mut scanned = 0usize;
+            while p < b.len() && !email_domain_forbidden(b[p]) {
+                scanned += 1;
+                p += char_len(b[p]);
+            }
+            if p < b.len() {
+                scanned += 1;
+            }
+            crate::metrics::scan_work(scanned);
+            self.next = p;
+            self.initialized = true;
+        }
+        self.next
     }
 }
 
@@ -1260,8 +1300,9 @@ fn read_metadata(s: &str, b: &[u8], end: &mut usize) -> String {
 
 // ---- autolink / email / inline html ---------------------------------------
 
-/// `<scheme:rest>` autolink (rest has no whitespace / '>'). Returns (end, node).
-pub(crate) fn parse_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
+/// mldoc `quick_link`: `<protocol:optional//link>`, where `link` is nonempty
+/// and stops before whitespace or `>`. Returns (end, node).
+pub(crate) fn parse_quick_link(s: &str, at: usize) -> Option<(usize, Inline)> {
     let b = s.as_bytes();
     let n = b.len();
     if b.get(at) != Some(&b'<') {
@@ -1353,59 +1394,9 @@ pub(crate) fn autolink_has_closing_boundary(s: &str, at: usize, scan: &mut Autol
     boundary < n && b[boundary] == b'>' && boundary > link_start
 }
 
-/// `<a@b.com>` email autolink. Returns (end, node) with the address object.
-#[allow(dead_code)]
-pub(crate) fn parse_email_autolink_with_no_at_floor(
-    s: &str,
-    at: usize,
-    no_at_from: &mut usize,
-) -> Option<(usize, Inline)> {
-    let b = s.as_bytes();
-    let n = b.len();
-    if b.get(at) != Some(&b'<') {
-        return None;
-    }
-    let mut j = at + 1;
-    let local_start = j;
-    if local_start >= *no_at_from {
-        return None;
-    }
-    let mut scanned = 0usize;
-    while j < n && b[j] != b'@' && b[j] != b'>' && !is_ws_or_nl(b[j]) {
-        scanned += 1;
-        j += 1;
-    }
-    if j < n {
-        scanned += 1;
-    }
-    crate::metrics::scan_work(scanned);
-    if j >= n {
-        *no_at_from = (*no_at_from).min(local_start);
-        return None;
-    }
-    if j >= n || b[j] != b'@' || j == local_start {
-        return None;
-    }
-    let local = s[local_start..j].to_string();
-    j += 1;
-    let dom_start = j;
-    let mut domain_scanned = 0usize;
-    while j < n && b[j] != b'>' && !is_ws_or_nl(b[j]) {
-        domain_scanned += 1;
-        j += 1;
-    }
-    if j < n {
-        domain_scanned += 1;
-    }
-    crate::metrics::scan_work(domain_scanned);
-    if j >= n || b[j] != b'>' || j == dom_start {
-        return None;
-    }
-    let domain = s[dom_start..j].to_string();
-    let val = serde_json::json!({ "local_part": local, "domain": domain });
-    Some((j + 1, Inline::Email { text: val, span: None }))
-}
-
+/// mldoc `email_address.email`, dispatched only from the `<` arm by the resolvers:
+/// optional `<`, address, optional `>`. On success without `>`, only the address is
+/// consumed and the suffix remains plain.
 pub(crate) fn parse_email_autolink_cached(
     s: &str,
     at: usize,
@@ -1413,18 +1404,18 @@ pub(crate) fn parse_email_autolink_cached(
 ) -> Option<(usize, Inline)> {
     let b = s.as_bytes();
     let n = b.len();
-    if b.get(at) != Some(&b'<') {
-        return None;
+    let mut j = at;
+    if b.get(j) == Some(&b'<') {
+        j += 1;
     }
-    let mut j = at + 1;
     let local_start = j;
     if local_start >= scan.no_at_from {
         return None;
     }
     let mut scanned = 0usize;
-    while j < n && b[j] != b'@' && b[j] != b'>' && !is_ws_or_nl(b[j]) {
+    while j < n && !email_local_forbidden(b[j]) {
         scanned += 1;
-        j += 1;
+        j += char_len(b[j]);
     }
     if j < n {
         scanned += 1;
@@ -1441,12 +1432,83 @@ pub(crate) fn parse_email_autolink_cached(
     j += 1;
     let dom_start = j;
     let boundary = scan.domain_boundary.first_from(b, dom_start);
-    if boundary >= n || b[boundary] != b'>' || boundary == dom_start {
+    if boundary == dom_start {
         return None;
     }
     let domain = s[dom_start..boundary].to_string();
     let val = serde_json::json!({ "local_part": local, "domain": domain });
-    Some((boundary + 1, Inline::Email { text: val, span: None }))
+    let end = if boundary < n && b[boundary] == b'>' {
+        boundary + 1
+    } else {
+        boundary
+    };
+    Some((end, Inline::Email { text: val, span: None }))
+}
+
+/// mldoc `statistics_cookie`: `[digits/slashes/percents]`, then Scanf-prefix
+/// parsing as either `%d/%d` or `%d%%`.
+pub(crate) fn parse_statistics_cookie(s: &str, at: usize) -> Option<(usize, Inline)> {
+    let b = s.as_bytes();
+    if b.get(at) != Some(&b'[') {
+        return None;
+    }
+    let mut j = at + 1;
+    while j < b.len() && (b[j].is_ascii_digit() || b[j] == b'/' || b[j] == b'%') {
+        j += 1;
+    }
+    if j == at + 1 || b.get(j) != Some(&b']') {
+        return None;
+    }
+    let body = &s[at + 1..j];
+    if let Some((value, total)) = scan_absolute_cookie(body) {
+        return Some((
+            j + 1,
+            Inline::Cookie {
+                kind: "Absolute".to_string(),
+                value,
+                total: Some(total),
+                span: None,
+            },
+        ));
+    }
+    if let Some(value) = scan_percent_cookie(body) {
+        return Some((
+            j + 1,
+            Inline::Cookie {
+                kind: "Percent".to_string(),
+                value,
+                total: None,
+                span: None,
+            },
+        ));
+    }
+    None
+}
+
+fn scan_cookie_int(body: &str, mut i: usize) -> Option<(i64, usize)> {
+    let start = i;
+    let b = body.as_bytes();
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == start {
+        return None;
+    }
+    body[start..i].parse::<i64>().ok().map(|n| (n, i))
+}
+
+fn scan_absolute_cookie(body: &str) -> Option<(i64, i64)> {
+    let (value, i) = scan_cookie_int(body, 0)?;
+    if body.as_bytes().get(i) != Some(&b'/') {
+        return None;
+    }
+    let (total, _) = scan_cookie_int(body, i + 1)?;
+    Some((value, total))
+}
+
+fn scan_percent_cookie(body: &str) -> Option<i64> {
+    let (value, i) = scan_cookie_int(body, 0)?;
+    (body.as_bytes().get(i) == Some(&b'%')).then_some(value)
 }
 
 /// Block-level LaTeX environment `\begin{NAME} … \end{NAME}` (mldoc `latex_env.ml`,

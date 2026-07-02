@@ -128,6 +128,7 @@ fn email_entity_target() {
     assert_eq!(md("contact <a.b@c.com> now"), r#"contact <a class="external-link" href="mailto:a.b@c.com">a.b@c.com</a> now"#);
     assert_eq!(md("alpha \\Delta beta"), "alpha \u{0394} beta");
     assert_eq!(org("see <<anchor>> here"), r#"see <span class="org-target">anchor</span> here"#);
+    assert_eq!(md("progress [01/02] and [50%%]"), "progress [1/2] and [50%]");
 }
 
 // ===========================================================================

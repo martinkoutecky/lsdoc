@@ -430,6 +430,17 @@ pub enum Inline {
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },
+    /// Org-mode statistics cookie, parsed from `[n/m]` or `[n%]` with mldoc's
+    /// non-anchored Scanf semantics (`[1/2%]` still becomes `Absolute(1,2)`).
+    #[serde(rename = "cookie")]
+    Cookie {
+        kind: String,
+        value: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "fnref")]
     Fnref {
         name: String,
@@ -492,6 +503,7 @@ pub(crate) fn set_inline_span(n: &mut Inline, span: Option<Span>) {
         | Inline::Macro { span: s, .. }
         | Inline::Latex { span: s, .. }
         | Inline::Timestamp { span: s, .. }
+        | Inline::Cookie { span: s, .. }
         | Inline::Fnref { span: s, .. }
         | Inline::InlineHtml { span: s, .. }
         | Inline::Email { span: s, .. }

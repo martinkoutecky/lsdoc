@@ -35,8 +35,10 @@ const KEPT = {
   Macro: ["name", "arguments"],
   Latex_Fragment: ["*array*"],                            // [mode, body]
   Timestamp: ["*array*"],                                 // [ts, date]
+  Cookie: ["*array*"],                                    // [Absolute,n,m] | [Percent,n]
   Footnote_Reference: ["name"],
   Target: ["*scalar*"],
+  Radio_Target: ["*scalar*"],
   Email: ["*whole*"],                                     // carried opaque
   Inline_Hiccup: [], Inline_Html: ["*scalar*"],
   Entity: ["name", "latex", "latex_mathp", "html", "ascii", "unicode"],

@@ -1290,7 +1290,7 @@ fn try_code_verbatim_at(s: &str, bb: &[u8], i: usize, marker: u8) -> Option<(Inl
     }
 }
 
-/// `<<target>>` then `<…>` angle (autolink → timestamp → inline-html → email) — v1 try_target + try_angle.
+/// Org `<` arm: quick_link → target → radio_target → timestamp → inline_html → email.
 fn try_target_angle_at(
     s: &str,
     bb: &[u8],
@@ -1302,12 +1302,17 @@ fn try_target_angle_at(
     email_scan: &mut crate::inline::EmailAutolinkScan,
 ) -> Option<(Inline, usize)> {
     let n = bb.len();
+    if crate::inline::autolink_has_closing_boundary(s, i, autolink_scan) {
+        if let Some((end, node)) = crate::inline::parse_quick_link(s, i) {
+            return Some((node, end));
+        }
+    }
     if s[i..].starts_with("<<") {
         let inner_start = i + 2;
         let mut j = inner_start;
         while j < n {
             let c = bb[j];
-            if c == b'<' || c == b'>' || c == b'\n' || c == b'\r' {
+            if c == b'>' || c == b'\n' || c == b'\r' {
                 break;
             }
             j += char_len(c);
@@ -1316,9 +1321,18 @@ fn try_target_angle_at(
             return Some((Inline::Target { text: s[inner_start..j].to_string(), span: None }, j + 2));
         }
     }
-    if crate::inline::autolink_has_closing_boundary(s, i, autolink_scan) {
-        if let Some((end, node)) = crate::org::parse_org_autolink(s, i) {
-            return Some((node, end));
+    if s[i..].starts_with("<<<") {
+        let inner_start = i + 3;
+        let mut j = inner_start;
+        while j < n {
+            let c = bb[j];
+            if c == b'>' || c == b'\n' || c == b'\r' {
+                break;
+            }
+            j += char_len(c);
+        }
+        if j > inner_start && j + 2 < n && bb[j] == b'>' && bb[j + 1] == b'>' && bb[j + 2] == b'>' {
+            return Some((Inline::Target { text: s[inner_start..j].to_string(), span: None }, j + 3));
         }
     }
     if ctx.timestamps {
@@ -1398,7 +1412,7 @@ fn try_block_ref_at(s: &str, bb: &[u8], i: usize) -> Option<(Inline, usize)> {
 }
 
 /// `[` bracket dispatch — mldoc Org order: nested/link → timestamp → footnote →
-/// statistics-cookie (not represented) → hiccup. Maps + cursors mirror md's
+/// statistics-cookie → hiccup. Maps + cursors mirror md's
 /// `[[…]]` linearity devices.
 #[allow(clippy::too_many_arguments)]
 fn try_bracket_at(
@@ -1451,6 +1465,9 @@ fn try_bracket_at(
         if let Some((end, name)) = org_footnote_at(s, off) {
             return Some((Inline::Fnref { name, span: None }, end));
         }
+    }
+    if let Some((end, node)) = crate::inline::parse_statistics_cookie(s, off) {
+        return Some((node, end));
     }
     if ctx.hiccup && bb.get(off + 1) == Some(&b':') && crate::inline::hiccup_head_ok(s, off) {
         if let Some(end) = hiccup_close.get(off).copied().filter(|&e| e != usize::MAX) {

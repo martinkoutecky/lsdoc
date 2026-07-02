@@ -484,6 +484,7 @@ impl Renderer {
                 self.out.push_str("></span>");
             }
             Inline::Timestamp { ts, date, .. } => self.timestamp(ts, date),
+            Inline::Cookie { kind, value, total, .. } => esc_text(&cookie_text(kind, *value, *total), &mut self.out),
             Inline::Fnref { name, .. } => {
                 self.out.push_str("<sup class=\"footnote-ref\">");
                 esc_text(name, &mut self.out);
@@ -697,6 +698,7 @@ fn flatten_into(inlines: &[Inline], out: &mut String) {
             Inline::Target { text, .. } => out.push_str(text),
             Inline::Entity { unicode, .. } => out.push_str(unicode),
             Inline::Latex { body, .. } => out.push_str(body),
+            Inline::Cookie { kind, value, total, .. } => out.push_str(&cookie_text(kind, *value, *total)),
             Inline::Hiccup { v, .. } => out.push_str(v),
             // Not part of `astText`: contribute no text.
             Inline::Break { .. }
@@ -707,6 +709,14 @@ fn flatten_into(inlines: &[Inline], out: &mut String) {
             | Inline::InlineHtml { .. }
             | Inline::Email { .. } => {}
         }
+    }
+}
+
+fn cookie_text(kind: &str, value: i64, total: Option<i64>) -> String {
+    if kind == "Absolute" {
+        format!("[{}/{}]", value, total.unwrap_or_default())
+    } else {
+        format!("[{}%]", value)
     }
 }
 

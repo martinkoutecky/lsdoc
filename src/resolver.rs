@@ -651,6 +651,7 @@ fn clear_inline_spans(node: &mut Inline) {
         | Inline::Macro { span, .. }
         | Inline::Latex { span, .. }
         | Inline::Timestamp { span, .. }
+        | Inline::Cookie { span, .. }
         | Inline::Fnref { span, .. }
         | Inline::InlineHtml { span, .. }
         | Inline::Email { span, .. }
@@ -1016,7 +1017,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut t = 0usize;
     while t < toks.len() {
         // `[` dispatch: mldoc Markdown order — footnote/reference → nested/link →
-        // inactive timestamp → statistics-cookie (not represented) → inline hiccup.
+        // inactive timestamp → statistics-cookie → inline hiccup.
         // Leftmost-greedy with byte-offset resync; pairing maps and monotone floors keep it linear.
         if matches!(toks[t].kind, Kind::Punct(b'[')) {
             let off = toks[t].off;
@@ -1086,7 +1087,16 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     end = Some(e);
                 }
             }
-            // 5. inline hiccup `[:tag …]` (ctx-gated — off in emphasis content).
+            // 5. statistics cookie `[n/m]` / `[n%]`.
+            if end.is_none() {
+                if let Some((e, mut node)) = crate::inline::parse_statistics_cookie(s, off) {
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
+                    out.push(node);
+                    end = Some(e);
+                }
+            }
+            // 6. inline hiccup `[:tag …]` (ctx-gated — off in emphasis content).
             if end.is_none()
                 && ctx.hiccup
                 && bb.get(off + 1) == Some(&b':')
@@ -1572,7 +1582,7 @@ fn is_swallow_byte(c: u8) -> bool {
     matches!(c, b'!' | b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b']')
 }
 
-/// `<…>` angle dispatch (mldoc try_angle order): autolink → timestamp → email → inline-html.
+/// `<…>` angle dispatch (mldoc order): quick_link → timestamp → inline_html → email.
 fn try_angle(
     s: &str,
     at: usize,
@@ -1584,7 +1594,7 @@ fn try_angle(
 ) -> Option<(Inline, usize)> {
     if ctx.autolinks {
         if crate::inline::autolink_has_closing_boundary(s, at, autolink_scan) {
-            if let Some((e, node)) = crate::inline::parse_autolink(s, at) {
+            if let Some((e, node)) = crate::inline::parse_quick_link(s, at) {
                 return Some((node, e));
             }
         }
@@ -1594,16 +1604,16 @@ fn try_angle(
             return Some((node, e));
         }
     }
-    if ctx.autolinks {
-        if let Some((e, node)) = crate::inline::parse_email_autolink_cached(s, at, email_scan) {
-            return Some((node, e));
-        }
-    }
     if ctx.html {
         if let Some(extent) =
             crate::block_common::parse_raw_html_at_cached(s, at, s.len(), Some(raw_html_scan))
         {
             return Some((Inline::InlineHtml { text: s[at..extent.end].to_string(), span: None }, extent.end));
+        }
+    }
+    if ctx.autolinks {
+        if let Some((e, node)) = crate::inline::parse_email_autolink_cached(s, at, email_scan) {
+            return Some((node, e));
         }
     }
     None
