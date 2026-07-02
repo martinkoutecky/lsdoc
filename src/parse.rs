@@ -1255,10 +1255,10 @@ fn dispatch_md_line<'a>(
             if !raw_html_block_start(cur_view) {
                 break;
             }
+            let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
             let cap = if remap_spans || (cur == i && !captured && view.is_some()) {
-                raw_html_view_capture(lines, cur, hi, strip, cur_view)
+                raw_html_view_capture(lines, cur, hi, strip, cur_view, body_end, input, raw_html_scan)
             } else {
-                let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
                 raw_html_raw_capture(lines, cur, hi, body_end, input, cur_view, raw_html_scan)
             };
             let Some(cap) = cap else {

@@ -355,6 +355,24 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
             4_000,
             org_begin_quote_indented_body,
         ),
+        (
+            "org_indented_quote_raw_html_adjacent",
+            true,
+            4_000,
+            org_indented_quote_raw_html_adjacent,
+        ),
+        (
+            "md_rebulleted_raw_html_adjacent",
+            false,
+            4_000,
+            md_rebulleted_raw_html_adjacent,
+        ),
+        (
+            "org_indented_quote_raw_html_rejected",
+            true,
+            4_000,
+            org_indented_quote_raw_html_rejected,
+        ),
     ]
 }
 
@@ -370,6 +388,33 @@ fn org_begin_quote_indented_body(n: usize) -> String {
     let mut s = String::from("#+BEGIN_QUOTE\n");
     for i in 0..n {
         writeln!(&mut s, "  line {i}").unwrap();
+    }
+    s.push_str("#+END_QUOTE\n");
+    s
+}
+
+fn org_indented_quote_raw_html_adjacent(n: usize) -> String {
+    let mut s = String::from("#+BEGIN_QUOTE\n");
+    for _ in 0..n {
+        s.push_str("  <kbd>x</kbd>\n");
+    }
+    s.push_str("#+END_QUOTE\n");
+    s
+}
+
+fn md_rebulleted_raw_html_adjacent(n: usize) -> String {
+    let mut s = String::from("- #+BEGIN_NOTE\n");
+    for _ in 0..n {
+        s.push_str("  <kbd>x</kbd>\n");
+    }
+    s.push_str("  #+END_NOTE\n");
+    s
+}
+
+fn org_indented_quote_raw_html_rejected(n: usize) -> String {
+    let mut s = String::from("#+BEGIN_QUOTE\n");
+    for _ in 0..n {
+        s.push_str("  <kbd>x\n");
     }
     s.push_str("#+END_QUOTE\n");
     s

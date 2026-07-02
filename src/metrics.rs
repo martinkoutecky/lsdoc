@@ -1,7 +1,8 @@
 //! Complexity instrumentation — a debug-only thread-local counter of "scan work": all work done
-//! by parser-owned scans and indexing structures. That includes byte scans plus index builds,
-//! cursor advances, cache lookups, search probes, and tree descents. An uncharged loop in a
-//! parser-owned structure is a complexity bug.
+//! by parser-owned scans, indexing structures, and buffer construction. That includes byte scans,
+//! bytes copied into parser-owned capture/view buffers, index builds, cursor advances, cache
+//! lookups, search probes, and tree descents. An uncharged loop or parser-owned copy is a
+//! complexity bug.
 //!
 //! # Why this exists
 //! The byte-exact parity gate (`harness/`) verifies WHAT the parser produces, not HOW MUCH work
@@ -14,8 +15,8 @@
 //!
 //! # Invariant
 //! `scan_work` summed over a parse must be **O(input length)**. Every increment marks parser-owned
-//! work that must be amortized by a single-pass design: byte walks, index construction, cursor
-//! advances, cache lookup/comparison, search probes, and tree visits.
+//! work that must be amortized by a single-pass design: byte walks, parser-owned buffer copies,
+//! index construction, cursor advances, cache lookup/comparison, search probes, and tree visits.
 //!
 //! # Zero cost in release
 //! The counter and every `scan_work` body are `#[cfg(debug_assertions)]`, so release builds (and

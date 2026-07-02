@@ -246,6 +246,17 @@ fn raw_html_block_escapes_into_data_raw() {
     );
 }
 
+#[test]
+fn raw_html_view_capture_preserves_view_peek_horizon() {
+    let blocks = lsdoc::parse("#+BEGIN_QUOTE\n  <b>ab</b>\n#+END_QUOTE", "org");
+    match &blocks[..] {
+        [Block::Quote { children, .. }] => {
+            assert!(matches!(&children[..], [Block::Paragraph { .. }]));
+        }
+        other => panic!("expected an org quote, got {other:?}"),
+    }
+}
+
 // ===========================================================================
 // Callouts (from the AST — no string re-parse)
 // ===========================================================================

@@ -947,16 +947,6 @@ fn parse_raw_html_impl(
     }
 }
 
-pub(crate) fn parse_raw_html_at(input: &str, opener: usize, body_end: usize) -> Option<RawHtmlExtent> {
-    if opener > body_end || body_end > input.len() {
-        return None;
-    }
-    match parse_raw_html_impl(input, opener, body_end, None) {
-        RawHtmlAttempt::Match(extent) => Some(extent),
-        RawHtmlAttempt::Miss(_) => None,
-    }
-}
-
 pub(crate) fn parse_raw_html_at_cached(
     input: &str,
     opener: usize,
@@ -1011,6 +1001,42 @@ fn line_view_abs_start(line: &Line<'_>, view: &str) -> usize {
     line.start + line.text.len() - view.len()
 }
 
+fn copy_capture_text(s: &str) -> String {
+    crate::metrics::scan_work(s.len());
+    s.to_string()
+}
+
+fn push_capture_str(out: &mut String, s: &str) {
+    crate::metrics::scan_work(s.len());
+    out.push_str(s);
+}
+
+fn push_capture_joiner(out: &mut String) {
+    crate::metrics::scan_work(1);
+    out.push('\n');
+}
+
+fn view_tail_has_peek(
+    lines: &[Line<'_>],
+    cur: usize,
+    hi: usize,
+    strip: usize,
+    first_view: &str,
+    opener_off: usize,
+) -> bool {
+    let mut seen = first_view.len().saturating_sub(opener_off).min(10);
+    let mut k = cur + 1;
+    while seen < 10 && k < hi {
+        seen += 1; // view line join
+        if seen >= 10 {
+            break;
+        }
+        seen = (seen + crate::org::strip_view(lines[k].text, strip).len()).min(10);
+        k += 1;
+    }
+    seen >= 10
+}
+
 pub(crate) fn raw_html_raw_capture<'a>(
     lines: &[Line<'a>],
     cur: usize,
@@ -1031,7 +1057,7 @@ pub(crate) fn raw_html_raw_capture<'a>(
         return None;
     }
     let content_end = lines[close_line].start + lines[close_line].text.len();
-    let text = input[opener..close_end].to_string();
+    let text = copy_capture_text(&input[opener..close_end]);
     if close_end < content_end {
         Some(RawHtmlCapture {
             text,
@@ -1057,50 +1083,53 @@ pub(crate) fn raw_html_view_capture<'a>(
     hi: usize,
     strip: usize,
     first_view: &str,
+    body_end: usize,
+    input: &'a str,
+    state: &mut RawHtmlScan,
 ) -> Option<RawHtmlCapture> {
-    let (opener_off, _) = raw_html_head_prefix(first_view)?;
-    let mut body = String::new();
-    let mut line_starts = Vec::new();
-    let mut k = cur;
-    loop {
-        line_starts.push(body.len());
-        if k == cur {
-            body.push_str(first_view);
-        } else {
-            body.push_str(crate::org::strip_view(lines[k].text, strip));
-        }
-        k += 1;
-        if k >= hi {
-            break;
-        }
-        body.push('\n');
+    if cur >= hi {
+        return None;
     }
-    let close_end_view = parse_raw_html_at(&body, opener_off, body.len())?.end;
+    let (opener_off, _) = raw_html_head_prefix(first_view)?;
+    if !view_tail_has_peek(lines, cur, hi, strip, first_view, opener_off) {
+        return None;
+    }
+    let opener = line_view_abs_start(&lines[cur], first_view) + opener_off;
+    let view_body_raw_end = lines[hi - 1].start + lines[hi - 1].text.len();
+    debug_assert!(view_body_raw_end <= body_end);
+    let close_end = parse_raw_html_at_cached(input, opener, view_body_raw_end, Some(state))?.end;
     let mut close_line = cur;
-    let mut close_line_view_start = 0usize;
-    for (idx, start) in line_starts.iter().enumerate() {
-        let line_idx = cur + idx;
-        let view_len = if line_idx == cur {
-            first_view.len()
-        } else {
-            crate::org::strip_view(lines[line_idx].text, strip).len()
-        };
-        if close_end_view <= start + view_len {
-            close_line = line_idx;
-            close_line_view_start = *start;
-            break;
-        }
+    while close_line < hi && lines[close_line].start + lines[close_line].text.len() < close_end {
+        close_line += 1;
+    }
+    if close_line >= hi {
+        return None;
     }
     let close_view = if close_line == cur {
         first_view
     } else {
         crate::org::strip_view(lines[close_line].text, strip)
     };
-    let close_end_in_line = close_end_view - close_line_view_start;
-    let close_abs = line_view_abs_start(&lines[close_line], close_view) + close_end_in_line;
+    let close_view_start = line_view_abs_start(&lines[close_line], close_view);
+    if close_end < close_view_start || close_end > close_view_start + close_view.len() {
+        return None;
+    }
+    let close_end_in_line = close_end - close_view_start;
+    let close_abs = close_end;
     let content_end = lines[close_line].start + lines[close_line].text.len();
-    let text = body[opener_off..close_end_view].to_string();
     let span_start = line_view_abs_start(&lines[cur], first_view) + opener_off;
+    let mut text = String::with_capacity(close_end.saturating_sub(opener));
+    if close_line == cur {
+        push_capture_str(&mut text, &first_view[opener_off..close_end_in_line]);
+    } else {
+        push_capture_str(&mut text, &first_view[opener_off..]);
+        for line_idx in cur + 1..close_line {
+            push_capture_joiner(&mut text);
+            push_capture_str(&mut text, crate::org::strip_view(lines[line_idx].text, strip));
+        }
+        push_capture_joiner(&mut text);
+        push_capture_str(&mut text, &close_view[..close_end_in_line]);
+    }
     if close_end_in_line < close_view.len() {
         Some(RawHtmlCapture {
             text,

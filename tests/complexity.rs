@@ -140,6 +140,36 @@ fn raw_html_unclosed_tail(n: usize) -> String {
 fn raw_html_repeated_unclosed(n: usize) -> String {
     "<kbd>\n".repeat(n)
 }
+/// Org `#+BEGIN_QUOTE` with indented adjacent raw-HTML siblings. This is the transformed-view
+/// twin of `raw_html_adjacent`: O(n²) if each sibling materializes the remaining strip-view suffix.
+fn org_indented_quote_raw_html_adjacent(n: usize) -> String {
+    let mut s = String::from("#+BEGIN_QUOTE\n");
+    for _ in 0..n {
+        s.push_str("  <kbd>x</kbd>\n");
+    }
+    s.push_str("#+END_QUOTE\n");
+    s
+}
+/// Markdown re-bulleted callout body with indented adjacent raw-HTML siblings. It reaches the same
+/// strip-view raw-HTML capture path through the markdown driver.
+fn md_rebulleted_raw_html_adjacent(n: usize) -> String {
+    let mut s = String::from("- #+BEGIN_NOTE\n");
+    for _ in 0..n {
+        s.push_str("  <kbd>x</kbd>\n");
+    }
+    s.push_str("  #+END_NOTE\n");
+    s
+}
+/// Rejected transformed-view raw-HTML openers. Missing closers must be floored through the shared
+/// raw-coordinate absence cache instead of re-scanning the remaining body for every line.
+fn org_indented_quote_raw_html_rejected(n: usize) -> String {
+    let mut s = String::from("#+BEGIN_QUOTE\n");
+    for _ in 0..n {
+        s.push_str("  <kbd>x\n");
+    }
+    s.push_str("#+END_QUOTE\n");
+    s
+}
 fn base36(mut n: usize) -> String {
     const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     if n == 0 {
@@ -281,6 +311,24 @@ fn complexity_gate() {
         assert_linear("raw_html_unclosed_tail", raw_html_unclosed_tail, 3000, "org");
         assert_linear("raw_html_repeated_unclosed", raw_html_repeated_unclosed, 3000, "md");
         assert_linear("raw_html_repeated_unclosed", raw_html_repeated_unclosed, 3000, "org");
+        assert_linear(
+            "org_indented_quote_raw_html_adjacent",
+            org_indented_quote_raw_html_adjacent,
+            1000,
+            "org",
+        );
+        assert_linear(
+            "md_rebulleted_raw_html_adjacent",
+            md_rebulleted_raw_html_adjacent,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "org_indented_quote_raw_html_rejected",
+            org_indented_quote_raw_html_rejected,
+            1000,
+            "org",
+        );
         assert_linear("nested_callout_raw_html", nested_callout_raw_html, 50, "md");
         assert_linear("nested_callout_raw_html", nested_callout_raw_html, 50, "org");
         assert_linear("raw_html_sibling_pairs", raw_html_sibling_pairs, 500, "md");
