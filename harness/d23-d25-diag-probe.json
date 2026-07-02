@@ -1,0 +1,18 @@
+[
+ {"id":"c1","format":"md","input":"{{embed ] }}"},
+ {"id":"c2","format":"md","input":"{{m a , b }}"},
+ {"id":"c3","format":"md","input":"{{m \"q\" , x}}"},
+ {"id":"c4","format":"md","input":"{{m [[P]] x, y}}"},
+ {"id":"c5","format":"org","input":"a\\\nb"},
+ {"id":"c6","format":"org","input":"a\\\n"},
+ {"id":"c7","format":"org","input":"a\\\n\\\nb"},
+ {"id":"c8","format":"md","input":"a\\\nb"},
+ {"id":"c9","format":"org","input":"* h :PROPERTIES::END::PROPERTIES:"},
+ {"id":"c10","format":"org","input":"* h :a::b:"},
+ {"id":"c11","format":"org","input":"* h :a:b:"},
+ {"id":"c12","format":"org","input":"x ^\\\ny"},
+ {"id":"c13","format":"org","input":"x ^abc\ny"},
+ {"id":"c14","format":"org","input":"* :PROPERTIES:\n \n"},
+ {"id":"c15","format":"org","input":":x\n \n"},
+ {"id":"c16","format":"org","input":"{{m a }}"}
+]

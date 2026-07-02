@@ -845,11 +845,13 @@ fn parse_macro_args(s: &str) -> Option<Vec<String>> {
 }
 
 /// One macro arg: nested-link content | page-ref | `(( .. ))` | `"..."` | until ','.
+/// The plain fallback is mldoc `take_while1 (c <> ',')` and keeps trailing spaces
+/// (`lib/syntax/inline.ml:979-988`).
 fn parse_macro_arg(s: &str, at: usize) -> Option<(String, usize)> {
     let b = s.as_bytes();
     let n = b.len();
     if at >= n {
-        return Some((String::new(), at));
+        return None;
     }
     // nested link content
     if s[at..].starts_with("[[") {
@@ -893,7 +895,7 @@ fn parse_macro_arg(s: &str, at: usize) -> Option<(String, usize)> {
     if j == at {
         return None;
     }
-    Some((s[at..j].trim_end().to_string(), j))
+    Some((s[at..j].to_string(), j))
 }
 
 // ---- footnote ref ---------------------------------------------------------

@@ -1,0 +1,14 @@
+[
+ {"id":"y1","format":"md","input":"{{m x , [[P]] , y }}"},
+ {"id":"y2","format":"md","input":"{{m ((11111111-1111-1111-1111-111111111111)) , a }}"},
+ {"id":"y3","format":"org","input":"{{m a, b }}"},
+ {"id":"y4","format":"org","input":"x\\\r\nb"},
+ {"id":"y5","format":"org","input":"\\\na"},
+ {"id":"y6","format":"org","input":"a\\\nDEADLINE: <2026-06-26 Fri>"},
+ {"id":"y7","format":"org","input":"* h :é::b:"},
+ {"id":"y8","format":"org","input":"** h ::"},
+ {"id":"y9","format":"org","input":"* TODO h ::"},
+ {"id":"y10","format":"md","input":"{{query (and [[A]] ) }}"},
+ {"id":"y11","format":"org","input":"b\\\n\n c"},
+ {"id":"y12","format":"org","input":"* h :a: "}
+]

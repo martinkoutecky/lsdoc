@@ -2086,28 +2086,29 @@ fn extract_htags(title: &mut Vec<Inline>) -> Vec<String> {
     tags
 }
 
-/// `:a:b:` → ["a","b"]; None if not a valid `:`-wrapped tag run. Empty tokens are
-/// dropped (mldoc `remove is_blank`); any token containing a space invalidates it.
+/// `:a:b:` -> ["a","b"]; `::` -> [] and still succeeds so the title rewrite runs.
+/// Interior empty segments are invalid: mldoc parses tags with `sep_by` over
+/// `take_while1` segments, then applies `remove is_blank` after a successful parse
+/// (`lib/syntax/heading0.ml:79-82,149-187`).
 fn parse_org_tags(s: &str) -> Option<Vec<String>> {
     if s.len() < 2 || !s.starts_with(':') || !s.ends_with(':') {
         return None;
     }
     let inner = &s[1..s.len() - 1];
+    if inner.is_empty() {
+        return Some(Vec::new());
+    }
     let mut out = Vec::new();
     for tok in inner.split(':') {
         if tok.is_empty() {
-            continue; // dropped as blank
+            return None;
         }
         if tok.bytes().any(|b| b == b' ' || b == b'\t') {
             return None;
         }
         out.push(tok.to_string());
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    Some(out)
 }
 
 // ---- blocks (#+BEGIN_X / fences / verbatim / quote / math / html) ---------

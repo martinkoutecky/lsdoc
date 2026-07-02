@@ -1,0 +1,6 @@
+[
+ {"id":"floor_r10","format":"org","input":" ][1. #+TITLE: ^^\\\n#+BEGIN_QUOTESCHEDULED: "},
+ {"id":"floor_r14","format":"org","input":"\\\n[fn:1]1. [#A] [#A] :PROPERTIES:#+END_QUOTE^y* #+BEGIN_QUOTE"},
+ {"id":"floor_r17","format":"org","input":"\\\n/DEADLINE: #+TITLE:   [#A] \n:key: valueDEADLINE: +/*** "},
+ {"id":"floor_r22","format":"org","input":"#+BEGIN_QUOTE]]** :END:<2026-06-26 Fri>[fn:1]bDEADLINE: \\\n"}
+]

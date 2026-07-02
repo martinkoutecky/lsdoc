@@ -1503,7 +1503,11 @@ fn org_backslash_at(s: &str, bb: &[u8], i: usize, ctx: Ctx, latex_ok: bool) -> (
         match bb.get(i + 1) {
             None => return (Bs::Plain("\\".to_string()), i + 1),
             Some(b'\n') | Some(b'\r') => {
-                return (Bs::Node(Inline::HardBreak { span: None }), i + 1)
+                // mldoc `org_hard_breakline = string "\\" <* eol`
+                // (`lib/syntax/inline.ml:456`): consume the backslash plus the
+                // EOL byte this resolver matched. CRLF intentionally leaves the
+                // following LF for normal break dispatch in this byte path.
+                return (Bs::Node(Inline::HardBreak { span: None }), i + 2)
             }
             _ => {}
         }
