@@ -17,7 +17,7 @@
 //! has **no wildcard arm**, so a future AST variant is a compile error, not silent
 //! empty output.
 
-use crate::projection::{Align, Block, Inline, ListItem, Url};
+use crate::projection::{Align, Block, Inline, ListItem, Property, Url};
 use serde_json::Value;
 
 /// Source format of the block tree being rendered. Drives only inline re-parsing of
@@ -210,12 +210,12 @@ impl Renderer {
         self.out.push_str("></span>");
     }
 
-    fn properties(&mut self, props: &[(String, String)]) {
+    fn properties(&mut self, props: &[Property]) {
         if props.is_empty() {
             return;
         }
         self.out.push_str("<span class=\"block-properties\">");
-        for (k, v) in props {
+        for Property(k, v, _) in props {
             self.out.push_str("<span class=\"block-property\"><span class=\"block-property-key\">");
             esc_text(k, &mut self.out);
             self.out.push_str("</span> <span class=\"block-property-val\">");

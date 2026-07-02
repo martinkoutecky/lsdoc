@@ -32,6 +32,8 @@ the fuzz floor** (more mldoc parity) — how each fix was verified.
 | D23 | macro plain args trimmed (mldoc: greedy `take_while1(≠',')` keeps trailing spaces — `{{embed ] }}` → `["] "]`; empty/space-only slots invalidate the macro; `inline.ml:977-1021`) | **FIXED** | `7d835c3` |
 | D24 | org hard-break `\`+EOL emitted extra Break (mldoc `string "\\" <* eol` consumes ONE EOL byte — CRLF keeps the `\n` break; `inline.ml:456`) | **FIXED** | `7d835c3` |
 | D25 | org heading tags accepted empty segments (mldoc: `:seg(:seg)*:` consume-all — interior `::` kills ALL tags, all-empty `::` = empty tags + title rewrite; `heading0.ml:79-82`) | **FIXED** | `7d835c3` |
+| D26 | org non-braced `^`-script at `\`+EOL — floor row 10 was reclassified: it was D24 (hardbreak) + D22 (directive) compounds; the minimal script case matches | **CLOSED (not a divergence)** | — |
+| D28 | org `#+NAME: v` (Drawer.parse2) property values ref-scanned — mldoc hardcodes refs `[]` for parse2 entries, per-entry provenance within a folded drawer (`drawer.ml:74`); also made `vdiff_iso` refs-aware (was blocks-only) | **FIXED** | see log |
 
 D16 surfaced during Phase B verification (pre-existing — fuzz floors held exactly across the perf-only
 change); fix belongs to the `<`-family construct port (inline-restructure-SPEC Phase C4).

@@ -8,7 +8,7 @@
 //! These walk the inline tree the parser emits (links/tags/macros) and produce the
 //! real page/block ref sets; they are gated against mldoc's refs by `harness/`.
 
-use crate::projection::{Block, Inline, ListItem, Refs, Url};
+use crate::projection::{Block, Inline, ListItem, Property, Refs, Url};
 
 pub fn extract_refs(blocks: &[Block], format: &str) -> Refs {
     let org = format == "org";
@@ -59,8 +59,11 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>, org: b
             // mldoc's `Property.property_references` first bails (empty refs) when the
             // trimmed value is empty or fully wrapped in double quotes (`desc:: "..."`
             // is "unparsed"), so we must NOT extract refs from those.
-            for (_k, v) in props {
-                let vt = v.trim();
+            for prop in props {
+                if !property_value_refs_enabled(prop) {
+                    continue;
+                }
+                let vt = prop.value().trim();
                 if vt.is_empty() || (vt.starts_with('"') && vt.ends_with('"')) {
                     continue;
                 }
@@ -68,9 +71,9 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>, org: b
                 // value's inline list per format, and the two differ (e.g. org `[[x][y]]`
                 // → Search link [no ref]; md `[[x][y]]` → Page_ref "x][y"). C6.
                 let inl = if org {
-                    crate::org_resolver::parse_inline_org(v, 0)
+                    crate::org_resolver::parse_inline_org(prop.value(), 0)
                 } else {
-                    crate::resolver::parse_inline(v, 0)
+                    crate::resolver::parse_inline(prop.value(), 0)
                 };
                 walk_inlines(&inl, page, block);
             }
@@ -88,6 +91,13 @@ fn walk_block(b: &Block, page: &mut Vec<String>, block: &mut Vec<String>, org: b
         // it (the `[[…]]` inside `[:div [[Foo]]]` is not a ref).
         | Block::Hiccup { .. } => {}
     }
+}
+
+/// Drawer.parse2 (`#+NAME: value`) hardcodes the property's refs list to `[]`
+/// in mldoc `lib/syntax/drawer.ml:74`; only parse1-derived entries contribute
+/// value refs.
+fn property_value_refs_enabled(prop: &Property) -> bool {
+    !prop.is_parse2()
 }
 
 /// Walk a list item's def-list term `name`, its block content, and (recursively) its

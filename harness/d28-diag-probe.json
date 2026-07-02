@@ -1,0 +1,10 @@
+[
+ {"id":"r1","format":"org","input":":PROPERTIES:\n:k: [[Page]]\n:END:"},
+ {"id":"r2","format":"org","input":"#+BEGIN_X: [[Page]]"},
+ {"id":"r3","format":"org","input":"#+X: [[Page]]"},
+ {"id":"r4","format":"org","input":":PROPERTIES:\n:k: #tag\n:END:"},
+ {"id":"r5","format":"org","input":"#+BEGIN_X: #tag ((11111111-1111-1111-1111-111111111111))"},
+ {"id":"r6","format":"md","input":"k:: [[Page]]"},
+ {"id":"r7","format":"org","input":":PROPERTIES:\n:END:\n#+BEGIN_X: [[P2]]"},
+ {"id":"r8","format":"org","input":"#+BEGIN_X: x\n:PROPERTIES:\n:k: [[P3]]\n:END:"}
+]

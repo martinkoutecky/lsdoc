@@ -1,0 +1,7 @@
+[
+ {"id":"z1","format":"org","input":"#+BEGIN_A: [[X]]\n:PROPERTIES:\n:p: [[Y]]\n:END:\n#+BEGIN_B: ((22222222-2222-2222-2222-222222222222))"},
+ {"id":"z2","format":"org","input":"* h\n:PROPERTIES:\n:k: [[Z]]\n:END:"},
+ {"id":"z3","format":"md","input":"k:: [[W]] #t"},
+ {"id":"z4","format":"org","input":"#+X: [[nope]] #no"},
+ {"id":"z5","format":"org","input":"body [[Real]] #yes\n#+BEGIN_C: [[fake]]"}
+]

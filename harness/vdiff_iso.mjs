@@ -10,7 +10,7 @@ execSync(`cargo run -q --bin lsdoc-parse -- ${path} _iso_lsdoc.json`, { stdio: "
 const L = Object.fromEntries(JSON.parse(readFileSync("_iso_lsdoc.json", "utf8")).map((x) => [x.id, x]));
 // canonJSON = the main gate's canonical comparator (key-sorted, span-dropped) — raw stringify
 // gave FALSE diffs on key order (email/timestamp objects).
-const strip = (o) => canonJSON(o.blocks || o);
+const strip = (o) => canonJSON({ blocks: o.blocks || o, refs: o.refs || { page: [], block: [] } });
 let bad = 0;
 for (const c of cases) {
   writeFileSync("_iso_one.json", JSON.stringify([c]));

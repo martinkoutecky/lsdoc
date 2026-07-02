@@ -29,7 +29,7 @@ use crate::block_common::{
     raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie, Line, RawHtmlScan,
     GT_FALLBACK_NEST_CAP, MARKERS,
 };
-use crate::projection::{Block, Inline, ListItem, Span, Url};
+use crate::projection::{Block, Inline, ListItem, Property, Span, Url};
 
 // ===========================================================================
 // Block segmentation
@@ -1763,7 +1763,7 @@ fn org_directive(s: &str) -> Option<(String, String)> {
 /// Drawer.parse2 (`drawer.ml`): optional `Parsers.spaces`, `#+`, no-space/non-colon name,
 /// `:`, then `spaces *> optional_line`. No `BEGIN_` rejection; this is the property fallback
 /// for Directive.parse refusals and the name-agnostic continuation inside an active fold.
-fn org_parse2_property(s: &str) -> Option<(String, String)> {
+fn org_parse2_property(s: &str) -> Option<Property> {
     let rest = org_trim_spaces_start(s).strip_prefix("#+")?;
     let pos = rest.find(':')?;
     let key = &rest[..pos];
@@ -1775,7 +1775,7 @@ fn org_parse2_property(s: &str) -> Option<(String, String)> {
         return None;
     }
     let value = org_trim_spaces_start(&rest[pos + 1..]);
-    Some((key.to_string(), value.to_string()))
+    Some(Property::parse2((key.to_string(), value.to_string())))
 }
 
 fn org_properties_begin(s: &str) -> bool {
@@ -1785,7 +1785,7 @@ fn org_properties_begin(s: &str) -> bool {
 /// One parse1 property body line. Source note: `drawer.ml` rejects `:` and literal space
 /// in the key (`c <> ':' && c <> ' ' && non_eol c`) and rejects lowercase `"end"`.
 /// Values use `Parsers.spaces *> optional_line`: left spaces-set skip only, trailing raw.
-fn org_drawer_property(s: &str) -> Option<(String, String)> {
+fn org_drawer_property(s: &str) -> Option<Property> {
     let rest = org_trim_spaces_start(s).strip_prefix(':')?;
     let pos = rest.find(':')?;
     let key = &rest[..pos];
@@ -1798,7 +1798,7 @@ fn org_drawer_property(s: &str) -> Option<(String, String)> {
         return None;
     }
     let value = org_trim_spaces_start(&rest[pos + 1..]);
-    Some((key.to_string(), value.to_string()))
+    Some(Property::parse1((key.to_string(), value.to_string())))
 }
 
 /// parse1's closer is `spaces *> string_ci ":END:" <* optional eol`, so trailing same-line
@@ -1812,7 +1812,7 @@ fn org_property_end_spill(s: &str) -> Option<usize> {
 }
 
 struct OrgParse1 {
-    props: Vec<(String, String)>,
+    props: Vec<Property>,
     next: usize,
     span_end: usize,
     absorb_after: bool,
@@ -1875,7 +1875,7 @@ fn org_property_group<'a>(
     input: &'a str,
     property_end_idxs: &[usize],
     property_end_cursor: &mut usize,
-) -> Option<(Vec<(String, String)>, usize, usize, bool)> {
+) -> Option<(Vec<Property>, usize, usize, bool)> {
     let mut props = Vec::new();
     let mut cur = start;
     let mut matched = false;

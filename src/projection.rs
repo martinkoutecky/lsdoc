@@ -25,6 +25,58 @@ pub struct Refs {
     pub block: Vec<String>,
 }
 
+/// Property value provenance inside mldoc's `Property_Drawer` fold.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PropertyOrigin {
+    /// parse1: markdown `k:: v` / drawer `:k: v`; values are walked for refs.
+    #[default]
+    Parse1,
+    /// parse2: org-style `#+NAME: v`; mldoc stores an empty refs list for the entry.
+    Parse2,
+}
+
+/// A serialized property pair plus skipped provenance used by ref extraction.
+///
+/// Serde still emits the public projection as the historical two-element tuple
+/// `[key, value]`; the third field is internal-only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Property(pub String, pub String, #[serde(skip)] pub PropertyOrigin);
+
+impl Property {
+    pub(crate) fn parse1((key, value): (String, String)) -> Self {
+        Self(key, value, PropertyOrigin::Parse1)
+    }
+
+    pub(crate) fn parse2((key, value): (String, String)) -> Self {
+        Self(key, value, PropertyOrigin::Parse2)
+    }
+
+    pub(crate) fn value(&self) -> &str {
+        &self.1
+    }
+
+    pub(crate) fn is_parse2(&self) -> bool {
+        self.2 == PropertyOrigin::Parse2
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pair(&self) -> (String, String) {
+        (self.0.clone(), self.1.clone())
+    }
+}
+
+impl PartialEq<(String, String)> for Property {
+    fn eq(&self, other: &(String, String)) -> bool {
+        self.0 == other.0 && self.1 == other.1
+    }
+}
+
+impl PartialEq<Property> for (String, String) {
+    fn eq(&self, other: &Property) -> bool {
+        self.0 == other.0 && self.1 == other.1
+    }
+}
+
 /// Block source span `[start, end]` (byte offsets). Serializes as a 2-array to
 /// match mldoc's `{start_pos,end_pos}` after normalization.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -201,7 +253,7 @@ pub enum Block {
     },
     #[serde(rename = "properties")]
     Properties {
-        props: Vec<(String, String)>,
+        props: Vec<Property>,
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },

@@ -46,7 +46,7 @@ use crate::block_common::{
     raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
     Line, RawHtmlScan, GT_FALLBACK_NEST_CAP, MARKERS,
 };
-use crate::projection::{Block, Inline, ListItem, Span};
+use crate::projection::{Block, Inline, ListItem, Property, Span};
 
 // Depth guard for the ONE md re-dispatch that still native-recurses: the §3 `>`-quote fallback
 // (`reparse_block_content`). The `>`-quote staircase and re-bulleted `#+BEGIN` bodies are now
@@ -979,14 +979,14 @@ fn dispatch_md_line<'a>(
         if let Some(kv) = property(content) {
             flush_para(out, para, para_buf, input, trim);
             empty_bullet!();
-            let mut props = vec![kv];
+            let mut props = vec![Property::parse1(kv)];
             let mut end = line_end;
             let mut ni = i + 1;
             while ni < hi {
                 if let Some(kv) = property(lines[ni].text) {
-                    props.push(kv);
+                    props.push(Property::parse1(kv));
                 } else if let Some(kv) = directive_property(lines[ni].text) {
-                    props.push(kv);
+                    props.push(Property::parse2(kv));
                 } else {
                     break;
                 }
@@ -1140,10 +1140,10 @@ fn dispatch_md_line<'a>(
         let mut ni = i;
         while ni < hi {
             if let Some(kv) = property(lines[ni].text) {
-                props.push(kv);
+                props.push(Property::parse1(kv));
                 ni += 1;
             } else if let Some(kv) = directive_property(lines[ni].text) {
-                props.push(kv);
+                props.push(Property::parse2(kv));
                 ni += 1;
             } else {
                 break;
@@ -1313,9 +1313,10 @@ fn dispatch_md_line<'a>(
                         .iter()
                         .all(|l| drawer_property(l.text).is_some())
                 {
-                    let mut props: Vec<(String, String)> = lines[i + 1..close]
+                    let mut props: Vec<Property> = lines[i + 1..close]
                         .iter()
                         .filter_map(|l| drawer_property(l.text))
+                        .map(Property::parse1)
                         .collect();
                     // M2: mldoc (`drawer.ml`) continues a `Property_Drawer` with a
                     // `many (parse1 <|> parse2)` AFTER the `:END:`, folding following lines into
@@ -1329,7 +1330,7 @@ fn dispatch_md_line<'a>(
                     loop {
                         if j < hi {
                             if let Some(kv) = property(lines[j].text) {
-                                props.push(kv);
+                                props.push(Property::parse1(kv));
                                 j += 1;
                                 continue;
                             }
@@ -1340,7 +1341,7 @@ fn dispatch_md_line<'a>(
                             }
                             if k < hi {
                                 if let Some(kv) = directive_property(lines[k].text) {
-                                    props.push(kv);
+                                    props.push(Property::parse2(kv));
                                     j = k + 1;
                                     while j < hi && lines[j].text.is_empty() {
                                         j += 1;
@@ -2537,7 +2538,7 @@ mod tests {
 
     fn prop_pairs(input: &str) -> Vec<(String, String)> {
         match parse(input).first() {
-            Some(Block::Properties { props, .. }) => props.clone(),
+            Some(Block::Properties { props, .. }) => props.iter().map(Property::pair).collect(),
             _ => Vec::new(),
         }
     }
