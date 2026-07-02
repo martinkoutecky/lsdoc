@@ -16,9 +16,9 @@ the fuzz floor** (more mldoc parity) — how each fix was verified.
 | D7 | org `[[url][label]]` label spans a newline | **FIXED** | `65df867` |
 | D8 | org `^{…}`/`_{…}` script non-space fallback | **FIXED** | `65df867` |
 | D9 | block-ref `((…))` content spans a newline | **FIXED** | `65df867` |
-| D10 | inline_html accepts UNKNOWN tags (mldoc → plain) | **FIXED** | pending |
-| D11 | `<br/>` no-space → inline_html (mldoc → plain) | **FIXED** | pending |
-| D12 | single-line `<b>`/`<i>` phrasing tags → raw_html (mldoc → plain) | **FIXED** | pending |
+| D10 | inline_html accepts UNKNOWN tags (mldoc → plain) | **FIXED** | `b85f4d7` |
+| D11 | `<br/>` no-space → inline_html (mldoc → plain) | **FIXED** | `b85f4d7` |
+| D12 | single-line `<b>`/`<i>` phrasing tags → raw_html (mldoc → plain) | **FIXED** | `b85f4d7` |
 | D13 | md link-label doesn't reparse entities/latex (`[\alpha](u)`, `[$x$](u)`) | OPEN | — |
 | D14 | timestamp token order-permissive (`<… +1d 12:00>` accepts both vs mldoc date-only) | OPEN | — |
 | D15 | md drawer name rejects punctuation (`:LOG@BOOK:` → paragraph vs mldoc drawer) | OPEN | — |
