@@ -1,0 +1,17 @@
+[
+ {"id":"m1","format":"md","input":"*a *b *c **"},
+ {"id":"m2","format":"md","input":"~~a ~~b ~~ ~~~~"},
+ {"id":"m3","format":"md","input":"**a ** **"},
+ {"id":"m4","format":"org","input":"x *a *b **"},
+ {"id":"m5","format":"md","input":"==a ==\t==="},
+ {"id":"m6","format":"md","input":"_a __ x__"},
+ {"id":"m7","format":"md","input":"^^a ^^^^"},
+ {"id":"m8","format":"md","input":"*a \\** b*"},
+ {"id":"m9","format":"org","input":"x +a +b ++."},
+ {"id":"m10","format":"md","input":"***a ****b***"},
+ {"id":"m11","format":"md","input":"*a ** **"},
+ {"id":"m12","format":"md","input":"==a =====x=="},
+ {"id":"m13","format":"md","input":"_a _b __"},
+ {"id":"m14","format":"md","input":"*a  **"},
+ {"id":"m15","format":"org","input":"x _a _b __"}
+]

@@ -263,6 +263,16 @@ struct EmParsed {
     end: usize,
 }
 
+/// ARTIFACT-1.5.7 deviation from published `inline.ml`: compiled npm mldoc 1.5.7
+/// backs an emphasis close off to a provenance-tracked pattern-as-plain absorb.
+/// See `subagent-tasks/constructs/d19-emphasis-close-guard-spec.md` and
+/// `subagent-tasks/notes/d19-diagnosis.md`.
+#[derive(Clone, Copy)]
+struct EmBackoffCandidate {
+    closer_start: usize,
+    body_len: usize,
+}
+
 /// Port of mldoc `Parsers.whitespace_chars` (`lib/parsers.ml:4`).
 #[inline]
 fn mldoc_whitespace_char(c: u8) -> bool {
@@ -382,23 +392,43 @@ fn org_md_em_parser_at(
     let mut body: Vec<Inline> = Vec::new();
     let mut char_before_pattern: Option<u8> = None;
     let mut saw_non_ws = false;
+    let mut backoff: Option<EmBackoffCandidate> = None;
+
+    let close_at = |closer_start: usize, body: Vec<Inline>| {
+        let close_end = closer_start + pat.len();
+        let full = Some(Span(base + at, base + close_end));
+        EmParsed {
+            node: Inline::Emphasis {
+                emph: typ.to_string(),
+                children: concat_plains_without_pos(body),
+                span: full,
+            },
+            end: close_end,
+        }
+    };
 
     let parse_non_ws = |i: usize,
                         body: &mut Vec<Inline>,
-                        char_before_pattern: &mut Option<u8>|
+                        char_before_pattern: &mut Option<u8>,
+                        backoff: &mut Option<EmBackoffCandidate>|
      -> Option<usize> {
         let stop_chars = |c: u8| c == pattern_c || mldoc_whitespace_char(c);
         let escape_chars = [pattern_c, b' ', b'\t', b'\n', b'\r', 0x0c];
         if let Some(end) = take_while1_include_backslash(s, i, &escape_chars, |c| !stop_chars(c)) {
             push_plain_node(body, &s[i..end], i, end, base);
             set_char_before_pattern_from_node(body.last().unwrap(), char_before_pattern);
+            *backoff = None;
             return Some(end);
         }
         if bb.get(i..i + pat.len()) != Some(pat) {
             if i < bb.len() {
+                let preserves_backoff = bb[i] == pattern_c;
                 let end = i + char_len(bb[i]);
                 push_plain_node(body, &s[i..end], i, end, base);
                 set_char_before_pattern_from_node(body.last().unwrap(), char_before_pattern);
+                if !preserves_backoff {
+                    *backoff = None;
+                }
                 return Some(end);
             }
             return None;
@@ -412,8 +442,13 @@ fn org_md_em_parser_at(
         };
         if pattern_as_plain {
             let end = i + pat.len();
+            let body_len = body.len();
             push_plain_node(body, &s[i..end], i, end, base);
             set_char_before_pattern_from_node(body.last().unwrap(), char_before_pattern);
+            *backoff = Some(EmBackoffCandidate {
+                closer_start: i,
+                body_len,
+            });
             return Some(end);
         }
         None
@@ -421,6 +456,10 @@ fn org_md_em_parser_at(
 
     loop {
         if i >= bb.len() {
+            if let Some(candidate) = backoff {
+                body.truncate(candidate.body_len);
+                return Ok(close_at(candidate.closer_start, body));
+            }
             return Err(EmFail::NoCloser);
         }
         if mldoc_whitespace_char(bb[i]) {
@@ -431,50 +470,49 @@ fn org_md_em_parser_at(
             crate::metrics::scan_work(i - ws_start);
             push_plain_node(&mut body, &s[ws_start..i], ws_start, i, base);
             set_char_before_pattern_from_node(body.last().unwrap(), &mut char_before_pattern);
+            backoff = None;
             let before = i;
-            match parse_non_ws(i, &mut body, &mut char_before_pattern) {
+            match parse_non_ws(i, &mut body, &mut char_before_pattern, &mut backoff) {
                 Some(end) => {
                     i = end;
                     saw_non_ws = true;
                     continue;
                 }
-                None if before >= bb.len() => return Err(EmFail::NoCloser),
-                None if bb.get(before..before + pat.len()) == Some(pat) && saw_non_ws => {
-                    let close_end = before + pat.len();
-                    let full = Some(Span(base + at, base + close_end));
-                    return Ok(EmParsed {
-                        node: Inline::Emphasis {
-                            emph: typ.to_string(),
-                            children: concat_plains_without_pos(body),
-                            span: full,
-                        },
-                        end: close_end,
-                    });
+                None if before >= bb.len() => {
+                    if let Some(candidate) = backoff {
+                        body.truncate(candidate.body_len);
+                        return Ok(close_at(candidate.closer_start, body));
+                    }
+                    return Err(EmFail::NoCloser);
                 }
                 None if bb.get(before..before + pat.len()) == Some(pat) => {
-                    return Err(EmFail::NotMatch)
+                    if let Some(candidate) = backoff {
+                        body.truncate(candidate.body_len);
+                        return Ok(close_at(candidate.closer_start, body));
+                    }
+                    if saw_non_ws {
+                        return Ok(close_at(before, body));
+                    }
+                    return Err(EmFail::NotMatch);
                 }
                 None => return Err(EmFail::NoCloser),
             }
         }
-        match parse_non_ws(i, &mut body, &mut char_before_pattern) {
+        match parse_non_ws(i, &mut body, &mut char_before_pattern, &mut backoff) {
             Some(end) => {
                 i = end;
                 saw_non_ws = true;
             }
-            None if bb.get(i..i + pat.len()) == Some(pat) && saw_non_ws => {
-                let close_end = i + pat.len();
-                let full = Some(Span(base + at, base + close_end));
-                return Ok(EmParsed {
-                    node: Inline::Emphasis {
-                        emph: typ.to_string(),
-                        children: concat_plains_without_pos(body),
-                        span: full,
-                    },
-                    end: close_end,
-                });
+            None if bb.get(i..i + pat.len()) == Some(pat) => {
+                if let Some(candidate) = backoff {
+                    body.truncate(candidate.body_len);
+                    return Ok(close_at(candidate.closer_start, body));
+                }
+                if saw_non_ws {
+                    return Ok(close_at(i, body));
+                }
+                return Err(EmFail::NotMatch);
             }
-            None if bb.get(i..i + pat.len()) == Some(pat) => return Err(EmFail::NotMatch),
             None => return Err(EmFail::NoCloser),
         }
     }
