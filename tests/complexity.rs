@@ -11,6 +11,8 @@
 //! Debug-only (the counter compiles out in release): run with `cargo test --test complexity`.
 #![cfg(debug_assertions)]
 
+use std::fmt::Write;
+
 /// Scan-work for one parse. The result is `forget`-ted: an adversarial family builds a deep AST
 /// whose recursive DROP would overflow — we measure only the (iterative, bounded-stack) parse.
 fn work(input: &str, fmt: &str) -> u64 {
@@ -74,6 +76,26 @@ fn resync(n: usize) -> String {
 /// behavior). O(n). See subagent-tasks/notes/lsdoc-inline-delimstack-design.md. (Bug 2b, residual.)
 fn resync_leaf(n: usize) -> String {
     "#a`#`".repeat(n)
+}
+/// Flat multi-line quote where one de-`>` fold buffer has O(n) origin segments and O(n) inline
+/// nodes. The remap pass must walk the origin segments monotonically, not from segment zero per
+/// inline node.
+fn flat_gt_quote_lines(n: usize) -> String {
+    let mut s = String::new();
+    for i in 0..n {
+        writeln!(&mut s, "> line {i}").unwrap();
+    }
+    s
+}
+/// Org `#+BEGIN_QUOTE` with an indented body: the strip-view paragraph buffer is another
+/// transformed fold site that remaps O(n) inline nodes through O(n) origin segments.
+fn org_begin_quote_indented_body(n: usize) -> String {
+    let mut s = String::from("#+BEGIN_QUOTE\n");
+    for i in 0..n {
+        writeln!(&mut s, "  line {i}").unwrap();
+    }
+    s.push_str("#+END_QUOTE\n");
+    s
 }
 
 // ---- linear controls (must stay linear) -----------------------------------
@@ -258,6 +280,17 @@ fn complexity_gate() {
         // `Punct`, no pre-built `Leaf`), so a tag consuming a backtick lands on a clean boundary —
         // the straddle cannot exist, no re-lex → LINEAR.
         assert_linear("resync_leaf", resync_leaf, 1500, "md");
+        // Inline-spans v2 Round 2: transformed flat quote buffers have O(n) origin segments and
+        // O(n) inline nodes. Source-map remap scans are counted by `scan_work`, so a segment-zero
+        // re-scan per inline node fails this deterministic gate.
+        assert_linear("flat_gt_quote_lines", flat_gt_quote_lines, 1000, "md");
+        assert_linear("org_flat_gt_quote_lines", flat_gt_quote_lines, 1000, "org");
+        assert_linear(
+            "org_begin_quote_indented_body",
+            org_begin_quote_indented_body,
+            1000,
+            "org",
+        );
     });
     // (2b) no-SIGABRT on a SMALL (4 MiB) stack, where the old per-unit suffix-recurse overflowed at
     // ~24 KB on the default stack: both the escape (C) and code-leaf (D) straddle families now parse

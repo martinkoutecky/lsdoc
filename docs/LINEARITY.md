@@ -12,6 +12,7 @@ order. Older construct-internal rows are kept where the owner did not change.
 |---|---|---|
 | Shared fresh/swallow tables @ `src/inline_driver.rs:17` | constant tables | Markdown/Org plain-delimiter and swallow-byte tables encode mldoc `plain` fallback; no scan is introduced. |
 | Markdown resolver token loop @ `src/resolver.rs:1259` | consume-on-match | `t` advances monotonically; successful leaves resync past consumed bytes. |
+| Inline OriginMap build/remap @ `src/parse.rs:1717`, `src/org.rs:1766`, `src/source_map.rs:299` | compose-at-build + one monotone remap | Fold buffers append source views and EOL joiners once while constructing text; remap walks each inline run and each origin segment in source order, with no suffix rescans or endpoint-only remapping. |
 | Markdown page-ref `]]` lookup @ `src/resolver.rs:1055` | precomputed-map | `build_real_dbl` positions are shared with a monotone cursor. |
 | Markdown hiccup/nested close lookup @ `src/resolver.rs:1047` | precomputed-map | `build_hiccup_close` and `build_nested_close` give O(1) close checks. |
 | Markdown md-link `](`/`)` floors @ `src/resolver.rs:1477`, `src/resolver.rs:1592`, `src/resolver.rs:1989` | invalidating-cursor | `lbp_cur`, `crlf`, and `rparen` advance only forward before `md_link`. |

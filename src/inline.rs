@@ -20,6 +20,7 @@
 //! `char_indices`, never mid-codepoint.
 
 use crate::projection::{Inline, Span, Url};
+use crate::source_map::OriginSegment;
 
 /// Byte offset of `sub` within `parent` (both must share the same backing buffer — `sub`
 /// is a sub-slice of `parent`). Used to recover the absolute base for a sub-slice inline
@@ -736,13 +737,22 @@ fn reparse_tag_name(
 }
 
 fn tag_plain(raw: &str, abs_start: usize, abs_end: usize, unescape_plain: bool) -> Inline {
-    let span = if !unescape_plain || !raw.contains('\\') {
-        Some(Span(abs_start, abs_end))
-    } else {
-        None
-    };
     let text = if unescape_plain { unescape(raw) } else { raw.to_string() };
-    Inline::Plain { text, span }
+    if unescape_plain && raw.contains('\\') {
+        crate::source_map::make_plain(
+            text,
+            Span(abs_start, abs_end),
+            unescape_origins(raw, abs_start),
+            raw,
+            abs_start,
+        )
+    } else {
+        Inline::Plain {
+            text,
+            span: Some(Span(abs_start, abs_end)),
+            span_map: None,
+        }
+    }
 }
 
 fn try_nested_link_or_link_md_tag(s: &str, at: usize, base: usize) -> Option<(Inline, usize)> {
@@ -774,7 +784,40 @@ fn concat_plains(nodes: Vec<Inline>) -> Vec<Inline> {
     let mut out: Vec<Inline> = Vec::new();
     for node in nodes {
         match (out.last_mut(), node) {
-            (Some(Inline::Plain { text: prev, span: prev_span }), Inline::Plain { text, span }) => {
+            (
+                Some(Inline::Plain {
+                    text: prev,
+                    span: prev_span,
+                    span_map: prev_map,
+                }),
+                Inline::Plain {
+                    text,
+                    span,
+                    span_map,
+                },
+            ) => {
+                let shift = prev.len();
+                if prev_map.is_some() || span_map.is_some() {
+                    let map = prev_map.get_or_insert_with(Vec::new);
+                    if map.is_empty() {
+                        if let Some(Span(start, end)) = *prev_span {
+                            crate::source_map::push_wire_segment(map, 0, start, end - start);
+                        }
+                    }
+                    match span_map {
+                        Some(mut segments) => {
+                            for seg in &mut segments {
+                                seg.0 += shift;
+                            }
+                            map.extend(segments);
+                        }
+                        None => {
+                            if let Some(Span(start, end)) = span {
+                                crate::source_map::push_wire_segment(map, shift, start, end - start);
+                            }
+                        }
+                    }
+                }
                 prev.push_str(&text);
                 *prev_span = match (*prev_span, span) {
                     (Some(Span(start, _)), Some(Span(_, end))) => Some(Span(start, end)),
@@ -1096,10 +1139,29 @@ fn unescape_markdown_label(nodes: Vec<Inline>) -> Vec<Inline> {
     let mut out = Vec::new();
     for node in nodes {
         match node {
-            Inline::Plain { text, span } => {
+            Inline::Plain { text, span, .. } => {
                 let value = unescape(&text);
-                let span = if value.len() == text.len() { span } else { None };
-                out.push(Inline::Plain { text: value, span });
+                if value.len() == text.len() {
+                    out.push(Inline::Plain {
+                        text: value,
+                        span,
+                        span_map: None,
+                    });
+                } else if let Some(span) = span {
+                    out.push(crate::source_map::make_plain(
+                        value,
+                        span,
+                        unescape_origins(&text, span.0),
+                        &text,
+                        span.0,
+                    ));
+                } else {
+                    out.push(Inline::Plain {
+                        text: value,
+                        span: None,
+                        span_map: None,
+                    });
+                }
             }
             other => out.push(other),
         }
@@ -1112,13 +1174,15 @@ fn push_label_plain(nodes: &mut Vec<Inline>, raw: &str, abs_start: usize) {
         return;
     }
     match nodes.last_mut() {
-        Some(Inline::Plain { text, span }) => {
+        Some(Inline::Plain { text, span, span_map }) => {
             text.push_str(raw);
             *span = span.map(|Span(start, _)| Span(start, abs_start + raw.len()));
+            *span_map = None;
         }
         _ => nodes.push(Inline::Plain {
             text: raw.to_string(),
             span: Some(Span(abs_start, abs_start + raw.len())),
+            span_map: None,
         }),
     }
 }
@@ -1143,14 +1207,33 @@ fn reparse_markdown_label(nodes: Vec<Inline>) -> Vec<Inline> {
     let mut out = Vec::new();
     for node in nodes {
         match node {
-            Inline::Plain { text, span } => {
+            Inline::Plain { text, span, .. } => {
                 let base = span.map(|Span(start, _)| start).unwrap_or(0);
                 if let Some(nodes) = crate::resolver::parse_inline_ctx_md_label(&text, base) {
                     out.extend(nodes);
                 } else {
                     let value = unescape(&text);
-                    let span = if value.len() == text.len() { span } else { None };
-                    out.push(Inline::Plain { text: value, span });
+                    if value.len() == text.len() {
+                        out.push(Inline::Plain {
+                            text: value,
+                            span,
+                            span_map: None,
+                        });
+                    } else if let Some(span) = span {
+                        out.push(crate::source_map::make_plain(
+                            value,
+                            span,
+                            unescape_origins(&text, span.0),
+                            &text,
+                            span.0,
+                        ));
+                    } else {
+                        out.push(Inline::Plain {
+                            text: value,
+                            span: None,
+                            span_map: None,
+                        });
+                    }
                 }
             }
             other => out.push(other),
@@ -1163,7 +1246,40 @@ fn concat_label_plains(nodes: Vec<Inline>) -> Vec<Inline> {
     let mut out: Vec<Inline> = Vec::new();
     for node in nodes {
         match (out.last_mut(), node) {
-            (Some(Inline::Plain { text: prev, span: prev_span }), Inline::Plain { text, span }) => {
+            (
+                Some(Inline::Plain {
+                    text: prev,
+                    span: prev_span,
+                    span_map: prev_map,
+                }),
+                Inline::Plain {
+                    text,
+                    span,
+                    span_map,
+                },
+            ) => {
+                let shift = prev.len();
+                if prev_map.is_some() || span_map.is_some() {
+                    let map = prev_map.get_or_insert_with(Vec::new);
+                    if map.is_empty() {
+                        if let Some(Span(start, end)) = *prev_span {
+                            crate::source_map::push_wire_segment(map, 0, start, end - start);
+                        }
+                    }
+                    match span_map {
+                        Some(mut segments) => {
+                            for seg in &mut segments {
+                                seg.0 += shift;
+                            }
+                            map.extend(segments);
+                        }
+                        None => {
+                            if let Some(Span(start, end)) = span {
+                                crate::source_map::push_wire_segment(map, shift, start, end - start);
+                            }
+                        }
+                    }
+                }
                 prev.push_str(&text);
                 *prev_span = match (*prev_span, span) {
                     (Some(Span(start, _)), Some(Span(_, end))) => Some(Span(start, end)),
@@ -1477,17 +1593,22 @@ fn read_metadata(s: &str, b: &[u8], end: &mut usize) -> String {
 /// mldoc `quick_link`: `<protocol:optional//link>`, where `link` is nonempty
 /// and stops before whitespace or `>`. Returns (end, node).
 pub(crate) fn parse_quick_link(s: &str, at: usize) -> Option<(usize, Inline)> {
-    parse_quick_link_with_mode(s, at, false)
+    parse_quick_link_with_mode(s, at, false, 0)
 }
 
 /// Markdown quick links in the compiled mldoc 1.5.7 artifact unescape the
 /// synthetic label and url link, while published `quick_link_aux` cannot produce
 /// label != full_text. The npm oracle is the compatibility target here.
-pub(crate) fn parse_quick_link_md(s: &str, at: usize) -> Option<(usize, Inline)> {
-    parse_quick_link_with_mode(s, at, true)
+pub(crate) fn parse_quick_link_md(s: &str, at: usize, base: usize) -> Option<(usize, Inline)> {
+    parse_quick_link_with_mode(s, at, true, base)
 }
 
-fn parse_quick_link_with_mode(s: &str, at: usize, md_unescape: bool) -> Option<(usize, Inline)> {
+fn parse_quick_link_with_mode(
+    s: &str,
+    at: usize,
+    md_unescape: bool,
+    base: usize,
+) -> Option<(usize, Inline)> {
     let b = s.as_bytes();
     let n = b.len();
     if b.get(at) != Some(&b'<') {
@@ -1535,18 +1656,33 @@ fn parse_quick_link_with_mode(s: &str, at: usize, md_unescape: bool) -> Option<(
         raw_link.to_string()
     };
     let full = format!("{}:{}{}", protocol, slashes, raw_link);
+    let raw_label = &full;
     let label = if md_unescape {
         unescape(&full)
     } else {
         full.clone()
+    };
+    let label_node = if label.as_bytes() == raw_label.as_bytes() {
+        Inline::Plain {
+            text: label,
+            span: Some(Span(base + at + 1, base + j)),
+            span_map: None,
+        }
+    } else {
+        crate::source_map::make_plain(
+            label,
+            Span(base + at + 1, base + j),
+            unescape_origins(raw_label, base + at + 1),
+            raw_label,
+            base + at + 1,
+        )
     };
     let node = Inline::Link {
         url: Url::Complex {
             protocol: Some(protocol),
             link: Some(link),
         },
-        // synthetic label (no `<>`): no clean source slice -> no span.
-        label: vec![Inline::Plain { text: label, span: None }],
+        label: vec![label_node],
         full,
         image: false,
         metadata: String::new(),
@@ -1777,6 +1913,7 @@ pub(crate) fn parse_bare_url_with_scan(
     s: &str,
     at: usize,
     scan: &mut BareUrlScan,
+    base: usize,
 ) -> Option<(usize, Inline)> {
     let b = s.as_bytes();
     let n = b.len();
@@ -1840,13 +1977,27 @@ pub(crate) fn parse_bare_url_with_scan(
     let link = unescape(raw);
     let full = format!("{}://{}", protocol, raw);
     let label_text = format!("{}://{}", protocol, link);
+    let label = if label_text.as_bytes() == full.as_bytes() {
+        Inline::Plain {
+            text: label_text,
+            span: Some(Span(base + at, base + end)),
+            span_map: None,
+        }
+    } else {
+        crate::source_map::make_plain(
+            label_text,
+            Span(base + at, base + end),
+            unescape_origins(&full, base + at),
+            &full,
+            base + at,
+        )
+    };
     let node = Inline::Link {
         url: Url::Complex {
             protocol: Some(protocol),
             link: Some(link),
         },
-        // synthetic label (unescaped URL value): may differ from source → no span.
-        label: vec![Inline::Plain { text: label_text, span: None }],
+        label: vec![label],
         full,
         image: false,
         metadata: String::new(),
@@ -1960,6 +2111,27 @@ pub(crate) fn unescape(s: &str) -> String {
         } else {
             let w = char_len(b[i]);
             out.push_str(&s[i..i + w]);
+            i += w;
+        }
+    }
+    out
+}
+
+fn unescape_origins(raw: &str, base: usize) -> Vec<OriginSegment> {
+    let b = raw.as_bytes();
+    let n = b.len();
+    let mut out = Vec::new();
+    let mut text_off = 0usize;
+    let mut i = 0usize;
+    while i < n {
+        if b[i] == b'\\' && i + 1 < n && b[i + 1].is_ascii_punctuation() {
+            out.push(OriginSegment::new(text_off, base + i + 1, 1, 1));
+            text_off += 1;
+            i += 2;
+        } else {
+            let w = char_len(b[i]);
+            out.push(OriginSegment::new(text_off, base + i, w, w));
+            text_off += w;
             i += w;
         }
     }

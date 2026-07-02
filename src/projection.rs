@@ -82,6 +82,11 @@ impl PartialEq<Property> for (String, String) {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct Span(pub usize, pub usize);
 
+/// Exact text-to-source byte mapping for transformed `plain` nodes.
+/// Serializes as `[text_off, src_off, len]`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpanMapSegment(pub usize, pub usize, pub usize);
+
 /// `serde` `skip_serializing_if` for `bool` fields that default to `false`.
 fn is_false(b: &bool) -> bool {
     !*b
@@ -388,6 +393,8 @@ pub enum Inline {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        span_map: Option<Vec<SpanMapSegment>>,
     },
     #[serde(rename = "code")]
     Code {

@@ -36,6 +36,7 @@ pub(crate) mod projection;
 pub(crate) mod refs;
 pub mod render;
 pub(crate) mod resolver;
+pub(crate) mod source_map;
 
 /// The render contract: the stable, `serde`-serializable AST. **This IS lsdoc's AST**
 /// (the projection that was once described as "comparison-only" — that framing is
@@ -171,7 +172,7 @@ mod table_align_tests {
 
 #[cfg(test)]
 mod span_tests {
-    use crate::projection::{Inline, Span};
+    use crate::projection::{Block, Inline, Span, SpanMapSegment};
 
     fn parse_md(s: &str) -> Vec<Inline> {
         crate::resolver::parse_inline(s, 0)
@@ -180,7 +181,52 @@ mod span_tests {
         crate::org_resolver::parse_inline_org(s, 0)
     }
 
-    /// S5: `block_body[span] == text` for every `plain` node (recursing into children/labels).
+    fn assert_plain(
+        node: &Inline,
+        expected_text: &str,
+        expected_span: Span,
+        expected_map: Option<&[SpanMapSegment]>,
+    ) {
+        let Inline::Plain {
+            text,
+            span,
+            span_map,
+        } = node else {
+            panic!("expected plain, got {node:?}");
+        };
+        assert_eq!(text, expected_text);
+        assert_eq!(*span, Some(expected_span));
+        assert_eq!(span_map.as_deref(), expected_map);
+    }
+
+    fn assert_break(node: &Inline, expected_span: Span) {
+        let Inline::Break { span } = node else {
+            panic!("expected break, got {node:?}");
+        };
+        assert_eq!(*span, Some(expected_span));
+    }
+
+    fn quote_paragraph(input: &str, format: &str) -> Vec<Inline> {
+        match &crate::parse(input, format)[0] {
+            Block::Quote { children, .. } => match &children[0] {
+                Block::Paragraph { inline, .. } => inline.clone(),
+                b => panic!("expected quote paragraph, got {b:?}"),
+            },
+            b => panic!("expected quote, got {b:?}"),
+        }
+    }
+
+    fn first_list_paragraph(input: &str) -> Vec<Inline> {
+        match &crate::parse(input, "md")[0] {
+            Block::List { items, .. } => match &items[0].content[0] {
+                Block::Paragraph { inline, .. } => inline.clone(),
+                b => panic!("expected list paragraph, got {b:?}"),
+            },
+            b => panic!("expected list, got {b:?}"),
+        }
+    }
+
+    /// S5: `block_body[span] == text` for every `plain` node without `span_map`.
     fn assert_s5(input: &str, inlines: &[Inline]) {
         for n in inlines {
             check_s5_node(input, n);
@@ -188,14 +234,16 @@ mod span_tests {
     }
     fn check_s5_node(input: &str, n: &Inline) {
         match n {
-            Inline::Plain { text, span } => {
-                if let Some(Span(s, e)) = span {
-                    assert_eq!(
-                        &input.as_bytes()[*s..*e],
-                        text.as_bytes(),
-                        "S5 fail: plain '{text}' has span [{s},{e}) but source is '{}'",
-                        &input[*s..*e]
-                    );
+            Inline::Plain { text, span, span_map } => {
+                if span_map.is_none() {
+                    if let Some(Span(s, e)) = span {
+                        assert_eq!(
+                            &input.as_bytes()[*s..*e],
+                            text.as_bytes(),
+                            "S5 fail: plain '{text}' has span [{s},{e}) but source is '{}'",
+                            &input[*s..*e]
+                        );
+                    }
                 }
             }
             Inline::Emphasis { children, .. }
@@ -220,7 +268,7 @@ mod span_tests {
         let s = "hello world";
         let out = parse_md(s);
         assert_eq!(out.len(), 1);
-        assert!(matches!(&out[0], Inline::Plain { text, span }
+        assert!(matches!(&out[0], Inline::Plain { text, span, .. }
             if text == "hello world" && *span == Some(Span(0, 11))));
         assert_s5(s, &out);
     }
@@ -231,7 +279,7 @@ mod span_tests {
         let s = "a **b** c";
         let out = parse_md(s);
         assert_eq!(out.len(), 3);
-        if let Inline::Plain { text, span } = &out[0] {
+        if let Inline::Plain { text, span, .. } = &out[0] {
             assert_eq!(text, "a ");
             assert_eq!(*span, Some(Span(0, 2)));
         } else {
@@ -241,7 +289,7 @@ mod span_tests {
             assert_eq!(emph, "Bold");
             assert_eq!(*span, Some(Span(2, 7)));
             assert_eq!(children.len(), 1);
-            if let Inline::Plain { text, span } = &children[0] {
+            if let Inline::Plain { text, span, .. } = &children[0] {
                 assert_eq!(text, "b");
                 assert_eq!(*span, Some(Span(4, 5)));
             } else {
@@ -250,7 +298,7 @@ mod span_tests {
         } else {
             panic!("out[1] not emphasis");
         }
-        if let Inline::Plain { text, span } = &out[2] {
+        if let Inline::Plain { text, span, .. } = &out[2] {
             assert_eq!(text, " c");
             assert_eq!(*span, Some(Span(7, 9)));
         } else {
@@ -279,7 +327,7 @@ mod span_tests {
         };
         assert!(os <= is && ie <= oe, "inner {inner_span:?} not contained in outer {span:?}");
         assert_eq!(children.len(), 1);
-        if let Inline::Plain { text, span } = &children[0] {
+        if let Inline::Plain { text, span, .. } = &children[0] {
             assert_eq!(text, "x");
             assert_eq!(*span, Some(Span(3, 4)));
         } else {
@@ -297,7 +345,7 @@ mod span_tests {
         let Inline::Link { span, label, .. } = &out[0] else { panic!("not link") };
         assert_eq!(*span, Some(Span(0, 6)));
         assert_eq!(label.len(), 1);
-        if let Inline::Plain { text, span } = &label[0] {
+        if let Inline::Plain { text, span, .. } = &label[0] {
             assert_eq!(text, "t");
             assert_eq!(*span, Some(Span(1, 2)));
         } else {
@@ -352,7 +400,7 @@ mod span_tests {
         assert_eq!(s.len(), 5);
         let out = parse_md(s);
         assert_eq!(out.len(), 1);
-        if let Inline::Plain { text, span } = &out[0] {
+        if let Inline::Plain { text, span, .. } = &out[0] {
             assert_eq!(text, "café");
             assert_eq!(*span, Some(Span(0, 5)));
         } else {
@@ -419,7 +467,7 @@ mod span_tests {
         assert_eq!(text.get("local_part").and_then(|v| v.as_str()), Some("a"));
         assert_eq!(text.get("domain").and_then(|v| v.as_str()), Some("b"));
         assert_eq!(*span, Some(Span(2, 6)));
-        assert!(matches!(&out[2], Inline::Plain { text, span } if text == " co>" && *span == Some(Span(6, 10))));
+        assert!(matches!(&out[2], Inline::Plain { text, span, .. } if text == " co>" && *span == Some(Span(6, 10))));
 
         let out = parse_md("x <a@b.co");
         assert!(matches!(&out[..], [
@@ -458,7 +506,7 @@ mod span_tests {
         let Some(Inline::Tag { children, span }) = tag else { panic!("expected Tag node") };
         assert_eq!(*span, Some(Span(0, 7)));
         let plain = children.iter().find(|n| matches!(n, Inline::Plain { .. }));
-        if let Some(Inline::Plain { text, span }) = plain {
+        if let Some(Inline::Plain { text, span, .. }) = plain {
             assert_eq!(text, "škola");
             assert_eq!(*span, Some(Span(1, 7)));
         } else {
@@ -480,7 +528,7 @@ mod span_tests {
         let row = header.as_ref().map(|h| h.as_slice()).or_else(|| rows.first().map(|r| r.as_slice()));
         let row = row.expect("a header or body row");
         let cell = row.first().expect("a first cell");
-        if let Some(Inline::Plain { text, span }) = cell.first() {
+        if let Some(Inline::Plain { text, span, .. }) = cell.first() {
             assert_eq!(text, "hello");
             if let Some(Span(s, e)) = span {
                 assert_eq!(&input.as_bytes()[*s..*e], text.as_bytes(), "S5 in table cell");
@@ -490,5 +538,90 @@ mod span_tests {
         } else {
             panic!("first cell not a plain");
         }
+    }
+
+    #[test]
+    fn inline_spans_v2_worked_quote() {
+        let inline = quote_paragraph("> b c\n> d", "md");
+        assert_eq!(inline.len(), 4);
+        assert_plain(&inline[0], "b c", Span(2, 5), None);
+        assert_break(&inline[1], Span(5, 6));
+        assert_plain(&inline[2], "d", Span(8, 9), None);
+        assert_break(&inline[3], Span(9, 9));
+    }
+
+    #[test]
+    fn inline_spans_v2_folded_constructs() {
+        let quote_body = quote_paragraph("#+BEGIN_QUOTE\n  hi\n#+END_QUOTE", "org");
+        assert_plain(&quote_body[0], "hi", Span(16, 18), None);
+        assert_break(&quote_body[1], Span(18, 19));
+
+        assert_plain(&first_list_paragraph("* item")[0], "item", Span(2, 6), None);
+        assert_plain(&first_list_paragraph("1. item")[0], "item", Span(3, 7), None);
+
+        let blocks = crate::parse("* > b c\n  > d", "md");
+        let Block::List { items, .. } = &blocks[0] else { panic!("expected list") };
+        let Block::Quote { children, .. } = &items[0].content[0] else { panic!("expected quote") };
+        let Block::Paragraph { inline, .. } = &children[0] else { panic!("expected paragraph") };
+        assert_plain(&inline[0], "b c", Span(4, 7), None);
+        assert_break(&inline[1], Span(7, 8));
+        assert_plain(&inline[2], "d", Span(12, 13), None);
+        assert_break(&inline[3], Span(13, 13));
+    }
+
+    #[test]
+    fn inline_spans_v2_non_ascii_and_crlf_quote() {
+        let inline = quote_paragraph("> café", "md");
+        assert_plain(&inline[0], "café", Span(2, 7), None);
+        assert_break(&inline[1], Span(7, 7));
+
+        let inline = quote_paragraph("> b c\r\n> d", "md");
+        assert_plain(&inline[0], "b c", Span(2, 5), None);
+        assert_break(&inline[1], Span(5, 7));
+        assert_plain(&inline[2], "d", Span(9, 10), None);
+        assert_break(&inline[3], Span(10, 10));
+    }
+
+    #[test]
+    fn inline_spans_v2_non_folded_transformed_plains() {
+        assert_plain(
+            &parse_md("a\\*b")[0],
+            "a*b",
+            Span(0, 4),
+            Some(&[SpanMapSegment(0, 0, 1), SpanMapSegment(1, 2, 2)]),
+        );
+
+        let quick = parse_md("<https://a\\*b>");
+        let Inline::Link { label, .. } = &quick[0] else { panic!("expected quick link") };
+        assert_plain(
+            &label[0],
+            "https://a*b",
+            Span(1, 13),
+            Some(&[SpanMapSegment(0, 1, 9), SpanMapSegment(9, 11, 2)]),
+        );
+
+        let blocks = crate::parse("* TODO task with :tag1:tag2:", "org");
+        let Block::Bullet { inline, htags, .. } = &blocks[0] else { panic!("expected org headline") };
+        assert_eq!(htags, &vec!["tag1".to_string(), "tag2".to_string()]);
+        assert_plain(&inline[0], "task with ", Span(7, 17), None);
+    }
+
+    #[test]
+    fn inline_spans_v2_cr_and_unknown_entity_maps() {
+        let md = parse_md("*a\rb*");
+        let Inline::Emphasis { children, .. } = &md[0] else { panic!("expected emphasis") };
+        assert_plain(
+            &children[0],
+            "a\nb",
+            Span(1, 4),
+            Some(&[SpanMapSegment(0, 1, 1), SpanMapSegment(2, 3, 1)]),
+        );
+
+        assert_plain(
+            &parse_org("\\doesnotexist")[0],
+            "doesnotexist",
+            Span(0, 13),
+            Some(&[SpanMapSegment(0, 1, 12)]),
+        );
     }
 }

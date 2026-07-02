@@ -17,7 +17,9 @@
 //   aligns — lsdoc-only table column alignment (`:--`/`--:`/`:-:`), an enrichment
 //   for `render_html`'s `data-align`. mldoc 1.5.7 discards alignment, so it has no
 //   such field; dropping it (like `span`) keeps the byte-exact gate unaffected.
-export const IGNORE_KEYS = new Set(["span", "aligns"]);
+//   span_map — lsdoc-only exact text-to-source segments for transformed `plain`
+//   nodes; validated by harness/spans.mjs alongside `span`.
+export const IGNORE_KEYS = new Set(["span", "aligns", "span_map"]);
 
 // Recursively sort object keys so comparison is order-insensitive, dropping
 // IGNORE_KEYS. Behaviorally identical to the historical per-script `canon()`.

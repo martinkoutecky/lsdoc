@@ -47,6 +47,7 @@ use crate::block_common::{
     Line, RawHtmlScan, GT_FALLBACK_NEST_CAP, MARKERS,
 };
 use crate::projection::{Block, Inline, ListItem, Property, Span};
+use crate::source_map::{OriginCursor, OriginMap};
 
 // Depth guard for the ONE md re-dispatch that still native-recurses: the §3 `>`-quote fallback
 // (`reparse_block_content`). The `>`-quote staircase and re-bulleted `#+BEGIN` bodies are now
@@ -63,7 +64,7 @@ pub fn parse(input: &str) -> Vec<Block> {
     // Single-pass streaming block driver: O(n) time, O(depth) HEAP (the explicit container
     // stack), NO native recursion and NO depth cap. Byte-exact to mldoc (gated by `harness/`).
     // (The deep-nesting recurse-on-body — mldoc's O(n²) + stack-overflow — is gone.)
-    parse_md_streaming(input, false, false)
+    parse_md_streaming(input, false, false, None, input)
 }
 
 /// Per-line de-indent view reused from org.rs: `pub(crate) strip_view` strips `strip` bytes
@@ -110,37 +111,6 @@ fn gt_cont_line_view<'a>(line: &Line<'a>, strip: usize, gt_level: usize) -> Opti
     )
 }
 
-/// Null the inline spans of the DIRECT leaf blocks WITHOUT recursing into container children
-/// (`Quote`/`Custom`/`List`). Used at a `>`-frame's close: that frame's nested `>`-quote children
-/// and its `Step::GtFallback` reparse children are ALREADY fully null'd, so re-descending them is
-/// redundant AND — on a deep (uncapped) `>`-staircase — an O(depth) native-recursion stack
-/// overflow. The md twin of org's `none_out_frame_leaves`.
-fn none_out_frame_leaves(blocks: &mut [Block]) {
-    for b in blocks.iter_mut() {
-        match b {
-            Block::Paragraph { inline, .. }
-            | Block::Heading { inline, .. }
-            | Block::Bullet { inline, .. }
-            | Block::FootnoteDef { inline, .. } => none_out_inlines(inline),
-            Block::Table { header, rows, .. } => {
-                if let Some(h) = header {
-                    for cell in h.iter_mut() {
-                        none_out_inlines(cell);
-                    }
-                }
-                for row in rows.iter_mut() {
-                    for cell in row.iter_mut() {
-                        none_out_inlines(cell);
-                    }
-                }
-            }
-            // Container children are already fully null'd — do NOT recurse (the overflow).
-            _ => {}
-        }
-    }
-}
-
-
 /// A-md single prefix consume (the md twin of org's `scan_gt_prefix`): walk `line2`'s leading
 /// `>`-prefix ONCE (the enclosing indent already removed via `strip_view`), recording `offs[j]` =
 /// the byte offset into `line2` where `gt_peel(line2, j)` begins, for j = 0..=g. So `&line2[offs[j]..]
@@ -172,24 +142,31 @@ fn scan_gt_prefix(line2: &str, offs: &mut Vec<usize>) -> usize {
     g
 }
 
-/// Pop the top frame and emit its block into the parent (`flush_para` → null spans → `finish`).
+/// Pop the top frame and emit its block into the parent (`flush_para` → `finish`).
 /// `consume` (a HARD frame's `#+END_` closer at line `i`) makes the span end at `lines[i].end`; a
 /// `>`-frame (`consume == false`) ends at the last body line `lines[i-1].end`. The md twin of org's
 /// `close_top` — but md has no `absorb` field; the blank-swallow is the driver's F6 loop
 /// (`gt_closed` / the hard-close swallow). Shared by phase 1 (hard bound) and phase 2a.
-fn close_top(stack: &mut Vec<Frame>, lines: &[Line], input: &str, i: usize, consume: bool) {
+fn close_top(
+    stack: &mut Vec<Frame>,
+    lines: &[Line],
+    input: &str,
+    i: usize,
+    consume: bool,
+    origin: Option<&OriginMap>,
+    source_body: &str,
+) {
     let mut f = stack.pop().unwrap();
-    flush_para(&mut f.out, &mut f.para, &mut f.para_buf, input, false);
-    // Transformed body (strip>0 or a `>`-frame): null inline spans. A `>`-frame's container children
-    // are already null'd (bottom-up) ⇒ non-recursive leaf null (deep-staircase overflow guard); a
-    // callout body is shallow ⇒ recurse.
-    if f.null_spans {
-        if f.gt_level > 0 {
-            none_out_frame_leaves(&mut f.out);
-        } else {
-            none_out_blocks(&mut f.out);
-        }
-    }
+    flush_para(
+        &mut f.out,
+        &mut f.para,
+        &mut f.para_buf,
+        &mut f.para_map,
+        input,
+        false,
+        origin,
+        source_body,
+    );
     let span_end = if consume {
         lines[i].end
     } else {
@@ -228,7 +205,7 @@ enum Step {
 
 /// One open container on the streaming driver's explicit stack. Every re-dispatched
 /// `#+BEGIN_X` callout body (Quote/Custom) — clean-window (indent-0 body) or strip-view
-/// (indented body, `null_spans = true`) — lives here as a heap `Frame`. `in_quote` marks
+/// (indented body, `remap_spans = true`) — lives here as a heap `Frame`. `in_quote` marks
 /// the "in block content" context; `in_item` marks list-item content.
 struct Frame {
     hi: usize,                       // EXCLUSIVE closer line index; line `hi` is the closer.
@@ -243,22 +220,24 @@ struct Frame {
                                      // def-list, PLUS Directive unless ALSO inside a quote.)
     out: Vec<Block>,                 // children of THIS body.
     para: Option<(usize, usize)>,    // the open paragraph byte-window for THIS body.
-    // In a `null_spans` (re-bulleted / strip>0) frame the paragraph's raw byte-window keeps
+    // In a `remap_spans` (re-bulleted / strip>0) frame the paragraph's raw byte-window keeps
     // the per-line indent (only the first line is de-indented). Instead we accumulate the
     // VIEWED (`line_text`) line texts joined with `\n`, which normalizes the cumulative
-    // indent (via `strip`). Active iff a paragraph is open in a null_spans frame (clean
+    // indent (via `strip`). Active iff a paragraph is open in a remap_spans frame (clean
     // frames keep `para`'s `(start,end)` fast path).
     para_buf: Option<String>,
+    para_map: OriginMap,
+    para_cursor: OriginCursor,
     builder: Option<Builder>,        // the opener → emitted on pop (None for the root).
     open_span_start: usize,          // byte offset of the opener line start (for the span).
     strip: usize,       // cumulative de-indent applied to every body-line view (0 = root/clean).
-    null_spans: bool,   // body was re-bulleted (strip>0) → null inline spans on pop.
+    remap_spans: bool,   // body was transformed (strip>0 / quote peel) → remap inline spans on pop.
     // A-md `>`-blockquote container frame (`gt_level == 0` for the root / `#+BEGIN_X` callout
     // frames). `gt_level` = the cumulative `>`-peel applied to CONTINUATION lines (composed on top
     // of the indent `strip`). The per-line `scan_gt_prefix` walk decides close/open/content for the
     // WHOLE `>`-stack in one pass — no per-frame re-peel, no opener re-dispatch (so `property` runs
     // once, not per level). `open_line` is the opener line index (kept for the pop invariant).
-    // `null_spans` is always true for a `>`-frame. Frame no longer borrows input (the deleted
+    // `remap_spans` is always true for a `>`-frame. Frame no longer borrows input (the deleted
     // `opener_content` field held the only `&'a str`) ⇒ no lifetime parameter.
     gt_level: usize,
     open_line: usize,
@@ -314,7 +293,13 @@ fn build_indexes(lines: &[Line], input: &str) -> (EndTrie, Vec<usize>, Vec<usize
 /// `root_in_quote = false` at the document level; `true` when re-dispatching a `>`-blockquote
 /// body (F1: the body is parsed with the full block grammar MINUS heading/bullet/property/
 /// footnote/drawer, and a paragraph's trailing Break is trimmed before a following block).
-fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: bool) -> Vec<Block> {
+fn parse_md_streaming<'a>(
+    input: &'a str,
+    root_in_quote: bool,
+    root_in_item: bool,
+    origin: Option<&OriginMap>,
+    source_body: &str,
+) -> Vec<Block> {
     let mut lines = split_lines(input);
     let last_rbracket = input.rfind(']');
     let (end_trie, drawer_end_idxs, fence_lines, hiccup_close) = build_indexes(&lines, input);
@@ -329,10 +314,12 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
         out: Vec::new(),
         para: None,
         para_buf: None,
+        para_map: OriginMap::new(),
+        para_cursor: OriginCursor::new(),
         builder: None,
         open_span_start: 0,
         strip: 0,
-        null_spans: false,
+        remap_spans: false,
         gt_level: 0,
         open_line: 0,
     }];
@@ -362,7 +349,7 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
         // so phase 1 never needs `offs`, and after it every open frame has `hi > i`.)
         while stack.len() > 1 && stack.last().unwrap().hi <= i {
             let consume = stack.last().unwrap().gt_level == 0;
-            close_top(&mut stack, &lines, input, i, consume);
+            close_top(&mut stack, &lines, input, i, consume, origin, source_body);
             if consume {
                 i += 1; // CONSUME the closer line.
                 // mldoc ends a `#+BEGIN_X` callout with `<* optional eols` (F6): swallow following
@@ -399,7 +386,7 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
                 {
                     break;
                 }
-                close_top(&mut stack, &lines, input, i, false);
+                close_top(&mut stack, &lines, input, i, false, origin, source_body);
                 gt_closed = true;
             }
 
@@ -463,7 +450,7 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
                             // intervening blank breaks), then flush the parent's para (`between_eols`).
                             drop_marker_ws(&mut top.para, ws_drop.take(), input);
                             let trim = top.in_quote || top.in_item;
-                            flush_para(&mut top.out, &mut top.para, &mut top.para_buf, input, trim);
+                            flush_para(&mut top.out, &mut top.para, &mut top.para_buf, &mut top.para_map, input, trim, origin, source_body);
                             opened_any = true;
                         }
                         (top.hi, top.strip, top.gt_level)
@@ -475,10 +462,12 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
                         out: Vec::new(),
                         para: None,
                         para_buf: None,
+                        para_map: OriginMap::new(),
+                        para_cursor: OriginCursor::new(),
                         builder: Some(Builder::Quote),
                         open_span_start: lines[i].start,
                         strip: p_strip,   // inherit the ancestor indent strip
-                        null_spans: true, // a `>`-body is transformed ⇒ null inline spans on pop
+                        remap_spans: true, // a `>`-body is transformed ⇒ remap inline spans on pop
                         gt_level: p_gt + 1,
                         open_line: i,
                     });
@@ -501,13 +490,15 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
             let hi = top.hi;
             let in_quote = top.in_quote;
             let in_item = top.in_item;
-            let null_spans = top.null_spans;
+            let remap_spans = top.remap_spans;
             dispatch_md_line(
                 i,
                 &mut lines,
                 &mut top.out,
                 &mut top.para,
                 &mut top.para_buf,
+                &mut top.para_map,
+                &mut top.para_cursor,
                 in_quote,
                 in_item,
                 &mut ws_drop,
@@ -522,8 +513,10 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
                 last_rbracket,
                 &hiccup_close,
                 input,
+                origin,
+                source_body,
                 strip,
-                null_spans,
+                remap_spans,
                 gt_level_disp,
                 dispatch_view,
             )
@@ -532,16 +525,16 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
             Step::Next(ni) => i = ni,
             Step::Open { close, builder, indent_strip, span_start } => {
                 // A `#+BEGIN_X` callout body — the SAME in-block-content grammar as a `>`-quote body
-                // (`in_quote = true`); clean-window (spans global) or strip-view (indent>0 ⇒ null).
+                // (`in_quote = true`); clean-window (spans global) or strip-view (indent>0 ⇒ remap).
                 // Callouts only open at `gt_level==0` (inside a `>`-frame they are a §3 tell).
                 let top_strip = stack.last().unwrap().strip;
                 {
                     let top = stack.last_mut().unwrap();
                     let pq = top.in_quote;
-                    flush_para(&mut top.out, &mut top.para, &mut top.para_buf, input, pq);
+                    flush_para(&mut top.out, &mut top.para, &mut top.para_buf, &mut top.para_map, input, pq, origin, source_body);
                 }
                 let child_strip = top_strip + indent_strip;
-                let null_spans = child_strip > 0;
+                let remap_spans = child_strip > 0;
                 stack.push(Frame {
                     hi: close,
                     in_quote: true,
@@ -549,10 +542,12 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
                     out: Vec::new(),
                     para: None,
                     para_buf: None,
+                    para_map: OriginMap::new(),
+                    para_cursor: OriginCursor::new(),
                     builder: Some(builder),
                     open_span_start: span_start,
                     strip: child_strip,
-                    null_spans,
+                    remap_spans,
                     gt_level: 0,
                     open_line: 0,
                 });
@@ -566,25 +561,50 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
                     let t = stack.last().unwrap();
                     (t.hi, t.gt_level)
                 };
-                let mut de_gt = {
+                let (mut de_gt, mut de_gt_map, mut de_gt_cursor) = {
                     let top = stack.last_mut().unwrap();
                     top.para = None;
-                    top.para_buf.take().unwrap_or_default()
+                    (
+                        top.para_buf.take().unwrap_or_default(),
+                        std::mem::take(&mut top.para_map),
+                        std::mem::take(&mut top.para_cursor),
+                    )
                 };
-                de_gt.push_str(dispatch_view.unwrap_or(""));
-                de_gt.push('\n');
+                append_view_with_origin(
+                    &mut de_gt,
+                    &mut de_gt_map,
+                    &mut de_gt_cursor,
+                    input,
+                    origin,
+                    dispatch_view.unwrap_or(""),
+                );
+                append_line_joiner(&mut de_gt, &mut de_gt_map, &mut de_gt_cursor, &lines, i, origin);
                 let mut end = i + 1;
                 while end < p_hi {
                     match gt_cont_line_view(&lines[end], strip, p_gt) {
                         Some(v) => {
-                            de_gt.push_str(v);
-                            de_gt.push('\n');
+                            append_view_with_origin(
+                                &mut de_gt,
+                                &mut de_gt_map,
+                                &mut de_gt_cursor,
+                                input,
+                                origin,
+                                v,
+                            );
+                            append_line_joiner(
+                                &mut de_gt,
+                                &mut de_gt_map,
+                                &mut de_gt_cursor,
+                                &lines,
+                                end,
+                                origin,
+                            );
                             end += 1;
                         }
                         None => break,
                     }
                 }
-                let children = reparse_block_content(&de_gt);
+                let children = reparse_block_content(&de_gt, &de_gt_map, source_body);
                 stack.last_mut().unwrap().out.extend(children);
                 i = end; // the frame closes next iteration (i == end ⇒ continuation `None` or `hi`)
             }
@@ -593,7 +613,7 @@ fn parse_md_streaming<'a>(input: &'a str, root_in_quote: bool, root_in_item: boo
 
     // Only the root remains (all callout bodies closed before EOF); flush its paragraph.
     let mut root = stack.pop().unwrap();
-    flush_para(&mut root.out, &mut root.para, &mut root.para_buf, input, false);
+    flush_para(&mut root.out, &mut root.para, &mut root.para_buf, &mut root.para_map, input, false, origin, source_body);
     root.out
 }
 
@@ -611,6 +631,8 @@ fn dispatch_md_line<'a>(
     out: &mut Vec<Block>,
     para: &mut Option<(usize, usize)>,
     para_buf: &mut Option<String>,
+    para_map: &mut OriginMap,
+    para_cursor: &mut OriginCursor,
     in_quote: bool,
     in_item: bool,
     ws_drop: &mut Option<usize>,
@@ -625,8 +647,10 @@ fn dispatch_md_line<'a>(
     last_rbracket: Option<usize>,
     hiccup_close: &[usize], // B: precomputed block-hiccup `[:`…`]` balance (position-indexed)
     input: &'a str,
+    origin: Option<&OriginMap>,
+    source_body: &str,
     strip: usize,
-    null_spans: bool,
+    remap_spans: bool,
     // A-md: `gt_level` is the FINAL `>`-depth the driver's prefix consume settled this line at
     // (0 for a hard-frame / plain line — behavior identical to before; `> 0` for a `>`-frame). `view`
     // is the pre-computed view the driver already de-`>`'d (`cur`) — `None` only for a plain line,
@@ -698,7 +722,7 @@ fn dispatch_md_line<'a>(
         if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
             if close < hi {
                 drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blanks.
-                flush_para(out, para, para_buf, input, trim);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                 let lang = fence_lang(&t[mend..]);
                 let code = if close > i + 1 {
                     input[lines[i + 1].start..lines[close - 1].end].to_string()
@@ -737,7 +761,7 @@ fn dispatch_md_line<'a>(
                 // following paragraph gets no leading Break. EXPORT/COMMENT are DEFERRED (they
                 // need new projection kinds and diverge in both formats) → stay Custom.
                 if name.eq_ignore_ascii_case("SRC") || name.eq_ignore_ascii_case("EXAMPLE") {
-                    flush_para(out, para, para_buf, input, trim);
+                    flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                     let (block, ni) = raw_callout_block(&name, t, lines, i, close, hi, line_start);
                     out.push(block);
                     return Step::Next(ni);
@@ -769,7 +793,7 @@ fn dispatch_md_line<'a>(
     // callout the WITH-Directive `list_content_parsers` (block0.ml) keeps it (verified vs oracle).
     if let Some((name, value)) = crate::org::directive(t).filter(|_| in_quote || !in_item) {
         drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop the marker `" \n"`, keep blanks.
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
         let mut ni = i + 1;
         let mut end = line_end;
         while ni < hi && lines[ni].text.is_empty() {
@@ -792,16 +816,16 @@ fn dispatch_md_line<'a>(
         // eol (no `optional eols`/`between_eols`), so inside a `>`-quote body a paragraph KEEPS
         // its trailing Break before it, and the eol AFTER it becomes a `Paragraph_Sep` →
         // a Break-paragraph (mldoc's `Paragraph.sep`-last ordering). Never trim. F1.
-        flush_para(out, para, para_buf, input, false);
+        flush_para(out, para, para_buf, para_map, input, false, origin, source_body);
         let mut ni = i + 1;
         while ni < lines.len() && lines[ni].start < consumed_end {
             ni += 1;
         }
-        // In a null_spans frame `content` sliced from raw `input` keeps the per-line indent.
+        // In a remap_spans frame `content` sliced from raw `input` keeps the per-line indent.
         // Re-run parse_latex_env over the VIEWED (de-indented) body window to get the correct
         // content; the STRUCTURE (name / consumed_end / ni) stays from the raw pass. O(n): each
         // body line belongs to exactly one leaf construct.
-        let content = if null_spans {
+        let content = if remap_spans {
             let mut s = String::new();
             for k in i..ni {
                 s.push_str(line_text(lines, k, strip));
@@ -822,10 +846,19 @@ fn dispatch_md_line<'a>(
             let trail_end = if ni < lines.len() { lines[ni].start } else { body_end };
             if consumed_end < trail_end {
                 *para = Some((consumed_end, trail_end));
-                // Keep para/para_buf in lockstep in a null_spans frame: the trailing region is a
+                // Keep para/para_buf in lockstep in a remap_spans frame: the trailing region is a
                 // line terminator (a single Break); the raw `\n` normalizes to `\n`.
-                if null_spans {
-                    *para_buf = Some("\n".to_string());
+                if remap_spans {
+                    let buf = para_buf.get_or_insert_with(String::new);
+                    let text_off = buf.len();
+                    para_map.push_composed_eol(
+                        text_off,
+                        origin,
+                        consumed_end,
+                        trail_end - consumed_end,
+                        Some(para_cursor),
+                    );
+                    buf.push('\n');
                 }
             }
         }
@@ -838,7 +871,7 @@ fn dispatch_md_line<'a>(
     // (suppressed inside a `>`-blockquote body — mldoc `block_content_parsers` omits Heading,
     // so `# h` / a `-` bullet there stay paragraph text. F1.)
     if let Some((level, size, hend)) = heading_at(t).filter(|_| !in_block_content) {
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
         let (marker, priority, title) = split_markers(t[hend..].trim_start());
         let trail = trim_end_ws_len(t);
         if title.is_empty() && trail < t.len() {
@@ -870,7 +903,7 @@ fn dispatch_md_line<'a>(
     // 4. horizontal rule (before dash bullet / list)
     if is_hr(t) {
         drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
         out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
         return Step::Next(i + 1);
     }
@@ -908,7 +941,7 @@ fn dispatch_md_line<'a>(
             // its very start (a true fence opener).
             if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
                 if close < hi {
-                    flush_para(out, para, para_buf, input, trim);
+                    flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                     empty_bullet!();
                     let lang = fence_lang(&content[frun..]);
                     let code = if close > i + 1 {
@@ -938,7 +971,7 @@ fn dispatch_md_line<'a>(
         // stays a normal bullet titled `#+BEGIN_<TYPE> …` (mldoc).
         if let Some(bname) = callout_begin(content) {
             if let Some(close) = end_trie.find(&bname, i).filter(|&c| c < hi) {
-                flush_para(out, para, para_buf, input, trim);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                 empty_bullet!();
                 if bname.eq_ignore_ascii_case("SRC") || bname.eq_ignore_ascii_case("EXAMPLE") {
                     let (block, ni) = raw_callout_block(&bname, content, lines, i, close, hi, content_off);
@@ -965,7 +998,7 @@ fn dispatch_md_line<'a>(
         // (bullets suppressed in every in-block-content body), so `strip == 0` / `content_off` maps
         // straight into `input`. C2.
         if md_quote_first_slice(content).is_some() {
-            flush_para(out, para, para_buf, input, trim);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
             empty_bullet!();
             lines[i] = Line { start: content_off, end: line_end, text: content };
             return Step::Next(i);
@@ -977,7 +1010,7 @@ fn dispatch_md_line<'a>(
         // (exactly like step 8). `content` is post-`#{1,n}`-strip, matching the size
         // run; the property `key` rejects bullet prefixes via its space check.
         if let Some(kv) = property(content) {
-            flush_para(out, para, para_buf, input, trim);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
             empty_bullet!();
             let mut props = vec![Property::parse1(kv)];
             let mut end = line_end;
@@ -998,7 +1031,7 @@ fn dispatch_md_line<'a>(
         }
         // (d) horizontal rule opener (`---`/`***`/`___`).
         if is_hr(content) {
-            flush_para(out, para, para_buf, input, trim);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
             empty_bullet!();
             out.push(Block::Hr { span: Some(Span(content_off, line_end)) });
             return Step::Next(i + 1);
@@ -1008,7 +1041,7 @@ fn dispatch_md_line<'a>(
             .and_then(|off| find_displayed_math_close(input, content_off + off, body_end))
             .is_some()
         {
-            flush_para(out, para, para_buf, input, trim);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
             empty_bullet!();
             lines[i] = Line { start: content_off, end: line_end, text: content };
             return Step::Next(i);
@@ -1017,7 +1050,7 @@ fn dispatch_md_line<'a>(
         if raw_html_block_start(content) {
             let cap = raw_html_raw_capture(lines, i, hi, body_end, input, content, raw_html_scan);
             if let Some(cap) = cap {
-                flush_para(out, para, para_buf, input, trim);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                 empty_bullet!();
                 out.push(Block::RawHtml {
                     text: cap.text,
@@ -1033,7 +1066,7 @@ fn dispatch_md_line<'a>(
         if let Some((name, lc, consumed_end)) =
             crate::inline::parse_latex_env(&input[..body_end], content_off, line_start + t.len())
         {
-            flush_para(out, para, para_buf, input, trim);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
             empty_bullet!();
             out.push(Block::LatexEnv { name, content: lc, span: Some(Span(content_off, consumed_end)) });
             let mut ni = i + 1;
@@ -1044,7 +1077,7 @@ fn dispatch_md_line<'a>(
         }
         // (h) table opener `| … |` (consumes following table-row lines, bounded by `hi`).
         if md_table_row(content) {
-            flush_para(out, para, para_buf, input, trim);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
             empty_bullet!();
             let mut texts: Vec<&str> = vec![content];
             let mut ni = i + 1;
@@ -1052,14 +1085,21 @@ fn dispatch_md_line<'a>(
                 texts.push(lines[ni].text);
                 ni += 1;
             }
-            out.push(build_table_from_texts(&texts, content_off, lines[ni - 1].end, input));
+            out.push(build_table_from_texts(
+                &texts,
+                content_off,
+                lines[ni - 1].end,
+                input,
+                origin,
+                source_body,
+            ));
             return Step::Next(ni);
         }
         // (i) footnote-definition opener — only WITHOUT a `#` prefix (with a `#`,
         // `[^id]` is an inline footnote ref in the heading title, per mldoc heading0).
         if size.is_none() {
             if let Some((fname, fbody)) = footnote_def(content) {
-                flush_para(out, para, para_buf, input, trim);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                 empty_bullet!();
                 out.push(Block::FootnoteDef {
                     name: fname,
@@ -1075,7 +1115,7 @@ fn dispatch_md_line<'a>(
         // the bullet for the prefix, then the leftover ws starts a paragraph:
         // `- ` / `-   ` / `- ## ` / `- TODO ` → [bullet, paragraph]; a bare `-`
         // / `- ##` / `- TODO` with no trailing ws stays a single empty bullet).
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
         let (marker, priority, title) = split_markers(content);
         let trail = trim_end_ws_len(t);
         if title.is_empty() && trail < t.len() {
@@ -1107,7 +1147,7 @@ fn dispatch_md_line<'a>(
     // 6. footnote definition — suppressed inside a `>`-blockquote body (mldoc
     // `block_content_parsers` omits Footnote, so `[^id]: …` stays paragraph text). F1.
     if let Some((fname, content)) = footnote_def(t).filter(|_| !in_block_content) {
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
         out.push(Block::FootnoteDef {
             name: fname,
             inline: stub_inline(content, crate::inline::ptr_base(content, input)),
@@ -1119,13 +1159,20 @@ fn dispatch_md_line<'a>(
     // 7. table (group of consecutive table-row lines, bounded by `hi`)
     if md_table_row(t) {
         drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
         let start = i;
         let mut ni = i;
         while ni < hi && md_table_row(lines[ni].text) {
             ni += 1;
         }
-        out.push(build_table(&lines[start..ni], lines[start].start, lines[ni - 1].end, input));
+        out.push(build_table(
+            &lines[start..ni],
+            lines[start].start,
+            lines[ni - 1].end,
+            input,
+            origin,
+            source_body,
+        ));
         return Step::Next(ni);
     }
 
@@ -1134,7 +1181,7 @@ fn dispatch_md_line<'a>(
     // `many1 (parse1 <|> parse2)`), so `a:: 1\n#+b: 2` → props a, b. Suppressed inside a
     // `>`-blockquote body (mldoc omits the markdown property from `block_content_parsers`). F1.
     if property(t).is_some() && !in_block_content {
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
         let start = i;
         let mut props = Vec::new();
         let mut ni = i;
@@ -1165,16 +1212,16 @@ fn dispatch_md_line<'a>(
     // `collapse_floor`). Disabled inside list-item content (`!in_item`: `list_content_parsers`
     // omits `Lists.parse`); `collapse_floor` skips list-starts inside an already-collapsed region.
     if !in_item && i >= *collapse_floor && md_marker(t).is_some() {
-        match collect_list_md(lines, i, hi, in_quote) {
+        match collect_list_md(lines, i, hi, in_quote, input, origin, source_body) {
             Ok((block, next)) => {
-                flush_para(out, para, para_buf, input, trim);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                 out.push(block);
                 return Step::Next(next);
             }
             Err(Collapse { kept, resume, trigger }) => {
                 *collapse_floor = trigger;
                 if let Some(block) = kept {
-                    flush_para(out, para, para_buf, input, trim);
+                    flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                     out.push(block);
                     return Step::Next(resume);
                 }
@@ -1208,7 +1255,7 @@ fn dispatch_md_line<'a>(
             if !raw_html_block_start(cur_view) {
                 break;
             }
-            let cap = if null_spans || (cur == i && !captured && view.is_some()) {
+            let cap = if remap_spans || (cur == i && !captured && view.is_some()) {
                 raw_html_view_capture(lines, cur, hi, strip, cur_view)
             } else {
                 let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
@@ -1219,7 +1266,7 @@ fn dispatch_md_line<'a>(
             };
             if !captured {
                 drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blanks.
-                flush_para(out, para, para_buf, input, trim);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
             }
             out.push(Block::RawHtml {
                 text: cap.text,
@@ -1260,7 +1307,7 @@ fn dispatch_md_line<'a>(
             let Some(opener_off) = displayed_math_opener(cur_view) else {
                 break;
             };
-            let cap = if null_spans || (cur == i && !captured && view.is_some()) {
+            let cap = if remap_spans || (cur == i && !captured && view.is_some()) {
                 displayed_math_view_capture(lines, cur, hi, strip, cur_view, opener_off)
             } else {
                 let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
@@ -1271,7 +1318,7 @@ fn dispatch_md_line<'a>(
             };
             if !captured {
                 drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blanks.
-                flush_para(out, para, para_buf, input, trim);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
             }
             out.push(Block::DisplayedMath {
                 text: cap.text,
@@ -1300,7 +1347,7 @@ fn dispatch_md_line<'a>(
     if let Some(name) = drawer_begin(t).filter(|_| !in_block_content) {
         if let Some(close) = find_drawer_end(drawer_end_idxs, drawer_cursor, i) {
             if close < hi {
-                flush_para(out, para, para_buf, input, trim);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                 let span = Some(Span(line_start, lines[close].end));
                 // mldoc (`drawer.ml`) emits a `Property_Drawer` ONLY when the WHOLE body
                 // parses as `many1 property` — every body line a valid `:key: value` (an
@@ -1404,7 +1451,7 @@ fn dispatch_md_line<'a>(
             if cap_end == usize::MAX || cap_end > body_end || !crate::inline::hiccup_head_ok(input, rec) {
                 break;
             }
-            flush_para(out, para, para_buf, input, trim); // no-op after the first (para already flushed)
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body); // no-op after the first (para already flushed)
             out.push(Block::Hiccup {
                 v: input[rec..cap_end].to_string(),
                 span: Some(Span(cur_start, cap_end)),
@@ -1464,8 +1511,8 @@ fn dispatch_md_line<'a>(
         && i + 1 < hi
         && is_def_opener(lines[i + 1].text)
     {
-        flush_para(out, para, para_buf, input, false);
-        let (item, ni) = build_def_list(lines, i, hi, input);
+        flush_para(out, para, para_buf, para_map, input, false, origin, source_body);
+        let (item, ni) = build_def_list(lines, i, hi, input, origin, source_body);
         out.push(Block::List {
             items: vec![item],
             span: Some(Span(line_start, lines[ni - 1].end)),
@@ -1474,16 +1521,16 @@ fn dispatch_md_line<'a>(
     }
 
     // 12. plain line — accumulate into the current paragraph.
-    // In null_spans (strip>0) frames, the content lives in para_buf (viewed, de-indented).
+    // In remap_spans (strip>0) frames, the content lives in para_buf (viewed, de-indented).
     // Each viewed line is appended with its trailing `\n` so that flush_para's trim_eol=false
     // (body-final flush at frame close) preserves the trailing Break, while trim_eol=true
     // (mid-body flush before a following block, in_quote=true) trims it — exactly matching
     // what the old reparse_block_content path produced via block_code_texts("x\n").
-    if null_spans {
+    if remap_spans {
         let viewed = t; // already line_text(lines, i, strip)
         let buf = para_buf.get_or_insert_with(String::new);
-        buf.push_str(viewed);
-        buf.push('\n'); // trailing \n preserved until flush_para trims or keeps based on trim_eol
+        append_view_with_origin(buf, para_map, para_cursor, input, origin, viewed);
+        append_line_joiner(buf, para_map, para_cursor, lines, i, origin);
         // Keep para in lockstep so flush_para and ws_drop still work.
         *para = Some(match *para {
             Some((s, _)) => (s, line_end),
@@ -1638,16 +1685,17 @@ fn displayed_math_view_capture<'a>(
 /// absorbs the paragraph's trailing eol via mldoc's `between_eols`/`concat_paragraph_lines`,
 /// whereas at the document level the eol stays a Break. Body-final / EOF flushes pass `false`.
 ///
-/// `para_buf`: in a `null_spans` (strip>0 / re-bulleted) frame, the paragraph content lives
-/// in `para_buf` (viewed line texts joined by `\n`), already de-indented. Parse THAT and
-/// null the span (the byte-window doesn't map to de-indented content; `none_out_blocks` on
-/// the frame's pop will null the inline spans). Keep `para` in lockstep by clearing it too.
+/// `para_buf`: in a transformed frame, the paragraph content lives in viewed line text joined
+/// by `\n`; `para_map` maps that rebuilt buffer back to absolute source bytes.
 fn flush_para(
     out: &mut Vec<Block>,
     para: &mut Option<(usize, usize)>,
     para_buf: &mut Option<String>,
+    para_map: &mut OriginMap,
     input: &str,
     trim_eol: bool,
+    origin: Option<&OriginMap>,
+    source_body: &str,
 ) {
     if let Some(mut buf) = para_buf.take() {
         *para = None;
@@ -1655,10 +1703,11 @@ fn flush_para(
             while buf.ends_with('\n') || buf.ends_with('\r') {
                 buf.pop();
             }
+            para_map.truncate_text_len(buf.len());
         }
-        // Base offset 0: inline spans are relative to `buf` and get nulled by none_out_blocks
-        // on the frame's pop (every null_spans frame runs it), so they never reach the output.
-        out.push(Block::Paragraph { inline: stub_inline(&buf, 0), span: None });
+        let inline = stub_inline_mapped(&buf, 0, &buf, Some(para_map), source_body);
+        para_map.clear();
+        out.push(Block::Paragraph { inline, span: None });
         return;
     }
     if let Some((s, mut e)) = para.take() {
@@ -1668,7 +1717,7 @@ fn flush_para(
             }
         }
         out.push(Block::Paragraph {
-            inline: stub_inline(&input[s..e], s),
+            inline: stub_inline_mapped(&input[s..e], s, input, origin, source_body),
             span: Some(Span(s, e)),
         });
     }
@@ -1689,82 +1738,56 @@ fn drop_marker_ws(para: &mut Option<(usize, usize)>, was_ws_drop: Option<usize>,
     }
 }
 
+fn append_view_with_origin(
+    buf: &mut String,
+    map: &mut OriginMap,
+    cursor: &mut OriginCursor,
+    input: &str,
+    origin: Option<&OriginMap>,
+    view: &str,
+) {
+    let text_off = buf.len();
+    if !view.is_empty() {
+        let src_off = crate::inline::ptr_base(view, input);
+        map.push_composed(text_off, origin, src_off, view.len(), Some(cursor));
+        buf.push_str(view);
+    }
+}
+
+fn append_line_joiner(
+    buf: &mut String,
+    map: &mut OriginMap,
+    cursor: &mut OriginCursor,
+    lines: &[Line],
+    line_idx: usize,
+    origin: Option<&OriginMap>,
+) {
+    let text_off = buf.len();
+    let eol_start = lines[line_idx].start + lines[line_idx].text.len();
+    let eol_len = lines[line_idx].end.saturating_sub(eol_start);
+    if eol_len > 0 {
+        map.push_composed_eol(text_off, origin, eol_start, eol_len, Some(cursor));
+    }
+    buf.push('\n');
+}
+
 fn stub_inline(s: &str, base: usize) -> Vec<Inline> {
     // The real inline parser. `base` = the absolute byte offset of `s` in the block body.
     crate::resolver::parse_inline(s, base)
 }
 
-/// Null out the `span` of `n` and, recursively, of its inline children. Used when the inline
-/// text was parsed from a FOLDED (joined) buffer whose positions don't map to the block body,
-/// so no meaningful source span exists (spans must be absent, not wrong).
-fn none_out_inline(n: &mut Inline) {
-    crate::projection::set_inline_span(n, None);
-    match n {
-        Inline::Emphasis { children, .. }
-        | Inline::Subscript { children, .. }
-        | Inline::Superscript { children, .. }
-        | Inline::Tag { children, .. } => {
-            for c in children.iter_mut() {
-                none_out_inline(c);
-            }
-        }
-        Inline::Link { label, .. } => {
-            for c in label.iter_mut() {
-                none_out_inline(c);
-            }
-        }
-        _ => {}
+fn stub_inline_mapped(
+    s: &str,
+    base: usize,
+    current_input: &str,
+    origin: Option<&OriginMap>,
+    source_body: &str,
+) -> Vec<Inline> {
+    let mut inline = stub_inline(s, base);
+    if let Some(origin) = origin {
+        crate::source_map::remap_inlines(&mut inline, current_input, source_body, origin);
     }
-}
-
-/// `pub(crate)` so the org driver can null the inline spans of its FOLDED reparse buffers.
-pub(crate) fn none_out_inlines(inlines: &mut [Inline]) {
-    for n in inlines.iter_mut() {
-        none_out_inline(n);
-    }
-}
-
-fn none_out_list_items(items: &mut [ListItem]) {
-    for item in items.iter_mut() {
-        none_out_inlines(&mut item.name);
-        none_out_blocks(&mut item.content);
-        none_out_list_items(&mut item.items);
-    }
-}
-
-/// Recursively null out every INLINE span in `blocks` (block-level spans are untouched —
-/// they are excluded from the gate and not part of this task's inline-span contract).
-/// `pub(crate)` so the org driver reuses it for its FOLDED `streaming_reparse` bodies.
-pub(crate) fn none_out_blocks(blocks: &mut [Block]) {
-    for block in blocks.iter_mut() {
-        match block {
-            Block::Paragraph { inline, .. }
-            | Block::Heading { inline, .. }
-            | Block::Bullet { inline, .. }
-            | Block::FootnoteDef { inline, .. } => {
-                none_out_inlines(inline);
-            }
-            Block::Table { header, rows, .. } => {
-                if let Some(h) = header {
-                    for cell in h.iter_mut() {
-                        none_out_inlines(cell);
-                    }
-                }
-                for row in rows.iter_mut() {
-                    for cell in row.iter_mut() {
-                        none_out_inlines(cell);
-                    }
-                }
-            }
-            Block::List { items, .. } => {
-                none_out_list_items(items);
-            }
-            Block::Quote { children, .. } | Block::Custom { children, .. } => {
-                none_out_blocks(children);
-            }
-            _ => {}
-        }
-    }
+    inline
 }
 
 /// Title text of an ATX-ish bullet/heading content: strip a leading `#{1,n} ` run
@@ -1905,14 +1928,14 @@ fn dash_bullet_level(s: &str) -> Option<u32> {
 }
 
 /// A parsed markdown list marker (mldoc `format_checkbox_parser` + the first content line),
-/// PLUS the raw body after `marker + ws + checkbox + spaces` (NOT yet trimmed — `collect_list_md`
+/// PLUS the raw body offset after `marker + ws + checkbox + spaces` (before `collect_list_md`
 /// applies the per-line `String.trim` mldoc does at content join).
 struct MdMarker {
     ordered: bool,
     number: Option<u32>,
     checkbox: Option<bool>,
     indent: u32,
-    body: String,
+    body_start: usize,
 }
 
 /// Parse a markdown list marker (`*`/`+` then ws, or `N.` then ws; mldoc `format_parser` for
@@ -1928,7 +1951,13 @@ fn md_marker(s: &str) -> Option<MdMarker> {
         if body.trim().is_empty() {
             return None;
         }
-        Some(MdMarker { ordered, number, checkbox, indent: ws as u32, body: body.to_string() })
+        Some(MdMarker {
+            ordered,
+            number,
+            checkbox,
+            indent: ws as u32,
+            body_start: s.len() - body.len(),
+        })
     };
     // unordered * or +
     if let Some(after) = rest.strip_prefix('*').or_else(|| rest.strip_prefix('+')) {
@@ -1990,7 +2019,11 @@ fn scan_leading_int(t: &str) -> bool {
 /// description is then always "" (the `>= l+1` branch is dead under `consume:All`). `* term :: x`
 /// / `* term ::\n…` do NOT fire (something follows the first " ::"); `* term ::` → name "term",
 /// content "". Returns `(name_inline, stripped_content)`; `None` = no split (content unchanged).
-fn md_definition_split(content: &str) -> Option<(Vec<Inline>, String)> {
+fn md_definition_split(
+    content: &str,
+    origin: &OriginMap,
+    source_body: &str,
+) -> Option<(Vec<Inline>, String, OriginMap)> {
     let pos = content.find(" ::")?;
     if pos + 3 != content.len() {
         return None; // the first " ::" is not at the end ⇒ consume:All fails ⇒ no definition
@@ -1999,10 +2032,8 @@ fn md_definition_split(content: &str) -> Option<(Vec<Inline>, String)> {
     if name.is_empty() {
         return None; // `take_while1` needs ≥1 char before " ::"
     }
-    // `content` is a FOLDED join → its positions don't map to the block body; drop the spans.
-    let mut inl = stub_inline(name, 0);
-    none_out_inlines(&mut inl);
-    Some((inl, String::new()))
+    let inl = stub_inline_mapped(name, 0, content, Some(origin), source_body);
+    Some((inl, String::new(), OriginMap::new()))
 }
 
 /// A (possibly partial) list collapse — mldoc's recursive list parser failed on a deeper
@@ -2037,6 +2068,9 @@ fn collect_list_md(
     start: usize,
     hi: usize,
     in_quote: bool,
+    input: &str,
+    origin: Option<&OriginMap>,
+    source_body: &str,
 ) -> Result<(Block, usize), Collapse> {
     let mut flat: Vec<ListItem> = Vec::new();
     let mut flat_lines: Vec<usize> = Vec::new();
@@ -2055,7 +2089,19 @@ fn collect_list_md(
         };
         let cur_indent = marker.indent;
         // content = first line (marker body) + folded indented continuation lines, each trimmed.
-        let mut content_lines: Vec<String> = vec![marker.body.trim().to_string()];
+        let mut joined = String::new();
+        let mut joined_map = OriginMap::new();
+        let mut joined_cursor = OriginCursor::new();
+        let first_raw = &lines[i].text[marker.body_start..];
+        append_view_with_origin(
+            &mut joined,
+            &mut joined_map,
+            &mut joined_cursor,
+            input,
+            origin,
+            first_raw.trim(),
+        );
+        let mut last_content_line = i;
         let mut j = i + 1;
         let mut trigger: Option<usize> = None;
         loop {
@@ -2080,7 +2126,23 @@ fn collect_list_md(
                 }
                 break; // child / breakout / collapse — handled below
             }
-            content_lines.push(cl.trim().to_string()); // fold (de-indented)
+            append_line_joiner(
+                &mut joined,
+                &mut joined_map,
+                &mut joined_cursor,
+                lines,
+                last_content_line,
+                origin,
+            );
+            append_view_with_origin(
+                &mut joined,
+                &mut joined_map,
+                &mut joined_cursor,
+                input,
+                origin,
+                cl.trim(),
+            );
+            last_content_line = j;
             j += 1;
         }
         if let Some(trigger) = trigger {
@@ -2101,20 +2163,19 @@ fn collect_list_md(
         }
         // mldoc: `content = List.map String.trim content |> concat "\n"`, then UNORDERED items
         // run `definition` (which may strip a trailing `name ::` and empty the content).
-        let joined = content_lines.join("\n");
-        let (name, content_str) = if marker.ordered {
-            (Vec::new(), joined)
+        let (name, content_str, content_map) = if marker.ordered {
+            (Vec::new(), joined, joined_map)
         } else {
-            match md_definition_split(&joined) {
-                Some((name, stripped)) => (name, stripped),
-                None => (Vec::new(), joined),
+            match md_definition_split(&joined, &joined_map, source_body) {
+                Some((name, stripped, stripped_map)) => (name, stripped, stripped_map),
+                None => (Vec::new(), joined, joined_map),
             }
         };
         flat.push(ListItem {
             ordered: marker.ordered,
             number: marker.number,
             indent: cur_indent,
-            content: reparse_item_content(&content_str, in_quote),
+            content: reparse_item_content(&content_str, &content_map, in_quote, source_body),
             items: vec![],
             name,
             checkbox: marker.checkbox,
@@ -2207,24 +2268,23 @@ fn md_quote_cont_line_slice(s: &str, has_eol: bool) -> Option<&str> {
 /// now frames and no longer reach here. Guarded by `GT_FALLBACK_NEST_CAP` so construct-in-`>`-quote
 /// nesting degrades gracefully (flat Paragraph past 64) instead of a parse-time SIGABRT — mldoc
 /// overflows on the same shape. See the const's doc.
-fn reparse_block_content(residual: &str) -> Vec<Block> {
+fn reparse_block_content(residual: &str, origin: &OriginMap, source_body: &str) -> Vec<Block> {
     let depth = MD_BLOCK_DEPTH.with(|c| c.get());
-    let mut out = if depth >= GT_FALLBACK_NEST_CAP {
+    if depth >= GT_FALLBACK_NEST_CAP {
         if residual.is_empty() {
             Vec::new()
         } else {
-            vec![Block::Paragraph { inline: stub_inline(residual, 0), span: Some(Span(0, residual.len())) }]
+            vec![Block::Paragraph {
+                inline: stub_inline_mapped(residual, 0, residual, Some(origin), source_body),
+                span: Some(Span(0, residual.len())),
+            }]
         }
     } else {
         MD_BLOCK_DEPTH.with(|c| c.set(depth + 1));
-        let o = parse_md_streaming(residual, true, false);
+        let o = parse_md_streaming(residual, true, false, Some(origin), source_body);
         MD_BLOCK_DEPTH.with(|c| c.set(depth));
         o
-    };
-    // `residual` is a FOLDED (de-`>`'d / dedented) buffer → inline spans don't map to the
-    // block body; drop them (block-level spans are gate-excluded and left as-is).
-    none_out_blocks(&mut out);
-    out
+    }
 }
 
 /// Re-parse a markdown list item's folded content (de-indented continuation lines, joined
@@ -2237,15 +2297,16 @@ fn reparse_block_content(residual: &str) -> Vec<Block> {
 /// `reparse_block_content` path) — no extra depth guard needed, mirroring org's `streaming_reparse`.
 /// mldoc's content reparse falls back to a single empty Paragraph on an empty content string
 /// (`definition` may strip a `name ::` item to ""), so an empty reparse yields `[Paragraph []]`.
-fn reparse_item_content(content: &str, in_quote: bool) -> Vec<Block> {
+fn reparse_item_content(
+    content: &str,
+    origin: &OriginMap,
+    in_quote: bool,
+    source_body: &str,
+) -> Vec<Block> {
     if content.is_empty() {
         return vec![Block::Paragraph { inline: Vec::new(), span: None }];
     }
-    // `content` is a FOLDED (de-indented, `\n`-joined) buffer → inline spans don't map to the
-    // block body; drop them.
-    let mut out = parse_md_streaming(content, in_quote, true);
-    none_out_blocks(&mut out);
-    out
+    parse_md_streaming(content, in_quote, true, Some(origin), source_body)
 }
 
 /// Markdown `key:: value` property, matching mldoc `lib/syntax/markdown_property.ml`.
@@ -2368,30 +2429,69 @@ fn def_line_content_ok(content: &str) -> bool {
 /// Build the markdown definition list whose term is `lines[i]` and whose `:` items
 /// follow. Returns the single `ListItem` and the next line index (after the items and
 /// any trailing blank lines mldoc's `<* optional eols` absorbs).
-fn build_def_list(lines: &[Line], i: usize, hi: usize, input: &str) -> (ListItem, usize) {
+fn build_def_list(
+    lines: &[Line],
+    i: usize,
+    hi: usize,
+    input: &str,
+    origin: Option<&OriginMap>,
+    source_body: &str,
+) -> (ListItem, usize) {
     // All scans are bounded by `hi`: at the top level `hi == lines.len()` (identical to
     // before); inside a callout body the closer line (`#+END_X`) is never a def
     // opener/continuation/blank, so the bound matches the legacy body-local scan exactly.
     // The term is a raw sub-slice of `lines[i].text` → its inline spans are absolute (S2).
     let term = lines[i].text.trim_start(); // mldoc name = `spaces *> line`
-    let name = stub_inline(term, crate::inline::ptr_base(term, input));
+    let name = stub_inline_mapped(
+        term,
+        crate::inline::ptr_base(term, input),
+        input,
+        origin,
+        source_body,
+    );
     let mut content: Vec<Block> = Vec::new();
     let mut j = i + 1;
     while j < hi && is_def_opener(lines[j].text) {
         // item first line: drop `<spaces>:` then the required ws (and any more spaces).
         let first = lines[j].text.trim_start().strip_prefix(':').unwrap_or("").trim_start();
-        let mut item_lines = vec![first.to_string()];
+        let mut item_text = String::new();
+        let mut item_map = OriginMap::new();
+        let mut item_cursor = OriginCursor::new();
+        append_view_with_origin(
+            &mut item_text,
+            &mut item_map,
+            &mut item_cursor,
+            input,
+            origin,
+            first,
+        );
+        let mut last_content_line = j;
         j += 1;
         // continuation lines (non-`:`-leading, same ≥2 rule), joined with '\n'.
         while j < hi && is_def_continuation(lines[j].text) {
-            item_lines.push(lines[j].text.trim_start().to_string());
+            append_line_joiner(
+                &mut item_text,
+                &mut item_map,
+                &mut item_cursor,
+                lines,
+                last_content_line,
+                origin,
+            );
+            append_view_with_origin(
+                &mut item_text,
+                &mut item_map,
+                &mut item_cursor,
+                input,
+                origin,
+                lines[j].text.trim_start(),
+            );
+            last_content_line = j;
             j += 1;
         }
-        // mldoc inline-parses `String.trim`-ed of the joined item — a FOLDED buffer, so its
-        // inline spans don't map to the block body; drop them.
-        let item_text = item_lines.join("\n");
-        let mut inl = stub_inline(item_text.trim(), 0);
-        none_out_inlines(&mut inl);
+        // mldoc inline-parses `String.trim`-ed of the joined item.
+        let trimmed = item_text.trim();
+        let trim_base = crate::inline::ptr_base(trimmed, &item_text);
+        let inl = stub_inline_mapped(trimmed, trim_base, &item_text, Some(&item_map), source_body);
         content.push(Block::Paragraph {
             inline: inl,
             span: None,
@@ -2498,8 +2598,31 @@ mod tests {
     /// inline vecs stay span-agnostic — the span invariants are checked separately (lib.rs).
     fn ns(v: &[Inline]) -> Vec<Inline> {
         let mut v = v.to_vec();
-        none_out_inlines(&mut v);
+        for n in &mut v {
+            clear_inline_span_for_test(n);
+        }
         v
+    }
+
+    fn clear_inline_span_for_test(n: &mut Inline) {
+        crate::projection::set_inline_span(n, None);
+        match n {
+            Inline::Plain { span_map, .. } => *span_map = None,
+            Inline::Emphasis { children, .. }
+            | Inline::Subscript { children, .. }
+            | Inline::Superscript { children, .. }
+            | Inline::Tag { children, .. } => {
+                for c in children {
+                    clear_inline_span_for_test(c);
+                }
+            }
+            Inline::Link { label, .. } => {
+                for c in label {
+                    clear_inline_span_for_test(c);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn kinds(input: &str) -> Vec<&'static str> {
@@ -2979,7 +3102,7 @@ mod tests {
         match &parse("term\n: definition")[0] {
             Block::List { items, .. } => {
                 assert_eq!(items.len(), 1);
-                assert_eq!(ns(&items[0].name), vec![Inline::Plain { text: "term".into(), span: None }]);
+                assert_eq!(ns(&items[0].name), vec![Inline::Plain { text: "term".into(), span: None, span_map: None }]);
                 assert!(matches!(items[0].content[0], Block::Paragraph { .. }));
             }
             _ => panic!(),
@@ -2993,11 +3116,11 @@ mod tests {
         // two terms (continuation): item1 content joins `d1`+`t2` across a Break.
         match &parse("t1\n: d1\nt2\n: d2")[0] {
             Block::List { items, .. } => {
-                assert_eq!(ns(&items[0].name), vec![Inline::Plain { text: "t1".into(), span: None }]);
+                assert_eq!(ns(&items[0].name), vec![Inline::Plain { text: "t1".into(), span: None, span_map: None }]);
                 match &items[0].content[0] {
                     Block::Paragraph { inline, .. } => assert_eq!(ns(inline), vec![
-                        Inline::Plain { text: "d1".into(), span: None }, Inline::Break { span: None },
-                        Inline::Plain { text: "t2".into(), span: None },
+                        Inline::Plain { text: "d1".into(), span: None, span_map: None }, Inline::Break { span: None },
+                        Inline::Plain { text: "t2".into(), span: None, span_map: None },
                     ]),
                     _ => panic!(),
                 }
@@ -3033,7 +3156,7 @@ mod tests {
         assert_eq!(kinds("- ```\nnoclose"), ["bullet", "paragraph"]);
         assert_eq!(kinds("- normal text"), ["bullet"]);
         match &parse("- >")[0] {
-            Block::Bullet { inline, .. } => assert_eq!(ns(inline), vec![Inline::Plain { text: ">".into(), span: None }]),
+            Block::Bullet { inline, .. } => assert_eq!(ns(inline), vec![Inline::Plain { text: ">".into(), span: None, span_map: None }]),
             _ => panic!(),
         }
     }
@@ -3151,16 +3274,30 @@ fn md_table_row(s: &str) -> bool {
     t.len() >= 2 && t.starts_with('|') && t.ends_with('|')
 }
 
-fn build_table(rows: &[Line], start: usize, end: usize, input: &str) -> Block {
+fn build_table(
+    rows: &[Line],
+    start: usize,
+    end: usize,
+    input: &str,
+    origin: Option<&OriginMap>,
+    source_body: &str,
+) -> Block {
     let texts: Vec<&str> = rows.iter().map(|l| l.text).collect();
-    build_table_from_texts(&texts, start, end, input)
+    build_table_from_texts(&texts, start, end, input, origin, source_body)
 }
 
 /// Build a `Table` from raw row strings (used by both the top-level table block and the
 /// `- | … |` bullet-opener split, whose first row is a mid-line bullet body, not a `Line`).
 /// Each `rows[k]` is a sub-slice of `input` (a real row line, or a bullet content line), so
 /// each cell's byte offset into the block body is recovered by pointer arithmetic (S2).
-fn build_table_from_texts(rows: &[&str], start: usize, end: usize, input: &str) -> Block {
+fn build_table_from_texts(
+    rows: &[&str],
+    start: usize,
+    end: usize,
+    input: &str,
+    origin: Option<&OriginMap>,
+    source_body: &str,
+) -> Block {
     let split_cells = |s: &str| -> Vec<Vec<Inline>> {
         let t = s.trim();
         let t = t.strip_prefix('|').unwrap_or(t);
@@ -3168,7 +3305,8 @@ fn build_table_from_texts(rows: &[&str], start: usize, end: usize, input: &str) 
         t.split('|')
             .map(|c| {
                 let c = c.trim();
-                stub_inline(c, crate::inline::ptr_base(c, input))
+                let base = crate::inline::ptr_base(c, input);
+                stub_inline_mapped(c, base, input, origin, source_body)
             })
             .collect()
     };

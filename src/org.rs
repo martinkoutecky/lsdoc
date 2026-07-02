@@ -29,7 +29,8 @@ use crate::block_common::{
     raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie, Line, RawHtmlScan,
     GT_FALLBACK_NEST_CAP, MARKERS,
 };
-use crate::projection::{Block, Inline, ListItem, Property, Span, Url};
+use crate::projection::{Block, Inline, ListItem, Property, Span, SpanMapSegment, Url};
+use crate::source_map::{OriginCursor, OriginMap};
 
 // ===========================================================================
 // Block segmentation
@@ -63,6 +64,8 @@ pub fn parse(input: &str) -> Vec<Block> {
             in_item: false,
             in_quote: false,
         },
+        None,
+        input,
     )
 }
 
@@ -76,6 +79,8 @@ pub(crate) fn parse_streaming_root(input: &str) -> Vec<Block> {
             in_item: false,
             in_quote: false,
         },
+        None,
+        input,
     )
 }
 
@@ -171,39 +176,6 @@ fn gt_peel(s: &str, n: usize) -> &str {
     cur
 }
 
-/// Null the inline spans of the DIRECT leaf blocks in `blocks` WITHOUT recursing into container
-/// children (`Quote`/`Custom`/`List`). Used at a `>`-frame's close: that frame's nested `>`-quote
-/// children and its `Step::GtFallback` reparse children are ALREADY fully null'd (each container
-/// nulls its own subtree at close / `streaming_reparse` nulls its output), so re-descending them
-/// is redundant AND — on a deep `>`-staircase (now uncapped ⇒ O(depth) nesting) — an O(depth)
-/// NATIVE-RECURSION stack overflow. Nulling only THIS frame's copy-free leaves keeps the
-/// whole-tree null invariant with O(1) native stack per close ⇒ O(n) total, no overflow.
-fn none_out_frame_leaves(blocks: &mut [Block]) {
-    use crate::parse::none_out_inlines;
-    for b in blocks.iter_mut() {
-        match b {
-            Block::Paragraph { inline, .. }
-            | Block::Heading { inline, .. }
-            | Block::Bullet { inline, .. }
-            | Block::FootnoteDef { inline, .. } => none_out_inlines(inline),
-            Block::Table { header, rows, .. } => {
-                if let Some(h) = header {
-                    for cell in h.iter_mut() {
-                        none_out_inlines(cell);
-                    }
-                }
-                for row in rows.iter_mut() {
-                    for cell in row.iter_mut() {
-                        none_out_inlines(cell);
-                    }
-                }
-            }
-            // Container children are already fully null'd — do NOT recurse (the overflow).
-            _ => {}
-        }
-    }
-}
-
 #[inline]
 fn line_has_eol(line: &Line) -> bool {
     line.end > line.start + line.text.len()
@@ -250,24 +222,31 @@ fn scan_gt_prefix(line2: &str, offs: &mut Vec<usize>) -> usize {
     g
 }
 
-/// Pop the top frame and emit its block into the parent (`flush_para` → null spans → `finish` →
+/// Pop the top frame and emit its block into the parent (`flush_para` → `finish` →
 /// `parent.absorb`). `consume` (a HARD frame's `#+END_` closer at line `i`) makes the span end at
 /// `lines[i].end`; a `>`-frame (`consume == false`) ends at the last body line `lines[i-1].end`.
 /// The driver adjusts `i` (only a consume advances it). Shared by the hard-bound close (phase 1)
 /// and the `>`-continuation close (phase 2a).
-fn close_top(stack: &mut Vec<Frame>, lines: &[Line], input: &str, i: usize, consume: bool) {
+fn close_top(
+    stack: &mut Vec<Frame>,
+    lines: &[Line],
+    input: &str,
+    i: usize,
+    consume: bool,
+    origin: Option<&OriginMap>,
+    source_body: &str,
+) {
     let mut f = stack.pop().unwrap();
-    flush_para(&mut f.out, &mut f.para, &mut f.para_buf, input, false);
-    // Transformed body (strip>0, nonstd eol, or a `>`-frame): null inline spans. A `>`-frame's
-    // container children are already null'd (bottom-up) ⇒ non-recursive leaf null (deep-staircase
-    // overflow guard); a callout body is shallow ⇒ recurse.
-    if f.null_spans {
-        if f.gt_level > 0 {
-            none_out_frame_leaves(&mut f.out);
-        } else {
-            crate::parse::none_out_blocks(&mut f.out);
-        }
-    }
+    flush_para(
+        &mut f.out,
+        &mut f.para,
+        &mut f.para_buf,
+        &mut f.para_map,
+        input,
+        false,
+        origin,
+        source_body,
+    );
     let span_end = if consume {
         lines[i].end
     } else {
@@ -296,22 +275,24 @@ struct Frame {
     ctx: Ctx,                     // child context (set by the parent on push).
     out: Vec<Block>,              // children of THIS body.
     para: Option<(usize, usize)>, // the open paragraph byte-window for THIS body.
-    // In a `null_spans` (transformed) frame the paragraph's raw byte-window would keep the
+    // In a `remap_spans` (transformed) frame the paragraph's raw byte-window would keep the
     // per-line indent (only the first line is de-indented) AND any `\r`; so instead we
     // accumulate the VIEWED (`line_text`) line texts joined with `\n`, which normalizes BOTH
     // the cumulative indent (via `strip`) and `\r\n`→`\n` in one move. Some IFF a paragraph is
-    // open in a null_spans frame (clean frames keep `para`'s `(start,end)` fast path).
+    // open in a remap_spans frame (clean frames keep `para`'s `(start,end)` fast path).
     para_buf: Option<String>,
+    para_map: OriginMap,
+    para_cursor: OriginCursor,
     absorb: bool,             // did this body's last child swallow a following blank?
     builder: Option<Builder>, // the opener → emitted on pop (None for the root).
     open_span_start: usize,   // byte offset of the opener line start (for the span).
     strip: usize, // cumulative de-indent applied to every body-line view (0 = root/clean).
-    null_spans: bool, // body was transformed (strip>0 or nonstd eol) → null inline spans on pop.
+    remap_spans: bool, // body was transformed (strip>0 or nonstd eol) → remap inline spans on pop.
     // A-org `>`-blockquote container frame (`gt_level == 0` for the root / `#+BEGIN_X` callout
     // frames). `gt_level` = the cumulative `>`-peel applied to CONTINUATION lines (composes on top
     // of the indent `strip`). The per-line `scan_gt_prefix` walk decides close/open/content for the
     // WHOLE `>`-stack in one pass — no per-frame re-peel, no opener re-dispatch. `open_line` is the
-    // opener line index (kept for the pop invariant / span reasoning). `null_spans` is always true
+    // opener line index (kept for the pop invariant / span reasoning). `remap_spans` is always true
     // for a `>`-frame (a `>`-body is transformed). Frame no longer borrows input (the deleted
     // `opener_content` field held the only `&'a str`) ⇒ no lifetime parameter.
     gt_level: usize,
@@ -326,12 +307,9 @@ struct Frame {
 ///     LaTeX env / hiccup, de-`>`'d and reparsed once (those recognizers don't tolerate literal
 ///     `>`s). Guarded by `GT_FALLBACK_NEST_CAP` so construct-in-`>`-quote nesting can't SIGABRT
 ///     (graceful flat-Paragraph degradation past 64; see the const's doc).
-fn streaming_reparse(input: &str, ctx: Ctx) -> Vec<Block> {
-    // Every `streaming_reparse` input is a FOLDED buffer (a `\n`-joined list-item content or a
-    // de-`>`'d quote-fallback body) whose byte positions don't map to the enclosing block body,
-    // so the reparsed INLINE spans are meaningless → null them.
-    let mut out = if ctx.in_item {
-        parse_org_streaming(input, ctx)
+fn streaming_reparse(input: &str, ctx: Ctx, origin: &OriginMap, source_body: &str) -> Vec<Block> {
+    if ctx.in_item {
+        parse_org_streaming(input, ctx, Some(origin), source_body)
     } else {
         let depth = BLOCK_DEPTH.with(|c| c.get());
         if depth >= GT_FALLBACK_NEST_CAP {
@@ -339,19 +317,17 @@ fn streaming_reparse(input: &str, ctx: Ctx) -> Vec<Block> {
                 Vec::new()
             } else {
                 vec![Block::Paragraph {
-                    inline: org_inline(input, 0),
+                    inline: org_inline_mapped(input, 0, input, Some(origin), source_body),
                     span: Some(Span(0, input.len())),
                 }]
             }
         } else {
             BLOCK_DEPTH.with(|c| c.set(depth + 1));
-            let o = parse_org_streaming(input, ctx);
+            let o = parse_org_streaming(input, ctx, Some(origin), source_body);
             BLOCK_DEPTH.with(|c| c.set(depth));
             o
         }
-    };
-    crate::parse::none_out_blocks(&mut out);
-    out
+    }
 }
 
 /// The shared per-construct closer/marker indexes over the WHOLE input (built ONCE, O(n)):
@@ -430,7 +406,12 @@ fn build_org_indexes(
 /// (local spans; gated by `harness/`). The `>`-quote and list-item content stay sub-recursions
 /// routed through the SAME driver via `streaming_reparse`. `root_ctx` is the document
 /// default `{false,false}` at the top level, or the child ctx of a transformed re-parse.
-fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
+fn parse_org_streaming<'a>(
+    input: &'a str,
+    root_ctx: Ctx,
+    origin: Option<&OriginMap>,
+    source_body: &str,
+) -> Vec<Block> {
     let mut lines = split_lines(input);
     let last_rbracket = input.rfind(']');
     let (end_trie, drawer_end_idxs, property_end_idxs, fence_lines, nonstd_eol_lines, hiccup_close) =
@@ -443,11 +424,13 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
         out: Vec::new(),
         para: None,
         para_buf: None,
+        para_map: OriginMap::new(),
+        para_cursor: OriginCursor::new(),
         absorb: false,
         builder: None,
         open_span_start: 0,
         strip: 0,
-        null_spans: false,
+        remap_spans: false,
         gt_level: 0,
         open_line: 0,
     }];
@@ -471,7 +454,7 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
         // `offs`, and after it every open frame has `hi > i`.)
         while stack.len() > 1 && stack.last().unwrap().hi <= i {
             let consume = stack.last().unwrap().gt_level == 0;
-            close_top(&mut stack, &lines, input, i, consume);
+            close_top(&mut stack, &lines, input, i, consume, origin, source_body);
             if consume {
                 i += 1;
             }
@@ -505,7 +488,7 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                 {
                     break;
                 }
-                close_top(&mut stack, &lines, input, i, false);
+                close_top(&mut stack, &lines, input, i, false, origin, source_body);
             }
 
             // Phase 2b: open new `>`-frames. `cur` starts at the surviving top's level-`H` view
@@ -538,8 +521,11 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                             &mut top.out,
                             &mut top.para,
                             &mut top.para_buf,
+                            &mut top.para_map,
                             input,
                             top.ctx.in_item || top.ctx.in_quote,
+                            origin,
+                            source_body,
                         );
                         opened_any = true;
                     }
@@ -554,11 +540,13 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                     out: Vec::new(),
                     para: None,
                     para_buf: None,
+                    para_map: OriginMap::new(),
+                    para_cursor: OriginCursor::new(),
                     absorb: false,
                     builder: Some(Builder::Quote),
                     open_span_start: lines[i].start,
                     strip: p_strip,   // inherit the ancestor indent strip
-                    null_spans: true, // a `>`-body is transformed ⇒ null inline spans on pop
+                    remap_spans: true, // a `>`-body is transformed ⇒ remap inline spans on pop
                     gt_level: p_gt + 1,
                     open_line: i,
                 });
@@ -577,13 +565,15 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
             let top = stack.last_mut().unwrap();
             let hi = top.hi;
             let ctx = top.ctx;
-            let null_spans = top.null_spans;
+            let remap_spans = top.remap_spans;
             dispatch_org_line(
                 i,
                 &mut lines,
                 &mut top.out,
                 &mut top.para,
                 &mut top.para_buf,
+                &mut top.para_map,
+                &mut top.para_cursor,
                 &mut top.absorb,
                 &mut collapse_floor,
                 &mut fence_cursor,
@@ -600,8 +590,10 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                 last_rbracket,
                 &hiccup_close,
                 input,
+                origin,
+                source_body,
                 strip,
-                null_spans,
+                remap_spans,
                 gt_level_disp,
                 dispatch_view,
             )
@@ -623,15 +615,18 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                         &mut top.out,
                         &mut top.para,
                         &mut top.para_buf,
+                        &mut top.para_map,
                         input,
                         top.ctx.in_item || top.ctx.in_quote,
+                        origin,
+                        source_body,
                     );
                 }
                 // A `#+BEGIN_X` callout body — clean-window (spans global) or strip-view / nonstd
-                // (spans nulled on pop). Callouts only open at `gt_level==0` (inside a `>`-frame they
+                // (spans remapped on pop). Callouts only open at `gt_level==0` (inside a `>`-frame they
                 // are a §3 fallback tell), so a callout frame's `gt_level` is always 0.
                 let child_strip = top_strip + indent_strip;
-                let null_spans = child_strip > 0
+                let remap_spans = child_strip > 0
                     || !body_is_clean_window(&nonstd_eol_lines, &mut nonstd_cursor, i + 1, close);
                 stack.push(Frame {
                     hi: close,
@@ -639,11 +634,13 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                     out: Vec::new(),
                     para: None,
                     para_buf: None,
+                    para_map: OriginMap::new(),
+                    para_cursor: OriginCursor::new(),
                     absorb: false,
                     builder: Some(builder),
                     open_span_start: lines[i].start,
                     strip: child_strip,
-                    null_spans,
+                    remap_spans,
                     gt_level: 0,
                     open_line: 0,
                 });
@@ -658,19 +655,44 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                     let t = stack.last().unwrap();
                     (t.hi, t.gt_level)
                 };
-                let mut de_gt = {
+                let (mut de_gt, mut de_gt_map, mut de_gt_cursor) = {
                     let top = stack.last_mut().unwrap();
                     top.para = None;
-                    top.para_buf.take().unwrap_or_default()
+                    (
+                        top.para_buf.take().unwrap_or_default(),
+                        std::mem::take(&mut top.para_map),
+                        std::mem::take(&mut top.para_cursor),
+                    )
                 };
-                de_gt.push_str(dispatch_view.unwrap_or(""));
-                de_gt.push('\n');
+                append_view_with_origin(
+                    &mut de_gt,
+                    &mut de_gt_map,
+                    &mut de_gt_cursor,
+                    input,
+                    origin,
+                    dispatch_view.unwrap_or(""),
+                );
+                append_line_joiner(&mut de_gt, &mut de_gt_map, &mut de_gt_cursor, &lines, i, origin);
                 let mut end = i + 1;
                 while end < p_hi {
                     match gt_cont_line_view(&lines[end], strip, p_gt) {
                         Some(v) => {
-                            de_gt.push_str(v);
-                            de_gt.push('\n');
+                            append_view_with_origin(
+                                &mut de_gt,
+                                &mut de_gt_map,
+                                &mut de_gt_cursor,
+                                input,
+                                origin,
+                                v,
+                            );
+                            append_line_joiner(
+                                &mut de_gt,
+                                &mut de_gt_map,
+                                &mut de_gt_cursor,
+                                &lines,
+                                end,
+                                origin,
+                            );
                             end += 1;
                         }
                         None => break,
@@ -682,6 +704,8 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                         in_item: false,
                         in_quote: true,
                     },
+                    &de_gt_map,
+                    source_body,
                 );
                 stack.last_mut().unwrap().out.extend(children);
                 i = end; // the frame closes next iteration (i == end ⇒ continuation `None` or `hi`)
@@ -694,8 +718,11 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
         &mut root.out,
         &mut root.para,
         &mut root.para_buf,
+        &mut root.para_map,
         input,
         false,
+        origin,
+        source_body,
     );
     root.out
 }
@@ -738,6 +765,8 @@ fn dispatch_org_line<'a>(
     out: &mut Vec<Block>,
     para: &mut Option<(usize, usize)>,
     para_buf: &mut Option<String>,
+    para_map: &mut OriginMap,
+    para_cursor: &mut OriginCursor,
     absorb: &mut bool,
     collapse_floor: &mut usize,
     fence_cursor: &mut usize,
@@ -754,8 +783,10 @@ fn dispatch_org_line<'a>(
     last_rbracket: Option<usize>,
     hiccup_close: &[usize], // B: precomputed block-hiccup `[:`…`]` balance (position-indexed)
     input: &'a str,
+    origin: Option<&OriginMap>,
+    source_body: &str,
     strip: usize,
-    null_spans: bool,
+    remap_spans: bool,
     // A-org: `gt_level` is the FINAL `>`-depth the driver's prefix consume settled this line at
     // (0 for a hard-frame / plain line — behavior identical to before; `> 0` for a `>`-frame). `view`
     // is the pre-computed view the driver already de-`>`'d (`cur`) — `None` only for a plain line,
@@ -807,12 +838,12 @@ fn dispatch_org_line<'a>(
         } else {
             *para = Some((line_start, line_end));
         }
-        // null_spans frame: mirror into the de-indented buffer (blank line ⇒ empty content +
+        // remap_spans frame: mirror into the de-indented buffer (blank line ⇒ empty content +
         // the `\n` Break delimiter; keeps para/para_buf in lockstep).
-        if null_spans && open_para {
+        if remap_spans && open_para {
             let b = para_buf.get_or_insert_with(String::new);
-            b.push_str(t); // "" for a truly-blank line; strip-viewed otherwise
-            b.push('\n');
+            append_view_with_origin(b, para_map, para_cursor, input, origin, t);
+            append_line_joiner(b, para_map, para_cursor, lines, i, origin);
         }
         return Step::Next(i + 1);
     }
@@ -842,7 +873,7 @@ fn dispatch_org_line<'a>(
 
     // 1. directive `#+KEY: value` (KEY != BEGIN_…) — not a list-item content block.
     if let Some((name, value)) = org_directive(t).filter(|_| !in_item) {
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
         out.push(Block::Directive {
             name,
             value,
@@ -869,7 +900,7 @@ fn dispatch_org_line<'a>(
             if was_ws_drop && para_ws_only(para, input) {
                 *para = None;
             }
-            flush_para(out, para, para_buf, input, trim);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
             out.push(Block::Properties {
                 props,
                 span: Some(Span(line_start, span_end)),
@@ -881,7 +912,7 @@ fn dispatch_org_line<'a>(
 
     // 2b. comment `# text` (mldoc Comment) — IS a valid list-item content block (not gated).
     if let Some(text) = org_comment(t) {
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
         out.push(Block::Comment {
             text: text.to_string(),
             span: Some(Span(line_start, line_end)),
@@ -901,7 +932,7 @@ fn dispatch_org_line<'a>(
                 if was_ws_drop && para_ws_only(para, input) {
                     *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
                 }
-                flush_para(out, para, para_buf, input, trim);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                 out.push(Block::Drawer {
                     name,
                     span: Some(Span(line_start, lines[close].end)),
@@ -939,7 +970,7 @@ fn dispatch_org_line<'a>(
                 raw_html_scan,
             )
         {
-            flush_para(out, para, para_buf, input, trim);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
             out.push(Block::Bullet {
                 level,
                 size: None,
@@ -980,7 +1011,7 @@ fn dispatch_org_line<'a>(
             return Step::Next(i);
         }
 
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
         let mut inline = org_inline(content, crate::inline::ptr_base(content, input));
         let htags = extract_htags(&mut inline);
         let empty_title = inline.is_empty() && htags.is_empty();
@@ -1011,7 +1042,7 @@ fn dispatch_org_line<'a>(
         if was_ws_drop && para_ws_only(para, input) {
             *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
         }
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
         let start = i;
         let mut ni = i;
         while ni < hi && is_table_row(line_text(lines, ni, strip)) {
@@ -1022,6 +1053,8 @@ fn dispatch_org_line<'a>(
             lines[start].start,
             lines[ni - 1].end,
             input,
+            origin,
+            source_body,
         ));
         *absorb = false;
         return Step::Next(ni);
@@ -1037,16 +1070,16 @@ fn dispatch_org_line<'a>(
         // latex_env is the ONLY block_content construct that does NOT consume the preceding eol,
         // so inside a `#+BEGIN_X` / `>`-quote body a paragraph KEEPS its trailing Break before it
         // and the eol AFTER it becomes a Break-paragraph (mldoc `Paragraph.sep`-last). Never trim.
-        flush_para(out, para, para_buf, input, false);
+        flush_para(out, para, para_buf, para_map, input, false, origin, source_body);
         let mut ni = i + 1;
         while ni < lines.len() && lines[ni].start < consumed_end {
             ni += 1;
         }
-        // In a null_spans frame `content` sliced from raw `input` keeps the per-line indent (and
+        // In a remap_spans frame `content` sliced from raw `input` keeps the per-line indent (and
         // any `\r`). Re-run parse_latex_env over the VIEWED (de-indented, `\r`-free) body window
         // to get the reparse-faithful content; the STRUCTURE (name / consumed_end / ni) stays
         // from the raw pass. O(n): each body line belongs to exactly one leaf construct.
-        let content = if null_spans {
+        let content = if remap_spans {
             let mut s = String::new();
             for k in i..ni {
                 s.push_str(line_text(lines, k, strip));
@@ -1073,10 +1106,19 @@ fn dispatch_org_line<'a>(
             };
             if consumed_end < trail_end {
                 *para = Some((consumed_end, trail_end));
-                // Keep para/para_buf in lockstep in a null_spans frame: the trailing region is a
+                // Keep para/para_buf in lockstep in a remap_spans frame: the trailing region is a
                 // line terminator (a single Break); normalize `\r\n`→`\n`.
-                if null_spans {
-                    *para_buf = Some("\n".to_string());
+                if remap_spans {
+                    let buf = para_buf.get_or_insert_with(String::new);
+                    let text_off = buf.len();
+                    para_map.push_composed_eol(
+                        text_off,
+                        origin,
+                        consumed_end,
+                        trail_end - consumed_end,
+                        Some(para_cursor),
+                    );
+                    buf.push('\n');
                 }
             }
         }
@@ -1091,7 +1133,7 @@ fn dispatch_org_line<'a>(
                 if was_ws_drop && para_ws_only(para, input) {
                     *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
                 }
-                flush_para(out, para, para_buf, input, trim);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                 // Body lines via line_text: strip-view drops the cumulative indent (= block_code
                 // semantics for strip>0) and is identical to `input[start..end]` for strip==0
                 // (clean-window bodies have only plain-`\n` lines, so text+"\n" == raw slice).
@@ -1131,7 +1173,7 @@ fn dispatch_org_line<'a>(
                 let lname = name.to_ascii_lowercase();
                 match lname.as_str() {
                     "src" => {
-                        flush_para(out, para, para_buf, input, trim);
+                        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                         let lang = begin_lang(t);
                         // Body via line_text: applies the cumulative strip (matching block_code
                         // semantics for nested indented bodies; no-op for strip==0).
@@ -1147,7 +1189,7 @@ fn dispatch_org_line<'a>(
                         return Step::Next(close + 1);
                     }
                     "example" => {
-                        flush_para(out, para, para_buf, input, trim);
+                        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                         let texts: Vec<&str> =
                             (i + 1..close).map(|k| line_text(lines, k, strip)).collect();
                         let inner = block_code_texts(&texts);
@@ -1209,7 +1251,7 @@ fn dispatch_org_line<'a>(
         if was_ws_drop && para_ws_only(para, input) {
             *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
         }
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
         let start = i;
         let mut code = String::new();
         let mut ni = i;
@@ -1251,7 +1293,7 @@ fn dispatch_org_line<'a>(
             let Some(opener_off) = displayed_math_opener(cur_view) else {
                 break;
             };
-            let cap = if null_spans || (cur == i && !captured && view.is_some()) {
+            let cap = if remap_spans || (cur == i && !captured && view.is_some()) {
                 displayed_math_view_capture(lines, cur, hi, strip, cur_view, opener_off)
             } else {
                 let body_end = if hi < lines.len() {
@@ -1268,7 +1310,7 @@ fn dispatch_org_line<'a>(
                 if was_ws_drop && para_ws_only(para, input) {
                     *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
                 }
-                flush_para(out, para, para_buf, input, trim);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
             }
             out.push(Block::DisplayedMath {
                 text: cap.text,
@@ -1312,7 +1354,7 @@ fn dispatch_org_line<'a>(
             if !raw_html_block_start(cur_view) {
                 break;
             }
-            let cap = if null_spans || (cur == i && !captured && view.is_some()) {
+            let cap = if remap_spans || (cur == i && !captured && view.is_some()) {
                 raw_html_view_capture(lines, cur, hi, strip, cur_view)
             } else {
                 let body_end = if hi < lines.len() {
@@ -1329,7 +1371,7 @@ fn dispatch_org_line<'a>(
                 if was_ws_drop && para_ws_only(para, input) {
                     *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
                 }
-                flush_para(out, para, para_buf, input, trim);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
             }
             out.push(Block::RawHtml {
                 text: cap.text,
@@ -1359,23 +1401,46 @@ fn dispatch_org_line<'a>(
     // `Footnote`, so `[fn:n] …` there stays a paragraph with an inline footnote ref). The
     // body absorbs following continuation lines (mldoc `many1 l`); bounded by `hi`. F2.
     if let Some((name, content)) = footnote_def(t).filter(|_| !in_item && !ctx.in_quote) {
-        flush_para(out, para, para_buf, input, trim);
-        let mut body = strip_cr_eol(content, line_has_nl(input, &lines[i])).to_string();
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        let mut body = String::new();
+        let mut body_map = OriginMap::new();
+        let mut body_cursor = OriginCursor::new();
+        append_view_with_origin(
+            &mut body,
+            &mut body_map,
+            &mut body_cursor,
+            input,
+            origin,
+            strip_cr_eol(content, line_has_nl(input, &lines[i])),
+        );
+        let mut last_content_line = i;
         let mut j = i + 1;
         while j < hi {
             match footnote_cont(line_text(lines, j, strip), line_has_nl(input, &lines[j])) {
                 Some(c) => {
-                    body.push('\n');
-                    body.push_str(c);
+                    append_line_joiner(
+                        &mut body,
+                        &mut body_map,
+                        &mut body_cursor,
+                        lines,
+                        last_content_line,
+                        origin,
+                    );
+                    append_view_with_origin(
+                        &mut body,
+                        &mut body_map,
+                        &mut body_cursor,
+                        input,
+                        origin,
+                        c,
+                    );
+                    last_content_line = j;
                     j += 1;
                 }
                 None => break,
             }
         }
-        // `body` is a FOLDED (possibly multi-line joined) buffer → inline spans don't map to
-        // the block body; drop them.
-        let mut inl = org_inline(&body, 0);
-        crate::parse::none_out_inlines(&mut inl);
+        let inl = org_inline_mapped(&body, 0, &body, Some(&body_map), source_body);
         out.push(Block::FootnoteDef {
             name,
             inline: inl,
@@ -1397,9 +1462,12 @@ fn dispatch_org_line<'a>(
                 in_quote: ctx.in_quote,
             },
             strip,
+            input,
+            origin,
+            source_body,
         ) {
             Ok((block, next)) => {
-                flush_para(out, para, para_buf, input, trim);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                 out.push(block);
                 *absorb = false;
                 return Step::Next(next);
@@ -1411,7 +1479,7 @@ fn dispatch_org_line<'a>(
             }) => {
                 *collapse_floor = trigger;
                 if let Some(block) = kept {
-                    flush_para(out, para, para_buf, input, trim);
+                    flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
                     out.push(block);
                     *absorb = false;
                     return Step::Next(resume);
@@ -1426,7 +1494,7 @@ fn dispatch_org_line<'a>(
         if was_ws_drop && para_ws_only(para, input) {
             *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
         }
-        flush_para(out, para, para_buf, input, trim);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
         out.push(Block::Hr {
             span: Some(Span(line_start, line_end)),
         });
@@ -1469,7 +1537,7 @@ fn dispatch_org_line<'a>(
             }
             // A preceding paragraph drops its trailing Break before a Hiccup inside a blockquote
             // body / list item, but keeps it at the document level.
-            flush_para(out, para, para_buf, input, trim); // no-op after the first
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body); // no-op after the first
             out.push(Block::Hiccup {
                 v: input[rec..cap_end].to_string(),
                 span: Some(Span(cur_start, cap_end)),
@@ -1513,14 +1581,14 @@ fn dispatch_org_line<'a>(
         Some((s, _)) => (s, line_end),
         None => (line_start, line_end),
     });
-    // null_spans frame: accumulate the VIEWED line text (de-indented, `\r`-free) into the
+    // remap_spans frame: accumulate the VIEWED line text (de-indented, `\r`-free) into the
     // paragraph buffer, joined with `\n` (the Break delimiter). This is what flush_para parses
     // instead of the raw byte-window, so continuation lines are de-indented too — not just the
     // first line — and a `\r\n` body never yields a stray extra Break.
-    if null_spans {
+    if remap_spans {
         let b = para_buf.get_or_insert_with(String::new);
-        b.push_str(t);
-        b.push('\n');
+        append_view_with_origin(b, para_map, para_cursor, input, origin, t);
+        append_line_joiner(b, para_map, para_cursor, lines, i, origin);
     }
     *absorb = false;
     Step::Next(i + 1)
@@ -1661,25 +1729,24 @@ fn flush_para(
     out: &mut Vec<Block>,
     para: &mut Option<(usize, usize)>,
     para_buf: &mut Option<String>,
+    para_map: &mut OriginMap,
     input: &str,
     trim_eol: bool,
+    origin: Option<&OriginMap>,
+    source_body: &str,
 ) {
-    // null_spans frame: the paragraph content lives in `para_buf` (viewed line texts joined by
-    // `\n`), already de-indented and `\r`-free. Parse THAT (span None — the byte-window doesn't
-    // map to the de-indented content, mirroring the old streaming_reparse's nulled spans). Keep
-    // `para` in lockstep by clearing it too.
     if let Some(mut buf) = para_buf.take() {
         *para = None;
         if trim_eol {
             while buf.ends_with('\n') || buf.ends_with('\r') {
                 buf.pop();
             }
+            para_map.truncate_text_len(buf.len());
         }
-        // Base offset 0: the inline spans are relative to `buf` and get nulled by
-        // none_out_blocks on the frame's pop (every null_spans frame runs it), so they never
-        // reach the output.
+        let inline = org_inline_mapped(&buf, 0, &buf, Some(para_map), source_body);
+        para_map.clear();
         out.push(Block::Paragraph {
-            inline: org_inline(&buf, 0),
+            inline,
             span: None,
         });
         return;
@@ -1691,10 +1758,43 @@ fn flush_para(
             }
         }
         out.push(Block::Paragraph {
-            inline: org_inline(&input[s..e], s),
+            inline: org_inline_mapped(&input[s..e], s, input, origin, source_body),
             span: Some(Span(s, e)),
         });
     }
+}
+
+fn append_view_with_origin(
+    buf: &mut String,
+    map: &mut OriginMap,
+    cursor: &mut OriginCursor,
+    input: &str,
+    origin: Option<&OriginMap>,
+    view: &str,
+) {
+    let text_off = buf.len();
+    if !view.is_empty() {
+        let src_off = crate::inline::ptr_base(view, input);
+        map.push_composed(text_off, origin, src_off, view.len(), Some(cursor));
+        buf.push_str(view);
+    }
+}
+
+fn append_line_joiner(
+    buf: &mut String,
+    map: &mut OriginMap,
+    cursor: &mut OriginCursor,
+    lines: &[Line],
+    line_idx: usize,
+    origin: Option<&OriginMap>,
+) {
+    let text_off = buf.len();
+    let eol_start = lines[line_idx].start + lines[line_idx].text.len();
+    let eol_len = lines[line_idx].end.saturating_sub(eol_start);
+    if eol_len > 0 {
+        map.push_composed_eol(text_off, origin, eol_start, eol_len, Some(cursor));
+    }
+    buf.push('\n');
 }
 
 // ---- directive ------------------------------------------------------------
@@ -2053,9 +2153,16 @@ fn split_markers(s: &str) -> (Option<String>, Option<String>, &str) {
 /// text ends with `:` (len > 1), split off a trailing `:tag1:tag2:` run (mldoc
 /// `heading0.ml`). Mutates `title` in place; returns the tag list.
 fn extract_htags(title: &mut Vec<Inline>) -> Vec<String> {
-    let Some(Inline::Plain { text, .. }) = title.last() else {
+    let Some(Inline::Plain {
+        text,
+        span: old_span,
+        span_map: old_map,
+    }) = title.last() else {
         return Vec::new();
     };
+    let old_text = text.clone();
+    let old_span = *old_span;
+    let old_map = old_map.clone();
     let s = text.trim().to_string();
     if s.len() <= 1 || !s.ends_with(':') {
         return Vec::new();
@@ -2071,19 +2178,109 @@ fn extract_htags(title: &mut Vec<Inline>) -> Vec<String> {
     // title2 = drop_last 1 title (then append [Plain prefix] if prefix != "")
     title.pop();
     if !prefix.is_empty() {
-        // reformatted (trimmed) text → no source span.
-        title.push(Inline::Plain {
-            text: prefix,
-            span: None,
-        });
+        let trimmed_start = old_text.len() - old_text.trim_start().len();
+        let prefix_start = trimmed_start;
+        let prefix_end = prefix_start + prefix.len();
+        title.push(plain_from_existing_slice(
+            &old_text,
+            prefix_start,
+            prefix_end,
+            prefix,
+            old_span,
+            old_map.as_deref(),
+        ));
     }
     // last_plain: if the (new) last inline is Plain, rtrim it and add one trailing space.
-    if let Some(Inline::Plain { text, span }) = title.last_mut() {
+    if matches!(title.last(), Some(Inline::Plain { .. })) {
+        let Some(Inline::Plain {
+            text,
+            span,
+            span_map,
+        }) = title.last().cloned() else {
+            unreachable!();
+        };
         let trimmed = text.trim_end();
-        *text = format!("{} ", trimmed);
-        *span = None; // text reformatted → span no longer matches source
+        let slice_end = if trimmed.len() < text.len() {
+            trimmed.len() + 1
+        } else {
+            trimmed.len()
+        };
+        let replacement = plain_from_existing_slice(
+            &text,
+            0,
+            slice_end,
+            format!("{trimmed} "),
+            span,
+            span_map.as_deref(),
+        );
+        *title.last_mut().unwrap() = replacement;
     }
     tags
+}
+
+fn plain_from_existing_slice(
+    old_text: &str,
+    slice_start: usize,
+    slice_end: usize,
+    text: String,
+    old_span: Option<Span>,
+    old_map: Option<&[SpanMapSegment]>,
+) -> Inline {
+    let source_slice = &old_text[slice_start..slice_end];
+    if let Some(map) = old_map {
+        let mut out = Vec::new();
+        let mut lo = usize::MAX;
+        let mut hi = 0usize;
+        for SpanMapSegment(text_off, src_off, len) in map.iter().copied() {
+            let seg_end = text_off + len;
+            let a = slice_start.max(text_off);
+            let b = slice_end.min(seg_end);
+            if a >= b {
+                continue;
+            }
+            let src = src_off + (a - text_off);
+            crate::source_map::push_wire_segment(&mut out, a - slice_start, src, b - a);
+            lo = lo.min(src);
+            hi = hi.max(src + (b - a));
+        }
+        let span = if lo != usize::MAX {
+            Span(lo, hi)
+        } else {
+            let p = old_span.map(|s| s.0).unwrap_or(0);
+            Span(p, p)
+        };
+        Inline::Plain {
+            text,
+            span: Some(span),
+            span_map: Some(out),
+        }
+    } else if let Some(Span(start, _)) = old_span {
+        let span = Span(start + slice_start, start + slice_end);
+        let span_map = if source_slice.as_bytes() == text.as_bytes() {
+            None
+        } else {
+            let mut out = Vec::new();
+            let copied_len = source_slice
+                .as_bytes()
+                .iter()
+                .zip(text.as_bytes())
+                .take_while(|(a, b)| a == b)
+                .count();
+            crate::source_map::push_wire_segment(&mut out, 0, span.0, copied_len);
+            Some(out)
+        };
+        Inline::Plain {
+            text,
+            span: Some(span),
+            span_map,
+        }
+    } else {
+        Inline::Plain {
+            text,
+            span: Some(Span(0, 0)),
+            span_map: Some(Vec::new()),
+        }
+    }
 }
 
 /// `:a:b:` -> ["a","b"]; `::` -> [] and still succeeds so the title rewrite runs.
@@ -2342,9 +2539,8 @@ struct Marker {
     number: Option<u32>,
     checkbox: Option<bool>,
     indent: usize,
-    /// The raw content after marker + ws + checkbox + spaces (trim_start'd), i.e. the
-    /// first item-content line BEFORE the final `String.trim` mldoc applies at join.
-    body: String,
+    /// Byte offset of the raw content after marker + ws + checkbox + spaces.
+    body_start: usize,
 }
 
 /// Parse an Org list marker at the line's own indent (mldoc `format_checkbox_parser`,
@@ -2365,7 +2561,7 @@ fn list_marker(s: &str) -> Option<Marker> {
             number,
             checkbox,
             indent: ws,
-            body: body.to_string(),
+            body_start: s.len() - body.len(),
         })
     };
     let dash = if ws == 0 {
@@ -2462,6 +2658,9 @@ fn collect_list(
     hi: usize,
     item_ctx: Ctx,
     strip: usize,
+    input: &str,
+    origin: Option<&OriginMap>,
+    source_body: &str,
 ) -> Result<(Block, usize), Collapse> {
     let mut flat: Vec<ListItem> = Vec::new();
     let mut flat_lines: Vec<usize> = Vec::new();
@@ -2480,7 +2679,19 @@ fn collect_list(
         };
         let cur_indent = marker.indent;
         // content = first line (after marker) + folded indented continuation lines.
-        let mut content_lines: Vec<String> = vec![marker.body.trim().to_string()];
+        let mut content = String::new();
+        let mut content_map = OriginMap::new();
+        let mut content_cursor = OriginCursor::new();
+        let first_raw = &t[marker.body_start..];
+        append_view_with_origin(
+            &mut content,
+            &mut content_map,
+            &mut content_cursor,
+            input,
+            origin,
+            first_raw.trim(),
+        );
+        let mut last_content_line = i;
         let mut j = i + 1;
         let mut trigger: Option<usize> = None;
         loop {
@@ -2502,7 +2713,23 @@ fn collect_list(
                 }
                 break; // child / breakout / collapse — handled below
             }
-            content_lines.push(cl.trim().to_string()); // fold (de-indented)
+            append_line_joiner(
+                &mut content,
+                &mut content_map,
+                &mut content_cursor,
+                lines,
+                last_content_line,
+                origin,
+            );
+            append_view_with_origin(
+                &mut content,
+                &mut content_map,
+                &mut content_cursor,
+                input,
+                origin,
+                cl.trim(),
+            );
+            last_content_line = j;
             j += 1;
         }
         if let Some(trigger) = trigger {
@@ -2533,7 +2760,7 @@ fn collect_list(
             ordered: marker.ordered,
             number: marker.number,
             indent: cur_indent as u32,
-            content: streaming_reparse(&content_lines.join("\n"), item_ctx),
+            content: streaming_reparse(&content, item_ctx, &content_map, source_body),
             items: vec![],
             name: vec![],
             checkbox: marker.checkbox,
@@ -2600,7 +2827,14 @@ fn is_table_row(s: &str) -> bool {
     t.len() >= 2 && t.starts_with('|') && t.ends_with('|')
 }
 
-fn build_table(rows: &[Line], start: usize, end: usize, input: &str) -> Block {
+fn build_table(
+    rows: &[Line],
+    start: usize,
+    end: usize,
+    input: &str,
+    origin: Option<&OriginMap>,
+    source_body: &str,
+) -> Block {
     let split_cells = |s: &str| -> Vec<Vec<Inline>> {
         let t = s.trim();
         let t = t.strip_prefix('|').unwrap_or(t);
@@ -2608,7 +2842,8 @@ fn build_table(rows: &[Line], start: usize, end: usize, input: &str) -> Block {
         t.split('|')
             .map(|c| {
                 let c = c.trim();
-                org_inline(c, crate::inline::ptr_base(c, input))
+                let base = crate::inline::ptr_base(c, input);
+                org_inline_mapped(c, base, input, origin, source_body)
             })
             .collect()
     };
@@ -2650,6 +2885,20 @@ fn build_table(rows: &[Line], start: usize, end: usize, input: &str) -> Block {
 /// `text` in the block body. Name kept for the block call sites.
 pub(crate) fn org_inline(text: &str, base: usize) -> Vec<Inline> {
     crate::org_resolver::parse_inline_org(text, base)
+}
+
+fn org_inline_mapped(
+    text: &str,
+    base: usize,
+    current_input: &str,
+    origin: Option<&OriginMap>,
+    source_body: &str,
+) -> Vec<Inline> {
+    let mut inline = org_inline(text, base);
+    if let Some(origin) = origin {
+        crate::source_map::remap_inlines(&mut inline, current_input, source_body, origin);
+    }
+    inline
 }
 
 /// Classify an `[[url][label]]` destination (mldoc `org_link_1`): `file:` -> File;
@@ -2719,8 +2968,31 @@ mod tests {
     /// (span invariants are checked separately in lib.rs).
     fn ns(v: &[Inline]) -> Vec<Inline> {
         let mut v = v.to_vec();
-        crate::parse::none_out_inlines(&mut v);
+        for n in &mut v {
+            clear_inline_span_for_test(n);
+        }
         v
+    }
+
+    fn clear_inline_span_for_test(n: &mut Inline) {
+        crate::projection::set_inline_span(n, None);
+        match n {
+            Inline::Plain { span_map, .. } => *span_map = None,
+            Inline::Emphasis { children, .. }
+            | Inline::Subscript { children, .. }
+            | Inline::Superscript { children, .. }
+            | Inline::Tag { children, .. } => {
+                for c in children {
+                    clear_inline_span_for_test(c);
+                }
+            }
+            Inline::Link { label, .. } => {
+                for c in label {
+                    clear_inline_span_for_test(c);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn ik(i: &Inline) -> String {
@@ -2933,7 +3205,8 @@ mod tests {
                     ns(inline),
                     vec![Inline::Plain {
                         text: "task with ".into(),
-                        span: None
+                        span: None,
+                        span_map: None
                     }]
                 );
             }
@@ -2955,7 +3228,8 @@ mod tests {
                     ns(inline),
                     vec![Inline::Plain {
                         text: "plain ".into(),
-                        span: None
+                        span: None,
+                        span_map: None
                     }]
                 );
             }
@@ -3195,12 +3469,14 @@ mod tests {
                 vec![
                     Inline::Plain {
                         text: "a plain paragraph".into(),
-                        span: None
+                        span: None,
+                        span_map: None
                     },
                     Inline::Break { span: None },
                     Inline::Plain {
                         text: "second line".into(),
-                        span: None
+                        span: None,
+                        span_map: None
                     },
                 ]
             ),
@@ -3657,12 +3933,14 @@ mod tests {
                 vec![
                     Inline::Plain {
                         text: " ".into(),
-                        span: None
+                        span: None,
+                        span_map: None
                     },
                     Inline::Break { span: None },
                     Inline::Plain {
                         text: "real content".into(),
-                        span: None
+                        span: None,
+                        span_map: None
                     },
                 ]
             ),

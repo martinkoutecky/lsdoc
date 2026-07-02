@@ -4257,7 +4257,11 @@
                   "inline": [
                     {
                       "k": "plain",
-                      "text": "milk"
+                      "text": "milk",
+                      "span": [
+                        46,
+                        50
+                      ]
                     }
                   ],
                   "span": [
@@ -4277,7 +4281,11 @@
                   "inline": [
                     {
                       "k": "plain",
-                      "text": "eggs"
+                      "text": "eggs",
+                      "span": [
+                        53,
+                        57
+                      ]
                     }
                   ],
                   "span": [
@@ -4297,7 +4305,11 @@
                   "inline": [
                     {
                       "k": "plain",
-                      "text": "also a valid bullet"
+                      "text": "also a valid bullet",
+                      "span": [
+                        60,
+                        79
+                      ]
                     }
                   ],
                   "span": [
@@ -4993,7 +5005,11 @@
                         "type": "page_ref",
                         "v": "mwe-namespace/alpha"
                       },
-                      "full": "[[mwe-namespace/alpha]]"
+                      "full": "[[mwe-namespace/alpha]]",
+                      "span": [
+                        92,
+                        115
+                      ]
                     }
                   ],
                   "span": [
@@ -5017,7 +5033,11 @@
                         "type": "page_ref",
                         "v": "mwe-namespace/beta"
                       },
-                      "full": "[[mwe-namespace/beta]]"
+                      "full": "[[mwe-namespace/beta]]",
+                      "span": [
+                        118,
+                        140
+                      ]
                     }
                   ],
                   "span": [

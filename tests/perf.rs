@@ -6,7 +6,7 @@
 //! The full-scale gate (`*_heavy`) is `#[ignore]`d so it doesn't slow the dev loop;
 //! run it explicitly: `cargo test --release -- --ignored` (see README).
 
-use std::time::Instant;
+use std::{fmt::Write, time::Instant};
 
 fn parse(s: &str) {
     std::hint::black_box(lsdoc::parse_to_projection(std::hint::black_box(s)));
@@ -336,7 +336,34 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         // drops 2000 → 1000 to match md.
         ("md_nested_callout", false, 1_000, |n| nested_callout(n)),
         ("org_nested_callout", true, 1_000, |n| nested_callout(n)),
+        // Inline-spans v2 Round 2: one transformed quote buffer with O(n) origin segments and
+        // O(n) inline nodes. The source-map remap cursor must keep these near 2× per doubling.
+        ("md_flat_gt_quote_lines", false, 4_000, flat_gt_quote_lines),
+        ("org_flat_gt_quote_lines", true, 4_000, flat_gt_quote_lines),
+        (
+            "org_begin_quote_indented_body",
+            true,
+            4_000,
+            org_begin_quote_indented_body,
+        ),
     ]
+}
+
+fn flat_gt_quote_lines(n: usize) -> String {
+    let mut s = String::new();
+    for i in 0..n {
+        writeln!(&mut s, "> line {i}").unwrap();
+    }
+    s
+}
+
+fn org_begin_quote_indented_body(n: usize) -> String {
+    let mut s = String::from("#+BEGIN_QUOTE\n");
+    for i in 0..n {
+        writeln!(&mut s, "  line {i}").unwrap();
+    }
+    s.push_str("#+END_QUOTE\n");
+    s
 }
 
 /// `#+BEGIN_a0 … #+BEGIN_a{n-1}` / `x` / `#+END_a{n-1} … #+END_a0` — n distinct-name callouts
@@ -511,9 +538,17 @@ fn render_html_nested_callout_is_linear_heavy() {
             fn build(depth: usize) -> Vec<Block> {
                 let lead = || {
                     vec![
-                        Inline::Plain { text: "[!NOTE] t".to_string(), span: None },
+                        Inline::Plain {
+                            text: "[!NOTE] t".to_string(),
+                            span: None,
+                            span_map: None,
+                        },
                         Inline::Break { span: None },
-                        Inline::Plain { text: "x".to_string(), span: None },
+                        Inline::Plain {
+                            text: "x".to_string(),
+                            span: None,
+                            span_map: None,
+                        },
                     ]
                 };
                 let mut node = Block::Quote {
