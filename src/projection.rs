@@ -87,9 +87,9 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Per-column table alignment, parsed from the separator row (`:--`/`--:`/`:-:`).
-/// An lsdoc-only render enrichment used by [`crate::render_html`]'s `data-align`
-/// (mldoc discards table alignment); the differential gate drops it like `span`.
+/// Per-column table alignment, parsed from the markdown separator row
+/// (`:--`/`--:`/`:-:`). An lsdoc-only render enrichment: mldoc discards table
+/// alignment, and the differential gate drops it like `span`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Align {
@@ -125,6 +125,20 @@ pub(crate) fn parse_separator_aligns(sep: &str) -> Vec<Option<Align>> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_separator_aligns, Align};
+
+    #[test]
+    fn separator_aligns_require_hyphen_per_cell() {
+        assert_eq!(
+            parse_separator_aligns("|:---|---:|:--:|---|"),
+            vec![Some(Align::Left), Some(Align::Right), Some(Align::Center), None]
+        );
+        assert_eq!(parse_separator_aligns("|:|::|"), vec![None, None]);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -266,14 +280,14 @@ pub enum Block {
     Table {
         header: Option<Vec<Vec<Inline>>>,
         rows: Vec<Vec<Vec<Inline>>>,
-        /// Per-column alignment parsed from the markdown `:--`/`--:`/`:-:` (or org)
-        /// separator row. An **lsdoc-only render enrichment**: mldoc 1.5.7 discards
-        /// alignment, so this is excluded from the differential gate exactly like
-        /// `span` (`harness/compare.mjs` + `harness/blockgate.mjs` drop the key).
-        /// `None` = no separator row / no `:` markers; each column is `Some` only
-        /// when that column carried a marker. Modeled on `Span` as a gate-dropped field.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        aligns: Option<Vec<Option<Align>>>,
+        /// Per-column alignment wire contract. Always serialized as a JSON array:
+        /// one entry per dropped markdown separator cell, with `"left"`, `"center"`,
+        /// `"right"`, or `null`; `[]` means no dropped separator row (including org
+        /// tables and header+separator-only markdown tables). Consumers map column
+        /// `i` to `aligns[i]`; a missing index is unaligned. This is excluded from
+        /// the differential gate exactly like `span`.
+        #[serde(default)]
+        aligns: Vec<Option<Align>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },

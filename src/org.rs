@@ -2630,14 +2630,14 @@ fn build_table(rows: &[Line], start: usize, end: usize, input: &str) -> Block {
         .map(|l| split_cells(l.text))
         .collect();
 
-    // Fix C: org tables emit NO `aligns`. Org's real column alignment is a `<l>/<c>/<r>`
+    // Fix C: org tables emit empty `aligns`. Org's real column alignment is a `<l>/<c>/<r>`
     // cookie row (using `+` junctions), NOT a markdown `:--` separator, so reusing the
     // markdown separator parser here produced WRONG alignment. mldoc discards org alignment
     // entirely (no oracle truth), so `data-align` is markdown-only.
     Block::Table {
         header,
         rows: body,
-        aligns: None,
+        aligns: Vec::new(),
         span: Some(Span(start, end)),
     }
 }

@@ -147,7 +147,7 @@ impl Renderer {
             Block::Quote { children, .. } => self.quote(children),
             Block::Custom { name, children, .. } => self.custom(name, children),
             Block::Properties { props, .. } => self.properties(props),
-            Block::Table { header, rows, aligns, .. } => self.table(header.as_deref(), rows, aligns.as_deref()),
+            Block::Table { header, rows, aligns, .. } => self.table(header.as_deref(), rows, aligns.as_slice()),
             Block::Hr { .. } => self.out.push_str("<hr class=\"md-hr\">"),
             // Block-level math: empty element + raw tex hook (consumer renders KaTeX).
             Block::DisplayedMath { text, .. } => self.math_block(text),
@@ -228,15 +228,12 @@ impl Renderer {
         self.out.push_str("</span>");
     }
 
-    fn table(&mut self, header: Option<&[Vec<Inline>]>, rows: &[Vec<Vec<Inline>>], aligns: Option<&[Option<Align>]>) {
+    fn table(&mut self, header: Option<&[Vec<Inline>]>, rows: &[Vec<Vec<Inline>>], aligns: &[Option<Align>]) {
         let align_attr = |out: &mut String, col: usize| {
-            if let Some(Some(a)) = aligns.map(|a| a.get(col).copied().flatten()) {
-                let v = match a {
-                    Align::Left => "left",
-                    Align::Center => "center",
-                    Align::Right => "right",
-                };
-                push_attr(out, "data-align", v);
+            match aligns.get(col).copied().flatten() {
+                Some(Align::Center) => push_attr(out, "data-align", "center"),
+                Some(Align::Right) => push_attr(out, "data-align", "right"),
+                Some(Align::Left) | None => {}
             }
         };
         self.out.push_str("<table class=\"md-table\">");

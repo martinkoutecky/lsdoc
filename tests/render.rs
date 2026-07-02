@@ -382,9 +382,9 @@ fn table_with_alignment() {
         md("| A | B | C |\n|:--|:-:|--:|\n| 1 | 2 | 3 |"),
         concat!(
             r#"<table class="md-table"><thead><tr>"#,
-            r#"<th data-align="left">A</th><th data-align="center">B</th><th data-align="right">C</th>"#,
+            r#"<th>A</th><th data-align="center">B</th><th data-align="right">C</th>"#,
             r#"</tr></thead><tbody><tr>"#,
-            r#"<td data-align="left">1</td><td data-align="center">2</td><td data-align="right">3</td>"#,
+            r#"<td>1</td><td data-align="center">2</td><td data-align="right">3</td>"#,
             r#"</tr></tbody></table>"#
         )
     );
@@ -400,10 +400,10 @@ fn table_without_alignment_emits_no_data_align() {
 
 #[test]
 fn table_partial_alignment() {
-    // only the first column is aligned; the second gets no data-align.
+    // only the second column is right-aligned; the first gets no data-align.
     assert_eq!(
-        md("| A | B |\n|:--|---|\n| 1 | 2 |"),
-        r#"<table class="md-table"><thead><tr><th data-align="left">A</th><th>B</th></tr></thead><tbody><tr><td data-align="left">1</td><td>2</td></tr></tbody></table>"#
+        md("| A | B |\n|---|--:|\n| 1 | 2 |"),
+        r#"<table class="md-table"><thead><tr><th>A</th><th data-align="right">B</th></tr></thead><tbody><tr><td>1</td><td data-align="right">2</td></tr></tbody></table>"#
     );
 }
 

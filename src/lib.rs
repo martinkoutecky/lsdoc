@@ -48,9 +48,10 @@ pub(crate) mod resolver;
 ///   [`Url`](ast::Url) → `"type"`.
 ///
 /// Every `Option` / `false` `bool` / empty `Vec` / empty `String` field is **omitted**
-/// (`skip_serializing_if`); a consumer treats an absent key as the default. Field names
-/// and `rename` values are part of the contract — see `AST.md` for the exhaustive
-/// construct→variant table and the per-variant field list.
+/// (`skip_serializing_if`), except [`Block::Table`](ast::Block::Table)`.aligns`, which
+/// is always serialized and may be `[]`. A consumer treats an absent key as the default
+/// for omitted fields. Field names and `rename` values are part of the contract — see
+/// `AST.md` for the exhaustive construct→variant table and the per-variant field list.
 ///
 /// Two fields are intentionally opaque, carried as mldoc's raw JSON so the contract
 /// need not commit to their sub-schema (both are render-complete as-is):
@@ -121,6 +122,50 @@ pub fn parse_format(input: &str, format: &str) -> Projection {
         parse_org_to_projection(input)
     } else {
         parse_to_projection(input)
+    }
+}
+
+#[cfg(test)]
+mod table_align_tests {
+    use crate::ast::{Align, Block};
+
+    fn table_aligns(input: &str, format: &str) -> Vec<Option<Align>> {
+        let blocks = crate::parse(input, format);
+        match blocks.first() {
+            Some(Block::Table { aligns, .. }) => aligns.clone(),
+            _ => panic!("expected table"),
+        }
+    }
+
+    #[test]
+    fn markdown_table_aligns_follow_separator_contract() {
+        assert_eq!(
+            table_aligns("|a|b|c|d|\n|:---|---:|:--:|---|\n|1|2|3|4|", "md"),
+            vec![Some(Align::Left), Some(Align::Right), Some(Align::Center), None]
+        );
+        assert_eq!(table_aligns("|a|b|\n|---|---|\n|1|2|", "md"), vec![None, None]);
+        assert_eq!(table_aligns("|a|b|\n|1|2|", "md"), Vec::<Option<Align>>::new());
+        assert_eq!(table_aligns("|a|b|\n|:--|--:|", "md"), Vec::<Option<Align>>::new());
+        assert_eq!(table_aligns("|a|b|\n|:|::|\n|1|2|", "md"), vec![None, None]);
+
+        let ragged = table_aligns("|a|b|c|\n|:--|--:|\n|1|2|3|", "md");
+        assert_eq!(ragged, vec![Some(Align::Left), Some(Align::Right)]);
+        assert_eq!(ragged.len(), 2);
+    }
+
+    #[test]
+    fn org_tables_emit_no_aligns() {
+        assert_eq!(
+            table_aligns("|a|b|\n|---+---|\n|1|2|", "org"),
+            Vec::<Option<Align>>::new()
+        );
+    }
+
+    #[test]
+    fn table_aligns_serializes_even_when_empty() {
+        let blocks = crate::parse("|a|b|\n|1|2|", "md");
+        let table = serde_json::to_value(&blocks[0]).expect("table serializes");
+        assert_eq!(table.get("aligns"), Some(&serde_json::json!([])));
     }
 }
 

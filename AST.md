@@ -18,8 +18,9 @@ Markdown and Org produce the **same** AST.
 - Enums are **internally tagged**; the discriminant key differs per enum:
   - `Block` → **`"kind"`**, `Inline` → **`"k"`**, `Url` → **`"type"`**.
 - **Omitted = default.** Every `Option`/`bool false`/empty-`Vec`/empty-`String` field is
-  omitted (`skip_serializing_if`). A consumer must treat an absent key as the default
-  (`None` / `false` / `[]` / `""`). The non-omitted (always-present) fields are noted below.
+  omitted (`skip_serializing_if`) unless explicitly noted. A consumer must treat an absent
+  key as the default (`None` / `false` / `[]` / `""`). Exception: `table.aligns` is always
+  serialized, including `[]` when there is no dropped markdown separator row.
 - `span` (block byte-offset `[start,end]`) is emitted but is **out of the render contract**
   (excluded from the oracle diff; Tine renders read-only). Inline nodes carry **no** span.
 
@@ -45,7 +46,7 @@ Markdown and Org produce the **same** AST.
 | `latex_env` | `name: string`, `content: string` | `span` | `\begin{X}…\end{X}` (name lowercased) |
 | `properties` | `props: [string, string][]` | `span` | `key:: value` block / org `:PROPERTIES:` |
 | `hr` | — | `span` | horizontal rule |
-| `table` | `header: Inline[][] \| null`, `rows: Inline[][][]` | `span` | table. **No column alignment** (see Notes) |
+| `table` | `header: Inline[][] \| null`, `rows: Inline[][][]`, `aligns: ("left"\|"center"\|"right"\|null)[]` | `span` | table. `aligns` is always serialized; see Notes |
 | `footnote_def` | `name: string`, `inline: Inline[]` | `span` | `[^id]: body` / org `[fn:id] body` |
 | `hiccup` | `v: string` | `span` | block-level Clojure-hiccup vector `[:tag …]` occupying a whole line (mldoc `Hiccup`). `v` = the RAW bracket text verbatim (children NOT parsed). md + org |
 
@@ -147,9 +148,13 @@ as opaque for display.
 
 ## Notes / deliberate gaps (render-relevant, NOT carried — see DECISIONS.md §"Render-level parity")
 
-- **Table column alignment is not available.** mldoc 1.5.7 discards it (`col_groups` is just
-  the column count); Logseq does not render aligned tables, so neither does this AST. If you
-  need it, it must be re-derived from the source separator row — it is not in the AST.
+- **Table column alignment is carried in `table.aligns`.** For Markdown tables with a dropped
+  separator row, `aligns` has one entry per separator cell: `"left"`, `"center"`, `"right"`,
+  or `null` for an unaligned column. `[]` means no dropped markdown separator row, including
+  no-separator tables, header+separator-only tables where the separator remains visible body
+  content, and Org tables. Consumers map column `i` to `aligns[i]`; a missing index is
+  unaligned. mldoc 1.5.7 discards alignment, so this lsdoc-only field is excluded from the
+  oracle diff like `span`.
 - **Clojure-hiccup `[:tag …]`** (mldoc `Hiccup` / `Inline_Hiccup`) IS carried — as the
   `hiccup` block + inline variants above. `v` is the raw bracket text verbatim (mldoc does
   NOT parse the children, so a renderer treats it opaquely; no refs are extracted from it).

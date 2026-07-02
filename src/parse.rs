@@ -3194,11 +3194,13 @@ fn build_table_from_texts(rows: &[&str], start: usize, end: usize, input: &str) 
         rows[data_start.min(rows.len())..].iter().map(|l| split_cells(l)).collect();
 
     // lsdoc-only render enrichment (gate-dropped): when the separator row is dropped,
-    // retain its `:--`/`--:`/`:-:` per-column alignment for `data-align`. Keep only if
-    // at least one column is actually aligned, so plain `|---|` tables emit nothing.
-    let aligns = (data_start == 2)
-        .then(|| crate::projection::parse_separator_aligns(rows[1]))
-        .filter(|a| a.iter().any(Option::is_some));
+    // retain one alignment entry per separator cell. Plain separators intentionally
+    // become `[None, ...]`; no dropped separator becomes `[]`.
+    let aligns = if data_start == 2 {
+        crate::projection::parse_separator_aligns(rows[1])
+    } else {
+        Vec::new()
+    };
 
     Block::Table {
         header,
