@@ -12,7 +12,7 @@
 //! near-twins (`fence_marker`, `split_markers`, `drawer_begin`, `flush_para`) stay per-file.
 
 use crate::projection::{Block, Span};
-use std::{cell::Cell, collections::HashMap};
+use std::cell::Cell;
 
 /// Anti-SIGABRT recursion floor on the ONE remaining native re-dispatch: the de-`>`'d reparse
 /// FALLBACK for a `>`-quote body that contains a fenced-code / `#+BEGIN_X` callout / LaTeX env /
@@ -232,6 +232,10 @@ struct RawHtmlWindowRanks {
     self_fit_end: usize,
 }
 
+// Per-tag body windows are stack-like plus the full-input resolver window. Keep only the most
+// recent windows so lookup work is deterministic; eviction only recomputes pure rank metadata.
+const RAW_HTML_BODY_RANK_CACHE_CAP: usize = 16;
+
 struct RawHtmlTagIndex {
     input_len: usize,
     close_len: usize,
@@ -244,7 +248,7 @@ struct RawHtmlTagIndex {
     close_min_tree: Vec<isize>,
     close_tree_base: usize,
     self_close_pos: Vec<usize>,
-    body_ranks: HashMap<usize, RawHtmlWindowRanks>,
+    body_ranks: Vec<(usize, RawHtmlWindowRanks)>,
     last_after_tag: usize,
     event_cursor: usize,
     event_cursor_prefix: isize,
@@ -354,7 +358,7 @@ impl RawHtmlTagIndex {
             close_min_tree,
             close_tree_base,
             self_close_pos,
-            body_ranks: HashMap::new(),
+            body_ranks: Vec::with_capacity(RAW_HTML_BODY_RANK_CACHE_CAP),
             last_after_tag: 0,
             event_cursor: 0,
             event_cursor_prefix: 0,
@@ -427,8 +431,21 @@ impl RawHtmlTagIndex {
 
     fn window_ranks(&mut self, body_end: usize) -> RawHtmlWindowRanks {
         debug_assert!(body_end <= self.input_len);
-        crate::metrics::scan_work(1);
-        if let Some(&ranks) = self.body_ranks.get(&body_end) {
+        let mut hit = None;
+        for pos in 0..self.body_ranks.len() {
+            crate::metrics::scan_work(1);
+            if self.body_ranks[pos].0 == body_end {
+                hit = Some(pos);
+                break;
+            }
+        }
+        if let Some(pos) = hit {
+            let ranks = self.body_ranks[pos].1;
+            if pos != 0 {
+                crate::metrics::scan_work(pos);
+                let entry = self.body_ranks.remove(pos);
+                self.body_ranks.insert(0, entry);
+            }
             return ranks;
         }
         let tail_start = body_end.saturating_sub(self.max_event_len);
@@ -449,8 +466,11 @@ impl RawHtmlTagIndex {
             close_fit_end,
             self_fit_end,
         };
-        crate::metrics::scan_work(1);
-        self.body_ranks.insert(body_end, ranks);
+        if self.body_ranks.len() == RAW_HTML_BODY_RANK_CACHE_CAP {
+            self.body_ranks.pop();
+        }
+        crate::metrics::scan_work(self.body_ranks.len());
+        self.body_ranks.insert(0, (body_end, ranks));
         ranks
     }
 
