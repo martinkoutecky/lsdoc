@@ -3,11 +3,14 @@
 // lsdoc is stateless so a single batch run is fine. Usage: node vdiff_iso.mjs <probe.json>
 import { readFileSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
+import { canonJSON } from "./lib/compare.mjs";
 const path = process.argv[2];
 const cases = JSON.parse(readFileSync(path, "utf8"));
 execSync(`cargo run -q --bin lsdoc-parse -- ${path} _iso_lsdoc.json`, { stdio: "ignore" });
 const L = Object.fromEntries(JSON.parse(readFileSync("_iso_lsdoc.json", "utf8")).map((x) => [x.id, x]));
-const strip = (o) => JSON.stringify(JSON.parse(JSON.stringify(o.blocks || o, (k, v) => (k === "span" ? undefined : v))));
+// canonJSON = the main gate's canonical comparator (key-sorted, span-dropped) — raw stringify
+// gave FALSE diffs on key order (email/timestamp objects).
+const strip = (o) => canonJSON(o.blocks || o);
 let bad = 0;
 for (const c of cases) {
   writeFileSync("_iso_one.json", JSON.stringify([c]));

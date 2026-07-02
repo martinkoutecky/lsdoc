@@ -811,7 +811,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 let is_ws = txt.bytes().all(|b| b == b' ' || b == b'\t');
                 if fresh && !is_ws {
                     let leaf = (if ctx.timestamps && matches!(bb[off], b'S' | b'C' | b'D' | b's' | b'c' | b'd') {
-                        crate::inline::parse_keyword_timestamp(s, off)
+                        crate::inline::parse_keyword_timestamp_with_scan(s, off, &mut timestamp_scan)
                     } else {
                         None
                     })
@@ -826,7 +826,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         flush(&mut out, &mut pending, &mut plain_start, plain_end);
                         crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + end)));
                         out.push(node);
-                        t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx, &mut bare_url_scan);
+                        t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx, &mut bare_url_scan, &mut timestamp_scan);
                         continue;
                     }
                 }
@@ -911,7 +911,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         pending.push_str(&text);
                     }
                 }
-                t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx, &mut bare_url_scan);
+                t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx, &mut bare_url_scan, &mut timestamp_scan);
                 continue;
             }
             Kind::Punct(c) => {
@@ -949,7 +949,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                             let rb_lb = present!(sq_rb_lb, b']', b'[', off);
                             if let Some((mut node, e)) = try_bracket_at(
                                 s, bb, off, ctx, &hiccup_close, &nested_close, &real_dbl,
-                                &mut real_dbl_cur, &mut crlf, rb_lb, base,
+                                &mut real_dbl_cur, &mut crlf, rb_lb, base, &mut timestamp_scan,
                             ) {
                                 flush(&mut out, &mut pending, &mut plain_start, plain_end);
                                 crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
@@ -1014,7 +1014,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     _ => {}
                 }
                 if let Some(e) = hit {
-                    t = resync_straddle(s, toks, t, e, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx, &mut bare_url_scan);
+                    t = resync_straddle(s, toks, t, e, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx, &mut bare_url_scan, &mut timestamp_scan);
                     continue;
                 }
                 // not consumed: plain. `# $ [` are PLAIN_DELIMS (fresh); the swallow bytes
@@ -1189,6 +1189,7 @@ fn resync_straddle(
     base: usize,
     ctx: Ctx,
     bare_url_scan: &mut crate::inline::BareUrlScan,
+    timestamp_scan: &mut crate::inline::TimestampCloseScan,
 ) -> usize {
     let n = s.len();
     while t < toks.len() && (if t + 1 < toks.len() { toks[t + 1].off } else { n }) <= end {
@@ -1201,7 +1202,7 @@ fn resync_straddle(
         let te = if t + 1 < toks.len() { toks[t + 1].off } else { n };
         let leads = (ctx.timestamps
             && matches!(s.as_bytes()[end], b'S' | b'C' | b'D' | b's' | b'c' | b'd')
-            && crate::inline::parse_keyword_timestamp(s, end).is_some())
+            && crate::inline::parse_keyword_timestamp_with_scan(s, end, timestamp_scan).is_some())
             || (ctx.urls
                 && crate::inline::parse_bare_url_with_scan(s, end, bare_url_scan).is_some());
         if leads {
@@ -1396,8 +1397,9 @@ fn try_block_ref_at(s: &str, bb: &[u8], i: usize) -> Option<(Inline, usize)> {
     None
 }
 
-/// `[` bracket dispatch — v1 try_bracket: hiccup → org_link_1 → nested → org_link_2 (page-ref)
-/// → inactive timestamp → footnote. Maps + cursors mirror md's `[[…]]` linearity devices.
+/// `[` bracket dispatch — mldoc Org order: nested/link → timestamp → footnote →
+/// statistics-cookie (not represented) → hiccup. Maps + cursors mirror md's
+/// `[[…]]` linearity devices.
 #[allow(clippy::too_many_arguments)]
 fn try_bracket_at(
     s: &str,
@@ -1411,12 +1413,8 @@ fn try_bracket_at(
     crlf: &mut usize,
     rb_lb_present: bool,
     base: usize,
+    timestamp_scan: &mut crate::inline::TimestampCloseScan,
 ) -> Option<(Inline, usize)> {
-    if ctx.hiccup && bb.get(off + 1) == Some(&b':') && crate::inline::hiccup_head_ok(s, off) {
-        if let Some(end) = hiccup_close.get(off).copied().filter(|&e| e != usize::MAX) {
-            return Some((Inline::Hiccup { v: s[off..end].to_string(), span: None }, end));
-        }
-    }
     if s[off..].starts_with("[[") {
         if rb_lb_present {
             if let Some((end, node)) = org_link_1_at(s, bb, off, base) {
@@ -1443,13 +1441,20 @@ fn try_bracket_at(
         }
     }
     if ctx.timestamps {
-        if let Some((end, node)) = org_inactive_ts_at(s, bb, off) {
+        if let Some((end, node)) =
+            crate::inline::parse_bracket_timestamp_with_scan(s, off, timestamp_scan)
+        {
             return Some((node, end));
         }
     }
     if ctx.footnotes {
         if let Some((end, name)) = org_footnote_at(s, off) {
             return Some((Inline::Fnref { name, span: None }, end));
+        }
+    }
+    if ctx.hiccup && bb.get(off + 1) == Some(&b':') && crate::inline::hiccup_head_ok(s, off) {
+        if let Some(end) = hiccup_close.get(off).copied().filter(|&e| e != usize::MAX) {
+            return Some((Inline::Hiccup { v: s[off..end].to_string(), span: None }, end));
         }
     }
     None
@@ -1616,21 +1621,6 @@ fn read_metadata(s: &str, bb: &[u8], end: &mut usize) -> String {
         }
     }
     String::new()
-}
-
-/// `[date]` / `[date]--[date]` inactive timestamp — v1 org_inactive_timestamp.
-fn org_inactive_ts_at(s: &str, bb: &[u8], i: usize) -> Option<(usize, Inline)> {
-    if !bb.get(i + 1).is_some_and(|c| c.is_ascii_digit() || c.is_ascii_whitespace()) {
-        return None;
-    }
-    let (end1, ts1) = crate::inline::parse_bracket_date(s, i, b'[', b']')?;
-    if s[end1..].starts_with("--") {
-        if let Some((end2, ts2)) = crate::inline::parse_bracket_date(s, end1 + 2, b'[', b']') {
-            let val = serde_json::json!({ "start": ts1, "stop": ts2 });
-            return Some((end2, Inline::Timestamp { ts: "Range".to_string(), date: val, span: None }));
-        }
-    }
-    Some((end1, Inline::Timestamp { ts: "Date".to_string(), date: ts1, span: None }))
 }
 
 /// `[fn:name]` / `[fn:name:def]` / `[fn::def]` → name — v1 org_footnote_ref.

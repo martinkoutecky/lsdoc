@@ -20,7 +20,7 @@ the fuzz floor** (more mldoc parity) — how each fix was verified.
 | D11 | `<br/>` no-space → inline_html (mldoc → plain) | **FIXED** | `b85f4d7` |
 | D12 | single-line `<b>`/`<i>` phrasing tags → raw_html (mldoc → plain) | **FIXED** | `b85f4d7` |
 | D13 | md link-label doesn't reparse entities/latex (`[\alpha](u)`, `[$x$](u)`) | **FIXED** | `2c77af8` |
-| D14 | timestamp token order-permissive (`<… +1d 12:00>` accepts both vs mldoc date-only) | OPEN | — |
+| D14 | timestamp token order-permissive (`<… +1d 12:00>` accepts both vs mldoc date-only) | **FIXED pending** | — |
 | D15 | md drawer name rejects punctuation (`:LOG@BOOK:` → paragraph vs mldoc drawer) | OPEN | — |
 | D16 | email requires closing `>` (`<a@b.co` → plain; mldoc → email, `<`/`>` both optional per `syntax/email_address.ml:33-34`; ditto `<a@b co>` → email `a@b` + plain) | OPEN | — |
 | D17 | md `data:` image parses as Search instead of `Embed_data` | **FIXED** | `2c77af8` |

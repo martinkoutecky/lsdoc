@@ -84,7 +84,7 @@ Markdown and Org produce the **same** AST.
 | `tag` | `children: Inline[]` | `#tag` / `#[[bracket tag]]` |
 | `macro` | `name: string`, `args: string[]` | `{{name arg1, arg2}}` (incl. `{{embed …}}`, `{{query …}}`) |
 | `latex` | `mode: string`, `body: string` | `mode` ∈ {`"Inline"`, `"Displayed"`}; `$x$` / `$$x$$` / `\(x\)` / `\[x\]` |
-| `timestamp` | `ts: string`, `date: Value` | `ts` ∈ {`"Date"`,`"Range"`,`"Scheduled"`,`"Deadline"`,`"Closed"`}; `date` = opaque (see below) |
+| `timestamp` | `ts: string`, `date: Value` | `ts` ∈ {`"Date"`,`"Range"`,`"Scheduled"`,`"Deadline"`,`"Closed"`,`"Clock"`}; `date` = opaque (see below) |
 | `fnref` | `name: string` | footnote reference `[^id]` / `[fn:id]` |
 | `inline_html` | `text: string` | inline raw HTML `<span>…` (org `@@html:` etc.) |
 | `email` | `text: Value` | `<a@b.com>` autolink; `text` opaque (see below) |
@@ -124,7 +124,7 @@ from `metadata`; shows `title` as a tooltip; renders the destination from `url`.
   md `^^…^^` / `==…==` and org `_…_` map as Logseq does.) Nesting: `***x***` →
   `Italic[Bold[x]]`.
 - **`latex.mode`**: `"Inline"` | `"Displayed"`.
-- **`timestamp.ts`**: `"Date"` | `"Range"` | `"Scheduled"` | `"Deadline"` | `"Closed"`.
+- **`timestamp.ts`**: `"Date"` | `"Range"` | `"Scheduled"` | `"Deadline"` | `"Closed"` | `"Clock"`.
 
 ### Opaque `Value` payloads
 
@@ -132,8 +132,9 @@ from `metadata`; shows `title` as a tooltip; renders the destination from `url`.
 so they are render-complete without lsdoc committing to a sub-schema:
 
 - `timestamp.date` — for a single date: `{date:{year,month,day}, wday, active, time?:{hour,min},
-  repetition?}`; for `ts:"Range"`: `{start:{…}, stop:{…}}`. SCHEDULED/DEADLINE/CLOSED and date
-  ranges all flow through here (the `ts` tag distinguishes), so heading-level planner badges
+  repetition?}`; for `ts:"Range"`: `{start:{…}, stop:{…}}`; for `ts:"Clock"`:
+  `["Started",{…}]` or `["Stopped",{start:{…},stop:{…}}]`. SCHEDULED/DEADLINE/CLOSED/CLOCK and
+  date ranges all flow through here (the `ts` tag distinguishes), so heading-level planner badges
   render from the `Timestamp` inline — there is no separate heading-meta field.
 - `email.text` — mldoc's address record.
 

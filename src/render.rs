@@ -593,11 +593,10 @@ impl Renderer {
     }
 
     fn timestamp(&mut self, ts: &str, date: &Value) {
-        let (active, text) = if ts == "Range" && date.get("start").is_some() && date.get("stop").is_some() {
-            let start = date.get("start").unwrap();
-            let stop = date.get("stop").unwrap();
-            let active = start.get("active").and_then(Value::as_bool).unwrap_or(true);
-            (active, format!("{}--{}", fmt_ts_point(start), fmt_ts_point(stop)))
+        let (active, text) = if ts == "Clock" {
+            fmt_clock_timestamp(date)
+        } else if ts == "Range" && date.get("start").is_some() && date.get("stop").is_some() {
+            fmt_timestamp_range(date)
         } else {
             let active = date.get("active").and_then(Value::as_bool).unwrap_or(true);
             (active, fmt_ts_point(date))
@@ -610,6 +609,25 @@ impl Renderer {
         esc_text(&format!("{open}{text}{close}"), &mut self.out);
         self.out.push_str("</span>");
     }
+}
+
+fn fmt_clock_timestamp(date: &Value) -> (bool, String) {
+    match (date.get(0).and_then(Value::as_str), date.get(1)) {
+        (Some("Started"), Some(point)) => {
+            let active = point.get("active").and_then(Value::as_bool).unwrap_or(true);
+            (active, fmt_ts_point(point))
+        }
+        (Some("Stopped"), Some(range)) => fmt_timestamp_range(range),
+        _ => (true, fmt_ts_point(date)),
+    }
+}
+
+fn fmt_timestamp_range(date: &Value) -> (bool, String) {
+    let (Some(start), Some(stop)) = (date.get("start"), date.get("stop")) else {
+        return (true, fmt_ts_point(date));
+    };
+    let active = start.get("active").and_then(Value::as_bool).unwrap_or(true);
+    (active, format!("{}--{}", fmt_ts_point(start), fmt_ts_point(stop)))
 }
 
 // ===========================================================================

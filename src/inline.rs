@@ -152,15 +152,15 @@ impl EmailAutolinkScan {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct TimestampCloseScan {
+#[derive(Clone, Default)]
+struct TimestampCloseCursor {
     next: usize,
     initialized: bool,
     no_close_from: usize,
 }
 
-impl TimestampCloseScan {
-    pub(crate) fn new() -> Self {
+impl TimestampCloseCursor {
+    fn new() -> Self {
         Self {
             next: 0,
             initialized: false,
@@ -183,6 +183,85 @@ impl TimestampCloseScan {
                 scanned += 1;
             } else {
                 self.no_close_from = self.no_close_from.min(from);
+            }
+            crate::metrics::scan_work(scanned);
+            self.next = p;
+            self.initialized = true;
+        }
+        self.next
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct TimestampCloseScan {
+    angle: TimestampCloseCursor,
+    bracket: TimestampCloseCursor,
+    angle_token: TimestampTokenCursor,
+    bracket_token: TimestampTokenCursor,
+}
+
+impl TimestampCloseScan {
+    pub(crate) fn new() -> Self {
+        Self {
+            angle: TimestampCloseCursor::new(),
+            bracket: TimestampCloseCursor::new(),
+            angle_token: TimestampTokenCursor::new(),
+            bracket_token: TimestampTokenCursor::new(),
+        }
+    }
+
+    fn first_close_or_lf(&mut self, b: &[u8], from: usize, close: u8) -> usize {
+        match close {
+            b'>' => self.angle.first_close_or_lf(b, from, close),
+            b']' => self.bracket.first_close_or_lf(b, from, close),
+            _ => b.len(),
+        }
+    }
+
+    fn first_token_boundary_or_lf(&mut self, b: &[u8], from: usize, close: u8) -> usize {
+        match close {
+            b'>' => self.angle_token.first_boundary_or_lf(b, from, close),
+            b']' => self.bracket_token.first_boundary_or_lf(b, from, close),
+            _ => b.len(),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct TimestampTokenCursor {
+    next: usize,
+    initialized: bool,
+    no_boundary_from: usize,
+}
+
+impl TimestampTokenCursor {
+    fn new() -> Self {
+        Self {
+            next: 0,
+            initialized: false,
+            no_boundary_from: usize::MAX,
+        }
+    }
+
+    fn first_boundary_or_lf(&mut self, b: &[u8], from: usize, close: u8) -> usize {
+        if from >= self.no_boundary_from {
+            return b.len();
+        }
+        if !self.initialized || self.next < from {
+            let mut p = from;
+            let mut scanned = 0usize;
+            while p < b.len()
+                && b[p] != close
+                && b[p] != b'\n'
+                && !is_mldoc_timestamp_space(b[p])
+            {
+                scanned += 1;
+                p += char_len(b[p]);
+            }
+            if p < b.len() {
+                scanned += 1;
+            } else {
+                self.no_boundary_from = self.no_boundary_from.min(from);
             }
             crate::metrics::scan_work(scanned);
             self.next = p;
@@ -1918,28 +1997,12 @@ pub(crate) fn parse_macro_at(s: &str, at: usize) -> Option<(Inline, usize)> {
 
 // ---- timestamps -----------------------------------------------------------
 
-/// `<YYYY-MM-DD WDAY [HH:MM]>` and ranges `<..>--<..>`. active = true (angle).
+/// `<...>` timestamp dispatch. Mirrors mldoc `timestamp = range <|> general_timestamp`
+/// (`lib/syntax/inline.ml:1111-1136`), with a local scan for legacy direct callers.
 #[allow(dead_code)]
 pub(crate) fn parse_angle_timestamp(s: &str, at: usize) -> Option<(usize, Inline)> {
-    let (end1, ts1) = parse_bracket_date(s, at, b'<', b'>')?;
-    // range?
-    if s[end1..].starts_with("--") {
-        let r = at + 0;
-        let _ = r;
-        if let Some((end2, ts2)) = parse_bracket_date(s, end1 + 2, b'<', b'>') {
-            let val = serde_json::json!({ "start": ts1, "stop": ts2 });
-            return Some((end2, Inline::Timestamp {
-                ts: "Range".to_string(),
-                date: val,
-                span: None,
-            }));
-        }
-    }
-    Some((end1, Inline::Timestamp {
-        ts: "Date".to_string(),
-        date: ts1,
-        span: None,
-    }))
+    let mut scan = TimestampCloseScan::new();
+    parse_angle_timestamp_with_scan(s, at, &mut scan)
 }
 
 pub(crate) fn parse_angle_timestamp_with_scan(
@@ -1947,132 +2010,374 @@ pub(crate) fn parse_angle_timestamp_with_scan(
     at: usize,
     scan: &mut TimestampCloseScan,
 ) -> Option<(usize, Inline)> {
-    if !bracket_date_has_close_before_lf(s, at, b'<', b'>', scan) {
+    if s.as_bytes().get(at) != Some(&b'<') {
         return None;
     }
-    let (end1, ts1) = parse_bracket_date(s, at, b'<', b'>')?;
-    if s[end1..].starts_with("--")
-        && bracket_date_has_close_before_lf(s, end1 + 2, b'<', b'>', scan)
-    {
-        if let Some((end2, ts2)) = parse_bracket_date(s, end1 + 2, b'<', b'>') {
-            let val = serde_json::json!({ "start": ts1, "stop": ts2 });
-            return Some((end2, Inline::Timestamp {
-                ts: "Range".to_string(),
-                date: val,
-                span: None,
-            }));
-        }
-    }
-    Some((end1, Inline::Timestamp {
-        ts: "Date".to_string(),
-        date: ts1,
-        span: None,
-    }))
+    parse_timestamp_at_with_scan(s, at, scan)
 }
 
-/// `SCHEDULED:`/`DEADLINE:`/`CLOSED:` `<DATE>`.
+#[allow(dead_code)]
 pub(crate) fn parse_keyword_timestamp(s: &str, at: usize) -> Option<(usize, Inline)> {
-    let keywords = [
-        ("SCHEDULED:", "Scheduled"),
-        ("DEADLINE:", "Deadline"),
-        ("CLOSED:", "Closed"),
-    ];
-    for (kw, ty) in keywords {
-        if s[at..].starts_with(kw) {
-            let mut j = at + kw.len();
-            let b = s.as_bytes();
-            while j < b.len() && b[j] == b' ' {
-                j += 1;
-            }
-            if let Some((end, ts)) = parse_bracket_date(s, j, b'<', b'>') {
-                return Some((end, Inline::Timestamp {
-                    ts: ty.to_string(),
-                    date: ts,
-                    span: None,
-                }));
-            }
-            return None;
-        }
-    }
-    None
+    let mut scan = TimestampCloseScan::new();
+    parse_keyword_timestamp_with_scan(s, at, &mut scan)
 }
 
-/// Parse `<YYYY-MM-DD WDAY [HH:MM]>` (or with `[`/`]`), returning (end, date_obj).
-pub(crate) fn parse_bracket_date(
+/// Text-arm timestamp dispatch for S/C/D/s/c/d. This must try `range` before
+/// keyword forms so `SCHEDULED: <a>--<b>` becomes a plain Range, while a missing
+/// second half backtracks to the first keyword timestamp.
+pub(crate) fn parse_keyword_timestamp_with_scan(
+    s: &str,
+    at: usize,
+    scan: &mut TimestampCloseScan,
+) -> Option<(usize, Inline)> {
+    if !matches!(s.as_bytes().get(at), Some(b'S' | b'C' | b'D' | b's' | b'c' | b'd')) {
+        return None;
+    }
+    parse_timestamp_at_with_scan(s, at, scan)
+}
+
+/// `[...]` timestamp dispatch, used by both Markdown and Org bracket arms after
+/// their link/reference alternatives have failed.
+pub(crate) fn parse_bracket_timestamp_with_scan(
+    s: &str,
+    at: usize,
+    scan: &mut TimestampCloseScan,
+) -> Option<(usize, Inline)> {
+    if s.as_bytes().get(at) != Some(&b'[') {
+        return None;
+    }
+    parse_timestamp_at_with_scan(s, at, scan)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TimestampKind {
+    Date,
+    Scheduled,
+    Deadline,
+    Closed,
+    Clock,
+}
+
+impl TimestampKind {
+    fn label(self) -> &'static str {
+        match self {
+            TimestampKind::Date => "Date",
+            TimestampKind::Scheduled => "Scheduled",
+            TimestampKind::Deadline => "Deadline",
+            TimestampKind::Closed => "Closed",
+            TimestampKind::Clock => "Clock",
+        }
+    }
+}
+
+fn parse_timestamp_at_with_scan(
+    s: &str,
+    at: usize,
+    scan: &mut TimestampCloseScan,
+) -> Option<(usize, Inline)> {
+    if let Some(range) = parse_range_at(s, at, scan) {
+        return Some(range);
+    }
+    let (end, kind, point) = parse_general_timestamp_at(s, at, scan)?;
+    Some((end, timestamp_node(kind, point)))
+}
+
+fn parse_range_at(s: &str, at: usize, scan: &mut TimestampCloseScan) -> Option<(usize, Inline)> {
+    let mut range_scan = scan.clone();
+    let b = s.as_bytes();
+    let mut i = skip_mldoc_spaces(b, at);
+    let prefix_start = i;
+    while i < b.len() && b[i].is_ascii_alphabetic() {
+        i += 1;
+    }
+    let clock = if i > prefix_start && b.get(i) == Some(&b':') {
+        let prefix = &s[prefix_start..i];
+        i += 1;
+        Some(prefix == "CLOCK")
+    } else {
+        i = prefix_start;
+        None
+    };
+    i = skip_mldoc_spaces(b, i);
+
+    let (end1, _kind1, start) = parse_general_timestamp_at(s, i, &mut range_scan)?;
+    if !s.get(end1..).is_some_and(|rest| rest.starts_with("--")) {
+        return None;
+    }
+    let (end2, _kind2, stop) = parse_general_timestamp_at(s, end1 + 2, &mut range_scan)?;
+    *scan = range_scan;
+    if clock == Some(true) {
+        Some((end2, Inline::Timestamp {
+            ts: "Clock".to_string(),
+            date: serde_json::json!(["Stopped", { "start": start, "stop": stop }]),
+            span: None,
+        }))
+    } else {
+        Some((end2, Inline::Timestamp {
+            ts: "Range".to_string(),
+            date: serde_json::json!({ "start": start, "stop": stop }),
+            span: None,
+        }))
+    }
+}
+
+fn parse_general_timestamp_at(
+    s: &str,
+    at: usize,
+    scan: &mut TimestampCloseScan,
+) -> Option<(usize, TimestampKind, serde_json::Value)> {
+    let b = s.as_bytes();
+    let i = skip_mldoc_spaces(b, at);
+    let c = *b.get(i)?;
+    match c.to_ascii_uppercase() {
+        b'<' => parse_date_time_at(s, i, b'<', b'>', true, scan)
+            .map(|(end, point)| (end, TimestampKind::Date, point)),
+        b'[' => parse_date_time_at(s, i, b'[', b']', false, scan)
+            .map(|(end, point)| (end, TimestampKind::Date, point)),
+        b'S' => parse_keyword_body(s, i + 1, b"CHEDULED:", TimestampKind::Scheduled, scan),
+        b'D' => parse_keyword_body(s, i + 1, b"EADLINE:", TimestampKind::Deadline, scan),
+        b'C' => {
+            let rest = i + 1;
+            if b.get(rest..rest + 3) == Some(b"LOS") {
+                parse_keyword_body(s, rest + 3, b"ED:", TimestampKind::Closed, scan)
+            } else if b.get(rest..rest + 3) == Some(b"LOC") {
+                parse_keyword_body(s, rest + 3, b"K:", TimestampKind::Clock, scan)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_keyword_body(
+    s: &str,
+    rest_at: usize,
+    rest: &[u8],
+    kind: TimestampKind,
+    scan: &mut TimestampCloseScan,
+) -> Option<(usize, TimestampKind, serde_json::Value)> {
+    let b = s.as_bytes();
+    if !ascii_ci_starts_with(b, rest_at, rest) {
+        return None;
+    }
+    let after_keyword = rest_at + rest.len();
+    let opener = take_mldoc_ws1(b, after_keyword)?;
+    match b.get(opener).copied()? {
+        b'<' => parse_date_time_at(s, opener, b'<', b'>', true, scan)
+            .map(|(end, point)| (end, kind, point)),
+        b'[' => parse_date_time_at(s, opener, b'[', b']', false, scan)
+            .map(|(end, point)| (end, kind, point)),
+        _ => None,
+    }
+}
+
+/// Port of mldoc `date_time close_char ~active typ`
+/// (`lib/syntax/inline.ml:1022-1066`).
+fn parse_date_time_at(
     s: &str,
     at: usize,
     open: u8,
     close: u8,
+    active: bool,
+    scan: &mut TimestampCloseScan,
 ) -> Option<(usize, serde_json::Value)> {
     let b = s.as_bytes();
-    let n = b.len();
-    if b.get(at) != Some(&open) {
+    if b.get(at) != Some(&open) || !timestamp_body_has_close_before_lf(s, at, close, scan) {
         return None;
     }
-    let inner_start = at + 1;
-    match b.get(inner_start) {
-        Some(c) if c.is_ascii_digit() || *c == b'+' || is_ws(*c) => {}
-        Some(_) => {
-            crate::metrics::scan_work(1);
-            return None;
+    let mut i = at + 1;
+    let (date_start, date_end) = take_timestamp_non_spaces(s, i, close, scan)?;
+    i = date_end;
+    if !b.get(i).is_some_and(|&c| is_mldoc_timestamp_space(c)) {
+        return None;
+    }
+    let (year, month, day) = parse_date_scanf(&b[date_start..date_end])?;
+    i += 1;
+
+    let wday_start = i;
+    while i < b.len() && b[i].is_ascii_alphabetic() {
+        i += 1;
+    }
+    if i == wday_start {
+        return None;
+    }
+    let wday = &s[wday_start..i];
+
+    let mut slot1 = None;
+    let mut slot2 = None;
+    if b.get(i).is_some_and(|&c| is_mldoc_timestamp_space(c)) {
+        i += 1;
+        let (start, end) = take_timestamp_non_spaces(s, i, close, scan)?;
+        slot1 = Some(&s[start..end]);
+        i = end;
+        if b.get(i).is_some_and(|&c| is_mldoc_timestamp_space(c)) {
+            i += 1;
+            let (start, end) = take_timestamp_non_spaces(s, i, close, scan)?;
+            slot2 = Some(&s[start..end]);
+            i = end;
         }
-        None => return None,
     }
-    let mut j = inner_start;
-    let mut scanned = 0usize;
-    while j < n && b[j] != close && b[j] != b'\n' {
-        scanned += 1;
-        j += 1;
-    }
-    if j < n {
-        scanned += 1;
-    }
-    crate::metrics::scan_work(scanned);
-    if j >= n || b[j] != close {
+    if b.get(i) != Some(&close) {
         return None;
     }
-    let inner = &s[inner_start..j];
-    let obj = parse_date_inner(inner, open == b'<')?;
-    Some((j + 1, obj))
+
+    let (time, repetition) = match (slot1, slot2) {
+        (None, None) => (None, None),
+        (Some(s1), None) => match s1.as_bytes().first().copied() {
+            Some(c @ (b'+' | b'.')) => (None, repetition_parser(s1, c)),
+            Some(_) => (parse_time_scanf(s1.as_bytes()), None),
+            None => (None, None),
+        },
+        (Some(s1), Some(s2)) => (
+            parse_time_scanf(s1.as_bytes()),
+            s2.as_bytes()
+                .first()
+                .copied()
+                .and_then(|c| repetition_parser(s2, c)),
+        ),
+        (None, Some(_)) => unreachable!(),
+    };
+
+    Some((i + 1, timestamp_point(year, month, day, wday, time, repetition, active)))
 }
 
-fn bracket_date_has_close_before_lf(
+fn timestamp_body_has_close_before_lf(
     s: &str,
     at: usize,
-    open: u8,
     close: u8,
     scan: &mut TimestampCloseScan,
 ) -> bool {
     let b = s.as_bytes();
-    if b.get(at) != Some(&open) {
-        return false;
-    }
-    let inner_start = at + 1;
-    match b.get(inner_start) {
-        Some(c) if c.is_ascii_digit() || *c == b'+' || is_ws(*c) => {}
-        _ => return false,
-    }
-    let boundary = scan.first_close_or_lf(b, inner_start, close);
+    let boundary = scan.first_close_or_lf(b, at + 1, close);
     boundary < b.len() && b[boundary] == close
 }
 
-/// Parse an org timestamp repeater token (`+1m`, `++2w`, `.+1d`) into mldoc's JSON
-/// shape `[[kind],[duration],n]` (e.g. `[["Plus"],["Month"],1]`); None if not one.
-fn parse_repetition(tok: &str) -> Option<serde_json::Value> {
-    let (kind, rest) = if let Some(r) = tok.strip_prefix(".+") {
-        ("Dotted", r)
-    } else if let Some(r) = tok.strip_prefix("++") {
-        ("DoublePlus", r)
-    } else if let Some(r) = tok.strip_prefix('+') {
-        ("Plus", r)
+fn timestamp_node(kind: TimestampKind, point: serde_json::Value) -> Inline {
+    let date = if kind == TimestampKind::Clock {
+        serde_json::json!(["Started", point])
     } else {
-        return None;
+        point
     };
-    let rb = rest.as_bytes();
-    if rb.is_empty() {
+    Inline::Timestamp {
+        ts: kind.label().to_string(),
+        date,
+        span: None,
+    }
+}
+
+fn timestamp_point(
+    year: i64,
+    month: i64,
+    day: i64,
+    wday: &str,
+    time: Option<(i64, i64)>,
+    repetition: Option<serde_json::Value>,
+    active: bool,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "date".to_string(),
+        serde_json::json!({ "year": year, "month": month, "day": day }),
+    );
+    obj.insert("wday".to_string(), serde_json::json!(wday));
+    if let Some((hour, min)) = time {
+        obj.insert("time".to_string(), serde_json::json!({ "hour": hour, "min": min }));
+    }
+    if let Some(rep) = repetition {
+        obj.insert("repetition".to_string(), rep);
+    }
+    obj.insert("active".to_string(), serde_json::json!(active));
+    serde_json::Value::Object(obj)
+}
+
+#[inline]
+fn is_mldoc_timestamp_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | 0x1a | 0x0c)
+}
+
+fn skip_mldoc_spaces(b: &[u8], mut i: usize) -> usize {
+    while i < b.len() && is_mldoc_timestamp_space(b[i]) {
+        i += 1;
+    }
+    i
+}
+
+fn take_mldoc_ws1(b: &[u8], i: usize) -> Option<usize> {
+    if !b.get(i).is_some_and(|&c| is_mldoc_timestamp_space(c)) {
         return None;
     }
-    let dur = match rb[rb.len() - 1] {
+    Some(skip_mldoc_spaces(b, i))
+}
+
+fn ascii_ci_starts_with(b: &[u8], at: usize, pat: &[u8]) -> bool {
+    b.get(at..at + pat.len()).is_some_and(|got| {
+        got.iter()
+            .zip(pat)
+            .all(|(&g, &p)| g.to_ascii_uppercase() == p.to_ascii_uppercase())
+    })
+}
+
+fn take_timestamp_non_spaces(
+    s: &str,
+    i: usize,
+    close: u8,
+    scan: &mut TimestampCloseScan,
+) -> Option<(usize, usize)> {
+    let b = s.as_bytes();
+    let start = i;
+    let end = scan.first_token_boundary_or_lf(b, i, close);
+    (end > start && end < b.len() && b[end] != b'\n').then_some((start, end))
+}
+
+fn scan_i64_prefix(b: &[u8], mut i: usize) -> Option<(i64, usize)> {
+    let start = i;
+    if matches!(b.get(i), Some(b'+' | b'-')) {
+        i += 1;
+    }
+    let digit_start = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == digit_start {
+        return None;
+    }
+    let n = std::str::from_utf8(&b[start..i]).ok()?.parse::<i64>().ok()?;
+    Some((n, i))
+}
+
+/// Port of `Timestamp.parse_date`: `Scanf.sscanf s "%d-%d-%d"` with prefix
+/// scanning and no width/range validation.
+fn parse_date_scanf(b: &[u8]) -> Option<(i64, i64, i64)> {
+    let (year, mut i) = scan_i64_prefix(b, 0)?;
+    if b.get(i) != Some(&b'-') {
+        return None;
+    }
+    i += 1;
+    let (month, mut i) = scan_i64_prefix(b, i)?;
+    if b.get(i) != Some(&b'-') {
+        return None;
+    }
+    i += 1;
+    let (day, _i) = scan_i64_prefix(b, i)?;
+    Some((year, month, day))
+}
+
+/// Port of `Timestamp.parse_time`: `Scanf.sscanf s "%d:%d"` with prefix
+/// scanning and no hour/minute validation.
+fn parse_time_scanf(b: &[u8]) -> Option<(i64, i64)> {
+    let (hour, mut i) = scan_i64_prefix(b, 0)?;
+    if b.get(i) != Some(&b':') {
+        return None;
+    }
+    i += 1;
+    let (min, _i) = scan_i64_prefix(b, i)?;
+    Some((hour, min))
+}
+
+fn parse_repetition_marker(kind: &'static str, b: &[u8]) -> Option<serde_json::Value> {
+    let (n, i) = scan_i64_prefix(b, 0)?;
+    let dur = match b.get(i).copied()? {
         b'h' => "Hour",
         b'd' => "Day",
         b'w' => "Week",
@@ -2080,48 +2385,21 @@ fn parse_repetition(tok: &str) -> Option<serde_json::Value> {
         b'y' => "Year",
         _ => return None,
     };
-    let n: i64 = rest[..rest.len() - 1].parse().ok()?; // unit is ASCII → boundary safe
     Some(serde_json::json!([[kind], [dur], n]))
 }
 
-pub(crate) fn parse_date_inner(inner: &str, active: bool) -> Option<serde_json::Value> {
-    // "YYYY-MM-DD WDAY [HH:MM] [repeat...]"
-    let mut parts = inner.split_whitespace();
-    let date_str = parts.next()?;
-    let date_b: Vec<&str> = date_str.split('-').collect();
-    if date_b.len() != 3 {
+/// Port of `Timestamp.repetition_parser` (`lib/syntax/timestamp.ml:120-136`),
+/// including the byte-drop quirks for `.1d`, `x1d`, `z+1d`, signed counts, and
+/// ignored suffixes after the unit char.
+fn repetition_parser(tok: &str, first: u8) -> Option<serde_json::Value> {
+    let b = tok.as_bytes();
+    if b.len() < 2 {
         return None;
     }
-    let year: i64 = date_b[0].parse().ok()?;
-    let month: i64 = date_b[1].parse().ok()?;
-    let day: i64 = date_b[2].parse().ok()?;
-    let wday = parts.next();
-    // require a weekday made of letters (mldoc day_name_parser)
-    let wday = match wday {
-        Some(w) if w.chars().all(|c| c.is_alphabetic()) => w,
-        _ => return None,
-    };
-    let mut obj = serde_json::Map::new();
-    obj.insert(
-        "date".to_string(),
-        serde_json::json!({ "year": year, "month": month, "day": day }),
-    );
-    obj.insert("wday".to_string(), serde_json::json!(wday));
-    // optional time `HH:MM` and/or repeater `+1m`/`++2w`/`.+1d` (mldoc timestamp.ml).
-    for tok in parts {
-        if let Some((h, m)) = tok.split_once(':') {
-            if let (Ok(hour), Ok(min)) = (h.parse::<i64>(), m.parse::<i64>()) {
-                obj.insert(
-                    "time".to_string(),
-                    serde_json::json!({ "hour": hour, "min": min }),
-                );
-                continue;
-            }
-        }
-        if let Some(rep) = parse_repetition(tok) {
-            obj.insert("repetition".to_string(), rep);
-        }
+    if b[1] != b'+' {
+        parse_repetition_marker("Plus", &b[1..])
+    } else {
+        let kind = if first == b'+' { "DoublePlus" } else { "Dotted" };
+        parse_repetition_marker(kind, &b[2..])
     }
-    obj.insert("active".to_string(), serde_json::json!(active));
-    Some(serde_json::Value::Object(obj))
 }

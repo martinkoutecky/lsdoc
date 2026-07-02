@@ -5,7 +5,7 @@ must have exactly one owner: constant/local, consume-on-match, suffix-absence mi
 invalidating cursor, precomputed map, or boundary-run map. A new unfloored scan in these
 paths is a bug.
 
-Line numbers were rechecked against the current tree after the C2 links port.
+Line numbers were rechecked against the current tree after the C3 timestamp port.
 
 | scan @ file:line | owner | argument |
 |---|---|---|
@@ -18,7 +18,9 @@ Line numbers were rechecked against the current tree after the C2 links port.
 | Markdown macro dispatch @ `src/resolver.rs:846`, `src/inline.rs:1844` | suffix-absence miss-cache + invalidating-cursor | `}}` floor proves close presence; first lone `}` cursor prevents repeated invalid misses. |
 | Markdown block-ref dispatch @ `src/resolver.rs:860`, `src/inline.rs:1809` | suffix-absence miss-cache + invalidating-cursor | `))` floor proves close presence; first lone `)` cursor owns body-invalid failures. |
 | Markdown angle autolink @ `src/resolver.rs:810`, `src/inline.rs:1206` | suffix-absence miss-cache + invalidating-cursor | one cursor owns first `>`/ws after `<scheme:`; EOF and ws-before-`>` are cached outcomes. |
-| Markdown angle timestamp @ `src/resolver.rs:810`, `src/inline.rs:1903` | suffix-absence miss-cache + invalidating-cursor | timestamp date parsing is gated by a monotone first `>`/LF cursor. |
+| Markdown angle timestamp @ `src/resolver.rs:1253`, `src/inline.rs:2011` | suffix-absence miss-cache + invalidating-cursor | active `<...>` bodies and active range halves are gated by the `>` half of `TimestampCloseScan`. |
+| Markdown inactive bracket timestamp @ `src/resolver.rs:1018`, `src/inline.rs:2041` | suffix-absence miss-cache + invalidating-cursor | inactive `[...]` bodies and inactive range halves are gated by the `]` half of `TimestampCloseScan`, after link/reference attempts. |
+| Markdown keyword/range timestamp @ `src/resolver.rs:1287`, `src/inline.rs:2027` | suffix-absence miss-cache + invalidating-cursor | keyword active/inactive bodies reuse the delimiter-specific timestamp cursor; range second-half probes are transactional clones, committed only on a successful range so fallback stays O(n). |
 | Markdown email local/domain @ `src/resolver.rs:810`, `src/inline.rs:1288` | suffix-absence miss-cache + invalidating-cursor | local-part keeps the `@` absence floor; domain uses a first `>`/ws cursor. |
 | Markdown raw HTML angle @ `src/resolver.rs:810`, `src/block_common.rs:614` | suffix-absence miss-cache + precomputed-map | missing closers use `RawHtmlScan`; unbalanced tag matching uses a lazy per-tag/body index. |
 | Markdown bare URL dispatch @ `src/resolver.rs:444`, `src/inline.rs:1407` | consume-on-match + suffix-absence miss-cache | accepted URLs consume their span; all-alphanumeric no-scheme suffixes are floored. |
@@ -29,7 +31,9 @@ Line numbers were rechecked against the current tree after the C2 links port.
 | Org tag dispatch @ `src/org_resolver.rs:493`, `src/inline.rs:219` | boundary-run | same delimiter-run precompute as Markdown. |
 | Org angle target @ `src/org_resolver.rs:975` | constant/local | `<<target>>` stops at `<`, `>`, or EOL and is tried once at the dispatch byte. |
 | Org autolink @ `src/org_resolver.rs:975`, `src/org.rs:2210` | suffix-absence miss-cache + invalidating-cursor | shared first `>`/ws cursor gates `parse_org_autolink`. |
-| Org timestamp @ `src/org_resolver.rs:975`, `src/inline.rs:1903` | suffix-absence miss-cache + invalidating-cursor | shared timestamp close cursor gates angle timestamps. |
+| Org angle timestamp @ `src/org_resolver.rs:977`, `src/inline.rs:2011` | suffix-absence miss-cache + invalidating-cursor | active `<...>` bodies and active range halves are gated by the `>` half of `TimestampCloseScan`. |
+| Org inactive bracket timestamp @ `src/org_resolver.rs:944`, `src/inline.rs:2041` | suffix-absence miss-cache + invalidating-cursor | inactive `[...]` bodies and inactive range halves are gated by the `]` half of `TimestampCloseScan`, after org link attempts. |
+| Org keyword/range timestamp @ `src/org_resolver.rs:808`, `src/inline.rs:2027` | suffix-absence miss-cache + invalidating-cursor | keyword active/inactive bodies reuse the delimiter-specific timestamp cursor; range second-half probes are transactional clones, committed only on a successful range so fallback stays O(n). |
 | Org raw HTML angle @ `src/org_resolver.rs:975`, `src/block_common.rs:614` | suffix-absence miss-cache + precomputed-map | same `RawHtmlScan` and unbalanced tag index as Markdown. |
 | Org email domain @ `src/org_resolver.rs:975`, `src/inline.rs:1288` | suffix-absence miss-cache + invalidating-cursor | same email `@` floor plus domain boundary cursor as Markdown. |
 | Org bare URL dispatch/resync @ `src/org_resolver.rs:367`, `src/org_resolver.rs:860` | consume-on-match + suffix-absence miss-cache | accepted URLs consume; resync lead probes share `BareUrlScan`. |
@@ -52,7 +56,7 @@ Line numbers were rechecked against the current tree after the C2 links port.
 | Email parser body @ `src/inline.rs:1288` | suffix-absence miss-cache + invalidating-cursor | cached entry point owns both local `@` absence and domain boundary. |
 | Bare URL path balance @ `src/inline.rs:1492` | consume-on-match | the balanced tail is part of the emitted URL span. |
 | LaTeX backslash/dollar @ `src/inline.rs:1759`, `src/inline.rs:1776` | invalidating-cursor / current-line | backslash closers are gated by resolver `\)`/`\]` cursors; dollar scans stop at current line and consume on success. |
-| Timestamp date body @ `src/inline.rs:1959` | invalidating-cursor owned by caller | angle timestamps are gated by `TimestampCloseScan`; accepted keyword/inactive timestamps consume their date span. |
+| Timestamp body slots @ `src/inline.rs:2177`, token boundary cursor @ `src/inline.rs:231` | invalidating-cursor owned by caller | after a cursor-owned close candidate, delimiter-specific token-boundary cursors own the date/time/repetition slot scans; exact body spacing and two-slot interpretation are bounded local work with no `split_whitespace` suffix rescans or caps. |
 | Raw HTML head @ `src/block_common.rs:406` | constant | known tag token scan is bounded by `MAX_HTML_TAG_LEN = 10`. |
 | Raw HTML special closer @ `src/block_common.rs:497`, `src/block_common.rs:530` | suffix-absence miss-cache | missing special closers update `RawHtmlScan.no_special_until`. |
 | Raw HTML missing tag closer @ `src/block_common.rs:530`, `src/block_common.rs:614` | suffix-absence miss-cache | no `</tag>` ahead updates `RawHtmlScan.no_tag_end_until[index]`. |

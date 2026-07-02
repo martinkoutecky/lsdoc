@@ -421,7 +421,7 @@ pub enum Inline {
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },
-    /// `ts` ∈ {`Date`,`Range`,`Scheduled`,`Deadline`,`Closed`}; `date` is mldoc's
+    /// `ts` ∈ {`Date`,`Range`,`Scheduled`,`Deadline`,`Closed`,`Clock`}; `date` is mldoc's
     /// raw date/range record, **declared opaque** for rendering (shape in `AST.md`).
     #[serde(rename = "timestamp")]
     Timestamp {

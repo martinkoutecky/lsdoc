@@ -1015,30 +1015,21 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut fresh = true;
     let mut t = 0usize;
     while t < toks.len() {
-        // `[` dispatch (M2a/M2b): mldoc's try_bracket order — hiccup `[:` → footnote `[^` →
-        // nested-link / page-ref `[[…]]` → markdown link `[…](…)`. Leftmost-greedy with
-        // byte-offset resync; the kept pairing disciplines + monotone floors keep it linear.
+        // `[` dispatch: mldoc Markdown order — footnote/reference → nested/link →
+        // inactive timestamp → statistics-cookie (not represented) → inline hiccup.
+        // Leftmost-greedy with byte-offset resync; pairing maps and monotone floors keep it linear.
         if matches!(toks[t].kind, Kind::Punct(b'[')) {
             let off = toks[t].off;
             let mut end = None;
-            // 1. inline hiccup `[:tag …]` (ctx-gated — off in emphasis content).
-            if ctx.hiccup && bb.get(off + 1) == Some(&b':') && crate::inline::hiccup_head_ok(s, off)
-            {
-                if let Some(e) = hiccup_close.get(off).copied().filter(|&e| e != usize::MAX) {
-                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                    out.push(Inline::Hiccup { v: s[off..e].to_string(), span: Some(Span(base + off, base + e)) });
-                    end = Some(e);
-                }
-            }
-            // 2. footnote `[^id]` (ctx-gated).
-            if end.is_none() && ctx.footnotes && bb.get(off + 1) == Some(&b'^') {
+            // 1. footnote `[^id]` (ctx-gated).
+            if ctx.footnotes && bb.get(off + 1) == Some(&b'^') {
                 if let Some((e, name)) = crate::inline::parse_footnote_ref(s, off) {
                     flush(&mut out, &mut pending, &mut plain_start, plain_end);
                     out.push(Inline::Fnref { name, span: Some(Span(base + off, base + e)) });
                     end = Some(e);
                 }
             }
-            // 3. nested-link (escape-free balance) then page-ref (escape-aware first `]]`).
+            // 2. nested-link (escape-free balance) then page-ref (escape-aware first `]]`).
             if end.is_none() && s[off..].starts_with("[[") {
                 if nested_close.get(off).is_some_and(|&e| e != usize::MAX) {
                     if let Some((e, content)) = crate::inline::parse_nested_link(s, off) {
@@ -1073,7 +1064,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     }
                 }
             }
-            // 4. markdown link `[label](url)` — needs a `](` before the next eol and a `)`.
+            // 3. markdown link `[label](url)` — needs a `](` before the next eol and a `)`.
             if end.is_none() {
                 if let Some((mut node, e)) =
                     try_md_link(s, bb, off, false, &lbp, &mut lbp_cur, &mut crlf, &mut rparen, base)
@@ -1084,8 +1075,31 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     end = Some(e);
                 }
             }
+            // 4. inactive timestamp `[date Wday]` / ranges, after links and before hiccup.
+            if end.is_none() && ctx.timestamps {
+                if let Some((e, mut node)) =
+                    crate::inline::parse_bracket_timestamp_with_scan(s, off, &mut timestamp_scan)
+                {
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
+                    out.push(node);
+                    end = Some(e);
+                }
+            }
+            // 5. inline hiccup `[:tag …]` (ctx-gated — off in emphasis content).
+            if end.is_none()
+                && ctx.hiccup
+                && bb.get(off + 1) == Some(&b':')
+                && crate::inline::hiccup_head_ok(s, off)
+            {
+                if let Some(e) = hiccup_close.get(off).copied().filter(|&e| e != usize::MAX) {
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    out.push(Inline::Hiccup { v: s[off..e].to_string(), span: Some(Span(base + off, base + e)) });
+                    end = Some(e);
+                }
+            }
             match end {
-                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan),
+                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan),
                 None => {
                     if pending.is_empty() { plain_start = Some(base + off); }
                     if plain_start.is_some() { plain_end = base + off + 1; }
@@ -1128,7 +1142,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 }
             }
             match end {
-                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan),
+                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan),
                 None => {
                     if pending.is_empty() { plain_start = Some(base + off); }
                     if plain_start.is_some() { plain_end = base + off + 1; }
@@ -1151,7 +1165,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             if let Some((node, e)) = try_code_span(s, off, base) {
                 flush(&mut out, &mut pending, &mut plain_start, plain_end);
                 out.push(node);
-                t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan);
+                t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan);
             } else {
                 if pending.is_empty() { plain_start = Some(base + off); }
                 if plain_start.is_some() { plain_end = base + off + 1; }
@@ -1195,7 +1209,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 }
             }
             match end {
-                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan),
+                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan),
                 None => {
                     // escape: the `\` is DROPPED, only `(`/`[` kept → the plain run is no
                     // longer 1:1 with source, so S5 can't hold for it.
@@ -1255,7 +1269,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     // before the `[` that `try_md_link` was handed — the image extent includes it.
                     crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                     out.push(node);
-                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan);
+                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan);
                     continue;
                 }
             }
@@ -1276,7 +1290,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             let off = toks[t].off;
             if fresh {
                 let leaf = (if ctx.timestamps {
-                    crate::inline::parse_keyword_timestamp(s, off)
+                    crate::inline::parse_keyword_timestamp_with_scan(s, off, &mut timestamp_scan)
                 } else {
                     None
                 })
@@ -1291,7 +1305,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     flush(&mut out, &mut pending, &mut plain_start, plain_end);
                     crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                     out.push(node);
-                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan);
+                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan);
                     continue;
                 }
             }
@@ -1398,7 +1412,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     t = closer_t + 1;
                 }
             } else {
-                t = resync(s, toks, t, hit.end, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan);
+                t = resync(s, toks, t, hit.end, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan);
             }
             fresh = true;
             continue;
@@ -1485,6 +1499,7 @@ fn resync(
     plain_end: &mut usize,
     base: usize,
     bare_url_scan: &mut crate::inline::BareUrlScan,
+    timestamp_scan: &mut crate::inline::TimestampCloseScan,
 ) -> usize {
     let n = s.len();
     while t < toks.len() && (if t + 1 < toks.len() { toks[t + 1].off } else { n }) <= end {
@@ -1515,7 +1530,8 @@ fn resync(
         // the chaining `#a\`code\`` family is gone); kept as the byte-exact fallback.
         let recurse = matches!(toks[t].kind, Kind::Leaf(_))
             || bb.get(end).is_some_and(|&c| is_special_lead(c))
-            || (ctx.timestamps && crate::inline::parse_keyword_timestamp(s, end).is_some())
+            || (ctx.timestamps
+                && crate::inline::parse_keyword_timestamp_with_scan(s, end, timestamp_scan).is_some())
             || (ctx.urls
                 && crate::inline::parse_bare_url_with_scan(s, end, bare_url_scan).is_some());
         if recurse {

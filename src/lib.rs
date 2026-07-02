@@ -54,7 +54,7 @@ pub(crate) mod resolver;
 /// Two fields are intentionally opaque, carried as mldoc's raw JSON so the contract
 /// need not commit to their sub-schema (both are render-complete as-is):
 /// - [`Inline::Timestamp`](ast::Inline)`.date` — a date / range record (the `ts` tag
-///   distinguishes `Date`/`Range`/`Scheduled`/`Deadline`/`Closed`).
+///   distinguishes `Date`/`Range`/`Scheduled`/`Deadline`/`Closed`/`Clock`).
 /// - [`Inline::Email`](ast::Inline)`.text` — mldoc's address record.
 pub mod ast {
     pub use crate::projection::{Align, Block, Inline, ListItem, Projection, Refs, Span, Url};
