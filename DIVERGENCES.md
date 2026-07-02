@@ -29,9 +29,9 @@ the fuzz floor** (more mldoc parity) — how each fix was verified.
 | D20 | inline displayed `$$…$$` body allows lone `$` + `\$` escape (mldoc: `take_while(∉{$,CR,LF})` then literal `$$` or fail → plain-`$` fallback: `$$$a$$` → `$`+Displayed("a"), `$$a$b$$` → `$`+Inline("a")+plain; `inline.ml:534-541`) | **FIXED** | `d32a88b` |
 | D21 | md property value kept raw after one `":: "` space (mldoc: `Parsers.spaces` skip {sp,tab,SUB,FF} + `String.trim` both ends {sp,tab,LF,CR,FF}; only_key `k::`+spaces+EOL → `""`; `markdown_property.ml`) | **FIXED** | `d32a88b` |
 | D22 | org block phase: `#+X: v` classification family — Directive rejects `BEGIN_` ci (ARTIFACT: source is case-sensitive — oracle wins), Drawer.parse2 `#+NoSpaceName: v` → Property_Drawer, many1 fold (blank-line-tolerant, `:END:` spill re-entry, `:end:`-key = closer), heading0.ml title lookahead (Drawer-not-Directive) | **FIXED** | `5c8ea6a` |
-| D23 | macro plain args trimmed (mldoc: greedy `take_while1(≠',')` keeps trailing spaces — `{{embed ] }}` → `["] "]`; empty/space-only slots invalidate the macro; `inline.ml:977-1021`) | **FIXED** | see log |
-| D24 | org hard-break `\`+EOL emitted extra Break (mldoc `string "\\" <* eol` consumes ONE EOL byte — CRLF keeps the `\n` break; `inline.ml:456`) | **FIXED** | see log |
-| D25 | org heading tags accepted empty segments (mldoc: `:seg(:seg)*:` consume-all — interior `::` kills ALL tags, all-empty `::` = empty tags + title rewrite; `heading0.ml:79-82`) | **FIXED** | see log |
+| D23 | macro plain args trimmed (mldoc: greedy `take_while1(≠',')` keeps trailing spaces — `{{embed ] }}` → `["] "]`; empty/space-only slots invalidate the macro; `inline.ml:977-1021`) | **FIXED** | `7d835c3` |
+| D24 | org hard-break `\`+EOL emitted extra Break (mldoc `string "\\" <* eol` consumes ONE EOL byte — CRLF keeps the `\n` break; `inline.ml:456`) | **FIXED** | `7d835c3` |
+| D25 | org heading tags accepted empty segments (mldoc: `:seg(:seg)*:` consume-all — interior `::` kills ALL tags, all-empty `::` = empty tags + title rewrite; `heading0.ml:79-82`) | **FIXED** | `7d835c3` |
 
 D16 surfaced during Phase B verification (pre-existing — fuzz floors held exactly across the perf-only
 change); fix belongs to the `<`-family construct port (inline-restructure-SPEC Phase C4).
