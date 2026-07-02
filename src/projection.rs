@@ -513,6 +513,8 @@ pub enum Url {
     Search { v: String },
     #[serde(rename = "file")]
     File { v: String },
+    #[serde(rename = "embed_data")]
+    EmbedData { v: String },
     #[serde(rename = "complex")]
     Complex {
         protocol: Option<String>,

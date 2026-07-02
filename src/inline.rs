@@ -11,11 +11,10 @@
 //! spans, hiccup, entities, escapes. Each returns `(node, end)` (or `None`) and does no
 //! delimiter pairing of its own; the resolver drives them.
 //!
-//! Markdown link/image LABELS are re-parsed with the restricted emphasis-content grammar
-//! (mldoc `aux_nested_emphasis`) via `crate::resolver::parse_inline_ctx_emph`
-//! (`reparse_label_text` below) — the same `Ctx::emph()` path the resolver uses for emphasis
-//! content, so md labels go through the v0.2 resolver just as Org labels do. (The old standalone
-//! v1 `Scanner` inline engine that used to live here was retired once both resolvers shipped.)
+//! Markdown link/image LABELS are re-parsed through the C1 Markdown emphasis port plus
+//! mldoc's label-only latex/entity/code/script choices (`resolver::parse_inline_ctx_md_label`).
+//! The old standalone v1 `Scanner` inline engine that used to live here was retired once both
+//! resolvers shipped.
 //!
 //! BYTE-SAFETY: all `&str` slicing is at ASCII delimiter / run boundaries or via
 //! `char_indices`, never mid-codepoint.
@@ -637,116 +636,357 @@ struct MdLink {
     end: usize,
 }
 
-/// Resolver (v0.2) entry: `[label](url)` / `![…](…)` → (node, end). Thin wrapper over the
-/// v1 `parse_md_link` so the resolver reuses its exact label/url/title/metadata semantics.
+/// Resolver entry for mldoc `markdown_link` / `markdown_image`
+/// (`lib/syntax/inline.ml:723-890,1138-1160`). `at` points at the `[`; when
+/// `image` is true the caller consumed the leading `!` at `at - 1`.
 /// `base` is the absolute byte offset of `s` in the block body (for label-child spans).
 pub(crate) fn md_link(s: &str, at: usize, image: bool, base: usize) -> Option<(Inline, usize)> {
     parse_md_link(s, at, image, base).map(|l| (l.node, l.end))
 }
 
-/// `[label](url)` markdown link/image starting at `at` (the '['). `image` controls
-/// the `!`-prefixed full_text. Returns None if it isn't a well-formed link.
 fn parse_md_link(s: &str, at: usize, image: bool, base: usize) -> Option<MdLink> {
-    let b = s.as_bytes();
-    let n = b.len();
-    if b.get(at) != Some(&b'[') {
-        return None;
-    }
-    // label between '[' and '](' (bracket-balanced; '[[..]]'/refs kept as text).
-    let (label_text, after_label) = parse_label(s, at)?; // after_label points at '('
-    if after_label >= n || b[after_label] != b'(' {
-        return None;
-    }
-    let url_start = after_label + 1;
-    let (url_text, after_url) = read_link_url(s, url_start)?; // after_url past ')'
-    // optional metadata `{...}`
-    let mut end = after_url;
-    let mut metadata = String::new();
-    if end < n && b[end] == b'{' {
-        if let Some(close) = find_sub_line(b, end + 1, b"}") {
-            metadata = s[end..close + 1].to_string();
-            end = close + 1;
+    if image {
+        if let Some(link) = markdown_embed_image(s, at, base) {
+            return Some(link);
         }
     }
-    // mldoc re-parses the raw between-parens text into a destination + optional
-    // `"title"` (link_url_part_inner); the title is dropped, the destination value is
-    // unescaped (full_text keeps the raw url_text). See DECISIONS.md.
-    let (dest, title) = link_destination(&url_text);
-    let url = classify_url(&dest);
-    // The label text is byte-identical to the source slice `s[at+1 .. close]` (parse_label
-    // copies every byte verbatim), so its children index off `base + at + 1`. The Link's own
-    // `span` is set by the resolver (set_inline_span) over the full `[label](url)` extent.
-    let label = parse_label_inline(&label_text, base + at + 1);
-    let prefix = if image { "!" } else { "" };
-    let full = format!("{}[{}]({}){}", prefix, label_text, url_text, metadata);
+    markdown_link(s, at, image, base)
+}
+
+/// mldoc `markdown_embed_image` (`syntax/inline.ml:1138-1152`): this branch is
+/// first and separate from `markdown_link`, so `data:` payloads do not go through
+/// URL-piece parsing or title parsing.
+fn markdown_embed_image(s: &str, at: usize, base: usize) -> Option<MdLink> {
+    let label = label_part(s, at, base, false)?;
+    let b = s.as_bytes();
+    let data_start = label.url_start;
+    if !s[data_start..].starts_with("data:") {
+        return None;
+    }
+    let mut j = data_start + "data:".len();
+    if j >= b.len() || b[j] == b')' {
+        return None;
+    }
+    while j < b.len() && b[j] != b')' {
+        j += char_len(b[j]);
+    }
+    if j >= b.len() || b[j] != b')' {
+        return None;
+    }
+    let data = s[data_start..j].to_string();
+    let mut end = j + 1;
+    let metadata = read_metadata(s, b, &mut end);
+    let full = format!("![{}]({}){}", label.label_text, data, metadata);
     Some(MdLink {
-        node: Inline::Link { url, label, full, image, metadata, title, span: None },
+        node: Inline::Link {
+            url: Url::EmbedData { v: data },
+            label: label.label,
+            full,
+            image: true,
+            metadata,
+            title: None,
+            span: None,
+        },
         end,
     })
 }
 
-/// Read the label text between `[` (at `at`) and the `](`, bracket-balanced.
-/// Returns (label_raw, index_of_'(' ). Code spans inside are rendered into the raw
-/// label text with surrounding backticks (mldoc label_part).
-fn parse_label(s: &str, at: usize) -> Option<(String, usize)> {
+/// mldoc `markdown_link` (`syntax/inline.ml:822-890`).
+fn markdown_link(s: &str, at: usize, image: bool, base: usize) -> Option<MdLink> {
+    let label = label_part(s, at, base, true)?;
+    let (url_text, after_url) = link_url_part(s, label.url_start)?;
+    let mut end = after_url;
+    let metadata = read_metadata(s, s.as_bytes(), &mut end);
+    let (link_type, url_value, title) = link_url_part_inner(&url_text)
+        .unwrap_or((MdUrlType::Other, url_text.clone(), None));
+    let trimmed = url_value.trim();
+    let unescaped;
+    let url_value = if link_type == MdUrlType::Other {
+        unescaped = unescape(trimmed);
+        unescaped.as_str()
+    } else {
+        trimmed
+    };
+    let url = classify_markdown_url(link_type, url_value);
+    let prefix = if image { "!" } else { "" };
+    let full = format!("{}[{}]({}){}", prefix, label.label_text, url_text, metadata);
+    Some(MdLink {
+        node: Inline::Link { url, label: label.label, full, image, metadata, title, span: None },
+        end,
+    })
+}
+
+struct MdLabelPart {
+    label: Vec<Inline>,
+    label_text: String,
+    url_start: usize,
+}
+
+/// mldoc `label_part` / `label_part_choices` (`syntax/inline.ml:735-770`).
+fn label_part(s: &str, at: usize, base: usize, reparse_plain: bool) -> Option<MdLabelPart> {
     let b = s.as_bytes();
     let n = b.len();
-    // special-case empty label "[]("
     if s[at..].starts_with("[](") {
-        return Some((String::new(), at + 2));
+        return Some(MdLabelPart { label: vec![], label_text: String::new(), url_start: at + 3 });
     }
     let mut j = at + 1;
-    let mut out = String::new();
+    let mut raw_nodes: Vec<Inline> = Vec::new();
     while j < n {
-        let c = b[j];
-        if c == b'\n' || c == b'\r' {
-            return None;
+        if s[j..].starts_with("](") {
+            let label_text = label_text_for_full(&raw_nodes);
+            let label = finish_markdown_label(raw_nodes, reparse_plain);
+            return Some(MdLabelPart { label, label_text, url_start: j + 2 });
         }
-        if c == b']' {
-            // must be followed by '(' to be a link
-            if j + 1 < n && b[j + 1] == b'(' {
-                return Some((out, j + 1));
-            }
-            return None;
+        let c = b[j];
+        if let Some(end) = take_while1_include_backslash_len(s, j, b"[]", |c| {
+            c != b'\n' && c != b'\r' && !matches!(c, b'`' | b'[' | b']')
+        }) {
+            push_label_plain(&mut raw_nodes, &s[j..end], base + j);
+            j = end;
+            continue;
         }
         if c == b'`' {
-            // code span (kept as `...` text) or single backtick
             if let Some(end) = code_span_end_str(s, j) {
-                out.push_str(&s[j..end]);
+                raw_nodes.push(Inline::Code {
+                    text: code_inner(&s[j..end]),
+                    span: Some(Span(base + j, base + end)),
+                });
                 j = end;
                 continue;
             }
-            out.push('`');
+            push_label_plain(&mut raw_nodes, "`", base + j);
             j += 1;
             continue;
         }
         if c == b'\\' && j + 1 < n {
-            out.push('\\');
-            out.push_str(&s[j + 1..j + 1 + char_len(b[j + 1])]);
-            j += 1 + char_len(b[j + 1]);
+            let end = j + 1 + char_len(b[j + 1]);
+            push_label_plain(&mut raw_nodes, &s[j..end], base + j);
+            j = end;
             continue;
         }
-        if c == b'[' {
-            // page-ref, then single-bracket-balanced `[…]` (mldoc label_part_choices:
-            // page_ref <|> string_contains_balanced_brackets [('[',']')]), kept raw.
-            if let Some((end, _name, full)) = parse_page_ref(s, j) {
-                out.push_str(&full);
-                j = end;
-                continue;
-            }
-            if let Some((end, content)) = match_single_brackets(s, j) {
-                out.push_str(&content);
-                j = end;
-                continue;
-            }
-            out.push('[');
+        if c == b'\\' {
+            push_label_plain(&mut raw_nodes, "\\", base + j);
             j += 1;
             continue;
         }
-        out.push_str(&s[j..j + char_len(c)]);
+        if c == b'[' {
+            if let Some((end, _name, full)) = parse_page_ref(s, j) {
+                push_label_plain(&mut raw_nodes, &full, base + j);
+                j = end;
+                continue;
+            }
+            let (text, end) = string_contains_balanced_brackets_single(s, j, b'[', b']', b"[]", b"", b"");
+            if end > j {
+                push_label_plain(&mut raw_nodes, &text, base + j);
+                j = end;
+                continue;
+            }
+        }
+        if c == b']' || c == b'\n' || c == b'\r' {
+            return None;
+        }
+        push_label_plain(&mut raw_nodes, &s[j..j + char_len(c)], base + j);
         j += char_len(c);
     }
     None
+}
+
+fn finish_markdown_label(nodes: Vec<Inline>, reparse_plain: bool) -> Vec<Inline> {
+    if reparse_plain {
+        reparse_markdown_label(nodes)
+    } else {
+        unescape_markdown_label(nodes)
+    }
+}
+
+fn unescape_markdown_label(nodes: Vec<Inline>) -> Vec<Inline> {
+    let mut out = Vec::new();
+    for node in nodes {
+        match node {
+            Inline::Plain { text, span } => {
+                let value = unescape(&text);
+                let span = if value.len() == text.len() { span } else { None };
+                out.push(Inline::Plain { text: value, span });
+            }
+            other => out.push(other),
+        }
+    }
+    concat_label_plains(out)
+}
+
+fn push_label_plain(nodes: &mut Vec<Inline>, raw: &str, abs_start: usize) {
+    if raw.is_empty() {
+        return;
+    }
+    match nodes.last_mut() {
+        Some(Inline::Plain { text, span }) => {
+            text.push_str(raw);
+            *span = span.map(|Span(start, _)| Span(start, abs_start + raw.len()));
+        }
+        _ => nodes.push(Inline::Plain {
+            text: raw.to_string(),
+            span: Some(Span(abs_start, abs_start + raw.len())),
+        }),
+    }
+}
+
+fn label_text_for_full(nodes: &[Inline]) -> String {
+    let mut out = String::new();
+    for node in nodes {
+        match node {
+            Inline::Plain { text, .. } => out.push_str(text),
+            Inline::Code { text, .. } => {
+                out.push('`');
+                out.push_str(text);
+                out.push('`');
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn reparse_markdown_label(nodes: Vec<Inline>) -> Vec<Inline> {
+    let mut out = Vec::new();
+    for node in nodes {
+        match node {
+            Inline::Plain { text, span } => {
+                let base = span.map(|Span(start, _)| start).unwrap_or(0);
+                if let Some(nodes) = crate::resolver::parse_inline_ctx_md_label(&text, base) {
+                    out.extend(nodes);
+                } else {
+                    let value = unescape(&text);
+                    let span = if value.len() == text.len() { span } else { None };
+                    out.push(Inline::Plain { text: value, span });
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    concat_label_plains(out)
+}
+
+fn concat_label_plains(nodes: Vec<Inline>) -> Vec<Inline> {
+    let mut out: Vec<Inline> = Vec::new();
+    for node in nodes {
+        match (out.last_mut(), node) {
+            (Some(Inline::Plain { text: prev, span: prev_span }), Inline::Plain { text, span }) => {
+                prev.push_str(&text);
+                *prev_span = match (*prev_span, span) {
+                    (Some(Span(start, _)), Some(Span(_, end))) => Some(Span(start, end)),
+                    _ => None,
+                };
+            }
+            (_, node) => out.push(node),
+        }
+    }
+    out
+}
+
+pub(crate) fn take_while1_include_backslash_len<F>(
+    s: &str,
+    at: usize,
+    chars_can_escape: &[u8],
+    mut pred: F,
+) -> Option<usize>
+where
+    F: FnMut(u8) -> bool,
+{
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut j = at;
+    let mut last_backslash = false;
+    while j < n {
+        let c = b[j];
+        let take = if last_backslash && chars_can_escape.contains(&c) {
+            last_backslash = false;
+            true
+        } else if last_backslash {
+            last_backslash = false;
+            pred(c)
+        } else if c == b'\\' {
+            last_backslash = true;
+            true
+        } else {
+            pred(c)
+        };
+        if !take {
+            break;
+        }
+        j += char_len(c);
+    }
+    (j > at).then_some(j)
+}
+
+/// Iterative single-pair port of `Parsers.string_contains_balanced_brackets`
+/// (`parsers.ml:293-332`) for the C2 call sites. It keeps the source helper's
+/// empty success, escape handling, excluded-ending rule, and unmatched-left
+/// fallback while avoiding a deep Rust call stack.
+fn string_contains_balanced_brackets_single(
+    s: &str,
+    at: usize,
+    left: u8,
+    right: u8,
+    escape_chars: &[u8],
+    other_delims: &[u8],
+    excluded_ending_chars: &[u8],
+) -> (String, usize) {
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut j = at;
+    let mut depth = 0usize;
+    let mut out = String::new();
+    while j < n {
+        let c = b[j];
+        if other_delims.contains(&c) {
+            break;
+        }
+        if excluded_ending_chars.contains(&c) {
+            let remain = n - j;
+            if remain < 2 || b.get(j + 1).is_some_and(|c2| other_delims.contains(c2)) {
+                break;
+            }
+            out.push(c as char);
+            j += 1;
+            continue;
+        }
+        if c == left {
+            out.push(c as char);
+            depth += 1;
+            j += 1;
+            continue;
+        }
+        if c == right {
+            if depth == 0 {
+                break;
+            }
+            out.push(c as char);
+            depth -= 1;
+            j += 1;
+            continue;
+        }
+        if c == b'\\' {
+            out.push('\\');
+            j += 1;
+            if j < n {
+                let next = b[j];
+                let next_plain = !other_delims.contains(&next)
+                    && !excluded_ending_chars.contains(&next)
+                    && next != left
+                    && next != right;
+                if escape_chars.contains(&next) || next_plain {
+                    let w = char_len(next);
+                    out.push_str(&s[j..j + w]);
+                    j += w;
+                }
+            }
+            continue;
+        }
+        let w = char_len(c);
+        out.push_str(&s[j..j + w]);
+        j += w;
+    }
+    (out, j)
 }
 
 fn code_span_end_str(s: &str, pos: usize) -> Option<usize> {
@@ -766,143 +1006,12 @@ fn code_span_end_str(s: &str, pos: usize) -> Option<usize> {
     }
     let start = pos + 2;
     if let Some(end) = find_sub(b, start, b"``") {
-        return Some(end + 2); // double-backtick code may be empty
+        return Some(end + 2);
     }
     None
-}
-
-/// Read the URL inside a markdown link's parens, paren/bracket-balanced, stopping
-/// at the unmatched ')' (the link closer). Returns (url_text, index_past_')').
-fn read_link_url(s: &str, at: usize) -> Option<(String, usize)> {
-    let b = s.as_bytes();
-    let n = b.len();
-    let mut j = at;
-    let mut pd = 0i32;
-    let mut bd = 0i32;
-    while j < n {
-        let c = b[j];
-        if c == b'\n' || c == b'\r' {
-            return None;
-        }
-        match c {
-            b'(' => {
-                pd += 1;
-                j += 1;
-            }
-            b'[' => {
-                bd += 1;
-                j += 1;
-            }
-            b')' => {
-                if pd == 0 {
-                    // link closer
-                    let url = s[at..j].to_string();
-                    return Some((url, j + 1));
-                }
-                pd -= 1;
-                j += 1;
-            }
-            b']' => {
-                if bd > 0 {
-                    bd -= 1;
-                }
-                j += 1;
-            }
-            b'\\' if j + 1 < n => {
-                j += 2;
-            }
-            _ => j += char_len(c),
-        }
-    }
-    None
-}
-
-/// Re-parse the raw `label_text` (byte-identical to its source slice) into inline nodes.
-/// `label_base` = the absolute byte offset of `label_text[0]` in the block body, so each
-/// segment's children index correctly (S2). mldoc re-parses each Plain label segment with
-/// {emphasis,latex,entity,code,sub/sup}, consume:All-or-keep-original. For our corpus,
-/// labels are plain text (or contain code spans). We reproduce: try the restricted parse;
-/// if it fully decomposes into non-plain-only nodes, use it, else keep the plain text.
-fn parse_label_inline(label_text: &str, label_base: usize) -> Vec<Inline> {
-    if label_text.is_empty() {
-        return vec![];
-    }
-    // First split off code spans (label_part already turned them into `...`): we
-    // re-segment on backticks so code is preserved, and re-parse the rest for
-    // emphasis only. Each segment carries its byte offset within `label_text`.
-    let segs = split_label_segments(label_text);
-    let mut out = Vec::new();
-    for (seg_start, seg) in segs {
-        match seg {
-            LabelSeg::Code { text, full_len } => out.push(Inline::Code {
-                text,
-                span: Some(Span(label_base + seg_start, label_base + seg_start + full_len)),
-            }),
-            LabelSeg::Text(t) => {
-                if let Some(nodes) = reparse_label_text(&t, label_base + seg_start) {
-                    out.extend(nodes);
-                } else {
-                    // label value is unescaped (`\]`→`]`, `\*`→`*`, …) while full_text keeps
-                    // the raw backslash (mldoc). The unescape can shorten the text vs. source;
-                    // keep a span only when it stayed 1:1 (length preserved ⟹ no `\` removed).
-                    let text = unescape(&t);
-                    let span = if text.len() == t.len() {
-                        Some(Span(label_base + seg_start, label_base + seg_start + t.len()))
-                    } else {
-                        None
-                    };
-                    out.push(Inline::Plain { text, span });
-                }
-            }
-        }
-    }
-    out
-}
-
-enum LabelSeg {
-    Text(String),
-    /// `text` = the code span's inner content (backticks stripped); `full_len` = the code
-    /// span's FULL source byte length (backticks included), for the atom's span extent.
-    Code { text: String, full_len: usize },
-}
-
-/// Split `s` into `(byte_offset_in_s, segment)` pairs: code spans (`` `…` ``) become
-/// `Code`, the rest coalesces into `Text`. Each segment's source range is contiguous, so
-/// `byte_offset_in_s` is the start of `Text` runs / the opening backtick of `Code`.
-fn split_label_segments(s: &str) -> Vec<(usize, LabelSeg)> {
-    let b = s.as_bytes();
-    let n = b.len();
-    let mut out = Vec::new();
-    let mut buf = String::new();
-    let mut buf_start = 0usize;
-    let mut i = 0;
-    while i < n {
-        if b[i] == b'`' {
-            if let Some(end) = code_span_end_str(s, i) {
-                if !buf.is_empty() {
-                    out.push((buf_start, LabelSeg::Text(std::mem::take(&mut buf))));
-                }
-                // strip surrounding backticks for Code content; keep the full length.
-                let inner = code_inner(&s[i..end]);
-                out.push((i, LabelSeg::Code { text: inner, full_len: end - i }));
-                i = end;
-                continue;
-            }
-        }
-        if buf.is_empty() {
-            buf_start = i;
-        }
-        buf.push_str(&s[i..i + char_len(b[i])]);
-        i += char_len(b[i]);
-    }
-    if !buf.is_empty() {
-        out.push((buf_start, LabelSeg::Text(buf)));
-    }
-    out
 }
 
 fn code_inner(span: &str) -> String {
-    // span is `x` or ``x``
     if span.starts_with("``") {
         span[2..span.len() - 2].to_string()
     } else {
@@ -910,224 +1019,164 @@ fn code_inner(span: &str) -> String {
     }
 }
 
-/// Re-parse a label text segment with emphasis-only (consume:All). Returns Some if
-/// the whole segment decomposes into emphasis nodes; None to keep it as plain. `base` is
-/// the absolute byte offset of `t[0]` in the block body (so the reparsed nodes' spans are
-/// absolute, S2).
-fn reparse_label_text(t: &str, base: usize) -> Option<Vec<Inline>> {
-    // Only emphasis (and the chars it consumes) are honored in labels; a label that
-    // isn't pure-emphasis is kept verbatim (matches mldoc keeping Plain on failure).
-    if !t.contains(['*', '_', '~', '^', '=']) {
-        return None;
+/// mldoc `link_url_part` (`syntax/inline.ml:723-733`).
+fn link_url_part(s: &str, at: usize) -> Option<(String, usize)> {
+    let (mut text, end) =
+        string_contains_balanced_brackets_single(s, at, b'(', b')', b"()", b"\r\n", b"");
+    if s.as_bytes().get(end) == Some(&b')') {
+        return Some((text, end + 1));
     }
-    let nodes = crate::resolver::parse_inline_ctx_emph(t, base);
-    // accept only if it produced at least one emphasis and no bare plain leftovers
-    let has_emph = nodes
-        .iter()
-        .any(|x| matches!(x, Inline::Emphasis { .. }));
-    let only_one_plain = nodes.len() == 1 && matches!(nodes[0], Inline::Plain { .. });
-    if has_emph && !only_one_plain {
-        // ensure no stray Plain that would indicate the consume:All failed
-        // (mldoc keeps original if any non-emphasis text remains).
-        let all_ok = nodes.iter().all(|x| {
-            matches!(
-                x,
-                Inline::Emphasis { .. } | Inline::Code { .. }
-            )
-        });
-        if all_ok {
-            return Some(nodes);
-        }
+    if text.ends_with(')') {
+        text.pop();
+        return Some((text, end));
     }
     None
 }
 
-/// From a `[` at `at`, match the balancing `]` counting nested single brackets
-/// (mldoc `string_contains_balanced_brackets [('[',']')]`). `\[`/`\]` are escaped.
-/// Returns (end_index, matched_string incl. the outer brackets). Stops at a newline.
-fn match_single_brackets(s: &str, at: usize) -> Option<(usize, String)> {
-    let b = s.as_bytes();
-    let n = b.len();
-    if b.get(at) != Some(&b'[') {
-        return None;
-    }
-    let mut depth: i32 = 0;
-    let mut j = at;
-    while j < n {
-        let c = b[j];
-        if c == b'\n' || c == b'\r' {
-            return None;
-        }
-        if c == b'\\' && j + 1 < n {
-            j += 1 + char_len(b[j + 1]);
-            continue;
-        }
-        if c == b'[' {
-            depth += 1;
-            j += 1;
-        } else if c == b']' {
-            depth -= 1;
-            j += 1;
-            if depth == 0 {
-                return Some((j, s[at..j].to_string()));
-            }
-        } else {
-            j += char_len(c);
-        }
-    }
-    None
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum MdUrlType {
+    BlockRef,
+    PageRef,
+    Other,
+    Other1,
+    Other2,
 }
 
-/// Extract a markdown link's *destination* from the raw between-parens text,
-/// dropping an optional trailing ` "title"` and unescaping the value — a port of
-/// mldoc `link_url_part_inner`. The url-parts are: `((block-ref))`, `<…>` (angles
-/// stripped, inner spaces kept), `[[page-ref]]` (inner spaces kept), runs of
-/// non-space/non-`[` chars, or a lone `[`; they stop at the first space outside
-/// those. After the parts, optional spaces then a `"…"` title-to-end is allowed;
-/// anything else fails and the *whole* raw text becomes the destination.
-/// Returns `(destination, title)`: the title is the raw inner of a trailing `"…"`
-/// (no quotes, NOT unescaped — matching mldoc's `Link.title`), or `None`.
-fn link_destination(url_text: &str) -> (String, Option<String>) {
+/// mldoc `link_url_part_inner` (`syntax/inline.ml:772-813`).
+fn link_url_part_inner(url_text: &str) -> Option<(MdUrlType, String, Option<String>)> {
     let b = url_text.as_bytes();
     let n = b.len();
     let mut j = 0usize;
-    let mut dest = String::new();
-    let mut part_count = 0usize;
-    let mut had_angle = false;
+    let mut parts: Vec<(MdUrlType, String)> = Vec::new();
     while j < n {
-        let c = b[j];
-        if c == b' ' {
+        if let Some((kind, value, end)) = url_part_piece(url_text, j) {
+            parts.push((kind, value));
+            j = end;
+        } else {
             break;
         }
-        // block ref ((...))
-        if url_text[j..].starts_with("((") {
-            if let Some(end) = find_sub(b, j + 2, b"))") {
-                dest.push_str(&url_text[j..end + 2]);
-                j = end + 2;
-                part_count += 1;
-                continue;
-            }
-        }
-        // <...> (angles stripped from the value; inner spaces allowed)
-        if c == b'<' {
-            let mut k = j + 1;
-            while k < n && b[k] != b'<' && b[k] != b'>' {
-                k += 1;
-            }
-            if k < n && b[k] == b'>' && k > j + 1 {
-                dest.push_str(&url_text[j + 1..k]);
-                j = k + 1;
-                part_count += 1;
-                had_angle = true;
-                continue;
-            }
-        }
-        // [[page ref]] (inner spaces allowed)
-        if url_text[j..].starts_with("[[") {
-            if let Some((end, _name, full)) = parse_page_ref(url_text, j) {
-                dest.push_str(&full);
-                j = end;
-                part_count += 1;
-                continue;
-            }
-        }
-        // run of non-space, non-'[' chars
-        if c != b'[' {
-            let run_start = j;
-            while j < n {
-                let cc = b[j];
-                if cc == b' ' || cc == b'\n' || cc == b'\r' || cc == b'[' {
-                    break;
-                }
-                j += char_len(cc);
-            }
-            if j > run_start {
-                dest.push_str(&url_text[run_start..j]);
-                part_count += 1;
-                continue;
-            }
-        }
-        // lone '[' (did not start '[[')
-        dest.push_str(&url_text[j..j + char_len(c)]);
-        j += char_len(c);
-        part_count += 1;
     }
-    // after the url-parts: optional spaces, then end-of-string or a `"…"` title.
-    let rest = url_text[j..].trim_start();
-    let title_ok = rest.is_empty() || is_quoted_title(rest);
-    if (had_angle && part_count > 1) || !title_ok {
-        // consume:All failed → the whole raw text is the destination, no title.
-        (unescape(url_text.trim()), None)
+    if parts.is_empty() {
+        return None;
+    }
+    let (kind, value) = if parts.len() == 1 {
+        let (kind, value) = parts.pop().unwrap();
+        match kind {
+            MdUrlType::Other1 | MdUrlType::Other2 => (MdUrlType::Other, value),
+            _ => (kind, value),
+        }
     } else {
-        // `rest` is either empty or exactly a `"…"` title (quotes ASCII → byte-safe).
-        let title = is_quoted_title(rest).then(|| rest[1..rest.len() - 1].to_string());
-        (unescape(dest.trim()), title)
-    }
-}
-
-/// Is `s` exactly a `"…"` title (non-empty content, no unescaped `"` before the end)?
-fn is_quoted_title(s: &str) -> bool {
-    let b = s.as_bytes();
-    let n = b.len();
-    if n < 3 || b[0] != b'"' || b[n - 1] != b'"' {
-        return false;
-    }
-    let mut i = 1;
-    while i < n - 1 {
-        if b[i] == b'\\' && i + 1 < n - 1 {
-            i += 2;
-            continue;
+        if parts.iter().any(|(kind, _)| *kind == MdUrlType::Other1) {
+            return None;
         }
-        if b[i] == b'"' {
-            return false; // a bare `"` before the closing quote
-        }
-        i += 1;
-    }
-    true
-}
-
-fn classify_url(url_text: &str) -> Url {
-    let t = url_text.trim();
-    // block ref `(( x ))` exactly
-    if t.starts_with("((") && t.ends_with("))") && t.len() >= 4 {
-        let inner = &t[2..t.len() - 2];
-        if !inner.contains(')') && !inner.is_empty() {
-            return Url::BlockRef {
-                v: inner.to_string(),
-            };
-        }
-    }
-    // page ref `[[ x ]]`
-    if t.starts_with("[[") && t.ends_with("]]") && t.len() >= 4 {
-        let inner = &t[2..t.len() - 2];
-        if !inner.contains("]]") {
-            return Url::PageRef {
-                v: inner.to_string(),
-            };
-        }
-    }
-    // `<...>` strip
-    let t2 = if t.starts_with('<') && t.ends_with('>') && t.len() >= 2 {
-        &t[1..t.len() - 1]
-    } else {
-        t
+        (MdUrlType::Other, parts.into_iter().map(|(_, value)| value).collect())
     };
-    // protocol://rest -> Complex
-    if let Some(idx) = t2.find("://") {
-        let protocol = &t2[..idx];
-        if !protocol.is_empty() && protocol.bytes().all(|c| c.is_ascii_alphanumeric()) {
-            return Url::Complex {
-                protocol: Some(protocol.to_string()),
-                link: Some(t2[idx + 3..].to_string()),
-            };
+    while j < n && matches!(b[j], b' ' | b'\t' | 0x16 | 0x0c) {
+        j += 1;
+    }
+    let title = if j >= n {
+        None
+    } else if b[j] == b'"' {
+        let start = j + 1;
+        let end = take_while1_include_backslash_len(url_text, start, b"\"", |c| c != b'"')?;
+        if end >= n || b[end] != b'"' {
+            return None;
+        }
+        j = end + 1;
+        if j != n {
+            return None;
+        }
+        Some(url_text[start..end].to_string())
+    } else {
+        return None;
+    };
+    Some((kind, value, title))
+}
+
+fn url_part_piece(url_text: &str, at: usize) -> Option<(MdUrlType, String, usize)> {
+    let b = url_text.as_bytes();
+    let n = b.len();
+    if at >= n {
+        return None;
+    }
+    if url_text[at..].starts_with("((") {
+        let mut j = at + 2;
+        while j < n && b[j] != b')' {
+            j += char_len(b[j]);
+        }
+        if j > at + 2 && j + 1 < n && b[j] == b')' && b[j + 1] == b')' {
+            return Some((MdUrlType::BlockRef, url_text[at..j + 2].to_string(), j + 2));
         }
     }
-    // .md / .markdown -> File
-    let lower = t2.to_ascii_lowercase();
-    if t2.len() > 3 && (lower.ends_with(".md") || lower.ends_with(".markdown")) {
-        return Url::File { v: t2.to_string() };
+    if b[at] == b'<' {
+        let start = at + 1;
+        let end = take_while1_include_backslash_len(url_text, start, b"<>", |c| {
+            c != b'<' && c != b'>'
+        })?;
+        if end < n && b[end] == b'>' {
+            return Some((MdUrlType::Other1, url_text[start..end].to_string(), end + 1));
+        }
     }
-    Url::Search { v: t2.to_string() }
+    if b[at] != b'[' && !is_ws_or_nl(b[at]) {
+        let mut j = at;
+        while j < n && !is_ws_or_nl(b[j]) && b[j] != b'[' {
+            j += char_len(b[j]);
+        }
+        if j > at {
+            return Some((MdUrlType::Other2, url_text[at..j].to_string(), j));
+        }
+    }
+    if url_text[at..].starts_with("[[") {
+        if let Some((end, _name, full)) = parse_page_ref(url_text, at) {
+            return Some((MdUrlType::PageRef, full, end));
+        }
+    }
+    if b[at] == b' ' {
+        return None;
+    }
+    let w = char_len(b[at]);
+    Some((MdUrlType::Other2, url_text[at..at + w].to_string(), at + w))
+}
+
+fn classify_markdown_url(link_type: MdUrlType, url: &str) -> Url {
+    match link_type {
+        MdUrlType::BlockRef => Url::BlockRef { v: url[2..url.len().saturating_sub(2)].to_string() },
+        MdUrlType::PageRef => Url::PageRef { v: url[2..url.len().saturating_sub(2)].to_string() },
+        MdUrlType::Other => {
+            if let Some(idx) = url.find(':') {
+                let protocol = &url[..idx];
+                if !protocol.is_empty() && url[idx..].starts_with("://") {
+                    let mut link = &url[idx + 3..];
+                    if let Some(stripped) = link.strip_prefix("//") {
+                        link = stripped;
+                    }
+                    return Url::Complex {
+                        protocol: Some(protocol.to_string()),
+                        link: Some(link.to_string()),
+                    };
+                }
+            }
+            let lower = url.to_ascii_lowercase();
+            if url.len() > 3 && (lower.ends_with(".md") || lower.ends_with(".markdown")) {
+                Url::File { v: url.to_string() }
+            } else {
+                Url::Search { v: url.to_string() }
+            }
+        }
+        MdUrlType::Other1 | MdUrlType::Other2 => unreachable!("normalized before classification"),
+    }
+}
+
+/// Shared mldoc `metadata` (`syntax/inline.ml:562-566`).
+fn read_metadata(s: &str, b: &[u8], end: &mut usize) -> String {
+    if b.get(*end) == Some(&b'{') {
+        if let Some(close) = find_sub_line(b, *end + 1, b"}") {
+            let meta = s[*end..close + 1].to_string();
+            *end = close + 1;
+            return meta;
+        }
+    }
+    String::new()
 }
 
 // ---- autolink / email / inline html ---------------------------------------

@@ -636,7 +636,11 @@ fn parse_callout_lead(text: &str) -> Option<(String, String)> {
 /// The destination string of a link/image `url` (mirrors the frontend `urlDest`).
 fn url_dest(url: &Url) -> String {
     match url {
-        Url::PageRef { v } | Url::BlockRef { v } | Url::Search { v } | Url::File { v } => v.clone(),
+        Url::PageRef { v }
+        | Url::BlockRef { v }
+        | Url::Search { v }
+        | Url::File { v }
+        | Url::EmbedData { v } => v.clone(),
         Url::Complex { protocol, link } => match (protocol, link) {
             (Some(p), Some(l)) => format!("{p}://{l}"),
             (_, l) => l.clone().unwrap_or_default(),

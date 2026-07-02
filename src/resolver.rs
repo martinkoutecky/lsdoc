@@ -52,26 +52,6 @@ impl Ctx {
             html: true,
         }
     }
-    /// Restricted emphasis-content context (mldoc `aux_nested_emphasis`): breaks become
-    /// literal; tags/macros/latex/images/hiccup/footnotes/block-refs off; links/code/
-    /// emphasis on.
-    fn emph() -> Ctx {
-        Ctx {
-            use_state: false,
-            breaks: false,
-            hiccup: false,
-            footnotes: false,
-            images: false,
-            latex: false,
-            tags: false,
-            macros: false,
-            block_refs: false,
-            urls: false,
-            timestamps: false,
-            autolinks: false,
-            html: false,
-        }
-    }
 }
 
 /// Parse a run of inline markup (top-level Markdown context). `base` is the absolute byte
@@ -80,12 +60,91 @@ pub(crate) fn parse_inline(text: &str, base: usize) -> Vec<Inline> {
     parse_ctx(text, Ctx::top(), base)
 }
 
-/// Re-parse a markdown link/image LABEL with the restricted emphasis-content context
-/// (mldoc `aux_nested_emphasis`): the same `Ctx::emph()` the resolver already applies to
-/// emphasis *content*. Used by `inline::reparse_label_text` so md label reparse runs on the
-/// v0.2 resolver (matching how Org labels go through `org_resolver::parse_ctx(_, Ctx::label())`).
-pub(crate) fn parse_inline_ctx_emph(text: &str, base: usize) -> Vec<Inline> {
-    parse_ctx(text, Ctx::emph(), base)
+/// Markdown link-label Plain chunk reparse, porting
+/// `syntax/inline.ml:862-884`: `many1 (choice [emphasis; latex_fragment; entity;
+/// code; subscript; superscript])` with `consume:All`. This deliberately has no
+/// `plain` or whitespace fallback; callers keep the original Plain on `None`.
+pub(crate) fn parse_inline_ctx_md_label(text: &str, base: usize) -> Option<Vec<Inline>> {
+    let bb = text.as_bytes();
+    if bb.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let mut no_closer = [[false; 3]; 5];
+    while i < bb.len() {
+        if matches!(bb[i], b'*' | b'_' | b'~' | b'^' | b'=') {
+            if let Ok(hit) = nested_emphasis_at_md(text, i, None, &mut no_closer, base) {
+                out.push(hit.node);
+                i = hit.end;
+                continue;
+            }
+        }
+        if let Some((node, end)) = markdown_label_latex_at(text, bb, i, base) {
+            out.push(node);
+            i = end;
+            continue;
+        }
+        if let Some((node, end)) = markdown_label_entity_at(text, bb, i, base) {
+            out.push(node);
+            i = end;
+            continue;
+        }
+        if let Some((node, end)) = try_code_span(text, i, base) {
+            out.push(node);
+            i = end;
+            continue;
+        }
+        if matches!(bb[i], b'_' | b'^') {
+            if let Some((node, end)) = try_markdown_script_at(text, bb, i, base) {
+                out.push(node);
+                i = end;
+                continue;
+            }
+        }
+        return None;
+    }
+    Some(concat_plains_without_pos(out))
+}
+
+fn markdown_label_latex_at(s: &str, bb: &[u8], i: usize, base: usize) -> Option<(Inline, usize)> {
+    let (mut node, end) = if bb.get(i) == Some(&b'$') {
+        crate::inline::parse_latex_dollar_at(s, i)?
+    } else if bb.get(i) == Some(&b'\\') && matches!(bb.get(i + 1), Some(b'(' | b'[')) {
+        crate::inline::parse_latex_backslash_at(s, i)?
+    } else {
+        return None;
+    };
+    crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+    Some((node, end))
+}
+
+fn markdown_label_entity_at(s: &str, bb: &[u8], i: usize, base: usize) -> Option<(Inline, usize)> {
+    if bb.get(i) != Some(&b'\\') || !bb.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let start = i + 1;
+    let mut end = start;
+    while end < bb.len() && bb[end].is_ascii_alphabetic() {
+        end += 1;
+    }
+    let name = &s[start..end];
+    if s[end..].starts_with("{}") {
+        end += 2;
+    }
+    let e = crate::entities::find(name)?;
+    Some((
+        Inline::Entity {
+            name: e.name.to_string(),
+            latex: e.latex.to_string(),
+            latex_mathp: e.latex_mathp,
+            html: e.html.to_string(),
+            ascii: e.ascii.to_string(),
+            unicode: e.unicode.to_string(),
+            span: Some(Span(base + i, base + end)),
+        },
+        end,
+    ))
 }
 
 fn parse_ctx(text: &str, ctx: Ctx, base: usize) -> Vec<Inline> {

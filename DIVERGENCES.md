@@ -4,7 +4,7 @@ Cases where lsdoc's AST differs from mldoc's. All were pre-existing (verified �
 the container-frame rewrite / O(n) audit; the audit merely *surfaced* them). **Fixing each LOWERS
 the fuzz floor** (more mldoc parity) — how each fix was verified.
 
-## Status (Jul 1 2026)
+## Status (Jul 2 2026)
 | # | divergence | status | commit |
 |---|---|---|---|
 | D1 | trailing bare `>` at EOF → paragraph | **FIXED** | `46baefa` |
@@ -19,16 +19,19 @@ the fuzz floor** (more mldoc parity) — how each fix was verified.
 | D10 | inline_html accepts UNKNOWN tags (mldoc → plain) | **FIXED** | `b85f4d7` |
 | D11 | `<br/>` no-space → inline_html (mldoc → plain) | **FIXED** | `b85f4d7` |
 | D12 | single-line `<b>`/`<i>` phrasing tags → raw_html (mldoc → plain) | **FIXED** | `b85f4d7` |
-| D13 | md link-label doesn't reparse entities/latex (`[\alpha](u)`, `[$x$](u)`) | OPEN | — |
+| D13 | md link-label doesn't reparse entities/latex (`[\alpha](u)`, `[$x$](u)`) | **FIXED** | `pending` |
 | D14 | timestamp token order-permissive (`<… +1d 12:00>` accepts both vs mldoc date-only) | OPEN | — |
 | D15 | md drawer name rejects punctuation (`:LOG@BOOK:` → paragraph vs mldoc drawer) | OPEN | — |
 | D16 | email requires closing `>` (`<a@b.co` → plain; mldoc → email, `<`/`>` both optional per `syntax/email_address.ml:33-34`; ditto `<a@b co>` → email `a@b` + plain) | OPEN | — |
+| D17 | md `data:` image parses as Search instead of `Embed_data` | **FIXED** | `pending` |
+| D18 | org `[[u][a]b]]` treats single `]` as terminator instead of label text | **FIXED** | `pending` |
 
 D16 surfaced during Phase B verification (pre-existing — fuzz floors held exactly across the perf-only
 change); fix belongs to the `<`-family construct port (inline-restructure-SPEC Phase C4).
 
-D13–D15 were surfaced by the **lsdoc-vs-mldoc structural audit** (`subagent-tasks/notes/lsdoc-vs-mldoc-audit.md`,
-Jul 1) — behavioral drifts confirmed vs the isolated oracle (D13/D14 verified; D15 codex-probed). That
+D14–D15 were surfaced by the **lsdoc-vs-mldoc structural audit** (`subagent-tasks/notes/lsdoc-vs-mldoc-audit.md`,
+Jul 1) — behavioral drifts confirmed vs the isolated oracle (D14 verified; D15 codex-probed). D13 was fixed by
+the C2 links port, together with D17/D18 from `subagent-tasks/constructs/links-spec.md` rev 2. That
 report also lists structural UNIFICATION opportunities (raw-html one-parser, hiccup quote-parity port,
 list/display-math/bracket-scan dedup) — those are refactors awaiting Martin's approval, not divergences.
 

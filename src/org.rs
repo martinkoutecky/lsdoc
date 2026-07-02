@@ -2343,6 +2343,7 @@ mod tests {
             Url::BlockRef { v } => format!("block:{v}"),
             Url::Search { v } => format!("search:{v}"),
             Url::File { v } => format!("file:{v}"),
+            Url::EmbedData { v } => format!("embed:{v}"),
             Url::Complex { protocol, link } => format!(
                 "complex:{}:{}",
                 protocol.clone().unwrap_or_default(),

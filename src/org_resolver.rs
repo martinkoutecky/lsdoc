@@ -1455,25 +1455,11 @@ fn try_bracket_at(
     None
 }
 
-/// `[[url][label]]` — v1 org_link_1.
+/// `[[url][label]]` — port of mldoc `org_link_1`
+/// (`syntax/inline.ml:617-696`).
 fn org_link_1_at(s: &str, bb: &[u8], at: usize, base: usize) -> Option<(usize, Inline)> {
-    let n = bb.len();
     let url_start = at + 2;
-    let mut j = url_start;
-    while j < n {
-        let c = bb[j];
-        if c == b'\n' || c == b'\r' {
-            return None;
-        }
-        if c == b'\\' && j + 1 < n {
-            j += 1 + char_len(bb[j + 1]);
-            continue;
-        }
-        if c == b']' {
-            break;
-        }
-        j += char_len(c);
-    }
+    let j = crate::inline::take_while1_include_backslash_len(s, url_start, b"]", |c| c != b']')?;
     if !s[j..].starts_with("][") {
         return None;
     }
@@ -1533,36 +1519,91 @@ fn org_link_2_at(s: &str, bb: &[u8], at: usize, base: usize) -> Option<(usize, I
     Some((j + 2, Inline::Link { url, label, full, image: false, metadata: String::new(), title: None, span: None }))
 }
 
-/// Closing `]]` of an org-link label, balancing single `[ ]` pairs — v1 find_org_label_end.
+/// End of the `org_link_1` label. Mirrors `label_part_choices`
+/// (`syntax/inline.ml:621-642`): a single `]` is label text unless it starts the
+/// final `]]`.
 fn find_org_label_end(bb: &[u8], start: usize) -> Option<usize> {
-    let n = bb.len();
     let mut j = start;
-    let mut depth: i32 = 0;
-    while j < n {
-        let c = bb[j];
-        if c == b'\\' && j + 1 < n {
-            j += 1 + char_len(bb[j + 1]);
+    while j < bb.len() {
+        if bb[j] == b']' && bb.get(j + 1) == Some(&b']') {
+            return Some(j);
+        }
+        if let Some(end) = take_org_label_plain(bb, j) {
+            j = end;
             continue;
         }
-        if c == b']' {
-            if depth == 0 {
-                if j + 1 < n && bb[j + 1] == b']' {
-                    return Some(j);
-                }
-                return None;
+        match bb[j] {
+            b'[' => {
+                j = org_balanced_label_chunk(bb, j);
             }
-            depth -= 1;
-            j += 1;
-            continue;
+            b']' => {
+                j += 1;
+            }
+            _ => {
+                j += char_len(bb[j]);
+            }
         }
-        if c == b'[' {
-            depth += 1;
-            j += 1;
-            continue;
+    }
+    None
+}
+
+fn take_org_label_plain(bb: &[u8], at: usize) -> Option<usize> {
+    let mut j = at;
+    let mut last_backslash = false;
+    while j < bb.len() {
+        let c = bb[j];
+        let take = if last_backslash && matches!(c, b'[' | b']') {
+            last_backslash = false;
+            true
+        } else if last_backslash {
+            last_backslash = false;
+            c != b'\n' && c != b'\r' && !matches!(c, b'[' | b']')
+        } else if c == b'\\' {
+            last_backslash = true;
+            true
+        } else {
+            c != b'\n' && c != b'\r' && !matches!(c, b'[' | b']')
+        };
+        if !take {
+            break;
         }
         j += char_len(c);
     }
-    None
+    (j > at).then_some(j)
+}
+
+fn org_balanced_label_chunk(bb: &[u8], at: usize) -> usize {
+    let mut j = at;
+    let mut depth = 0usize;
+    while j < bb.len() {
+        match bb[j] {
+            b'\\' => {
+                j += 1;
+                if j < bb.len() {
+                    let next = bb[j];
+                    if matches!(next, b'[' | b']')
+                        || !matches!(next, b'[' | b']')
+                    {
+                        j += char_len(next);
+                    }
+                }
+            }
+            b'[' => {
+                depth += 1;
+                j += 1;
+            }
+            b']' if depth == 0 => break,
+            b']' => {
+                depth -= 1;
+                j += 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => j += char_len(bb[j]),
+        }
+    }
+    j
 }
 
 /// Optional `{ … }` metadata after a link; advances `end` and returns it (incl. braces) or "".

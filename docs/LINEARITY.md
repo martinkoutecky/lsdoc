@@ -5,14 +5,14 @@ must have exactly one owner: constant/local, consume-on-match, suffix-absence mi
 invalidating cursor, precomputed map, or boundary-run map. A new unfloored scan in these
 paths is a bug.
 
-Line numbers were rechecked against the current tree after Phase B leaf-linearity work.
+Line numbers were rechecked against the current tree after the C2 links port.
 
 | scan @ file:line | owner | argument |
 |---|---|---|
 | Markdown resolver token loop @ `src/resolver.rs:134` | consume-on-match | `t` advances monotonically; successful leaves resync past consumed bytes. |
 | Markdown page-ref `]]` lookup @ `src/resolver.rs:216` | precomputed-map | `build_real_dbl` positions are shared with a monotone cursor. |
 | Markdown hiccup/nested close lookup @ `src/resolver.rs:199` | precomputed-map | `build_hiccup_close` and `build_nested_close` give O(1) close checks. |
-| Markdown md-link `](`/`)` floors @ `src/resolver.rs:906`, `src/resolver.rs:875` | invalidating-cursor | `lbp_cur`, `crlf`, and `rparen` advance only forward before `md_link`. |
+| Markdown md-link `](`/`)` floors @ `src/resolver.rs:1079`, `src/resolver.rs:1227`, `src/resolver.rs:1673` | invalidating-cursor | `lbp_cur`, `crlf`, and `rparen` advance only forward before `md_link`. |
 | Markdown emphasis body parser @ `src/resolver.rs:255`, dispatch @ `src/resolver.rs:432` | consume-on-match + suffix-absence miss-cache | mldoc `md_em_parser` consumes each body byte once per bounded nesting phase; `no_closer[class][k]` floors EOF/no-closer failures. |
 | Markdown tag dispatch @ `src/resolver.rs:292`, `src/inline.rs:219` | boundary-run | delimiter-run termination is precomputed once by `build_tag_boundary_runs`. |
 | Markdown macro dispatch @ `src/resolver.rs:846`, `src/inline.rs:1844` | suffix-absence miss-cache + invalidating-cursor | `}}` floor proves close presence; first lone `}` cursor prevents repeated invalid misses. |
@@ -37,7 +37,17 @@ Line numbers were rechecked against the current tree after Phase B leaf-linearit
 | `parse_tag_name` body @ `src/inline.rs:390` | consume-on-match + boundary-run | main bytes are consumed into the tag; delimiter suffixes use the boundary map. |
 | Tag nested/page refs @ `src/inline.rs:454` | precomputed-map at top level, consume-on-match in tag | successful refs advance tag cursor; top-level bracket retries are gated by maps. |
 | Macro arg scans @ `src/inline.rs:569` | consume-on-match | scans are limited to an already accepted macro body. |
-| Markdown link label/destination/title @ `src/inline.rs:650` | consume-on-match | reached only after resolver floors prove `](` and `)`; accepted link consumes the tail. |
+| Markdown `markdown_embed_image` data branch @ `src/inline.rs:659` | consume-on-match under md-link floors | The `data:` scan runs only after `try_md_link` proves `](` and a `)`; success consumes through that `)`, failure is bounded by the same candidate. |
+| Markdown `label_part` @ `src/inline.rs:718` | consume-on-match under md-link floors | Reached only after `try_md_link` proves a same-line `](`; label chunks, code spans, page refs, and bracket chunks advance the local label cursor monotonically to that delimiter. |
+| Markdown label `string_contains_balanced_brackets` @ `src/inline.rs:894` | bounded-by-label-candidate | The iterative helper is called only inside the already-floored label span and advances one local cursor; unmatched-left fallback does not scan past the label candidate. |
+| Markdown `link_url_part` @ `src/inline.rs:992` | bounded-by-url-candidate | The balanced-paren scan is called only after the resolver has a forward `)` floor; it advances to that candidate or to an eol stop, with no retry from later bytes. |
+| Markdown `link_url_part_inner` URL/title reparse @ `src/inline.rs:1015` | bounded-by-url-candidate | It reparses only the raw string returned by `link_url_part`; URL pieces, quoted-title scans, and parse-failure fallback are one pass over that bounded candidate. |
+| Markdown label Plain reparse @ `src/resolver.rs:67` | bounded disjoint label spans | Each Plain label node is reparsed once with the C1 emphasis port plus latex/entity/code/script choices; consume-all failure keeps that one Plain chunk, so chunks are not rescanned. |
+| Markdown link metadata @ `src/inline.rs:1140` | consume-on-match/current-line | `{...}` metadata is checked immediately after an accepted link/image and scans only to `}` before eol; absence is constant at the current end byte. |
+| Org `org_link_1` URL scan @ `src/org_resolver.rs:1460` | bounded by org bracket floors | `try_bracket_at` reaches this path only with the `][` floor; the URL scan advances once to the candidate `]` and accepts escaped `]` without retrying prior bytes. |
+| Org `org_link_1` label scan @ `src/org_resolver.rs:1525` | bounded by org `]]`/eol floors | The label scan advances one cursor to the caller-proved closing `]]`; single `]` is consumed as label text unless it is that final closer. |
+| Org label reparse/full reconstruction @ `src/org_resolver.rs:1488` | bounded disjoint label span | The label string is reparsed once with `Ctx::label()`; the full-text first-Plain-only quirk reads only the first produced node. |
+| Org link metadata @ `src/org_resolver.rs:1610` | consume-on-match/current-line | Same metadata parser as Markdown in placement: it runs only after an accepted link and scans to `}` before eol. |
 | Autolink parser body @ `src/inline.rs:1143` | invalidating-cursor owned by caller | parser may scan to `>`/ws, but dispatch only calls it after the shared boundary cursor succeeds. |
 | Email parser body @ `src/inline.rs:1288` | suffix-absence miss-cache + invalidating-cursor | cached entry point owns both local `@` absence and domain boundary. |
 | Bare URL path balance @ `src/inline.rs:1492` | consume-on-match | the balanced tail is part of the emitted URL span. |
