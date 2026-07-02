@@ -40,11 +40,20 @@ pub(crate) fn ptr_base(sub: &str, parent: &str) -> usize {
 pub(crate) fn is_ws(c: u8) -> bool {
     // `\r` is an EOL (handled as `Break`, like `\n`), NOT whitespace — so a whitespace
     // run stops at `\r` and lets the break dispatch fire (C5: CRLF / lone-CR endings).
-    c == b' ' || c == b'\t'
+    // Form feed is part of mldoc's `whitespace_chars` and the npm oracle treats it as a
+    // C6 tag/bare-url delimiter. SUB (`0x1a`) is intentionally not included here.
+    c == b' ' || c == b'\t' || c == 0x0c
 }
 #[inline]
 pub(crate) fn is_ws_or_nl(c: u8) -> bool {
     is_ws(c) || c == b'\n' || c == b'\r'
+}
+
+#[inline]
+fn is_tag_url_space_or_eol(c: u8) -> bool {
+    // C6 boundary set: source `space_chars @ eol_chars` as enforced by the local
+    // npm oracle for actual SUB (`0x1a`). `U+0016` remains ordinary text.
+    is_ws_or_nl(c) || c == 0x1a
 }
 
 #[inline]
@@ -396,7 +405,7 @@ pub(crate) fn build_tag_boundary_runs(s: &str) -> Vec<bool> {
         while i < n && TAG_DELIMS.contains(&b[i]) {
             i += 1;
         }
-        let boundary = i >= n || is_ws_or_nl(b[i]);
+        let boundary = i >= n || is_tag_url_space_or_eol(b[i]);
         if boundary {
             for slot in &mut out[start..i] {
                 *slot = true;
@@ -549,8 +558,16 @@ fn nested_children_count(inner: &str) -> usize {
 const TAG_DELIMS: &[u8] = &[b',', b';', b'.', b'!', b'?', b'\'', b'"', b':', b'#'];
 const TAG_STOP: &[u8] = &[b'#', b',', b'!', b'?', b'\'', b'"', b':'];
 
+#[derive(Clone, Copy)]
+pub(crate) enum TagReparse {
+    Markdown,
+    Org,
+}
+
 /// Parse a tag name starting at `start` (just after '#'). Returns (end_index,
-/// children) where children are Plain runs and page-ref Links (mldoc Hash_tag).
+/// children). This mirrors mldoc's two-stage `hash_tag`: first capture a raw
+/// `Hash_tag.hashtag_name` string (where `[[...]]` is admitted by `page_ref`),
+/// then reparse that captured string with the format's `nested_link_or_link`.
 /// `unescape_plain`: Markdown unescapes the plain runs (`#ab\|` → `ab|`); Org keeps
 /// backslashes literal (`#ab\|` → `ab\|`), matching its no-unescape invariant (C4).
 pub(crate) fn parse_tag_name(
@@ -558,116 +575,212 @@ pub(crate) fn parse_tag_name(
     start: usize,
     unescape_plain: bool,
     base: usize,
+    format: TagReparse,
     boundary_runs: Option<&[bool]>,
 ) -> (usize, Vec<Inline>) {
+    let end = capture_tag_name_end(s, start, boundary_runs);
+    if end == start {
+        return (start, Vec::new());
+    }
+    let children = reparse_tag_name(s, start, end, unescape_plain, base, format);
+    (end, children)
+}
+
+fn capture_tag_name_end(s: &str, start: usize, boundary_runs: Option<&[bool]>) -> usize {
     let b = s.as_bytes();
     let n = b.len();
     let mut i = start;
-    let mut children: Vec<Inline> = Vec::new();
-    let mut plain = String::new();
-    // Byte offset (within `s`) where the current plain run began. The plain buffer only
-    // accumulates a CONTIGUOUS source range (each push is at the current `i` and advances
-    // it), so the run is `s[plain_buf_start..i]` — UNLESS `unescape` shortened it (md).
-    let mut plain_buf_start = start;
-    macro_rules! flush {
-        () => {{
-            if !plain.is_empty() {
-                let raw = std::mem::take(&mut plain);
-                // A `\`-unescape transform (md) can shorten the text vs. source, so S5
-                // can't hold — drop the span. Org keeps `\` literal → always trackable.
-                let span = if !unescape_plain || !raw.contains('\\') {
-                    Some(Span(base + plain_buf_start, base + i))
-                } else {
-                    None
-                };
-                let text = if unescape_plain { unescape(&raw) } else { raw };
-                children.push(Inline::Plain { text, span });
-            }
-        }};
-    }
-    macro_rules! push_plain {
-        ($pos:expr, $seg:expr) => {{
-            if plain.is_empty() {
-                plain_buf_start = $pos;
-            }
-            plain.push_str($seg);
-        }};
-    }
+    let mut consumed = false;
     loop {
-        // (a) main run: non-space/eol, not a tag delim, not '['
+        // `hashtag_name_part` case 1: a non-empty run of non-space/eol chars
+        // that are not tag delimiters and not `[`.
         let run_start = i;
         while i < n {
             let c = b[i];
-            if is_ws_or_nl(c) || TAG_DELIMS.contains(&c) || c == b'[' {
+            if is_tag_url_space_or_eol(c) || TAG_DELIMS.contains(&c) || c == b'[' {
                 break;
             }
             i += char_len(c);
         }
         if i > run_start {
-            push_plain!(run_start, &s[run_start..i]);
+            consumed = true;
             continue;
         }
         if i >= n {
             break;
         }
         let c = b[i];
-        if is_ws_or_nl(c) {
+        if is_tag_url_space_or_eol(c) {
             break;
         }
         if c == b'[' {
-            // (b) nested link `[[ …[[ ]]… ]]` (tried before page-ref, mirroring the
-            // top-level bracket dispatch) then page ref.
-            if let Some((end, content)) = parse_nested_link(s, i) {
-                flush!();
-                children.push(Inline::NestedLink { content, span: Some(Span(base + i, base + end)) });
+            // `hashtag_name_part` case 2: raw `page_ref` capture. Nested-link
+            // recognition happens only in the second-stage reparse.
+            if let Some((end, _, _)) = parse_page_ref(s, i) {
                 i = end;
+                consumed = true;
                 continue;
             }
-            if let Some((end, name, full)) = parse_page_ref(s, i) {
-                flush!();
-                children.push(Inline::Link {
+        }
+
+        // `hashtag_name_part` case 3a: if the whole delimiter run is followed
+        // by space/eol/EOF, stop before the entire run.
+        if TAG_DELIMS.contains(&c) {
+            let boundary_run = boundary_runs
+                .and_then(|runs| runs.get(i))
+                .copied()
+                .unwrap_or_else(|| {
+                    let mut k = i;
+                    let mut scanned = 0usize;
+                    while k < n && TAG_DELIMS.contains(&b[k]) {
+                        scanned += 1;
+                        k += 1;
+                    }
+                    crate::metrics::scan_work(scanned);
+                    k > i && (k >= n || is_tag_url_space_or_eol(b[k]))
+                });
+            if boundary_run {
+                break;
+            }
+        }
+
+        // `hashtag_name_part` case 3b: otherwise consume exactly one char unless
+        // it is a hard stop. This is what lets `.` and `;` continue when they are
+        // not a trailing delimiter run, and lets a lone invalid `[` be literal.
+        if TAG_STOP.contains(&c) {
+            break;
+        }
+        i += char_len(c);
+        consumed = true;
+    }
+    if consumed { i } else { start }
+}
+
+fn reparse_tag_name(
+    s: &str,
+    start: usize,
+    end: usize,
+    unescape_plain: bool,
+    base: usize,
+    format: TagReparse,
+) -> Vec<Inline> {
+    let tag = &s[start..end];
+    let b = tag.as_bytes();
+    let n = b.len();
+    let mut i = 0usize;
+    let tag_base = base + start;
+    let mut children = Vec::new();
+    let mut plain = String::new();
+    let mut plain_start = 0usize;
+    let mut plain_end = 0usize;
+
+    macro_rules! push_plain_raw {
+        ($local_start:expr, $local_end:expr) => {{
+            if plain.is_empty() {
+                plain_start = $local_start;
+            }
+            plain_end = $local_end;
+            plain.push_str(&tag[$local_start..$local_end]);
+        }};
+    }
+    macro_rules! flush_plain {
+        () => {{
+            if !plain.is_empty() {
+                let raw = std::mem::take(&mut plain);
+                children.push(tag_plain(
+                    &raw,
+                    tag_base + plain_start,
+                    tag_base + plain_end,
+                    unescape_plain,
+                ));
+            }
+        }};
+    }
+
+    while i < n {
+        // mldoc `hash_tag` stage 2: plain run is non-space/eol and not `[`.
+        let run_start = i;
+        while i < n && !is_tag_url_space_or_eol(b[i]) && b[i] != b'[' {
+            i += char_len(b[i]);
+        }
+        if i > run_start {
+            push_plain_raw!(run_start, i);
+            continue;
+        }
+        if i >= n {
+            break;
+        }
+        if b[i] == b'[' {
+            let parsed = match format {
+                TagReparse::Markdown => try_nested_link_or_link_md_tag(tag, i, tag_base),
+                TagReparse::Org => crate::org_resolver::try_nested_link_or_link_org(tag, b, i, tag_base),
+            };
+            if let Some((node, next)) = parsed {
+                flush_plain!();
+                children.push(node);
+                i = next;
+                continue;
+            }
+        }
+        let next = i + char_len(b[i]);
+        push_plain_raw!(i, next);
+        i = next;
+    }
+    flush_plain!();
+
+    concat_plains(children)
+}
+
+fn tag_plain(raw: &str, abs_start: usize, abs_end: usize, unescape_plain: bool) -> Inline {
+    let span = if !unescape_plain || !raw.contains('\\') {
+        Some(Span(abs_start, abs_end))
+    } else {
+        None
+    };
+    let text = if unescape_plain { unescape(raw) } else { raw.to_string() };
+    Inline::Plain { text, span }
+}
+
+fn try_nested_link_or_link_md_tag(s: &str, at: usize, base: usize) -> Option<(Inline, usize)> {
+    if s[at..].starts_with("[[") {
+        if let Some((end, content)) = parse_nested_link(s, at) {
+            return Some((Inline::NestedLink { content, span: Some(Span(base + at, base + end)) }, end));
+        }
+        if let Some((end, name, full)) = parse_page_ref(s, at) {
+            return Some((
+                Inline::Link {
                     url: Url::PageRef { v: name },
                     label: vec![],
                     full,
                     image: false,
                     metadata: String::new(),
                     title: None,
-                    span: Some(Span(base + i, base + end)),
-                });
-                i = end;
-                continue;
-            }
-            // else '[' is an ordinary tag char (c2)
-            push_plain!(i, "[");
-            i += 1;
-            continue;
+                    span: Some(Span(base + at, base + end)),
+                },
+                end,
+            ));
         }
-        // (c1) lookahead: a run of tag delims followed by space/eol/EOF -> stop.
-        let boundary_run = boundary_runs
-            .and_then(|runs| runs.get(i))
-            .copied()
-            .unwrap_or_else(|| {
-                let mut k = i;
-                let mut scanned = 0usize;
-                while k < n && TAG_DELIMS.contains(&b[k]) {
-                    scanned += 1;
-                    k += 1;
-                }
-                crate::metrics::scan_work(scanned);
-                k > i && (k >= n || is_ws_or_nl(b[k]))
-            });
-        if boundary_run {
-            break;
-        }
-        // (c2) consume one char if it isn't a hard tag-stop char.
-        if TAG_STOP.contains(&c) {
-            break;
-        }
-        push_plain!(i, &s[i..i + char_len(c)]);
-        i += char_len(c);
     }
-    flush!();
-    (i, children)
+    let (mut node, end) = md_link(s, at, false, base)?;
+    crate::projection::set_inline_span(&mut node, Some(Span(base + at, base + end)));
+    Some((node, end))
+}
+
+fn concat_plains(nodes: Vec<Inline>) -> Vec<Inline> {
+    let mut out: Vec<Inline> = Vec::new();
+    for node in nodes {
+        match (out.last_mut(), node) {
+            (Some(Inline::Plain { text: prev, span: prev_span }), Inline::Plain { text, span }) => {
+                prev.push_str(&text);
+                *prev_span = match (*prev_span, span) {
+                    (Some(Span(start, _)), Some(Span(_, end))) => Some(Span(start, end)),
+                    _ => None,
+                };
+            }
+            (_, node) => out.push(node),
+        }
+    }
+    out
 }
 
 // ---- macros ---------------------------------------------------------------
@@ -1672,11 +1785,13 @@ pub(crate) fn parse_bare_url_with_scan(
     let protocol = s[at..j].to_string();
     j += 3; // past "://"
     let path_start = j;
-    // before_path: until space / '/' / '?' / '#' / inline_link_delims ([]<>{}())
+    // before_path: until space/eol / '/' / '?' / '#' / inline_link_delims ([]<>{}()).
+    // Trailing punctuation is NOT excluded here; mldoc only applies that rule to
+    // the optional `/ ? #` tail.
     let mut path_scanned = 0usize;
     while j < n {
         let c = b[j];
-        if is_ws_or_nl(c)
+        if is_tag_url_space_or_eol(c)
             || c == b'/'
             || c == b'?'
             || c == b'#'
@@ -1695,12 +1810,12 @@ pub(crate) fn parse_bare_url_with_scan(
     if before_path_end == path_start {
         return None; // before_path is take_while1 in mldoc: must be non-empty
     }
-    // remaining_part: optional ('/' | '?' | '#') then balanced-bracket run that stops
-    // only at whitespace / unmatched ')'|']' (NOT at < > { }) with trailing ,;.!?
-    // before whitespace/EOL excluded.
+    // remaining_part: mldoc consumes the optional '/' | '?' | '#' opener before
+    // entering the balanced-bracket scan. That opener is always kept; the
+    // trailing ,;.!? exclusion applies only to bytes after it.
     let mut remain_end = before_path_end;
     if j < n && matches!(b[j], b'/' | b'?' | b'#') {
-        remain_end = read_url_balanced(s, j);
+        remain_end = read_url_balanced(s, j + 1);
     }
     let end = remain_end;
     let raw = &s[path_start..end];
@@ -1712,7 +1827,7 @@ pub(crate) fn parse_bare_url_with_scan(
             protocol: Some(protocol),
             link: Some(link),
         },
-        // synthetic label (unescaped url): may differ from source → no span.
+        // synthetic label (unescaped URL value): may differ from source → no span.
         label: vec![Inline::Plain { text: label_text, span: None }],
         full,
         image: false,
@@ -1723,56 +1838,87 @@ pub(crate) fn parse_bare_url_with_scan(
     Some((end, node))
 }
 
-/// Read the remaining URL path (mldoc `string_contains_balanced_brackets` over the
-/// `/`,`?`,`#`-prefixed tail): balances `()` and `[]`, stops at whitespace or an
-/// unmatched `)`/`]`, and excludes a trailing `, ; . ! ?` that precedes whitespace
-/// or end-of-input. Does NOT stop at `< > { }` (mldoc keeps those in the tail).
+/// Read the remaining URL path after the already-consumed `/`, `?`, or `#`
+/// opener (mldoc `string_contains_balanced_brackets`): balances `()` and `[]`,
+/// stops at whitespace or an unmatched `)`/`]`, and excludes a trailing
+/// `, ; . ! ?` that precedes whitespace or end-of-input. Does NOT stop at
+/// `< > { }` (mldoc keeps those in the tail).
 fn read_url_balanced(s: &str, at: usize) -> usize {
+    string_contains_balanced_brackets_multi_end(
+        s,
+        at,
+        &[(b'(', b')'), (b'[', b']')],
+        b" \t\r\n\x0c\x1a",
+        b",;.!?",
+    )
+}
+
+fn string_contains_balanced_brackets_multi_end(
+    s: &str,
+    at: usize,
+    bracket_pairs: &[(u8, u8)],
+    other_delims: &[u8],
+    excluded_ending_chars: &[u8],
+) -> usize {
     let b = s.as_bytes();
     let n = b.len();
     let mut j = at;
-    let mut pd = 0i32;
-    let mut bd = 0i32;
+    let mut stack: Vec<u8> = Vec::new();
     let mut scanned = 0usize;
     while j < n {
         let c = b[j];
         scanned += 1;
-        if is_ws_or_nl(c) {
+        if other_delims.contains(&c) {
+            stack.clear();
             break;
         }
-        match c {
-            b'(' => {
-                pd += 1;
+        if let Some(&expected) = stack.last() {
+            if c == expected {
+                stack.pop();
                 j += 1;
+                continue;
             }
-            b'[' => {
-                bd += 1;
-                j += 1;
-            }
-            b')' => {
-                if pd == 0 {
-                    break;
-                }
-                pd -= 1;
-                j += 1;
-            }
-            b']' => {
-                if bd == 0 {
-                    break;
-                }
-                bd -= 1;
-                j += 1;
-            }
-            b',' | b';' | b'.' | b'!' | b'?' => {
-                // excluded ending char: drop it (and stop) if it's the last char or
-                // is followed by whitespace/EOL; otherwise keep and continue.
-                if j + 1 >= n || is_ws_or_nl(b[j + 1]) {
-                    break;
-                }
-                j += 1;
-            }
-            _ => j += char_len(c),
         }
+        if bracket_pairs.iter().any(|&(_, right)| c == right) {
+            if stack.pop().is_some() {
+                continue;
+            } else {
+                break;
+            }
+        }
+        if excluded_ending_chars.contains(&c) {
+            if j + 1 >= n || other_delims.contains(&b[j + 1]) {
+                stack.clear();
+                break;
+            }
+            j += 1;
+            continue;
+        }
+        if let Some(&(_, right)) = bracket_pairs.iter().find(|&&(left, _)| left == c) {
+            stack.push(right);
+            j += 1;
+            continue;
+        }
+
+        let mut plain_end = j;
+        while plain_end < n {
+            let pc = b[plain_end];
+            if other_delims.contains(&pc)
+                || excluded_ending_chars.contains(&pc)
+                || bracket_pairs.iter().any(|&(left, right)| pc == left || pc == right)
+            {
+                break;
+            }
+            plain_end += char_len(pc);
+        }
+        if plain_end == j {
+            break;
+        }
+        scanned += plain_end - j - 1;
+        j = plain_end;
+    }
+    while !stack.is_empty() {
+        stack.pop();
     }
     crate::metrics::scan_work(scanned);
     j

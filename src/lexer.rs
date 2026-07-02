@@ -107,7 +107,7 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
                 toks.push(Token { off: i, kind: Kind::Newline(c) });
                 i += 1;
             }
-            b' ' | b'\t' => {
+            b' ' | b'\t' | 0x0c => {
                 // whitespace run → its OWN Text token (not merged into ordinary text), so
                 // construct ends at a ws align with a token boundary and the position right
                 // after ws is a fresh dispatch point (bare-url / keyword-timestamp detection).

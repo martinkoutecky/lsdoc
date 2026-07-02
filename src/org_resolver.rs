@@ -158,7 +158,7 @@ pub(crate) fn org_lex(s: &str) -> Vec<Token> {
                 toks.push(Token { off: i, kind: Kind::Newline(c) });
                 i += 1;
             }
-            b' ' | b'\t' => {
+            b' ' | b'\t' | 0x0c => {
                 flush!();
                 let start = i;
                 while i < n && is_ws(b[i]) {
@@ -652,7 +652,12 @@ fn org_plain_at(s: &str, i: usize, base: usize) -> Option<(Inline, usize)> {
 
 /// Port of mldoc Org `nested_link_or_link`
 /// (`lib/syntax/inline.ml:915-917`) for phase-2 emphasis reparsing.
-fn try_nested_link_or_link_org(s: &str, bb: &[u8], at: usize, base: usize) -> Option<(Inline, usize)> {
+pub(crate) fn try_nested_link_or_link_org(
+    s: &str,
+    bb: &[u8],
+    at: usize,
+    base: usize,
+) -> Option<(Inline, usize)> {
     if s[at..].starts_with("[[") {
         if let Some((end, node)) = org_link_1_at(s, bb, at, base) {
             return Some((node, end));
@@ -792,7 +797,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 // default arm: keyword timestamp (S/C/D…) then bare URL at a fresh ordinary run.
                 let txt = txt.clone();
                 // org Text is all-ws or all-ordinary (ws is lexed separately).
-                let is_ws = txt.bytes().all(|b| b == b' ' || b == b'\t');
+                let is_ws = txt.bytes().all(crate::inline::is_ws);
                 if fresh && !is_ws {
                     let leaf = (if ctx.timestamps && matches!(bb[off], b'S' | b'C' | b'D' | b's' | b'c' | b'd') {
                         crate::inline::parse_keyword_timestamp_with_scan(s, off, &mut timestamp_scan)
@@ -911,6 +916,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                             off + 1,
                             false,
                             base,
+                            crate::inline::TagReparse::Org,
                             tag_boundary_runs.as_deref(),
                         );
                         if e > off + 1 && !children.is_empty() {
@@ -1290,7 +1296,7 @@ fn resync_straddle(
         }
         *plain_start = Some(base + end);
         *plain_end = base + te;
-        *fresh = !tail.is_empty() && tail.bytes().all(|b| b == b' ' || b == b'\t');
+        *fresh = !tail.is_empty() && tail.bytes().all(crate::inline::is_ws);
         pending.push_str(tail);
         t += 1;
     } else {

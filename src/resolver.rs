@@ -1158,6 +1158,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     off + 1,
                     true,
                     base,
+                    crate::inline::TagReparse::Markdown,
                     tag_boundary_runs.as_deref(),
                 );
                 if e > off + 1 && !children.is_empty() {
@@ -1343,7 +1344,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             if plain_start.is_some() { plain_end = base + off + txt_len; }
             pending.push_str(txt);
             last_plain_char_after_append(txt, &mut last_plain_char);
-            fresh = trailing_ws(txt) > 0;
+            fresh = trailing_dispatch_ws(txt) > 0;
             t += 1;
             continue;
         }
@@ -1492,6 +1493,12 @@ fn trailing_ws(s: &str) -> usize {
     s.bytes().rev().take_while(|&b| b == b' ' || b == b'\t').count()
 }
 
+/// Count of trailing mldoc whitespace bytes that make the next byte a fresh
+/// dispatch point. Unlike hard breaks, this includes form feed.
+fn trailing_dispatch_ws(s: &str) -> usize {
+    s.bytes().rev().take_while(|&b| matches!(b, b' ' | b'\t' | 0x0c)).count()
+}
+
 /// First `\n`/`\r` byte at/after `from`, or `bb.len()` (page-ref eol boundary).
 fn first_crlf(bb: &[u8], from: usize) -> usize {
     let mut p = from;
@@ -1584,7 +1591,7 @@ fn resync(
         *plain_start = Some(base + end);
         *plain_end = base + te;
         pending.push_str(tail);
-        *fresh = trailing_ws(tail) > 0;
+        *fresh = trailing_dispatch_ws(tail) > 0;
         t += 1;
     } else {
         // clean construct end → fresh dispatch point.

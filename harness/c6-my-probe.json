@@ -1,0 +1,119 @@
+[
+ {
+  "id": "t1",
+  "input": "x #a.b y"
+ },
+ {
+  "id": "t2",
+  "input": "x #a, y"
+ },
+ {
+  "id": "t3",
+  "input": "x #a:b: y"
+ },
+ {
+  "id": "t4",
+  "input": "x ##a y"
+ },
+ {
+  "id": "t5",
+  "input": "x #a###"
+ },
+ {
+  "id": "t6",
+  "input": "x #[[Foo bar]] y"
+ },
+ {
+  "id": "t7",
+  "input": "x #a[[Foo]]b y"
+ },
+ {
+  "id": "t8",
+  "input": "x #[a](u) y"
+ },
+ {
+  "id": "t9",
+  "input": "x#a y"
+ },
+ {
+  "id": "t10",
+  "input": "#a\fb"
+ },
+ {
+  "id": "t11",
+  "input": "#a\u001ab"
+ },
+ {
+  "id": "t12",
+  "input": "#a\u0016b"
+ },
+ {
+  "id": "u1",
+  "input": "see http://x.co, next"
+ },
+ {
+  "id": "u2",
+  "input": "see http://x.co/a, next"
+ },
+ {
+  "id": "u3",
+  "input": "xyz9://a.b c"
+ },
+ {
+  "id": "u4",
+  "input": "a http://x.co/p(q(r)) b"
+ },
+ {
+  "id": "u5",
+  "input": "a http://x.co/p] b"
+ },
+ {
+  "id": "u6",
+  "input": "(http://x.co)"
+ },
+ {
+  "id": "u7",
+  "input": "http://x"
+ },
+ {
+  "id": "u8",
+  "input": "a http://x.co? b"
+ },
+ {
+  "id": "u9",
+  "input": "a http://x.co?q=1! b"
+ },
+ {
+  "id": "u10",
+  "input": "a http://x.co#f b"
+ },
+ {
+  "id": "u11",
+  "input": "a http://x.co/\fz b"
+ },
+ {
+  "id": "o1",
+  "input": "x #a.b y",
+  "format": "org"
+ },
+ {
+  "id": "o2",
+  "input": "x #[[Foo]] y",
+  "format": "org"
+ },
+ {
+  "id": "o3",
+  "input": "see http://x.co, next",
+  "format": "org"
+ },
+ {
+  "id": "o4",
+  "input": "#a\fb",
+  "format": "org"
+ },
+ {
+  "id": "o5",
+  "input": "a http://x.co/p(q) b",
+  "format": "org"
+ }
+]
