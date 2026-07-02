@@ -22,7 +22,9 @@ Markdown and Org produce the **same** AST.
   key as the default (`None` / `false` / `[]` / `""`). Exception: `table.aligns` is always
   serialized, including `[]` when there is no dropped markdown separator row.
 - `span` (block byte-offset `[start,end]`) is emitted but is **out of the render contract**
-  (excluded from the oracle diff; Tine renders read-only). Inline nodes carry **no** span.
+  (excluded from the oracle diff; Tine renders read-only). Inline nodes carry `span` too
+  (total, since v0.3.0 — see **Inline spans** in Notes); block and inline spans are both
+  oracle-excluded.
 
 ---
 
@@ -162,9 +164,17 @@ as opaque for display.
   allowlist (case-insensitive) + a keyword boundary (`]`/space/tab/`.`/`#`) + a string-aware,
   `[:`-nested balanced `]`. A whole-line vector → a `hiccup` block (the remainder past the
   `]` re-enters block parsing); a vector mixed with text → an inline `hiccup`.
-- **No inline spans.** Block `span` (byte `[start,end]`) is present but excluded from the
-  render contract; inline nodes have none. Source-rewriting features (media-resize, checkbox
-  toggle) operate on the block's raw text, not the AST.
+- **Inline spans.** Since v0.3.0 every inline node carries a **total** `span` (byte
+  `[start,end)` into the block body — the same convention as block `span`). Nodes parsed in
+  place get their full source extent (delimiters included); nodes inside folded constructs
+  (`>`-quote bodies, `#+BEGIN` bodies, list-item content) get the **envelope** — the
+  contiguous `[min origin, max origin end)` over the source bytes they were rebuilt from.
+  Additionally, a `plain` node whose `text` is not a verbatim slice of `block_body[span]`
+  (transformed plains: escape collapse, CR normalization, unknown-entity fallback, synthetic
+  labels; or multi-segment folded origins) carries `span_map: [[text_off, src_off, len], …]`
+  mapping `text` bytes back to block-body bytes. Like block `span`, both `span` and `span_map`
+  are lsdoc-only and excluded from the oracle diff. Source-rewriting features (media-resize,
+  checkbox toggle) operate on the block's raw text, not the AST.
 - Dropped mldoc internals with no render impact: `Heading.anchor`/`meta`,
   `Footnote_Reference.id` and inline `definition`, `Nested_link.children` (use `content`),
   `Src.options`/`pos_meta`.
