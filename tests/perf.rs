@@ -314,6 +314,15 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         ("md_raw_html_unbalanced_interleave", false, 8_000, |n| {
             "*a*<div><div>x</div>".repeat(n)
         }),
+        ("org_raw_html_unbalanced_interleave", true, 8_000, |n| {
+            "/a/<div><div>x</div>".repeat(n)
+        }),
+        ("md_nested_callout_raw_html", false, 200, nested_callout_raw_html),
+        ("org_nested_callout_raw_html", true, 200, nested_callout_raw_html),
+        ("md_raw_html_sibling_pairs", false, 10_000, raw_html_sibling_pairs),
+        ("org_raw_html_sibling_pairs", true, 10_000, raw_html_sibling_pairs),
+        ("md_raw_html_closes_then_opens", false, 10_000, raw_html_closes_then_opens),
+        ("org_raw_html_closes_then_opens", true, 10_000, raw_html_closes_then_opens),
         // Callout closer-finding adversarial cases. The on-demand dispatch (correct: only
         // top-level openers are reached) finds `#+END_<name>` via the by-all-prefixes index — an
         // O(1) bucket lookup, no EOF scan. So even these stay ~linear, where mldoc's own
@@ -364,6 +373,48 @@ fn org_begin_quote_indented_body(n: usize) -> String {
     }
     s.push_str("#+END_QUOTE\n");
     s
+}
+
+fn base36(mut n: usize) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    if n == 0 {
+        return "0".to_string();
+    }
+    let mut out = Vec::new();
+    while n > 0 {
+        out.push(DIGITS[n % 36]);
+        n /= 36;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap()
+}
+
+fn nested_callout_raw_html(k: usize) -> String {
+    let width = base36(k + 1).len();
+    let mut s = String::new();
+    for d in 0..k {
+        let name = format!("{:0>width$}", base36(d), width = width);
+        writeln!(&mut s, "#+BEGIN_A{name}").unwrap();
+        s.push_str("<div>x</div>\n");
+    }
+    for d in (0..k).rev() {
+        let name = format!("{:0>width$}", base36(d), width = width);
+        writeln!(&mut s, "#+END_A{name}").unwrap();
+    }
+    s
+}
+
+fn raw_html_sibling_pairs(n: usize) -> String {
+    let mut s = String::from("<div>");
+    for _ in 0..n {
+        s.push_str("<div></div>");
+    }
+    s.push_str("</div>");
+    s
+}
+
+fn raw_html_closes_then_opens(n: usize) -> String {
+    format!("<div>{}{}</div>", "</div>".repeat(n), "<div>".repeat(n))
 }
 
 /// `#+BEGIN_a0 … #+BEGIN_a{n-1}` / `x` / `#+END_a{n-1} … #+END_a0` — n distinct-name callouts

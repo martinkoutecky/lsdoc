@@ -3,7 +3,9 @@
 This file is the standing O(n) ownership map for inline-phase forward scans. Each scan
 must have exactly one owner: constant/local, consume-on-match, suffix-absence miss-cache,
 invalidating cursor, precomputed map, or boundary-run map. A new unfloored scan in these
-paths is a bug.
+paths is a bug. Every new row must state the summation argument, not only name the mechanism.
+Audit lesson: counters must charge data-structure work, and every cache key dimension needs a
+gate shape that maximizes its cardinality.
 
 C8 refreshed the driver rows after the dispatch loops were rewritten in `inline_choices`
 order. Older construct-internal rows are kept where the owner did not change.
@@ -28,7 +30,7 @@ order. Older construct-internal rows are kept where the owner did not change.
 | Markdown inactive bracket timestamp @ `src/resolver.rs:1487`, `src/inline.rs:2343` | suffix-absence miss-cache + invalidating-cursor | inactive `[...]` bodies and inactive range halves are gated by the `]` half of `TimestampCloseScan`, after link/reference attempts. |
 | Markdown keyword/range timestamp @ `src/resolver.rs:1155`, `src/inline.rs:2330` | suffix-absence miss-cache + invalidating-cursor | keyword active/inactive bodies reuse the delimiter-specific timestamp cursor; range second-half probes are transactional clones, committed only on a successful range so fallback stays O(n). |
 | Markdown email local/domain @ `src/resolver.rs:1890`, `src/inline.rs:1568` | suffix-absence miss-cache + invalidating-cursor | local-part keeps the `@` absence floor; domain uses a first `>`/ws cursor. |
-| Markdown raw HTML angle @ `src/resolver.rs:1883`, `src/block_common.rs:614` | suffix-absence miss-cache + precomputed-map | missing closers use `RawHtmlScan`; unbalanced tag matching uses a lazy per-tag/body index. |
+| Markdown raw HTML angle @ `src/resolver.rs:1883`, `src/block_common.rs:614` | suffix-absence miss-cache + precomputed-map | Missing closers use `RawHtmlScan`; unbalanced tag matching uses the parse-local raw-HTML tag index below, so total work is the sum of one charged per-tag build plus charged cursor/rank queries. |
 | Markdown bare URL dispatch @ `src/resolver.rs:1161`, `src/inline.rs:1749` | consume-on-match + suffix-absence miss-cache | accepted URLs consume their span; all-alphanumeric no-scheme suffixes are floored by `BareUrlScan`. |
 | Markdown resync lead checks @ `src/resolver.rs:1812` | invalidating-cursor | split-token bare-url probes share `BareUrlScan`; fast path re-lexes only the split token. |
 | Org resolver token loop @ `src/org_resolver.rs:953` | consume-on-match | `t` advances monotonically; accepted leaves resync past consumed bytes. |
@@ -41,7 +43,7 @@ order. Older construct-internal rows are kept where the owner did not change.
 | Org angle timestamp @ `src/org_resolver.rs:1693`, `src/inline.rs:2316` | suffix-absence miss-cache + invalidating-cursor | active `<...>` bodies and active range halves are gated by the `>` half of `TimestampCloseScan`. |
 | Org inactive bracket timestamp @ `src/org_resolver.rs:1833`, `src/inline.rs:2343` | suffix-absence miss-cache + invalidating-cursor | inactive `[...]` bodies and inactive range halves are gated by the `]` half of `TimestampCloseScan`, after org link attempts. |
 | Org keyword/range timestamp @ `src/org_resolver.rs:890`, `src/inline.rs:2330` | suffix-absence miss-cache + invalidating-cursor | keyword active/inactive bodies reuse the delimiter-specific timestamp cursor; range second-half probes are transactional clones, committed only on a successful range so fallback stays O(n). |
-| Org raw HTML angle @ `src/org_resolver.rs:1704`, `src/block_common.rs:614` | suffix-absence miss-cache + precomputed-map | same `RawHtmlScan` and unbalanced tag index as Markdown. |
+| Org raw HTML angle @ `src/org_resolver.rs:1704`, `src/block_common.rs:614` | suffix-absence miss-cache + precomputed-map | Same `RawHtmlScan` and unbalanced tag index as Markdown: one charged per-tag build per input string plus charged cursor/rank queries. |
 | Org email domain @ `src/org_resolver.rs:1709`, `src/inline.rs:1568` | suffix-absence miss-cache + invalidating-cursor | same email `@` floor plus domain boundary cursor as Markdown. |
 | Org bare URL dispatch/resync @ `src/org_resolver.rs:896`, `src/org_resolver.rs:1568`, `src/inline.rs:1749` | consume-on-match + suffix-absence miss-cache | accepted URLs consume; bounded split-token resync probes share `BareUrlScan`. |
 | Org emphasis body parser @ `src/org_resolver.rs:370`, dispatch @ `src/org_resolver.rs:486` | consume-on-match + suffix-absence miss-cache | Org uses the same mldoc body parser with `include_md_code=false`; `no_closer[class][k]` floors EOF/no-closer failures. |
@@ -69,8 +71,9 @@ order. Older construct-internal rows are kept where the owner did not change.
 | Raw HTML head @ `src/block_common.rs:406` | constant | known tag token scan is bounded by `MAX_HTML_TAG_LEN = 10`. |
 | Raw HTML special closer @ `src/block_common.rs:497`, `src/block_common.rs:530` | suffix-absence miss-cache | missing special closers update `RawHtmlScan.no_special_until`. |
 | Raw HTML missing tag closer @ `src/block_common.rs:530`, `src/block_common.rs:614` | suffix-absence miss-cache | no `</tag>` ahead updates `RawHtmlScan.no_tag_end_until[index]`. |
-| Raw HTML unbalanced tag @ `src/block_common.rs:200`, `src/block_common.rs:530` | precomputed-map | lazy per `(tag, body_end)` index answers match-tag balance queries without rescanning. |
-| Raw HTML self-close fallback @ `src/block_common.rs:200` | precomputed-map | first `/>` after the opener is stored in the same tag/body index and used only after no match. |
+| Raw HTML tag-index build @ `src/block_common.rs:200` | precomputed-map + exact-case cache | Each `RawHtmlScan` is tied to one input string. A queried exact-case tag token builds one combined pass over the whole input; opens stay exact-case and closes stay case-insensitive. Summation: `Σ builds <= T * n`, where `T` is the bounded universe of HICCUP-recognized exact-case ASCII tag tokens of length `<= 10`, so `T` is a parse-independent constant. |
+| Raw HTML tag-index query @ `src/block_common.rs:200`, `src/block_common.rs:530` | monotone cursor + charged window ranks | `after_tag` queries are non-decreasing per `RawHtmlScan`, so per-tag event/close/self-close cursors advance at most once over their lists: `Σ cursor work <= events + queries`. A `(tag, body_end)` rank entry is cached and built by charged binary probes plus `O(max_tag_pattern_len)` tail correction; `Σ rank work <= distinct queried body windows * O(log events)`, with the nested-frame maximizer covered by the raw-HTML gate and all probes charged to `scan_work`. |
+| Raw HTML self-close fallback @ `src/block_common.rs:200` | shared precomputed-map | `/>` positions are stored in the same per-tag index. Query work shares the monotone self-close cursor and the charged body-window fit rank above, so `Σ self-close work <= self-close events + queries + rank probes`. |
 | Raw HTML accepted capture mapping @ `src/block_common.rs:668`, `src/block_common.rs:708` | consume-on-match | line/view mapping scans only accepted raw-HTML extents and consumed trailing blanks. |
 
 Documented non-inline exceptions:

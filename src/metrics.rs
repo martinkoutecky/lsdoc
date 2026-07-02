@@ -1,8 +1,7 @@
-//! Complexity instrumentation — a debug-only thread-local counter of "scan work": the number
-//! of bytes examined by the parser's potentially-re-scanning operations (the `>`-prefix peel,
-//! `property`'s `::` search, the inline `resync` re-lex). (The block-hiccup close is no longer a
-//! re-scan — Phase B precomputes the `[:`-balance once, so it does an O(1) lookup, not a per-line
-//! scan; the `hiccup_unclosed` gate family stays linear via `property`'s O(n) charge.)
+//! Complexity instrumentation — a debug-only thread-local counter of "scan work": all work done
+//! by parser-owned scans and indexing structures. That includes byte scans plus index builds,
+//! cursor advances, cache lookups, search probes, and tree descents. An uncharged loop in a
+//! parser-owned structure is a complexity bug.
 //!
 //! # Why this exists
 //! The byte-exact parity gate (`harness/`) verifies WHAT the parser produces, not HOW MUCH work
@@ -14,8 +13,9 @@
 //! machine noise or which exact input triggers it.
 //!
 //! # Invariant
-//! `scan_work` summed over a parse must be **O(input length)**. Every increment marks a place
-//! where the parser walks bytes it could, in a single-pass design, have consumed exactly once.
+//! `scan_work` summed over a parse must be **O(input length)**. Every increment marks parser-owned
+//! work that must be amortized by a single-pass design: byte walks, index construction, cursor
+//! advances, cache lookup/comparison, search probes, and tree visits.
 //!
 //! # Zero cost in release
 //! The counter and every `scan_work` body are `#[cfg(debug_assertions)]`, so release builds (and
@@ -26,7 +26,8 @@ thread_local! {
     static SCAN_WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Charge `n` bytes of scan work to the debug counter. No-op (and fully compiled out) in release.
+/// Charge `n` units of parser-owned scan/index work to the debug counter. No-op (and fully
+/// compiled out) in release.
 #[inline(always)]
 pub(crate) fn scan_work(_n: usize) {
     #[cfg(debug_assertions)]

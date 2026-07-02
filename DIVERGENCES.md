@@ -243,6 +243,25 @@ lsdoc:  plain "a^{b", break, plain "c}"                      ← not recognized
 braced body. **Reachability:** rare (org, multi-line script body). **Fix direction:** allow a
 newline inside the braced-script scan — O(n), no cap. Status: **OPEN.**
 
+## D9 — a case-mismatched raw-HTML close keeps its source case instead of the opener's
+
+**Trigger:** raw HTML where the matching `</tag>` differs in ASCII case from the opener. **MD + ORG.**
+
+```
+input:  "<DIV>a</div><div>b</DIV>"
+mldoc:  raw_html "<DIV>a</DIV>", raw_html "<div>b</div>"    ← close REWRITTEN to the opener's case
+lsdoc:  raw_html "<DIV>a</div>", raw_html "<div>b</DIV>"    ← close kept verbatim from source
+```
+
+**Root cause:** mldoc's `Raw_html.parse` matches the close case-insensitively but RECONSTRUCTS the
+consumed text with the opener's tag token, so the emitted close is case-normalized to the opener.
+lsdoc matches case-insensitively too (extent identical — block boundaries match) but copies the
+source bytes verbatim. Found by an adversarial probe during the Jul 2026 raw-html index
+verification (`harness/rawhtml-fix-my-probe.json` p03/p04/p13); pre-existing, NOT introduced by
+the index rewrite (unmodified-HEAD output identical). **Reachability:** rare (mixed-case HTML tag
+pairs). **Fix direction:** when the ci-matched close's bytes differ from `</tag>`, emit the
+reconstructed opener-case close in the captured text — O(1) at capture time. Status: **OPEN.**
+
 ---
 
 ## Not on this list (for contrast)

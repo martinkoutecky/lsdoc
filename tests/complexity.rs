@@ -1,12 +1,11 @@
 //! Complexity gate — the structural guard the byte-exact parity gate cannot be.
 //!
-//! `src/metrics.rs` counts "scan work": bytes examined by the parser's re-scanning operations
-//! (the `>`-prefix peel, `property`'s `::` search, the hiccup balanced-bracket scan, the inline
-//! `resync` re-lex). A single-pass parser examines each byte O(1) times, so scan-work MUST be
+//! `src/metrics.rs` counts "scan work": parser-owned byte scans plus index builds, cache lookups,
+//! cursor advances, search probes, and tree visits. A single-pass parser keeps that total
 //! O(input length). This gate parses adversarial families at n / 2n / 4n and asserts the count
 //! grows ~linearly (ratio < 3×). Because the count is **deterministic** (not timed), small inputs
-//! give a clean signal and there is no machine-noise flakiness — the weakness that let four O(n²)
-//! families hide behind 1321/1321 byte-exact.
+//! give a clean signal and there is no machine-noise flakiness — the weakness that let O(n²)
+//! families hide behind byte-exact parity.
 //!
 //! Debug-only (the counter compiles out in release): run with `cargo test --test complexity`.
 #![cfg(debug_assertions)]
@@ -141,6 +140,50 @@ fn raw_html_unclosed_tail(n: usize) -> String {
 fn raw_html_repeated_unclosed(n: usize) -> String {
     "<kbd>\n".repeat(n)
 }
+fn base36(mut n: usize) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    if n == 0 {
+        return "0".to_string();
+    }
+    let mut out = Vec::new();
+    while n > 0 {
+        out.push(DIGITS[n % 36]);
+        n /= 36;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap()
+}
+fn nested_callout_raw_html(k: usize) -> String {
+    let width = base36(k + 1).len();
+    let mut s = String::new();
+    for d in 0..k {
+        let name = format!("{:0>width$}", base36(d), width = width);
+        writeln!(&mut s, "#+BEGIN_A{name}").unwrap();
+        s.push_str("<div>x</div>\n");
+    }
+    for d in (0..k).rev() {
+        let name = format!("{:0>width$}", base36(d), width = width);
+        writeln!(&mut s, "#+END_A{name}").unwrap();
+    }
+    s
+}
+fn raw_html_sibling_pairs(n: usize) -> String {
+    let mut s = String::from("<div>");
+    for _ in 0..n {
+        s.push_str("<div></div>");
+    }
+    s.push_str("</div>");
+    s
+}
+fn raw_html_closes_then_opens(n: usize) -> String {
+    format!("<div>{}{}</div>", "</div>".repeat(n), "<div>".repeat(n))
+}
+fn raw_html_unbalanced_retry_interleave(n: usize) -> String {
+    "*a*<div><div>x</div>\n".repeat(n)
+}
+fn raw_html_org_unbalanced_retry_interleave(n: usize) -> String {
+    "/a/<div><div>x</div>\n".repeat(n)
+}
 /// Bare `<` run: control for raw-HTML tokenizer batching when no inline construct resets `fresh`.
 fn raw_html_lt_bare(n: usize) -> String {
     "<".repeat(n)
@@ -238,6 +281,24 @@ fn complexity_gate() {
         assert_linear("raw_html_unclosed_tail", raw_html_unclosed_tail, 3000, "org");
         assert_linear("raw_html_repeated_unclosed", raw_html_repeated_unclosed, 3000, "md");
         assert_linear("raw_html_repeated_unclosed", raw_html_repeated_unclosed, 3000, "org");
+        assert_linear("nested_callout_raw_html", nested_callout_raw_html, 50, "md");
+        assert_linear("nested_callout_raw_html", nested_callout_raw_html, 50, "org");
+        assert_linear("raw_html_sibling_pairs", raw_html_sibling_pairs, 500, "md");
+        assert_linear("raw_html_sibling_pairs", raw_html_sibling_pairs, 500, "org");
+        assert_linear("raw_html_closes_then_opens", raw_html_closes_then_opens, 500, "md");
+        assert_linear("raw_html_closes_then_opens", raw_html_closes_then_opens, 500, "org");
+        assert_linear(
+            "raw_html_unbalanced_retry_interleave",
+            raw_html_unbalanced_retry_interleave,
+            500,
+            "md",
+        );
+        assert_linear(
+            "raw_html_org_unbalanced_retry_interleave",
+            raw_html_org_unbalanced_retry_interleave,
+            500,
+            "org",
+        );
         assert_linear("raw_html_lt_bare", raw_html_lt_bare, 6000, "md");
         assert_linear("raw_html_lt_bare", raw_html_lt_bare, 6000, "org");
         assert_linear("raw_html_emph_lt", raw_html_emph_lt, 6000, "md");
