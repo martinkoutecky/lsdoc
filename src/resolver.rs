@@ -99,9 +99,7 @@ pub(crate) fn parse_inline_ctx_md_label(text: &str, base: usize) -> Option<Vec<I
             continue;
         }
         if matches!(bb[i], b'_' | b'^') {
-            if bb.get(i + 1) == Some(&b'{')
-                && script_rbrace_scan.has_before_eol(bb, i + 2)
-            {
+            if bb.get(i + 1) == Some(&b'{') && script_rbrace_scan.has_before_eol(bb, i + 2) {
                 if let Some((node, end)) = try_markdown_script_at(text, bb, i, base) {
                     out.push(node);
                     i = end;
@@ -209,7 +207,11 @@ fn underline_emphasis_delims_backward(state_char: Option<u8>) -> bool {
 /// (`lib/syntax/inline.ml:381-383`).
 #[inline]
 fn underline_emphasis_delims_lookahead(s: &str, at: usize) -> bool {
-    s.as_bytes().get(at).copied().map(underline_emphasis_delim).unwrap_or(true)
+    s.as_bytes()
+        .get(at)
+        .copied()
+        .map(underline_emphasis_delim)
+        .unwrap_or(true)
 }
 
 /// Port of mldoc `is_left_flanking_delimiter_run`
@@ -218,7 +220,9 @@ fn underline_emphasis_delims_lookahead(s: &str, at: usize) -> bool {
 fn is_left_flanking_delimiter_run(s: &str, at: usize, pattern: &[u8]) -> bool {
     let bb = s.as_bytes();
     bb.get(at..at + pattern.len()) == Some(pattern)
-        && bb.get(at + pattern.len()).is_some_and(|&c| !mldoc_whitespace_char(c))
+        && bb
+            .get(at + pattern.len())
+            .is_some_and(|&c| !mldoc_whitespace_char(c))
 }
 
 /// Port of mldoc `take_while1_include_backslash`
@@ -356,12 +360,9 @@ fn md_em_parser_at(
         } else {
             &escape_chars_without_code[..]
         };
-        if let Some(end) = take_while1_include_backslash(
-            s,
-            i,
-            escape_chars,
-            |c| !stop_chars_with_code(c),
-        ) {
+        if let Some(end) =
+            take_while1_include_backslash(s, i, escape_chars, |c| !stop_chars_with_code(c))
+        {
             push_plain_node(body, &s[i..end], i, end, base);
             set_char_before_pattern_from_node(body.last().unwrap(), char_before_pattern);
             return Some(end);
@@ -384,9 +385,7 @@ fn md_em_parser_at(
 
         // Alternative 3: non-whitespace run, allowing invalid backticks as plain.
         let escape_chars = [pattern_c, b' ', b'\t', b'\n', b'\r', 0x0c];
-        if let Some(end) =
-            take_while1_include_backslash(s, i, &escape_chars, |c| !stop_chars(c))
-        {
+        if let Some(end) = take_while1_include_backslash(s, i, &escape_chars, |c| !stop_chars(c)) {
             push_plain_node(body, &s[i..end], i, end, base);
             set_char_before_pattern_from_node(body.last().unwrap(), char_before_pattern);
             return Some(end);
@@ -455,11 +454,21 @@ fn md_em_parser_at(
                             span: full,
                         }
                     } else {
-                        Inline::Emphasis { emph: typ.to_string(), children, span: full }
+                        Inline::Emphasis {
+                            emph: typ.to_string(),
+                            children,
+                            span: full,
+                        }
                     };
-                    return Ok(EmParsed { node, end: close_end, closer_start: before });
+                    return Ok(EmParsed {
+                        node,
+                        end: close_end,
+                        closer_start: before,
+                    });
                 }
-                None if bb.get(before..before + pat.len()) == Some(pat) => return Err(EmFail::NotMatch),
+                None if bb.get(before..before + pat.len()) == Some(pat) => {
+                    return Err(EmFail::NotMatch)
+                }
                 None => return Err(EmFail::NoCloser),
             }
         }
@@ -484,9 +493,17 @@ fn md_em_parser_at(
                         span: full,
                     }
                 } else {
-                    Inline::Emphasis { emph: typ.to_string(), children, span: full }
+                    Inline::Emphasis {
+                        emph: typ.to_string(),
+                        children,
+                        span: full,
+                    }
                 };
-                return Ok(EmParsed { node, end: close_end, closer_start: i });
+                return Ok(EmParsed {
+                    node,
+                    end: close_end,
+                    closer_start: i,
+                });
             }
             None if bb.get(i..i + pat.len()) == Some(pat) => return Err(EmFail::NotMatch),
             None => return Err(EmFail::NoCloser),
@@ -613,34 +630,48 @@ fn aux_nested_emphasis_md(node: Inline) -> Inline {
         return node;
     }
     match node {
-        Inline::Emphasis { emph, children, span } => {
+        Inline::Emphasis {
+            emph,
+            children,
+            span,
+        } => {
             let mut reparsed = Vec::new();
             for child in children {
                 match child {
-                    Inline::Plain { text, span: plain_span } => {
-                        match parse_nested_plain_md(&text, plain_span.map(|s| s.0).unwrap_or(0)) {
-                            Ok(result) if result.len() == 1 && matches!(result[0], Inline::Plain { .. }) => {
-                                let (text, clean) = markdown_plain_text(&text);
-                                reparsed.push(Inline::Plain {
-                                    text,
-                                    span: if clean { plain_span } else { None },
-                                });
-                            }
-                            Ok(mut result) => {
-                                if plain_span.is_none() {
-                                    for node in &mut result {
-                                        clear_inline_spans(node);
-                                    }
-                                }
-                                reparsed.extend(result.into_iter().map(aux_nested_emphasis_md));
-                            }
-                            Err(()) => reparsed.push(Inline::Plain { text, span: plain_span }),
+                    Inline::Plain {
+                        text,
+                        span: plain_span,
+                    } => match parse_nested_plain_md(&text, plain_span.map(|s| s.0).unwrap_or(0)) {
+                        Ok(result)
+                            if result.len() == 1 && matches!(result[0], Inline::Plain { .. }) =>
+                        {
+                            let (text, clean) = markdown_plain_text(&text);
+                            reparsed.push(Inline::Plain {
+                                text,
+                                span: if clean { plain_span } else { None },
+                            });
                         }
-                    }
+                        Ok(mut result) => {
+                            if plain_span.is_none() {
+                                for node in &mut result {
+                                    clear_inline_spans(node);
+                                }
+                            }
+                            reparsed.extend(result.into_iter().map(aux_nested_emphasis_md));
+                        }
+                        Err(()) => reparsed.push(Inline::Plain {
+                            text,
+                            span: plain_span,
+                        }),
+                    },
                     other => reparsed.push(other),
                 }
             }
-            Inline::Emphasis { emph, children: concat_plains_without_pos(reparsed), span }
+            Inline::Emphasis {
+                emph,
+                children: concat_plains_without_pos(reparsed),
+                span,
+            }
         }
         other => other,
     }
@@ -714,9 +745,7 @@ fn parse_nested_plain_md(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
             }
         }
         if matches!(bb[i], b'_' | b'^') {
-            if bb.get(i + 1) == Some(&b'{')
-                && script_rbrace_scan.has_before_eol(bb, i + 2)
-            {
+            if bb.get(i + 1) == Some(&b'{') && script_rbrace_scan.has_before_eol(bb, i + 2) {
                 if let Some((node, end)) = try_markdown_script_at(text, bb, i, base) {
                     out.push(node);
                     i = end;
@@ -746,21 +775,23 @@ fn markdown_plain_at(s: &str, i: usize, base: usize) -> Option<(Inline, usize)> 
         return None;
     }
     let in_plain_delims = |c: u8| {
-        matches!(c, b'\\' | b'_' | b'^' | b'[' | b'*' | b'~' | b'`' | b'=' | b'$' | b'#')
-            || mldoc_whitespace_char(c)
+        matches!(
+            c,
+            b'\\' | b'_' | b'^' | b'[' | b'*' | b'~' | b'`' | b'=' | b'$' | b'#'
+        ) || mldoc_whitespace_char(c)
     };
-    if !mldoc_whitespace_char(bb[i]) && bb[i] != b'\n' && bb[i] != b'\r' && !in_plain_delims(bb[i]) {
+    if !mldoc_whitespace_char(bb[i]) && bb[i] != b'\n' && bb[i] != b'\r' && !in_plain_delims(bb[i])
+    {
         let mut end = i + char_len_at(bb, i);
-        while end < bb.len()
-            && bb[end] != b'\n'
-            && bb[end] != b'\r'
-            && !in_plain_delims(bb[end])
-        {
+        while end < bb.len() && bb[end] != b'\n' && bb[end] != b'\r' && !in_plain_delims(bb[end]) {
             end += char_len_at(bb, end);
         }
         crate::metrics::scan_work(end - i);
         return Some((
-            Inline::Plain { text: s[i..end].to_string(), span: Some(Span(base + i, base + end)) },
+            Inline::Plain {
+                text: s[i..end].to_string(),
+                span: Some(Span(base + i, base + end)),
+            },
             end,
         ));
     }
@@ -771,7 +802,10 @@ fn markdown_plain_at(s: &str, i: usize, base: usize) -> Option<(Inline, usize)> 
         }
         crate::metrics::scan_work(end - i);
         return Some((
-            Inline::Plain { text: s[i..end].to_string(), span: Some(Span(base + i, base + end)) },
+            Inline::Plain {
+                text: s[i..end].to_string(),
+                span: Some(Span(base + i, base + end)),
+            },
             end,
         ));
     }
@@ -780,7 +814,10 @@ fn markdown_plain_at(s: &str, i: usize, base: usize) -> Option<(Inline, usize)> 
             if next.is_ascii_punctuation() {
                 let end = i + 1 + char_len_at(bb, i + 1);
                 return Some((
-                    Inline::Plain { text: s[i + 1..end].to_string(), span: None },
+                    Inline::Plain {
+                        text: s[i + 1..end].to_string(),
+                        span: None,
+                    },
                     end,
                 ));
             }
@@ -789,7 +826,10 @@ fn markdown_plain_at(s: &str, i: usize, base: usize) -> Option<(Inline, usize)> 
     if in_plain_delims(bb[i]) {
         let end = i + char_len_at(bb, i);
         return Some((
-            Inline::Plain { text: s[i..end].to_string(), span: Some(Span(base + i, base + end)) },
+            Inline::Plain {
+                text: s[i..end].to_string(),
+                span: Some(Span(base + i, base + end)),
+            },
             end,
         ));
     }
@@ -801,7 +841,13 @@ fn markdown_plain_at(s: &str, i: usize, base: usize) -> Option<(Inline, usize)> 
 fn try_nested_link_or_link_md(s: &str, at: usize, base: usize) -> Option<(Inline, usize)> {
     if s[at..].starts_with("[[") {
         if let Some((end, content)) = crate::inline::parse_nested_link(s, at) {
-            return Some((Inline::NestedLink { content, span: Some(Span(base + at, base + end)) }, end));
+            return Some((
+                Inline::NestedLink {
+                    content,
+                    span: Some(Span(base + at, base + end)),
+                },
+                end,
+            ));
         }
         if let Some((end, name, full)) = crate::inline::parse_page_ref(s, at) {
             return Some((
@@ -913,7 +959,10 @@ fn markdown_entity_or_plain_at(s: &str, i: usize, base: usize) -> Option<(Inline
             end,
         )),
         None => Some((
-            Inline::Plain { text: name.to_string(), span: None },
+            Inline::Plain {
+                text: name.to_string(),
+                span: None,
+            },
             end,
         )),
     }
@@ -923,7 +972,13 @@ fn concat_plains_without_pos(nodes: Vec<Inline>) -> Vec<Inline> {
     let mut out: Vec<Inline> = Vec::new();
     for node in nodes {
         match (out.last_mut(), node) {
-            (Some(Inline::Plain { text: prev, span: prev_span }), Inline::Plain { text, span }) => {
+            (
+                Some(Inline::Plain {
+                    text: prev,
+                    span: prev_span,
+                }),
+                Inline::Plain { text, span },
+            ) => {
                 prev.push_str(&text);
                 *prev_span = match (*prev_span, span) {
                     (Some(Span(start, _)), Some(Span(_, end))) => Some(Span(start, end)),
@@ -942,10 +997,18 @@ fn last_plain_char_after_append(s: &str, last_plain_char: &mut Option<u8>) {
     }
 }
 
-fn find_delim_token_containing(toks: &[Token], mut t: usize, start: usize, end: usize, ch: u8) -> Option<usize> {
+fn find_delim_token_containing(
+    toks: &[Token],
+    mut t: usize,
+    start: usize,
+    end: usize,
+    ch: u8,
+) -> Option<usize> {
     while t < toks.len() {
         match toks[t].kind {
-            Kind::Delim { ch: dch, len } if dch == ch && toks[t].off <= start && start < toks[t].off + len => {
+            Kind::Delim { ch: dch, len }
+                if dch == ch && toks[t].off <= start && start < toks[t].off + len =>
+            {
                 return Some(t);
             }
             _ if toks[t].off >= end => return None,
@@ -998,8 +1061,16 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     } else {
         Vec::new()
     };
-    let real_dbl = if has_brk { crate::inline::build_real_dbl(s) } else { Vec::new() };
-    let lbp = if has_brk { seq_positions(bb, b']', b'(') } else { Vec::new() };
+    let real_dbl = if has_brk {
+        crate::inline::build_real_dbl(s)
+    } else {
+        Vec::new()
+    };
+    let lbp = if has_brk {
+        seq_positions(bb, b']', b'(')
+    } else {
+        Vec::new()
+    };
     let mut real_dbl_cur = 0usize;
     let mut lbp_cur = 0usize;
     let mut crlf = first_crlf(bb, 0);
@@ -1027,454 +1098,579 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut dollar_scan = crate::inline::ByteBeforeEolScan::new(b'$');
     let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
 
-    // `fresh` = at a fresh dispatch point (BOL, or after ws / a marker-delim / a construct /
-    // a Break). A SWALLOW opener (`! ( { < @`) tries its construct only when `fresh`; mid-plain-
-    // run (after ordinary non-ws text) it is swallowed as plain (mldoc `plain_run` semantics).
     let mut fresh = true;
-    let mut t = 0usize;
-    while t < toks.len() {
-        // `[` dispatch: mldoc Markdown order — footnote/reference → nested/link →
-        // inactive timestamp → statistics-cookie → inline hiccup.
-        // Leftmost-greedy with byte-offset resync; pairing maps and monotone floors keep it linear.
-        if matches!(toks[t].kind, Kind::Punct(b'[')) {
-            let off = toks[t].off;
-            let mut end = None;
-            // 1. footnote `[^id]` (ctx-gated).
-            if ctx.footnotes && bb.get(off + 1) == Some(&b'^') {
-                if let Some((e, name)) = crate::inline::parse_footnote_ref(s, off) {
-                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                    out.push(Inline::Fnref { name, span: Some(Span(base + off, base + e)) });
-                    end = Some(e);
-                }
+    macro_rules! track {
+        ($off:expr, $len:expr) => {{
+            if pending.is_empty() {
+                plain_start = Some(base + $off);
             }
-            // 2. nested-link (escape-free balance) then page-ref (escape-aware first `]]`).
-            if end.is_none() && s[off..].starts_with("[[") {
-                if nested_close.get(off).is_some_and(|&e| e != usize::MAX) {
-                    if let Some((e, content)) = crate::inline::parse_nested_link(s, off) {
-                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                        out.push(Inline::NestedLink { content, span: Some(Span(base + off, base + e)) });
-                        end = Some(e);
-                    }
-                }
-                if end.is_none() {
-                    while real_dbl.get(real_dbl_cur).is_some_and(|&p| p < off + 2) {
-                        real_dbl_cur += 1;
-                    }
-                    if let Some(&d) = real_dbl.get(real_dbl_cur) {
-                        if off > crlf {
-                            crlf = first_crlf(bb, off);
-                        }
-                        if d > off + 2 && crlf > d {
-                            if let Some((e, name, full)) = crate::inline::parse_page_ref(s, off) {
-                                flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                                out.push(Inline::Link {
-                                    url: crate::projection::Url::PageRef { v: name },
-                                    label: vec![],
-                                    full,
-                                    image: false,
-                                    metadata: String::new(),
-                                    title: None,
-                                    span: Some(Span(base + off, base + e)),
-                                });
-                                end = Some(e);
-                            }
-                        }
-                    }
-                }
+            if plain_start.is_some() {
+                plain_end = base + $off + $len;
             }
-            // 3. markdown link `[label](url)` — needs a `](` before the next eol and a `)`.
-            if end.is_none() {
-                if let Some((mut node, e)) =
-                    try_md_link(s, bb, off, false, &lbp, &mut lbp_cur, &mut crlf, &mut rparen, base)
-                {
-                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
-                    out.push(node);
-                    end = Some(e);
-                }
-            }
-            // 4. inactive timestamp `[date Wday]` / ranges, after links and before hiccup.
-            if end.is_none() && ctx.timestamps {
-                if let Some((e, mut node)) =
-                    crate::inline::parse_bracket_timestamp_with_scan(s, off, &mut timestamp_scan)
-                {
-                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
-                    out.push(node);
-                    end = Some(e);
-                }
-            }
-            // 5. statistics cookie `[n/m]` / `[n%]`.
-            if end.is_none() {
-                if let Some((e, mut node)) = crate::inline::parse_statistics_cookie(s, off) {
-                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
-                    out.push(node);
-                    end = Some(e);
-                }
-            }
-            // 6. inline hiccup `[:tag …]` (ctx-gated — off in emphasis content).
-            if end.is_none()
-                && ctx.hiccup
-                && bb.get(off + 1) == Some(&b':')
-                && crate::inline::hiccup_head_ok(s, off)
-            {
-                if let Some(e) = hiccup_close.get(off).copied().filter(|&e| e != usize::MAX) {
-                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                    out.push(Inline::Hiccup { v: s[off..e].to_string(), span: Some(Span(base + off, base + e)) });
-                    end = Some(e);
-                }
-            }
-            match end {
-                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan),
-                None => {
-                    if pending.is_empty() { plain_start = Some(base + off); }
-                    if plain_start.is_some() { plain_end = base + off + 1; }
-                    pending.push('[');
-                    last_plain_char = Some(b'[');
-                    t += 1;
-                    fresh = true; // `[` is a marker-delim → fresh point
-                }
-            }
-            continue;
-        }
-
-        // `$` latex / `#` tag — marker-delim openers: a single literal char on failure.
-        let md_open = match &toks[t].kind {
-            Kind::Punct(c @ (b'$' | b'#')) => Some(*c),
-            _ => None,
-        };
-        if let Some(c) = md_open {
-            let off = toks[t].off;
-            let mut end = None;
-            if c == b'$' && ctx.latex {
-                if dollar_scan.has_before_eol(bb, off + 2) {
-                    if let Some((mut node, e)) = crate::inline::parse_latex_dollar_at(s, off) {
-                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                        crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
-                        out.push(node);
-                        end = Some(e);
-                    }
-                }
-            } else if c == b'#' && ctx.tags {
-                let (e, children) = crate::inline::parse_tag_name(
-                    s,
-                    off + 1,
-                    true,
-                    base,
-                    crate::inline::TagReparse::Markdown,
-                    tag_boundary_runs.as_deref(),
-                );
-                if e > off + 1 && !children.is_empty() {
-                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                    out.push(Inline::Tag { children, span: Some(Span(base + off, base + e)) });
-                    end = Some(e);
-                }
-            }
-            match end {
-                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan),
-                None => {
-                    if pending.is_empty() { plain_start = Some(base + off); }
-                    if plain_start.is_some() { plain_end = base + off + 1; }
-                    pending.push(c as char);
-                    last_plain_char = Some(c);
-                    t += 1;
-                    fresh = true; // `$`/`#` are marker-delims → fresh point
-                }
-            }
-            continue;
-        }
-
-        // `` ` `` code span (Phase D) — recognized LAZILY here (was a pre-built lexer `Leaf`). On
-        // success emit the Code node + `resync` past its extent (the closer `` ` `` and content are
-        // consumed tokens); else the backtick is a literal marker-delim → fresh point (`` `((uuid))
-        // `` → `` ` `` + block-ref). Greedy left-to-right: a backtick a construct already consumed
-        // is never dispatched here, so a tag eating a `` ` `` needs no re-lex (bug 2b, code-leaf).
-        if matches!(toks[t].kind, Kind::Punct(b'`')) {
-            let off = toks[t].off;
-            if let Some((node, e)) = try_code_span(s, off, base) {
-                flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                out.push(node);
-                t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan);
-            } else {
-                if pending.is_empty() { plain_start = Some(base + off); }
-                if plain_start.is_some() { plain_end = base + off + 1; }
-                pending.push('`');
-                last_plain_char = Some(b'`');
-                t += 1;
-                fresh = true; // `` ` `` is a marker-delim → fresh point
-            }
-            continue;
-        }
-
-        // `\(` / `\[` latex-backslash (ctx-dependent): a Latex span when `ctx.latex` and a
-        // `\)`/`\]` closer exists ahead, else an escape (the `(`/`[` literal). The monotone
-        // closer floor keeps a `\(`×n run linear.
-        let latex_bs = match &toks[t].kind {
-            Kind::LatexBs(c) => Some(*c),
-            _ => None,
-        };
-        if let Some(c) = latex_bs {
-            let off = toks[t].off;
-            let mut end = None;
-            if ctx.latex {
-                let closer = if c == b'(' {
-                    if off > bs_paren {
-                        bs_paren = first_seq(bb, b'\\', b')', off);
-                    }
-                    bs_paren < bb.len()
-                } else {
-                    if off > bs_brack {
-                        bs_brack = first_seq(bb, b'\\', b']', off);
-                    }
-                    bs_brack < bb.len()
-                };
-                if closer {
-                    if let Some((mut node, e)) = crate::inline::parse_latex_backslash_at(s, off) {
-                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                        crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
-                        out.push(node);
-                        end = Some(e);
-                    }
-                }
-            }
-            match end {
-                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan),
-                None => {
-                    // escape: the `\` is DROPPED, only `(`/`[` kept → the plain run is no
-                    // longer 1:1 with source, so S5 can't hold for it.
-                    plain_start = None;
-                    pending.push(c as char);
-                    last_plain_char = Some(c);
-                    t += 1;
-                    fresh = true;
-                }
-            }
-            continue;
-        }
-
-        // Swallow bytes `! ( { < ] ) } >`: openers try their construct (M2b: `!` image;
-        // `( { <` land in M3), then ALL fall back to a plain_run that swallows following
-        // non-marker-delim bytes — so a following `!`/special isn't re-dispatched
-        // (`!![a](b)` → plain `![a](b)`; `]]![a](b)` → plain `]]!` + `[a](b)`).
-        let swallow = match &toks[t].kind {
-            Kind::Punct(c) if is_swallow_byte(*c) => Some(*c),
-            _ => None,
-        };
-        if let Some(c) = swallow {
-            let off = toks[t].off;
-            // Opener construct, only at a fresh dispatch point. `!` image, `{` macro, `@`
-            // export-snippet, `(` block-ref, `<` angle. `] ) } >` never open.
-            if fresh {
-                let opened = match c {
-                    b'!' if ctx.images && bb.get(off + 1) == Some(&b'[') => {
-                        try_md_link(s, bb, off + 1, true, &lbp, &mut lbp_cur, &mut crlf, &mut rparen, base)
-                    }
-                    b'{' if ctx.macros
-                        && macro_close_is_viable(bb, off, &mut sq_rbrace, &mut macro_rbrace) =>
-                    {
-                        crate::inline::parse_macro_at(s, off)
-                    }
-                    b'@' if ctx.export_snippets
-                        && export_snippet_close_is_viable(bb, off, &mut sq_at) =>
-                    {
-                        crate::inline::parse_export_snippet_at(s, off)
-                    }
-                    b'(' if ctx.block_refs
-                        && block_ref_close_is_viable(bb, off, &mut sq_rr, &mut block_rparen) =>
-                    {
-                        crate::inline::parse_block_ref_at(s, off)
-                    }
-                    b'<' if ctx.autolinks || ctx.timestamps || ctx.html => {
-                        try_angle(
-                            s,
-                            off,
-                            ctx,
-                            &mut raw_html_scan,
-                            &mut autolink_scan,
-                            &mut timestamp_scan,
-                            &mut email_scan,
-                        )
-                    }
-                    _ => None,
-                };
-                if let Some((mut node, e)) = opened {
-                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                    // span starts at the dispatch byte (`!`/`{`/`(`/`<`), which for `!` is one
-                    // before the `[` that `try_md_link` was handed — the image extent includes it.
-                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
-                    out.push(node);
-                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan);
-                    continue;
-                }
-            }
-            // not consumed (failed opener, or mid-plain-run) → render as plain; now mid-run, so
-            // a following swallow byte won't be re-dispatched.
-            if pending.is_empty() { plain_start = Some(base + off); }
-            if plain_start.is_some() { plain_end = base + off + 1; }
+        }};
+    }
+    macro_rules! push_byte {
+        ($off:expr, $c:expr) => {{
+            let c: u8 = $c;
+            track!($off, 1usize);
             pending.push(c as char);
             last_plain_char = Some(c);
-            fresh = false;
-            t += 1;
-            continue;
-        }
-
-        // Text — at a fresh dispatch point try the no-opener leaves (keyword timestamp then
-        // bare URL), exactly where mldoc's default arm does; otherwise plain.
-        if let Kind::Text(_) = &toks[t].kind {
-            let off = toks[t].off;
+        }};
+    }
+    macro_rules! append_text {
+        ($off:expr, $txt:expr) => {{
+            let txt: &str = $txt;
+            track!($off, txt.len());
+            pending.push_str(txt);
+            last_plain_char_after_append(txt, &mut last_plain_char);
+        }};
+    }
+    macro_rules! resync_here {
+        ($t:ident, $end:expr) => {{
+            $t = resync(
+                s,
+                toks,
+                $t,
+                $end,
+                &mut out,
+                &mut pending,
+                &mut fresh,
+                ctx,
+                &mut plain_start,
+                &mut plain_end,
+                base,
+                &mut bare_url_scan,
+                &mut timestamp_scan,
+            );
+        }};
+    }
+    macro_rules! dispatch_text {
+        ($t:ident, $off:expr, $keyword_ts:expr) => {{
+            let txt = match &toks[$t].kind {
+                Kind::Text(x) => x.as_str(),
+                _ => unreachable!(),
+            };
             if fresh {
-                let leaf = (if ctx.timestamps {
-                    crate::inline::parse_keyword_timestamp_with_scan(s, off, &mut timestamp_scan)
+                let leaf = (if $keyword_ts && ctx.timestamps {
+                    crate::inline::parse_keyword_timestamp_with_scan(s, $off, &mut timestamp_scan)
                 } else {
                     None
                 })
                 .or_else(|| {
                     if ctx.urls {
-                        crate::inline::parse_bare_url_with_scan(s, off, &mut bare_url_scan)
+                        crate::inline::parse_bare_url_with_scan(s, $off, &mut bare_url_scan)
                     } else {
                         None
                     }
                 });
                 if let Some((e, mut node)) = leaf {
                     flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
+                    crate::projection::set_inline_span(
+                        &mut node,
+                        Some(Span(base + $off, base + e)),
+                    );
                     out.push(node);
-                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan);
+                    resync_here!($t, e);
                     continue;
                 }
             }
-            let txt = match &toks[t].kind {
-                Kind::Text(x) => x,
+            append_text!($off, txt);
+            fresh = trailing_dispatch_ws(txt) > 0;
+            $t += 1;
+            continue;
+        }};
+    }
+    macro_rules! dispatch_swallow_byte {
+        ($t:ident, $off:expr, $c:expr) => {{
+            push_byte!($off, $c);
+            fresh = false;
+            $t += 1;
+            continue;
+        }};
+    }
+    macro_rules! dispatch_markdown_delim {
+        ($t:ident, $off:expr) => {{
+            let (ch, len) = match &toks[$t].kind {
+                Kind::Delim { ch, len } => (*ch, *len),
                 _ => unreachable!(),
             };
-            let txt_len = txt.len();
-            if pending.is_empty() { plain_start = Some(base + off); }
-            if plain_start.is_some() { plain_end = base + off + txt_len; }
-            pending.push_str(txt);
-            last_plain_char_after_append(txt, &mut last_plain_char);
-            fresh = trailing_dispatch_ws(txt) > 0;
-            t += 1;
-            continue;
-        }
-
-        // Non-delimiter tokens pass straight through (Text is handled by its own block above).
-        if !matches!(toks[t].kind, Kind::Delim { .. }) {
-            let off = toks[t].off;
-            match &toks[t].kind {
-                Kind::Newline(c) => {
-                    let c = *c;
-                    if ctx.breaks {
-                        // hard break: `\n` (not `\r`) immediately preceded by >=2 spaces/tabs
-                        // in the pending run — the spaces are consumed (mldoc).
-                        let tw = trailing_ws(&pending);
-                        if c == b'\n' && tw >= 2 {
-                            // the consumed spaces leave the plain run; drop them from its end.
-                            if plain_start.is_some() { plain_end -= tw; }
-                            pending.truncate(pending.len() - tw);
-                            flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                            out.push(Inline::HardBreak { span: Some(Span(base + off, base + off + 1)) });
-                        } else {
-                            flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                            out.push(Inline::Break { span: Some(Span(base + off, base + off + 1)) });
-                        }
+            let state_char = if ctx.use_state {
+                pending.as_bytes().last().copied().or(last_plain_char)
+            } else {
+                None
+            };
+            if let Ok(hit) = nested_emphasis_at_md(s, $off, state_char, &mut no_closer, base) {
+                flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                out.push(hit.node);
+                if let Some(closer_t) =
+                    find_delim_token_containing(toks, $t, hit.closer_start, hit.end, ch)
+                {
+                    let closer_end = match toks[closer_t].kind {
+                        Kind::Delim { len, .. } => toks[closer_t].off + len,
+                        _ => unreachable!(),
+                    };
+                    if closer_end > hit.end {
+                        toks[closer_t] = Token {
+                            off: hit.end,
+                            kind: Kind::Delim {
+                                ch,
+                                len: closer_end - hit.end,
+                            },
+                        };
+                        $t = closer_t;
                     } else {
-                        if pending.is_empty() { plain_start = Some(base + off); }
-                        if plain_start.is_some() { plain_end = base + off + 1; }
+                        $t = closer_t + 1;
+                    }
+                } else {
+                    resync_here!($t, hit.end);
+                }
+                fresh = true;
+                continue;
+            }
+            if matches!(ch, b'_' | b'^')
+                && bb.get($off + 1) == Some(&b'{')
+                && script_rbrace_scan.has_before_eol(bb, $off + 2)
+            {
+                if let Some((node, end)) = try_markdown_script_at(s, bb, $off, base) {
+                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                    out.push(node);
+                    resync_here!($t, end);
+                    fresh = true;
+                    continue;
+                }
+            }
+            push_byte!($off, ch);
+            if len > 1 {
+                toks[$t] = Token {
+                    off: $off + 1,
+                    kind: Kind::Delim { ch, len: len - 1 },
+                };
+            } else {
+                $t += 1;
+            }
+            fresh = true;
+            continue;
+        }};
+    }
+
+    let mut t = 0usize;
+    while t < toks.len() {
+        let off = toks[t].off;
+        match md_dispatch_byte(&toks[t].kind) {
+            // inline.ml:1344 — `| '\n' -> breakline`
+            b'\n' | b'\r' => {
+                let c = match &toks[t].kind {
+                    Kind::Newline(c) => *c,
+                    _ => unreachable!(),
+                };
+                if ctx.breaks {
+                    let tw = trailing_ws(&pending);
+                    if c == b'\n' && tw >= 2 {
+                        if plain_start.is_some() {
+                            plain_end -= tw;
+                        }
+                        pending.truncate(pending.len() - tw);
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        out.push(Inline::HardBreak {
+                            span: Some(Span(base + off, base + off + 1)),
+                        });
+                    } else {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        out.push(Inline::Break {
+                            span: Some(Span(base + off, base + off + 1)),
+                        });
+                    }
+                } else {
+                    push_byte!(off, c);
+                }
+                fresh = true;
+                t += 1;
+            }
+            // inline.ml:1345 — `| '#' -> hash_tag config`
+            b'#' => {
+                let mut end = None;
+                if ctx.tags {
+                    let (e, children) = crate::inline::parse_tag_name(
+                        s,
+                        off + 1,
+                        true,
+                        base,
+                        crate::inline::TagReparse::Markdown,
+                        tag_boundary_runs.as_deref(),
+                    );
+                    if e > off + 1 && !children.is_empty() {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        out.push(Inline::Tag {
+                            children,
+                            span: Some(Span(base + off, base + e)),
+                        });
+                        end = Some(e);
+                    }
+                }
+                if let Some(e) = end {
+                    resync_here!(t, e);
+                } else {
+                    push_byte!(off, b'#');
+                    fresh = true;
+                    t += 1;
+                }
+            }
+            // inline.ml:1346-1348 — `| '*' | '~' -> nested_emphasis config`
+            b'*' | b'~' => dispatch_markdown_delim!(t, off),
+            // inline.ml:1349 — `| '_' -> nested_emphasis ~state config <|> subscript config`
+            b'_' => dispatch_markdown_delim!(t, off),
+            // inline.ml:1350 — `| '^' -> nested_emphasis config <|> superscript config`
+            b'^' => dispatch_markdown_delim!(t, off),
+            // inline.ml:1351 — `| '=' -> nested_emphasis config`
+            b'=' => dispatch_markdown_delim!(t, off),
+            // inline.ml:1352 — `| '$' -> latex_fragment config`
+            b'$' => {
+                let mut end = None;
+                if ctx.latex && dollar_scan.has_before_eol(bb, off + 2) {
+                    if let Some((mut node, e)) = crate::inline::parse_latex_dollar_at(s, off) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(
+                            &mut node,
+                            Some(Span(base + off, base + e)),
+                        );
+                        out.push(node);
+                        end = Some(e);
+                    }
+                }
+                if let Some(e) = end {
+                    resync_here!(t, e);
+                } else {
+                    push_byte!(off, b'$');
+                    fresh = true;
+                    t += 1;
+                }
+            }
+            // inline.ml:1353 — `| '\\' -> latex_fragment config <|> entity`
+            b'\\' => match &toks[t].kind {
+                Kind::LatexBs(c) => {
+                    let c = *c;
+                    let mut end = None;
+                    if ctx.latex {
+                        let closer = if c == b'(' {
+                            if off > bs_paren {
+                                bs_paren = first_seq(bb, b'\\', b')', off);
+                            }
+                            bs_paren < bb.len()
+                        } else {
+                            if off > bs_brack {
+                                bs_brack = first_seq(bb, b'\\', b']', off);
+                            }
+                            bs_brack < bb.len()
+                        };
+                        if closer {
+                            if let Some((mut node, e)) =
+                                crate::inline::parse_latex_backslash_at(s, off)
+                            {
+                                flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                                crate::projection::set_inline_span(
+                                    &mut node,
+                                    Some(Span(base + off, base + e)),
+                                );
+                                out.push(node);
+                                end = Some(e);
+                            }
+                        }
+                    }
+                    if let Some(e) = end {
+                        resync_here!(t, e);
+                    } else {
+                        plain_start = None;
                         pending.push(c as char);
                         last_plain_char = Some(c);
+                        fresh = true;
+                        t += 1;
                     }
-                    fresh = true;
                 }
-                // Phase D: a `Leaf` is now only a `\name` Entity (code spans are dispatched lazily
-                // at the `` ` `` Punct branch above). It ends at the next token's byte offset (or EOF).
                 Kind::Leaf(node) => {
                     flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                    let tok_end_val = if t + 1 < toks.len() { toks[t + 1].off } else { s.len() };
+                    let tok_end_val = if t + 1 < toks.len() {
+                        toks[t + 1].off
+                    } else {
+                        s.len()
+                    };
                     let mut node = node.clone();
-                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + tok_end_val)));
+                    crate::projection::set_inline_span(
+                        &mut node,
+                        Some(Span(base + off, base + tok_end_val)),
+                    );
                     out.push(node);
                     fresh = true;
+                    t += 1;
                 }
-                // resolved escape / lone `\` / unknown entity letters — the position right
-                // after is a fresh dispatch point in mldoc.
                 Kind::Escape(x) => {
-                    // the backslash is dropped from the text → S5 can't hold for this run.
                     plain_start = None;
                     pending.push_str(x.as_str());
                     last_plain_char_after_append(x, &mut last_plain_char);
                     fresh = true;
+                    t += 1;
                 }
-                // `$`/`#` (M3 markers) render literally for now; they are marker-delims → fresh.
-                Kind::Punct(c) => {
-                    let c = *c;
-                    if pending.is_empty() { plain_start = Some(base + off); }
-                    if plain_start.is_some() { plain_end = base + off + 1; }
-                    pending.push(c as char);
-                    last_plain_char = Some(c);
-                    fresh = true;
+                _ => unreachable!(),
+            },
+            // inline.ml:1354-1358 — `[` footnote/ref → nested/link → timestamp → cookie → hiccup
+            b'[' => {
+                let mut end = None;
+                if ctx.footnotes && bb.get(off + 1) == Some(&b'^') {
+                    if let Some((e, name)) = crate::inline::parse_footnote_ref(s, off) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        out.push(Inline::Fnref {
+                            name,
+                            span: Some(Span(base + off, base + e)),
+                        });
+                        end = Some(e);
+                    }
                 }
-                // Text/Delim/LatexBs are handled by dedicated blocks above.
-                Kind::Text(_) | Kind::Delim { .. } | Kind::LatexBs(_) => unreachable!(),
-            }
-            t += 1;
-            continue;
-        }
-
-        // Emphasis delimiter run.
-        let (ch, len, off) = match &toks[t].kind {
-            Kind::Delim { ch, len } => (*ch, *len, toks[t].off),
-            _ => unreachable!(),
-        };
-        let state_char = if ctx.use_state {
-            pending.as_bytes().last().copied().or(last_plain_char)
-        } else {
-            None
-        };
-        if let Ok(hit) = nested_emphasis_at_md(s, off, state_char, &mut no_closer, base) {
-            flush(&mut out, &mut pending, &mut plain_start, plain_end);
-            out.push(hit.node);
-            if let Some(closer_t) = find_delim_token_containing(toks, t, hit.closer_start, hit.end, ch) {
-                let closer_end = match toks[closer_t].kind {
-                    Kind::Delim { len, .. } => toks[closer_t].off + len,
-                    _ => unreachable!(),
-                };
-                if closer_end > hit.end {
-                    toks[closer_t] =
-                        Token { off: hit.end, kind: Kind::Delim { ch, len: closer_end - hit.end } };
-                    t = closer_t;
+                if end.is_none() && s[off..].starts_with("[[") {
+                    if nested_close.get(off).is_some_and(|&e| e != usize::MAX) {
+                        if let Some((e, content)) = crate::inline::parse_nested_link(s, off) {
+                            flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                            out.push(Inline::NestedLink {
+                                content,
+                                span: Some(Span(base + off, base + e)),
+                            });
+                            end = Some(e);
+                        }
+                    }
+                    if end.is_none() {
+                        while real_dbl.get(real_dbl_cur).is_some_and(|&p| p < off + 2) {
+                            real_dbl_cur += 1;
+                        }
+                        if let Some(&d) = real_dbl.get(real_dbl_cur) {
+                            if off > crlf {
+                                crlf = first_crlf(bb, off);
+                            }
+                            if d > off + 2 && crlf > d {
+                                if let Some((e, name, full)) = crate::inline::parse_page_ref(s, off)
+                                {
+                                    flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                                    out.push(Inline::Link {
+                                        url: crate::projection::Url::PageRef { v: name },
+                                        label: vec![],
+                                        full,
+                                        image: false,
+                                        metadata: String::new(),
+                                        title: None,
+                                        span: Some(Span(base + off, base + e)),
+                                    });
+                                    end = Some(e);
+                                }
+                            }
+                        }
+                    }
+                }
+                if end.is_none() {
+                    if let Some((mut node, e)) = try_md_link(
+                        s,
+                        bb,
+                        off,
+                        false,
+                        &lbp,
+                        &mut lbp_cur,
+                        &mut crlf,
+                        &mut rparen,
+                        base,
+                    ) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(
+                            &mut node,
+                            Some(Span(base + off, base + e)),
+                        );
+                        out.push(node);
+                        end = Some(e);
+                    }
+                }
+                if end.is_none() && ctx.timestamps {
+                    if let Some((e, mut node)) = crate::inline::parse_bracket_timestamp_with_scan(
+                        s,
+                        off,
+                        &mut timestamp_scan,
+                    ) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(
+                            &mut node,
+                            Some(Span(base + off, base + e)),
+                        );
+                        out.push(node);
+                        end = Some(e);
+                    }
+                }
+                if end.is_none() {
+                    if let Some((e, mut node)) = crate::inline::parse_statistics_cookie(s, off) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(
+                            &mut node,
+                            Some(Span(base + off, base + e)),
+                        );
+                        out.push(node);
+                        end = Some(e);
+                    }
+                }
+                if end.is_none()
+                    && ctx.hiccup
+                    && bb.get(off + 1) == Some(&b':')
+                    && crate::inline::hiccup_head_ok(s, off)
+                {
+                    if let Some(e) = hiccup_close.get(off).copied().filter(|&e| e != usize::MAX) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        out.push(Inline::Hiccup {
+                            v: s[off..e].to_string(),
+                            span: Some(Span(base + off, base + e)),
+                        });
+                        end = Some(e);
+                    }
+                }
+                if let Some(e) = end {
+                    resync_here!(t, e);
                 } else {
-                    t = closer_t + 1;
+                    push_byte!(off, b'[');
+                    fresh = true;
+                    t += 1;
                 }
-            } else {
-                t = resync(s, toks, t, hit.end, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan);
             }
-            fresh = true;
-            continue;
-        }
-        if matches!(ch, b'_' | b'^') {
-            if bb.get(off + 1) == Some(&b'{')
-                && script_rbrace_scan.has_before_eol(bb, off + 2)
-            {
-                if let Some((node, end)) = try_markdown_script_at(s, bb, off, base) {
+            // inline.ml:1359 — `| '<' -> quick_link <|> timestamp <|> inline_html <|> email`
+            b'<' => {
+                if fresh && (ctx.autolinks || ctx.timestamps || ctx.html) {
+                    if let Some((mut node, e)) = try_angle(
+                        s,
+                        off,
+                        ctx,
+                        &mut raw_html_scan,
+                        &mut autolink_scan,
+                        &mut timestamp_scan,
+                        &mut email_scan,
+                    ) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(
+                            &mut node,
+                            Some(Span(base + off, base + e)),
+                        );
+                        out.push(node);
+                        resync_here!(t, e);
+                        continue;
+                    }
+                }
+                dispatch_swallow_byte!(t, off, b'<');
+            }
+            // inline.ml:1360 — `| '{' -> macro config`
+            b'{' => {
+                if fresh
+                    && ctx.macros
+                    && macro_close_is_viable(bb, off, &mut sq_rbrace, &mut macro_rbrace)
+                {
+                    if let Some((mut node, e)) = crate::inline::parse_macro_at(s, off) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(
+                            &mut node,
+                            Some(Span(base + off, base + e)),
+                        );
+                        out.push(node);
+                        resync_here!(t, e);
+                        continue;
+                    }
+                }
+                dispatch_swallow_byte!(t, off, b'{');
+            }
+            // inline.ml:1361 — `| '!' -> markdown_image config`
+            b'!' => {
+                if fresh && ctx.images && bb.get(off + 1) == Some(&b'[') {
+                    if let Some((mut node, e)) = try_md_link(
+                        s,
+                        bb,
+                        off + 1,
+                        true,
+                        &lbp,
+                        &mut lbp_cur,
+                        &mut crlf,
+                        &mut rparen,
+                        base,
+                    ) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(
+                            &mut node,
+                            Some(Span(base + off, base + e)),
+                        );
+                        out.push(node);
+                        resync_here!(t, e);
+                        continue;
+                    }
+                }
+                dispatch_swallow_byte!(t, off, b'!');
+            }
+            // inline.ml:1362 — `| '@' -> export_snippet`
+            b'@' => {
+                if fresh
+                    && ctx.export_snippets
+                    && export_snippet_close_is_viable(bb, off, &mut sq_at)
+                {
+                    if let Some((mut node, e)) = crate::inline::parse_export_snippet_at(s, off) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(
+                            &mut node,
+                            Some(Span(base + off, base + e)),
+                        );
+                        out.push(node);
+                        resync_here!(t, e);
+                        continue;
+                    }
+                }
+                dispatch_swallow_byte!(t, off, b'@');
+            }
+            // inline.ml:1363 — `| '`' -> code config`
+            b'`' => {
+                if let Some((node, e)) = try_code_span(s, off, base) {
                     flush(&mut out, &mut pending, &mut plain_start, plain_end);
                     out.push(node);
-                    t = resync(s, toks, t, end, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan, &mut timestamp_scan);
+                    resync_here!(t, e);
+                } else {
+                    push_byte!(off, b'`');
                     fresh = true;
-                    continue;
+                    t += 1;
                 }
             }
+            // inline.ml:1364-1370 — `| 'S' | 'C' | 'D' | 's' | 'c' | 'd' -> timestamp`
+            b'S' | b'C' | b'D' | b's' | b'c' | b'd' => dispatch_text!(t, off, true),
+            // inline.ml:1371 — `| '(' -> block_reference config`
+            b'(' => {
+                if fresh
+                    && ctx.block_refs
+                    && block_ref_close_is_viable(bb, off, &mut sq_rr, &mut block_rparen)
+                {
+                    if let Some((mut node, e)) = crate::inline::parse_block_ref_at(s, off) {
+                        flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                        crate::projection::set_inline_span(
+                            &mut node,
+                            Some(Span(base + off, base + e)),
+                        );
+                        out.push(node);
+                        resync_here!(t, e);
+                        continue;
+                    }
+                }
+                dispatch_swallow_byte!(t, off, b'(');
+            }
+            // inline.ml:1372 — `| ' ' -> Markdown_line_breaks.parse >>| Hard_Break_Line`
+            b' ' | b'\t' | 0x0c => dispatch_text!(t, off, false),
+            // inline.ml:1373 — `| _ -> link_inline`, then `p <|> plain` at line 1412.
+            _ => {
+                if let Kind::Text(_) = &toks[t].kind {
+                    dispatch_text!(t, off, false);
+                }
+                let c = match &toks[t].kind {
+                    Kind::Punct(c) => *c,
+                    _ => unreachable!(),
+                };
+                if crate::inline_driver::markdown_swallow_byte(c) {
+                    dispatch_swallow_byte!(t, off, c);
+                }
+                push_byte!(off, c);
+                fresh = crate::inline_driver::markdown_plain_delimiter(c);
+                t += 1;
+            }
         }
-        if pending.is_empty() { plain_start = Some(base + off); }
-        if plain_start.is_some() { plain_end = base + off + 1; }
-        pending.push(ch as char);
-        last_plain_char = Some(ch);
-        if len > 1 {
-            toks[t] = Token { off: off + 1, kind: Kind::Delim { ch, len: len - 1 } };
-        } else {
-            t += 1;
-        }
-        fresh = true;
     }
     flush(&mut out, &mut pending, &mut plain_start, plain_end);
     out
@@ -1491,7 +1687,10 @@ fn flush(
 ) {
     if !pending.is_empty() {
         let span = plain_start.take().map(|s| Span(s, plain_end));
-        out.push(Inline::Plain { text: std::mem::take(pending), span });
+        out.push(Inline::Plain {
+            text: std::mem::take(pending),
+            span,
+        });
     } else {
         plain_start.take();
     }
@@ -1499,13 +1698,28 @@ fn flush(
 
 /// Count of trailing space/tab bytes in `s` (for hard-break detection).
 fn trailing_ws(s: &str) -> usize {
-    s.bytes().rev().take_while(|&b| b == b' ' || b == b'\t').count()
+    s.bytes()
+        .rev()
+        .take_while(|&b| b == b' ' || b == b'\t')
+        .count()
 }
 
 /// Count of trailing mldoc whitespace bytes that make the next byte a fresh
 /// dispatch point. Unlike hard breaks, this includes form feed.
 fn trailing_dispatch_ws(s: &str) -> usize {
-    s.bytes().rev().take_while(|&b| matches!(b, b' ' | b'\t' | 0x0c)).count()
+    s.bytes()
+        .rev()
+        .take_while(|&b| matches!(b, b' ' | b'\t' | 0x0c))
+        .count()
+}
+
+fn md_dispatch_byte(kind: &Kind) -> u8 {
+    match kind {
+        Kind::Text(s) => s.as_bytes().first().copied().unwrap_or(0),
+        Kind::Newline(c) => *c,
+        Kind::Leaf(_) | Kind::Escape(_) | Kind::LatexBs(_) => b'\\',
+        Kind::Delim { ch, .. } | Kind::Punct(ch) => *ch,
+    }
 }
 
 /// First `\n`/`\r` byte at/after `from`, or `bb.len()` (page-ref eol boundary).
@@ -1556,7 +1770,13 @@ fn resync(
     timestamp_scan: &mut crate::inline::TimestampCloseScan,
 ) -> usize {
     let n = s.len();
-    while t < toks.len() && (if t + 1 < toks.len() { toks[t + 1].off } else { n }) <= end {
+    while t < toks.len()
+        && (if t + 1 < toks.len() {
+            toks[t + 1].off
+        } else {
+            n
+        }) <= end
+    {
         t += 1;
     }
     if t < toks.len() && toks[t].off < end {
@@ -1564,7 +1784,11 @@ fn resync(
         // whose raw end falls mid-Text or mid-Escape — escape is CONSTRUCT-LOCAL, so the
         // token boundaries needn't align).
         let bb = s.as_bytes();
-        let te = if t + 1 < toks.len() { toks[t + 1].off } else { n };
+        let te = if t + 1 < toks.len() {
+            toks[t + 1].off
+        } else {
+            n
+        };
         // FAST PATH — reuse the outer tail (see the fn doc). Excludes only `Leaf` (a `\name`
         // Entity, the sole remaining pre-built multi-byte token — code spans are dispatch-time
         // since Phase D, so a freed backtick is a one-byte `Punct` that re-dispatches + pairs
@@ -1585,7 +1809,8 @@ fn resync(
         let recurse = matches!(toks[t].kind, Kind::Leaf(_))
             || bb.get(end).is_some_and(|&c| is_special_lead(c))
             || (ctx.timestamps
-                && crate::inline::parse_keyword_timestamp_with_scan(s, end, timestamp_scan).is_some())
+                && crate::inline::parse_keyword_timestamp_with_scan(s, end, timestamp_scan)
+                    .is_some())
             || (ctx.urls
                 && crate::inline::parse_bare_url_with_scan(s, end, bare_url_scan).is_some());
         if recurse {
@@ -1614,16 +1839,21 @@ fn resync(
 fn is_special_lead(c: u8) -> bool {
     matches!(
         c,
-        b'#' | b'$' | b'[' | b'(' | b'{' | b'<' | b'!' | b'*' | b'_' | b'~' | b'^' | b'=' | b'`'
-            | b'\\' | b'@'
+        b'#' | b'$'
+            | b'['
+            | b'('
+            | b'{'
+            | b'<'
+            | b'!'
+            | b'*'
+            | b'_'
+            | b'~'
+            | b'^'
+            | b'='
+            | b'`'
+            | b'\\'
+            | b'@'
     )
-}
-
-/// Is `c` a SWALLOW byte — `mldoc` dispatches it but a failure runs `plain_run` (rather than
-/// emitting a single literal char like a marker-delim). Openers `! ( { < @` and the closers
-/// `] ) } >` (which never open an inline construct at top level).
-fn is_swallow_byte(c: u8) -> bool {
-    matches!(c, b'!' | b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b']' | b'@')
 }
 
 /// `<…>` angle dispatch (mldoc order): quick_link → timestamp → inline_html → email.
@@ -1644,7 +1874,9 @@ fn try_angle(
         }
     }
     if ctx.timestamps {
-        if let Some((e, node)) = crate::inline::parse_angle_timestamp_with_scan(s, at, timestamp_scan) {
+        if let Some((e, node)) =
+            crate::inline::parse_angle_timestamp_with_scan(s, at, timestamp_scan)
+        {
             return Some((node, e));
         }
     }
@@ -1652,7 +1884,13 @@ fn try_angle(
         if let Some(extent) =
             crate::block_common::parse_raw_html_at_cached(s, at, s.len(), Some(raw_html_scan))
         {
-            return Some((Inline::InlineHtml { text: s[at..extent.end].to_string(), span: None }, extent.end));
+            return Some((
+                Inline::InlineHtml {
+                    text: s[at..extent.end].to_string(),
+                    span: None,
+                },
+                extent.end,
+            ));
         }
     }
     if ctx.autolinks {

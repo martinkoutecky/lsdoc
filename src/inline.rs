@@ -1746,15 +1746,6 @@ pub(crate) fn find_ci(s: &str, from: usize, needle: &str) -> Option<usize> {
 
 // ---- bare urls ------------------------------------------------------------
 
-/// Bare URL `proto://...` (mldoc link_inline). proto = letters/digits. The path is
-/// read until whitespace / `< > { } ( ) [ ]`-imbalance, with balanced parens/brackets
-/// and `,;.!?` allowed only when not trailing before a delimiter.
-#[allow(dead_code)]
-pub(crate) fn parse_bare_url(s: &str, at: usize) -> Option<(usize, Inline)> {
-    let mut scan = BareUrlScan::new();
-    parse_bare_url_with_scan(s, at, &mut scan)
-}
-
 pub(crate) fn parse_bare_url_with_scan(
     s: &str,
     at: usize,
@@ -2322,14 +2313,6 @@ pub(crate) fn parse_export_snippet_at(s: &str, at: usize) -> Option<(Inline, usi
 
 // ---- timestamps -----------------------------------------------------------
 
-/// `<...>` timestamp dispatch. Mirrors mldoc `timestamp = range <|> general_timestamp`
-/// (`lib/syntax/inline.ml:1111-1136`), with a local scan for legacy direct callers.
-#[allow(dead_code)]
-pub(crate) fn parse_angle_timestamp(s: &str, at: usize) -> Option<(usize, Inline)> {
-    let mut scan = TimestampCloseScan::new();
-    parse_angle_timestamp_with_scan(s, at, &mut scan)
-}
-
 pub(crate) fn parse_angle_timestamp_with_scan(
     s: &str,
     at: usize,
@@ -2339,12 +2322,6 @@ pub(crate) fn parse_angle_timestamp_with_scan(
         return None;
     }
     parse_timestamp_at_with_scan(s, at, scan)
-}
-
-#[allow(dead_code)]
-pub(crate) fn parse_keyword_timestamp(s: &str, at: usize) -> Option<(usize, Inline)> {
-    let mut scan = TimestampCloseScan::new();
-    parse_keyword_timestamp_with_scan(s, at, &mut scan)
 }
 
 /// Text-arm timestamp dispatch for S/C/D/s/c/d. This must try `range` before

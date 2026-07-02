@@ -22,6 +22,7 @@
 pub(crate) mod block_common;
 pub(crate) mod entities;
 pub(crate) mod inline;
+pub(crate) mod inline_driver;
 pub(crate) mod lexer;
 pub(crate) mod metrics;
 /// Debug-only complexity probe: read+reset the "scan work" counter (bytes examined by
