@@ -135,6 +135,45 @@ fn raw_html_pageref_lt(n: usize) -> String {
 fn raw_html_org_emph_lt(n: usize) -> String {
     "/a/<".repeat(n / 4)
 }
+fn email_domain_interleave(n: usize) -> String {
+    "*a*<x@".repeat(n / 6)
+}
+fn org_email_domain_interleave(n: usize) -> String {
+    "/a/<x@".repeat(n / 6)
+}
+fn timestamp_angle_interleave(n: usize) -> String {
+    "*a*<20".repeat(n / 6)
+}
+fn org_timestamp_angle_interleave(n: usize) -> String {
+    "/a/<20".repeat(n / 6)
+}
+fn autolink_interleave(n: usize) -> String {
+    "*a*<a:".repeat(n / 6)
+}
+fn macro_interleave(n: usize) -> String {
+    "*a*{{".repeat(n / 5)
+}
+fn org_macro_interleave(n: usize) -> String {
+    "/a/{{".repeat(n / 5)
+}
+fn blockref_interleave(n: usize) -> String {
+    "*a*((".repeat(n / 5)
+}
+fn org_blockref_interleave(n: usize) -> String {
+    "/a/((".repeat(n / 5)
+}
+fn raw_html_unbalanced_interleave(n: usize) -> String {
+    "*a*<div><div>x</div>".repeat(n / 20)
+}
+fn tag_hash_run(n: usize) -> String {
+    "#".repeat(n)
+}
+fn tag_word_interleave(n: usize) -> String {
+    "x #a".repeat(n / 4)
+}
+fn bare_url_interleave(n: usize) -> String {
+    "*a*httpx".repeat(n / 8)
+}
 
 fn big_stack(f: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()
@@ -171,6 +210,19 @@ fn complexity_gate() {
         assert_linear("raw_html_pageref_lt", raw_html_pageref_lt, 6000, "md");
         assert_linear("raw_html_org_emph_lt", raw_html_org_emph_lt, 6000, "org");
         assert_linear("raw_html_org_pageref_lt", raw_html_pageref_lt, 6000, "org");
+        assert_linear("email_domain_interleave", email_domain_interleave, 6000, "md");
+        assert_linear("org_email_domain_interleave", org_email_domain_interleave, 6000, "org");
+        assert_linear("timestamp_angle_interleave", timestamp_angle_interleave, 6000, "md");
+        assert_linear("org_timestamp_angle_interleave", org_timestamp_angle_interleave, 6000, "org");
+        assert_linear("autolink_interleave", autolink_interleave, 6000, "md");
+        assert_linear("macro_interleave", macro_interleave, 6000, "md");
+        assert_linear("org_macro_interleave", org_macro_interleave, 6000, "org");
+        assert_linear("blockref_interleave", blockref_interleave, 6000, "md");
+        assert_linear("org_blockref_interleave", org_blockref_interleave, 6000, "org");
+        assert_linear("raw_html_unbalanced_interleave", raw_html_unbalanced_interleave, 6000, "md");
+        assert_linear("tag_hash_run", tag_hash_run, 6000, "md");
+        assert_linear("tag_word_interleave", tag_word_interleave, 6000, "md");
+        assert_linear("bare_url_interleave", bare_url_interleave, 6000, "md");
         // A (container-prefix consume): both formats now dispatch a `>`-line's content ONCE at the
         // final depth (no per-re-dispatch `property` re-scan — 1a) and close many frames at one
         // interior breaker in O(closed) (no per-frame `gt_cont_view` re-peel — 1b).

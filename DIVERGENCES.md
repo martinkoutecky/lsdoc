@@ -22,6 +22,10 @@ the fuzz floor** (more mldoc parity) — how each fix was verified.
 | D13 | md link-label doesn't reparse entities/latex (`[\alpha](u)`, `[$x$](u)`) | OPEN | — |
 | D14 | timestamp token order-permissive (`<… +1d 12:00>` accepts both vs mldoc date-only) | OPEN | — |
 | D15 | md drawer name rejects punctuation (`:LOG@BOOK:` → paragraph vs mldoc drawer) | OPEN | — |
+| D16 | email requires closing `>` (`<a@b.co` → plain; mldoc → email, `<`/`>` both optional per `syntax/email_address.ml:33-34`; ditto `<a@b co>` → email `a@b` + plain) | OPEN | — |
+
+D16 surfaced during Phase B verification (pre-existing — fuzz floors held exactly across the perf-only
+change); fix belongs to the `<`-family construct port (inline-restructure-SPEC Phase C4).
 
 D13–D15 were surfaced by the **lsdoc-vs-mldoc structural audit** (`subagent-tasks/notes/lsdoc-vs-mldoc-audit.md`,
 Jul 1) — behavioral drifts confirmed vs the isolated oracle (D13/D14 verified; D15 codex-probed). That

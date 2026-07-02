@@ -2229,9 +2229,15 @@ pub(crate) fn parse_org_autolink(s: &str, at: usize) -> Option<(usize, Inline)> 
         j += 2;
     }
     let link_start = j;
+    let mut scanned = 0usize;
     while j < n && !is_ws_or_nl(b[j]) && b[j] != b'>' {
+        scanned += 1;
         j += char_len(b[j]);
     }
+    if j < n {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
     if j >= n || b[j] != b'>' || j == link_start {
         return None;
     }

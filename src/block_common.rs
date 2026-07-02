@@ -162,6 +162,7 @@ pub(crate) fn find_displayed_math_close(input: &str, opener: usize, body_end: us
 pub(crate) struct RawHtmlScan {
     no_tag_end_until: Vec<usize>,
     no_special_until: [usize; 4],
+    tag_indexes: Vec<RawHtmlTagCache>,
 }
 
 impl RawHtmlScan {
@@ -169,6 +170,195 @@ impl RawHtmlScan {
         Self {
             no_tag_end_until: vec![0; crate::inline::HICCUP_TAGS.len()],
             no_special_until: [0; 4],
+            tag_indexes: Vec::new(),
+        }
+    }
+
+    fn tag_index<'a>(&'a mut self, input: &str, tag: &str, body_end: usize) -> &'a RawHtmlTagIndex {
+        if let Some(pos) = self
+            .tag_indexes
+            .iter()
+            .position(|idx| idx.body_end == body_end && idx.tag == tag)
+        {
+            return &self.tag_indexes[pos].index;
+        }
+        self.tag_indexes.push(RawHtmlTagCache {
+            tag: tag.to_string(),
+            body_end,
+            index: RawHtmlTagIndex::build(input.as_bytes(), tag, body_end),
+        });
+        &self.tag_indexes.last().unwrap().index
+    }
+}
+
+struct RawHtmlTagCache {
+    tag: String,
+    body_end: usize,
+    index: RawHtmlTagIndex,
+}
+
+struct RawHtmlTagIndex {
+    close_len: usize,
+    event_pos: Vec<usize>,
+    event_prefix_after: Vec<isize>,
+    close_pos: Vec<usize>,
+    close_min_tree: Vec<isize>,
+    close_tree_base: usize,
+    self_close_pos: Vec<usize>,
+}
+
+impl RawHtmlTagIndex {
+    fn build(bytes: &[u8], tag: &str, body_end: usize) -> Self {
+        let close_tag = format!("</{}>", tag);
+        let open_tag = format!("<{}>", tag);
+        let open_attr = format!("<{} ", tag);
+        let close = close_tag.as_bytes();
+        let open_plain = open_tag.as_bytes();
+        let open_with_attrs = open_attr.as_bytes();
+
+        let mut events: Vec<(usize, isize)> = Vec::new();
+        let mut q = 0usize;
+        let mut open_scanned = 0usize;
+        while q < body_end {
+            open_scanned += 1;
+            if starts_with_at(bytes, q, open_plain, body_end) {
+                events.push((q, 1));
+                q += open_plain.len();
+            } else if starts_with_at(bytes, q, open_with_attrs, body_end) {
+                events.push((q, 1));
+                q += open_with_attrs.len();
+            } else {
+                q += 1;
+            }
+        }
+        crate::metrics::scan_work(open_scanned);
+
+        let mut close_pos = Vec::new();
+        let mut p = 0usize;
+        let mut close_scanned = 0usize;
+        while p + close.len() <= body_end {
+            close_scanned += 1;
+            if starts_with_ci_at(bytes, p, close, body_end) {
+                close_pos.push(p);
+                events.push((p, -1));
+                p += close.len();
+            } else {
+                p += 1;
+            }
+        }
+        crate::metrics::scan_work(close_scanned);
+
+        let mut self_close_pos = Vec::new();
+        let mut r = 0usize;
+        let mut self_scanned = 0usize;
+        while r + 1 < body_end {
+            self_scanned += 1;
+            if starts_with_at(bytes, r, b"/>", body_end) {
+                self_close_pos.push(r);
+                r += 2;
+            } else {
+                r += 1;
+            }
+        }
+        crate::metrics::scan_work(self_scanned);
+
+        events.sort_unstable_by_key(|&(pos, _)| pos);
+        let mut event_pos = Vec::with_capacity(events.len());
+        let mut event_prefix_after = Vec::with_capacity(events.len());
+        let mut close_prefix_after = Vec::with_capacity(close_pos.len());
+        let mut prefix = 0isize;
+        for (pos, delta) in events {
+            prefix += delta;
+            event_pos.push(pos);
+            event_prefix_after.push(prefix);
+            if delta < 0 {
+                close_prefix_after.push(prefix);
+            }
+        }
+
+        let mut close_tree_base = 1usize;
+        while close_tree_base < close_prefix_after.len().max(1) {
+            close_tree_base *= 2;
+        }
+        let mut close_min_tree = vec![isize::MAX; close_tree_base * 2];
+        for (i, &v) in close_prefix_after.iter().enumerate() {
+            close_min_tree[close_tree_base + i] = v;
+        }
+        for i in (1..close_tree_base).rev() {
+            close_min_tree[i] = close_min_tree[i * 2].min(close_min_tree[i * 2 + 1]);
+        }
+
+        Self {
+            close_len: close.len(),
+            event_pos,
+            event_prefix_after,
+            close_pos,
+            close_min_tree,
+            close_tree_base,
+            self_close_pos,
+        }
+    }
+
+    fn prefix_before(&self, pos: usize) -> isize {
+        let idx = self.event_pos.partition_point(|&p| p < pos);
+        if idx == 0 {
+            0
+        } else {
+            self.event_prefix_after[idx - 1]
+        }
+    }
+
+    fn first_close_below(&self, start: usize, threshold: isize) -> Option<usize> {
+        if self.close_pos.is_empty() {
+            return None;
+        }
+        let start_idx = self.close_pos.partition_point(|&p| p < start);
+        if start_idx >= self.close_pos.len() {
+            return None;
+        }
+        self.first_close_below_node(1, 0, self.close_tree_base, start_idx, threshold)
+    }
+
+    fn first_close_below_node(
+        &self,
+        node: usize,
+        lo: usize,
+        hi: usize,
+        start_idx: usize,
+        threshold: isize,
+    ) -> Option<usize> {
+        if hi <= start_idx || self.close_min_tree[node] >= threshold {
+            return None;
+        }
+        if hi - lo == 1 {
+            return (lo < self.close_pos.len()).then_some(lo);
+        }
+        let mid = (lo + hi) / 2;
+        self.first_close_below_node(node * 2, lo, mid, start_idx, threshold)
+            .or_else(|| self.first_close_below_node(node * 2 + 1, mid, hi, start_idx, threshold))
+    }
+
+    fn match_from(&self, opener: usize, after_tag: usize, tag_index: usize) -> RawHtmlAttempt {
+        let threshold = self.prefix_before(after_tag);
+        if let Some(close_idx) = self.first_close_below(after_tag, threshold) {
+            return RawHtmlAttempt::Match(RawHtmlExtent {
+                start: opener,
+                end: self.close_pos[close_idx] + self.close_len,
+            });
+        }
+        if let Some(&self_close) = self
+            .self_close_pos
+            .get(self.self_close_pos.partition_point(|&p| p < after_tag))
+        {
+            return RawHtmlAttempt::Match(RawHtmlExtent {
+                start: opener,
+                end: self_close + 2,
+            });
+        }
+        if self.close_pos.partition_point(|&p| p < after_tag) < self.close_pos.len() {
+            RawHtmlAttempt::Miss(RawHtmlMiss::UnbalancedTag)
+        } else {
+            RawHtmlAttempt::Miss(RawHtmlMiss::MissingTagCloser { index: tag_index })
         }
     }
 }
@@ -337,7 +527,12 @@ fn count_tag_opens_in_chunk(
     (count, scanned)
 }
 
-fn parse_raw_html_impl(input: &str, opener: usize, body_end: usize) -> RawHtmlAttempt {
+fn parse_raw_html_impl(
+    input: &str,
+    opener: usize,
+    body_end: usize,
+    state: Option<&mut RawHtmlScan>,
+) -> RawHtmlAttempt {
     let Some(head) = raw_html_head_at(input, opener, body_end, true) else {
         return RawHtmlAttempt::Miss(RawHtmlMiss::NoGrammar);
     };
@@ -354,6 +549,9 @@ fn parse_raw_html_impl(input: &str, opener: usize, body_end: usize) -> RawHtmlAt
         }
         RawHtmlHead::Tag { tag, index } => {
             let after_tag = opener + 1 + tag.len();
+            if let Some(state) = state {
+                return state.tag_index(input, tag, body_end).match_from(opener, after_tag, index);
+            }
             let bytes = input.as_bytes();
             let close_tag = format!("</{}>", tag);
             let open_tag = format!("<{}>", tag);
@@ -407,7 +605,7 @@ pub(crate) fn parse_raw_html_at(input: &str, opener: usize, body_end: usize) -> 
     if opener > body_end || body_end > input.len() {
         return None;
     }
-    match parse_raw_html_impl(input, opener, body_end) {
+    match parse_raw_html_impl(input, opener, body_end, None) {
         RawHtmlAttempt::Match(extent) => Some(extent),
         RawHtmlAttempt::Miss(_) => None,
     }
@@ -422,24 +620,25 @@ pub(crate) fn parse_raw_html_at_cached(
     if opener > body_end || body_end > input.len() {
         return None;
     }
+    let mut state = state;
     let head = raw_html_head_at(input, opener, body_end, true)?;
-    if let Some(s) = state.as_ref() {
+    if let Some(s) = state.as_deref() {
         match head {
             RawHtmlHead::Tag { index, .. } if s.no_tag_end_until[index] >= body_end => return None,
             RawHtmlHead::Special { miss, .. } if s.no_special_until[miss] >= body_end => return None,
             _ => {}
         }
     }
-    match parse_raw_html_impl(input, opener, body_end) {
+    match parse_raw_html_impl(input, opener, body_end, state.as_deref_mut()) {
         RawHtmlAttempt::Match(extent) => Some(extent),
         RawHtmlAttempt::Miss(RawHtmlMiss::MissingTagCloser { index }) => {
-            if let Some(s) = state {
+            if let Some(s) = state.as_deref_mut() {
                 s.no_tag_end_until[index] = body_end;
             }
             None
         }
         RawHtmlAttempt::Miss(RawHtmlMiss::MissingSpecialCloser { miss }) => {
-            if let Some(s) = state {
+            if let Some(s) = state.as_deref_mut() {
                 s.no_special_until[miss] = body_end;
             }
             None

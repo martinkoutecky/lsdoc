@@ -104,6 +104,143 @@ pub(crate) fn find_sub_line(b: &[u8], from: usize, needle: &[u8]) -> Option<usiz
     None
 }
 
+#[derive(Default)]
+pub(crate) struct AngleBoundaryScan {
+    next: usize,
+    initialized: bool,
+}
+
+impl AngleBoundaryScan {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    fn first_from(&mut self, b: &[u8], from: usize) -> usize {
+        if !self.initialized || self.next < from {
+            let mut p = from;
+            let mut scanned = 0usize;
+            while p < b.len() && b[p] != b'>' && !is_ws_or_nl(b[p]) {
+                scanned += 1;
+                p += char_len(b[p]);
+            }
+            if p < b.len() {
+                scanned += 1;
+            }
+            crate::metrics::scan_work(scanned);
+            self.next = p;
+            self.initialized = true;
+        }
+        self.next
+    }
+}
+
+pub(crate) struct AutolinkScan {
+    boundary: AngleBoundaryScan,
+}
+
+impl AutolinkScan {
+    pub(crate) fn new() -> Self {
+        Self {
+            boundary: AngleBoundaryScan::new(),
+        }
+    }
+}
+
+pub(crate) struct EmailAutolinkScan {
+    no_at_from: usize,
+    domain_boundary: AngleBoundaryScan,
+}
+
+impl EmailAutolinkScan {
+    pub(crate) fn new() -> Self {
+        Self {
+            no_at_from: usize::MAX,
+            domain_boundary: AngleBoundaryScan::new(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct TimestampCloseScan {
+    next: usize,
+    initialized: bool,
+    no_close_from: usize,
+}
+
+impl TimestampCloseScan {
+    pub(crate) fn new() -> Self {
+        Self {
+            next: 0,
+            initialized: false,
+            no_close_from: usize::MAX,
+        }
+    }
+
+    fn first_close_or_lf(&mut self, b: &[u8], from: usize, close: u8) -> usize {
+        if from >= self.no_close_from {
+            return b.len();
+        }
+        if !self.initialized || self.next < from {
+            let mut p = from;
+            let mut scanned = 0usize;
+            while p < b.len() && b[p] != close && b[p] != b'\n' {
+                scanned += 1;
+                p += char_len(b[p]);
+            }
+            if p < b.len() {
+                scanned += 1;
+            } else {
+                self.no_close_from = self.no_close_from.min(from);
+            }
+            crate::metrics::scan_work(scanned);
+            self.next = p;
+            self.initialized = true;
+        }
+        self.next
+    }
+}
+
+pub(crate) struct BareUrlScan {
+    no_scheme_from: usize,
+}
+
+impl BareUrlScan {
+    pub(crate) fn new() -> Self {
+        Self {
+            no_scheme_from: usize::MAX,
+        }
+    }
+}
+
+/// Boundary-run map for hash tags: for every byte in a run of tag delimiters, `true`
+/// means the run suffix is followed by whitespace/eol/EOF and therefore terminates the
+/// tag. The resolver builds this once per inline string so `#`×n does not re-scan the
+/// same delimiter suffix at every failed tag dispatch.
+pub(crate) fn build_tag_boundary_runs(s: &str) -> Vec<bool> {
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut out = vec![false; n];
+    let mut i = 0usize;
+    while i < n {
+        if !TAG_DELIMS.contains(&b[i]) {
+            i += char_len(b[i]);
+            continue;
+        }
+        let start = i;
+        while i < n && TAG_DELIMS.contains(&b[i]) {
+            i += 1;
+        }
+        let boundary = i >= n || is_ws_or_nl(b[i]);
+        if boundary {
+            for slot in &mut out[start..i] {
+                *slot = true;
+            }
+        }
+    }
+    crate::metrics::scan_work(n);
+    out
+}
+
 // ---- page ref / nested link -----------------------------------------------
 
 /// `[[ name ]]` where name is non-empty, contains no newline, and ends at the first
@@ -255,6 +392,7 @@ pub(crate) fn parse_tag_name(
     start: usize,
     unescape_plain: bool,
     base: usize,
+    boundary_runs: Option<&[bool]>,
 ) -> (usize, Vec<Inline>) {
     let b = s.as_bytes();
     let n = b.len();
@@ -339,11 +477,20 @@ pub(crate) fn parse_tag_name(
             continue;
         }
         // (c1) lookahead: a run of tag delims followed by space/eol/EOF -> stop.
-        let mut k = i;
-        while k < n && TAG_DELIMS.contains(&b[k]) {
-            k += 1;
-        }
-        if k > i && (k >= n || is_ws_or_nl(b[k])) {
+        let boundary_run = boundary_runs
+            .and_then(|runs| runs.get(i))
+            .copied()
+            .unwrap_or_else(|| {
+                let mut k = i;
+                let mut scanned = 0usize;
+                while k < n && TAG_DELIMS.contains(&b[k]) {
+                    scanned += 1;
+                    k += 1;
+                }
+                crate::metrics::scan_work(scanned);
+                k > i && (k >= n || is_ws_or_nl(b[k]))
+            });
+        if boundary_run {
             break;
         }
         // (c2) consume one char if it isn't a hard tag-stop char.
@@ -1002,9 +1149,15 @@ pub(crate) fn parse_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
     // protocol = letters/digits, then ':'
     let mut j = at + 1;
     let p0 = j;
+    let mut proto_scanned = 0usize;
     while j < n && b[j].is_ascii_alphanumeric() {
+        proto_scanned += 1;
         j += 1;
     }
+    if j < n {
+        proto_scanned += 1;
+    }
+    crate::metrics::scan_work(proto_scanned);
     if j == p0 || j >= n || b[j] != b':' {
         return None;
     }
@@ -1016,9 +1169,15 @@ pub(crate) fn parse_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
         j += 2;
     }
     let link_start = j;
+    let mut scanned = 0usize;
     while j < n && !is_ws_or_nl(b[j]) && b[j] != b'>' {
+        scanned += 1;
         j += char_len(b[j]);
     }
+    if j < n {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
     if j >= n || b[j] != b'>' || j == link_start {
         return None;
     }
@@ -1040,7 +1199,41 @@ pub(crate) fn parse_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
     Some((j + 1, node))
 }
 
+/// Dispatch-owner guard for `<scheme:...>`: the unbounded part of autolink parsing is
+/// the search for the first `>`/whitespace boundary after the scheme. A single monotone
+/// boundary cursor owns that scan; EOF is a suffix-absence miss and whitespace-before-`>`
+/// is an invalidating token until the dispatch cursor passes it.
+pub(crate) fn autolink_has_closing_boundary(s: &str, at: usize, scan: &mut AutolinkScan) -> bool {
+    let b = s.as_bytes();
+    let n = b.len();
+    if b.get(at) != Some(&b'<') {
+        return false;
+    }
+    let mut j = at + 1;
+    let p0 = j;
+    let mut proto_scanned = 0usize;
+    while j < n && b[j].is_ascii_alphanumeric() {
+        proto_scanned += 1;
+        j += 1;
+    }
+    if j < n {
+        proto_scanned += 1;
+    }
+    crate::metrics::scan_work(proto_scanned);
+    if j == p0 || j >= n || b[j] != b':' {
+        return false;
+    }
+    j += 1;
+    if s[j..].starts_with("//") {
+        j += 2;
+    }
+    let link_start = j;
+    let boundary = scan.boundary.first_from(b, link_start);
+    boundary < n && b[boundary] == b'>' && boundary > link_start
+}
+
 /// `<a@b.com>` email autolink. Returns (end, node) with the address object.
+#[allow(dead_code)]
 pub(crate) fn parse_email_autolink_with_no_at_floor(
     s: &str,
     at: usize,
@@ -1090,6 +1283,49 @@ pub(crate) fn parse_email_autolink_with_no_at_floor(
     let domain = s[dom_start..j].to_string();
     let val = serde_json::json!({ "local_part": local, "domain": domain });
     Some((j + 1, Inline::Email { text: val, span: None }))
+}
+
+pub(crate) fn parse_email_autolink_cached(
+    s: &str,
+    at: usize,
+    scan: &mut EmailAutolinkScan,
+) -> Option<(usize, Inline)> {
+    let b = s.as_bytes();
+    let n = b.len();
+    if b.get(at) != Some(&b'<') {
+        return None;
+    }
+    let mut j = at + 1;
+    let local_start = j;
+    if local_start >= scan.no_at_from {
+        return None;
+    }
+    let mut scanned = 0usize;
+    while j < n && b[j] != b'@' && b[j] != b'>' && !is_ws_or_nl(b[j]) {
+        scanned += 1;
+        j += 1;
+    }
+    if j < n {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
+    if j >= n {
+        scan.no_at_from = scan.no_at_from.min(local_start);
+        return None;
+    }
+    if b[j] != b'@' || j == local_start {
+        return None;
+    }
+    let local = s[local_start..j].to_string();
+    j += 1;
+    let dom_start = j;
+    let boundary = scan.domain_boundary.first_from(b, dom_start);
+    if boundary >= n || b[boundary] != b'>' || boundary == dom_start {
+        return None;
+    }
+    let domain = s[dom_start..boundary].to_string();
+    let val = serde_json::json!({ "local_part": local, "domain": domain });
+    Some((boundary + 1, Inline::Email { text: val, span: None }))
 }
 
 /// Block-level LaTeX environment `\begin{NAME} … \end{NAME}` (mldoc `latex_env.ml`,
@@ -1162,21 +1398,44 @@ pub(crate) fn find_ci(s: &str, from: usize, needle: &str) -> Option<usize> {
 /// Bare URL `proto://...` (mldoc link_inline). proto = letters/digits. The path is
 /// read until whitespace / `< > { } ( ) [ ]`-imbalance, with balanced parens/brackets
 /// and `,;.!?` allowed only when not trailing before a delimiter.
+#[allow(dead_code)]
 pub(crate) fn parse_bare_url(s: &str, at: usize) -> Option<(usize, Inline)> {
+    let mut scan = BareUrlScan::new();
+    parse_bare_url_with_scan(s, at, &mut scan)
+}
+
+pub(crate) fn parse_bare_url_with_scan(
+    s: &str,
+    at: usize,
+    scan: &mut BareUrlScan,
+) -> Option<(usize, Inline)> {
     let b = s.as_bytes();
     let n = b.len();
+    if at >= scan.no_scheme_from {
+        return None;
+    }
     // protocol
     let mut j = at;
+    let mut proto_scanned = 0usize;
     while j < n && b[j].is_ascii_alphanumeric() {
+        proto_scanned += 1;
         j += 1;
     }
+    if j < n {
+        proto_scanned += 1;
+    }
+    crate::metrics::scan_work(proto_scanned);
     if j == at || !s[j..].starts_with("://") {
+        if j >= n {
+            scan.no_scheme_from = scan.no_scheme_from.min(at);
+        }
         return None;
     }
     let protocol = s[at..j].to_string();
     j += 3; // past "://"
     let path_start = j;
     // before_path: until space / '/' / '?' / '#' / inline_link_delims ([]<>{}())
+    let mut path_scanned = 0usize;
     while j < n {
         let c = b[j];
         if is_ws_or_nl(c)
@@ -1187,8 +1446,13 @@ pub(crate) fn parse_bare_url(s: &str, at: usize) -> Option<(usize, Inline)> {
         {
             break;
         }
+        path_scanned += 1;
         j += char_len(c);
     }
+    if j < n {
+        path_scanned += 1;
+    }
+    crate::metrics::scan_work(path_scanned);
     let before_path_end = j;
     if before_path_end == path_start {
         return None; // before_path is take_while1 in mldoc: must be non-empty
@@ -1231,8 +1495,10 @@ fn read_url_balanced(s: &str, at: usize) -> usize {
     let mut j = at;
     let mut pd = 0i32;
     let mut bd = 0i32;
+    let mut scanned = 0usize;
     while j < n {
         let c = b[j];
+        scanned += 1;
         if is_ws_or_nl(c) {
             break;
         }
@@ -1270,6 +1536,7 @@ fn read_url_balanced(s: &str, at: usize) -> usize {
             _ => j += char_len(c),
         }
     }
+    crate::metrics::scan_work(scanned);
     j
 }
 
@@ -1547,9 +1814,15 @@ pub(crate) fn parse_block_ref_at(s: &str, at: usize) -> Option<(Inline, usize)> 
     }
     let inner_start = at + 2;
     let mut j = inner_start;
+    let mut scanned = 0usize;
     while j < n && b[j] != b')' {
+        scanned += 1;
         j += 1;
     }
+    if j < n {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
     if j == inner_start || j + 1 >= n || b[j] != b')' || b[j + 1] != b')' {
         return None;
     }
@@ -1582,9 +1855,15 @@ pub(crate) fn parse_macro_at(s: &str, at: usize) -> Option<(Inline, usize)> {
     for &(open, close) in candidates {
         let inner_start = at + open.len();
         let mut j = inner_start;
+        let mut scanned = 0usize;
         while j < n && b[j] != b'}' && b[j] != b'\n' && b[j] != b'\r' {
+            scanned += 1;
             j += 1;
         }
+        if j < n {
+            scanned += 1;
+        }
+        crate::metrics::scan_work(scanned);
         if j == inner_start || !s[j..].starts_with(close) {
             continue;
         }
@@ -1598,12 +1877,41 @@ pub(crate) fn parse_macro_at(s: &str, at: usize) -> Option<(Inline, usize)> {
 // ---- timestamps -----------------------------------------------------------
 
 /// `<YYYY-MM-DD WDAY [HH:MM]>` and ranges `<..>--<..>`. active = true (angle).
+#[allow(dead_code)]
 pub(crate) fn parse_angle_timestamp(s: &str, at: usize) -> Option<(usize, Inline)> {
     let (end1, ts1) = parse_bracket_date(s, at, b'<', b'>')?;
     // range?
     if s[end1..].starts_with("--") {
         let r = at + 0;
         let _ = r;
+        if let Some((end2, ts2)) = parse_bracket_date(s, end1 + 2, b'<', b'>') {
+            let val = serde_json::json!({ "start": ts1, "stop": ts2 });
+            return Some((end2, Inline::Timestamp {
+                ts: "Range".to_string(),
+                date: val,
+                span: None,
+            }));
+        }
+    }
+    Some((end1, Inline::Timestamp {
+        ts: "Date".to_string(),
+        date: ts1,
+        span: None,
+    }))
+}
+
+pub(crate) fn parse_angle_timestamp_with_scan(
+    s: &str,
+    at: usize,
+    scan: &mut TimestampCloseScan,
+) -> Option<(usize, Inline)> {
+    if !bracket_date_has_close_before_lf(s, at, b'<', b'>', scan) {
+        return None;
+    }
+    let (end1, ts1) = parse_bracket_date(s, at, b'<', b'>')?;
+    if s[end1..].starts_with("--")
+        && bracket_date_has_close_before_lf(s, end1 + 2, b'<', b'>', scan)
+    {
         if let Some((end2, ts2)) = parse_bracket_date(s, end1 + 2, b'<', b'>') {
             let val = serde_json::json!({ "start": ts1, "stop": ts2 });
             return Some((end2, Inline::Timestamp {
@@ -1684,6 +1992,26 @@ pub(crate) fn parse_bracket_date(
     let inner = &s[inner_start..j];
     let obj = parse_date_inner(inner, open == b'<')?;
     Some((j + 1, obj))
+}
+
+fn bracket_date_has_close_before_lf(
+    s: &str,
+    at: usize,
+    open: u8,
+    close: u8,
+    scan: &mut TimestampCloseScan,
+) -> bool {
+    let b = s.as_bytes();
+    if b.get(at) != Some(&open) {
+        return false;
+    }
+    let inner_start = at + 1;
+    match b.get(inner_start) {
+        Some(c) if c.is_ascii_digit() || *c == b'+' || is_ws(*c) => {}
+        _ => return false,
+    }
+    let boundary = scan.first_close_or_lf(b, inner_start, close);
+    boundary < b.len() && b[boundary] == close
 }
 
 /// Parse an org timestamp repeater token (`+1m`, `++2w`, `.+1d`) into mldoc's JSON

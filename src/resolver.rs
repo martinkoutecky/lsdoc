@@ -167,7 +167,20 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut rparen = first_byte(bb, 0, b')');
     // Caller-owned raw-HTML miss cache: a `<tag>`×n run with no closer stays linear.
     let mut raw_html_scan = crate::block_common::RawHtmlScan::new();
-    let mut email_no_at_from = usize::MAX;
+    let mut autolink_scan = crate::inline::AutolinkScan::new();
+    let mut timestamp_scan = crate::inline::TimestampCloseScan::new();
+    let mut email_scan = crate::inline::EmailAutolinkScan::new();
+    let mut bare_url_scan = crate::inline::BareUrlScan::new();
+    let tag_boundary_runs = if ctx.tags && bb.contains(&b'#') {
+        crate::inline::build_tag_boundary_runs(s)
+    } else {
+        Vec::new()
+    };
+    let tag_boundary_runs = (!tag_boundary_runs.is_empty()).then_some(tag_boundary_runs);
+    let mut sq_rr = first_seq(bb, b')', b')', 0);
+    let mut sq_rbrace = first_seq(bb, b'}', b'}', 0);
+    let mut block_rparen = first_byte(bb, 0, b')');
+    let mut macro_rbrace = first_byte(bb, 0, b'}');
     // monotone next-`\)` / `\]` (latex-backslash closer floors: a `\(`×n run stays linear).
     let mut bs_paren = first_seq(bb, b'\\', b')', 0);
     let mut bs_brack = first_seq(bb, b'\\', b']', 0);
@@ -248,7 +261,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 }
             }
             match end {
-                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base),
+                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan),
                 None => {
                     if pending.is_empty() { plain_start = Some(base + off); }
                     if plain_start.is_some() { plain_end = base + off + 1; }
@@ -276,7 +289,13 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     end = Some(e);
                 }
             } else if c == b'#' && ctx.tags {
-                let (e, children) = crate::inline::parse_tag_name(s, off + 1, true, base);
+                let (e, children) = crate::inline::parse_tag_name(
+                    s,
+                    off + 1,
+                    true,
+                    base,
+                    tag_boundary_runs.as_deref(),
+                );
                 if e > off + 1 && !children.is_empty() {
                     flush(&mut out, &mut pending, &mut plain_start, plain_end);
                     out.push(Inline::Tag { children, span: Some(Span(base + off, base + e)) });
@@ -284,7 +303,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 }
             }
             match end {
-                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base),
+                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan),
                 None => {
                     if pending.is_empty() { plain_start = Some(base + off); }
                     if plain_start.is_some() { plain_end = base + off + 1; }
@@ -306,7 +325,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             if let Some((node, e)) = try_code_span(s, off, base) {
                 flush(&mut out, &mut pending, &mut plain_start, plain_end);
                 out.push(node);
-                t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base);
+                t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan);
             } else {
                 if pending.is_empty() { plain_start = Some(base + off); }
                 if plain_start.is_some() { plain_end = base + off + 1; }
@@ -349,7 +368,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 }
             }
             match end {
-                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base),
+                Some(e) => t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan),
                 None => {
                     // escape: the `\` is DROPPED, only `(`/`[` kept → the plain run is no
                     // longer 1:1 with source, so S5 can't hold for it.
@@ -379,10 +398,26 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     b'!' if ctx.images && bb.get(off + 1) == Some(&b'[') => {
                         try_md_link(s, bb, off + 1, true, &lbp, &mut lbp_cur, &mut crlf, &mut rparen, base)
                     }
-                    b'{' if ctx.macros => crate::inline::parse_macro_at(s, off),
-                    b'(' if ctx.block_refs => crate::inline::parse_block_ref_at(s, off),
+                    b'{' if ctx.macros
+                        && macro_close_is_viable(bb, off, &mut sq_rbrace, &mut macro_rbrace) =>
+                    {
+                        crate::inline::parse_macro_at(s, off)
+                    }
+                    b'(' if ctx.block_refs
+                        && block_ref_close_is_viable(bb, off, &mut sq_rr, &mut block_rparen) =>
+                    {
+                        crate::inline::parse_block_ref_at(s, off)
+                    }
                     b'<' if ctx.autolinks || ctx.timestamps || ctx.html => {
-                        try_angle(s, off, ctx, &mut raw_html_scan, &mut email_no_at_from)
+                        try_angle(
+                            s,
+                            off,
+                            ctx,
+                            &mut raw_html_scan,
+                            &mut autolink_scan,
+                            &mut timestamp_scan,
+                            &mut email_scan,
+                        )
                     }
                     _ => None,
                 };
@@ -392,7 +427,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     // before the `[` that `try_md_link` was handed — the image extent includes it.
                     crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                     out.push(node);
-                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base);
+                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan);
                     continue;
                 }
             }
@@ -416,12 +451,18 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 } else {
                     None
                 })
-                .or_else(|| if ctx.urls { crate::inline::parse_bare_url(s, off) } else { None });
+                .or_else(|| {
+                    if ctx.urls {
+                        crate::inline::parse_bare_url_with_scan(s, off, &mut bare_url_scan)
+                    } else {
+                        None
+                    }
+                });
                 if let Some((e, mut node)) = leaf {
                     flush(&mut out, &mut pending, &mut plain_start, plain_end);
                     crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                     out.push(node);
-                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base);
+                    t = resync(s, toks, t, e, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan);
                     continue;
                 }
             }
@@ -652,9 +693,15 @@ fn trailing_ws(s: &str) -> usize {
 /// First `\n`/`\r` byte at/after `from`, or `bb.len()` (page-ref eol boundary).
 fn first_crlf(bb: &[u8], from: usize) -> usize {
     let mut p = from;
+    let mut scanned = 0usize;
     while p < bb.len() && bb[p] != b'\n' && bb[p] != b'\r' {
+        scanned += 1;
         p += 1;
     }
+    if p < bb.len() {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
     p
 }
 
@@ -687,6 +734,7 @@ fn resync(
     plain_start: &mut Option<usize>,
     plain_end: &mut usize,
     base: usize,
+    bare_url_scan: &mut crate::inline::BareUrlScan,
 ) -> usize {
     let n = s.len();
     while t < toks.len() && (if t + 1 < toks.len() { toks[t + 1].off } else { n }) <= end {
@@ -718,7 +766,8 @@ fn resync(
         let recurse = matches!(toks[t].kind, Kind::Leaf(_))
             || bb.get(end).is_some_and(|&c| is_special_lead(c))
             || (ctx.timestamps && crate::inline::parse_keyword_timestamp(s, end).is_some())
-            || (ctx.urls && crate::inline::parse_bare_url(s, end).is_some());
+            || (ctx.urls
+                && crate::inline::parse_bare_url_with_scan(s, end, bare_url_scan).is_some());
         if recurse {
             flush(out, pending, plain_start, *plain_end);
             // the remainder is re-parsed with its own absolute base `base + end`.
@@ -763,22 +812,24 @@ fn try_angle(
     at: usize,
     ctx: Ctx,
     raw_html_scan: &mut crate::block_common::RawHtmlScan,
-    email_no_at_from: &mut usize,
+    autolink_scan: &mut crate::inline::AutolinkScan,
+    timestamp_scan: &mut crate::inline::TimestampCloseScan,
+    email_scan: &mut crate::inline::EmailAutolinkScan,
 ) -> Option<(Inline, usize)> {
     if ctx.autolinks {
-        if let Some((e, node)) = crate::inline::parse_autolink(s, at) {
-            return Some((node, e));
+        if crate::inline::autolink_has_closing_boundary(s, at, autolink_scan) {
+            if let Some((e, node)) = crate::inline::parse_autolink(s, at) {
+                return Some((node, e));
+            }
         }
     }
     if ctx.timestamps {
-        if let Some((e, node)) = crate::inline::parse_angle_timestamp(s, at) {
+        if let Some((e, node)) = crate::inline::parse_angle_timestamp_with_scan(s, at, timestamp_scan) {
             return Some((node, e));
         }
     }
     if ctx.autolinks {
-        if let Some((e, node)) =
-            crate::inline::parse_email_autolink_with_no_at_floor(s, at, email_no_at_from)
-        {
+        if let Some((e, node)) = crate::inline::parse_email_autolink_cached(s, at, email_scan) {
             return Some((node, e));
         }
     }
@@ -792,26 +843,63 @@ fn try_angle(
     None
 }
 
+fn macro_close_is_viable(bb: &[u8], off: usize, sq_rbrace: &mut usize, rbrace: &mut usize) -> bool {
+    let inner = off + 2;
+    if *sq_rbrace < inner {
+        *sq_rbrace = first_seq(bb, b'}', b'}', inner);
+    }
+    if *sq_rbrace >= bb.len() {
+        return false;
+    }
+    if *rbrace < inner {
+        *rbrace = first_byte(bb, inner, b'}');
+    }
+    *rbrace + 1 < bb.len() && bb[*rbrace + 1] == b'}'
+}
+
+fn block_ref_close_is_viable(bb: &[u8], off: usize, sq_rr: &mut usize, rparen: &mut usize) -> bool {
+    let inner = off + 2;
+    if *sq_rr < inner {
+        *sq_rr = first_seq(bb, b')', b')', inner);
+    }
+    if *sq_rr >= bb.len() {
+        return false;
+    }
+    if *rparen < inner {
+        *rparen = first_byte(bb, inner, b')');
+    }
+    *rparen + 1 < bb.len() && bb[*rparen + 1] == b')'
+}
+
 /// First byte `c` at/after `from`, or `bb.len()` if none (monotone-cursor helper).
 fn first_byte(bb: &[u8], from: usize, c: u8) -> usize {
     let mut p = from;
+    let mut scanned = 0usize;
     while p < bb.len() && bb[p] != c {
+        scanned += 1;
         p += 1;
     }
+    if p < bb.len() {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
     p
 }
 
 /// First position of the 2-byte sequence `a b` at/after `from`, or `bb.len()` (monotone).
 fn first_seq(bb: &[u8], a: u8, b: u8, from: usize) -> usize {
     let mut p = from;
-    while p + 1 < bb.len() && !(bb[p] == a && bb[p + 1] == b) {
+    let mut scanned = 0usize;
+    while p + 1 < bb.len() {
+        scanned += 1;
+        if bb[p] == a && bb[p + 1] == b {
+            crate::metrics::scan_work(scanned + 1);
+            return p;
+        }
         p += 1;
     }
-    if p + 1 < bb.len() {
-        p
-    } else {
-        bb.len()
-    }
+    crate::metrics::scan_work(scanned);
+    bb.len()
 }
 
 /// Sorted positions of the 2-byte sequence `a b` in `bb` (e.g. `](` for markdown links).
@@ -824,6 +912,7 @@ fn seq_positions(bb: &[u8], a: u8, b: u8) -> Vec<usize> {
         }
         i += 1;
     }
+    crate::metrics::scan_work(bb.len());
     v
 }
 

@@ -300,7 +300,16 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut sq_rr = first_seq(bb, b')', b')', 0); // ))
     let mut sq_rbrace = first_seq(bb, b'}', b'}', 0); // }}
     let mut raw_html_scan = crate::block_common::RawHtmlScan::new();
-    let mut email_no_at_from = usize::MAX;
+    let mut autolink_scan = crate::inline::AutolinkScan::new();
+    let mut timestamp_scan = crate::inline::TimestampCloseScan::new();
+    let mut email_scan = crate::inline::EmailAutolinkScan::new();
+    let mut bare_url_scan = crate::inline::BareUrlScan::new();
+    let tag_boundary_runs = if ctx.tags && bb.contains(&b'#') {
+        crate::inline::build_tag_boundary_runs(s)
+    } else {
+        Vec::new()
+    };
+    let tag_boundary_runs = (!tag_boundary_runs.is_empty()).then_some(tag_boundary_runs);
     // latex-backslash closer floors: only attempt `\(`/`\[` when a `\)`/`\]` exists ahead, so
     // a `\(`×n run (no closer) stays O(n) instead of an EOF re-scan per `\(` (mirrors resolver.rs).
     let mut bs_paren = first_seq(bb, b'\\', b')', 0); // \)
@@ -365,12 +374,18 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     } else {
                         None
                     })
-                    .or_else(|| if ctx.urls { crate::inline::parse_bare_url(s, off) } else { None });
+                    .or_else(|| {
+                        if ctx.urls {
+                            crate::inline::parse_bare_url_with_scan(s, off, &mut bare_url_scan)
+                        } else {
+                            None
+                        }
+                    });
                     if let Some((end, mut node)) = leaf {
                         flush(&mut out, &mut pending, &mut plain_start, plain_end);
                         crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + end)));
                         out.push(node);
-                        t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx);
+                        t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx, &mut bare_url_scan);
                         continue;
                     }
                 }
@@ -466,7 +481,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         pending.push_str(&text);
                     }
                 }
-                t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx);
+                t = resync_straddle(s, toks, t, end, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx, &mut bare_url_scan);
                 continue;
             }
             Kind::Punct(c) => {
@@ -475,7 +490,13 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 let mut hit: Option<usize> = None;
                 match c {
                     b'#' if ctx.tags => {
-                        let (e, children) = crate::inline::parse_tag_name(s, off + 1, false, base);
+                        let (e, children) = crate::inline::parse_tag_name(
+                            s,
+                            off + 1,
+                            false,
+                            base,
+                            tag_boundary_runs.as_deref(),
+                        );
                         if e > off + 1 && !children.is_empty() {
                             flush(&mut out, &mut pending, &mut plain_start, plain_end);
                             out.push(Inline::Tag { children, span: Some(Span(base + off, base + e)) });
@@ -530,7 +551,9 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                             off,
                             ctx,
                             &mut raw_html_scan,
-                            &mut email_no_at_from,
+                            &mut autolink_scan,
+                            &mut timestamp_scan,
+                            &mut email_scan,
                         ) {
                             flush(&mut out, &mut pending, &mut plain_start, plain_end);
                             crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
@@ -561,7 +584,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     _ => {}
                 }
                 if let Some(e) = hit {
-                    t = resync_straddle(s, toks, t, e, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx);
+                    t = resync_straddle(s, toks, t, e, &mut out, &mut pending, &mut last_plain_char, &mut fresh, &mut plain_start, &mut plain_end, base, ctx, &mut bare_url_scan);
                     continue;
                 }
                 // not consumed: plain. `# $ [` are PLAIN_DELIMS (fresh); the swallow bytes
@@ -847,6 +870,7 @@ fn resync_straddle(
     plain_end: &mut usize,
     base: usize,
     ctx: Ctx,
+    bare_url_scan: &mut crate::inline::BareUrlScan,
 ) -> usize {
     let n = s.len();
     while t < toks.len() && (if t + 1 < toks.len() { toks[t + 1].off } else { n }) <= end {
@@ -860,7 +884,8 @@ fn resync_straddle(
         let leads = (ctx.timestamps
             && matches!(s.as_bytes()[end], b'S' | b'C' | b'D' | b's' | b'c' | b'd')
             && crate::inline::parse_keyword_timestamp(s, end).is_some())
-            || (ctx.urls && crate::inline::parse_bare_url(s, end).is_some());
+            || (ctx.urls
+                && crate::inline::parse_bare_url_with_scan(s, end, bare_url_scan).is_some());
         if leads {
             // FAST PATH: re-lex ONLY the split token's tail (Org is fully local — see fn doc),
             // overwrite `toks[t]`, re-dispatch. Falls back to the suffix re-lex only if the
@@ -953,7 +978,9 @@ fn try_target_angle_at(
     i: usize,
     ctx: Ctx,
     raw_html_scan: &mut crate::block_common::RawHtmlScan,
-    email_no_at_from: &mut usize,
+    autolink_scan: &mut crate::inline::AutolinkScan,
+    timestamp_scan: &mut crate::inline::TimestampCloseScan,
+    email_scan: &mut crate::inline::EmailAutolinkScan,
 ) -> Option<(Inline, usize)> {
     let n = bb.len();
     if s[i..].starts_with("<<") {
@@ -970,11 +997,13 @@ fn try_target_angle_at(
             return Some((Inline::Target { text: s[inner_start..j].to_string(), span: None }, j + 2));
         }
     }
-    if let Some((end, node)) = crate::org::parse_org_autolink(s, i) {
-        return Some((node, end));
+    if crate::inline::autolink_has_closing_boundary(s, i, autolink_scan) {
+        if let Some((end, node)) = crate::org::parse_org_autolink(s, i) {
+            return Some((node, end));
+        }
     }
     if ctx.timestamps {
-        if let Some((end, node)) = crate::inline::parse_angle_timestamp(s, i) {
+        if let Some((end, node)) = crate::inline::parse_angle_timestamp_with_scan(s, i, timestamp_scan) {
             return Some((node, end));
         }
     }
@@ -983,9 +1012,7 @@ fn try_target_angle_at(
     {
         return Some((Inline::InlineHtml { text: s[i..extent.end].to_string(), span: None }, extent.end));
     }
-    if let Some((end, node)) =
-        crate::inline::parse_email_autolink_with_no_at_floor(s, i, email_no_at_from)
-    {
+    if let Some((end, node)) = crate::inline::parse_email_autolink_cached(s, i, email_scan) {
         return Some((node, end));
     }
     None
@@ -1267,30 +1294,45 @@ fn org_footnote_at(s: &str, i: usize) -> Option<(usize, String)> {
 /// First byte `c` at/after `from`, else `bb.len()` (monotone-cursor helper).
 fn first_byte(bb: &[u8], from: usize, c: u8) -> usize {
     let mut p = from;
+    let mut scanned = 0usize;
     while p < bb.len() && bb[p] != c {
+        scanned += 1;
         p += 1;
     }
+    if p < bb.len() {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
     p
 }
 
 /// First `a b` 2-byte sequence at/after `from`, else `bb.len()` (monotone).
 fn first_seq(bb: &[u8], a: u8, b: u8, from: usize) -> usize {
     let mut p = from;
-    while p + 1 < bb.len() && !(bb[p] == a && bb[p + 1] == b) {
+    let mut scanned = 0usize;
+    while p + 1 < bb.len() {
+        scanned += 1;
+        if bb[p] == a && bb[p + 1] == b {
+            crate::metrics::scan_work(scanned + 1);
+            return p;
+        }
         p += 1;
     }
-    if p + 1 < bb.len() {
-        p
-    } else {
-        bb.len()
-    }
+    crate::metrics::scan_work(scanned);
+    bb.len()
 }
 
 /// First `\n`/`\r` at/after `from`, else `bb.len()` (page-ref eol boundary).
 fn first_crlf(bb: &[u8], from: usize) -> usize {
     let mut p = from;
+    let mut scanned = 0usize;
     while p < bb.len() && bb[p] != b'\n' && bb[p] != b'\r' {
+        scanned += 1;
         p += 1;
     }
+    if p < bb.len() {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
     p
 }

@@ -28,8 +28,12 @@ fn org_linear_cases(n: usize) -> Vec<(&'static str, String)> {
         ("o_emph_words", "*a* ".repeat(n / 4)),
         ("o_lt_bare", "<".repeat(n)),
         ("o_emph_lt", "/a/<".repeat(n / 4)),
+        ("o_email_domain_interleave", "/a/<x@".repeat(n / 6)),
+        ("o_timestamp_angle_interleave", "/a/<20".repeat(n / 6)),
         ("o_pageref_lt", "[[a]]<".repeat(n / 6)),
         ("o_page_open", "[[".repeat(n / 2)),
+        ("o_macro_interleave", "/a/{{".repeat(n / 5)),
+        ("o_blockref_interleave", "/a/((".repeat(n / 5)),
         ("o_links", "[[a][b]] ".repeat(n / 9)),
         ("o_deep_emph", format!("{}x{}", "*".repeat(n / 2), "*".repeat(n / 2))),
         // Org multi-line list: long sibling run, long single-item continuation fold,
@@ -74,11 +78,20 @@ fn linear_cases(n: usize) -> Vec<(&'static str, String)> {
         ("emph_words", "*a ".repeat(n / 3)),
         ("lt_bare", "<".repeat(n)),
         ("emph_lt", "*a*<".repeat(n / 4)),
+        ("email_domain_interleave", "*a*<x@".repeat(n / 6)),
+        ("timestamp_angle_interleave", "*a*<20".repeat(n / 6)),
+        ("autolink_interleave", "*a*<a:".repeat(n / 6)),
         ("pageref_lt", "[[a]]<".repeat(n / 6)),
         ("page_open", "[[".repeat(n / 2)),
         ("block_open", "((".repeat(n / 2)),
         ("macro_open", "{{".repeat(n / 2)),
+        ("macro_interleave", "*a*{{".repeat(n / 5)),
+        ("blockref_interleave", "*a*((".repeat(n / 5)),
+        ("raw_html_unbalanced_interleave", "*a*<div><div>x</div>".repeat(n / 20)),
         ("tags", "#tag ".repeat(n / 5)),
+        ("tag_hash_run", "#".repeat(n)),
+        ("tag_word_interleave", "x #a".repeat(n / 4)),
+        ("bare_url_interleave", "*a*httpx".repeat(n / 8)),
         ("refs", "[[a]] ".repeat(n / 6)),
         ("mixed_delims", "a*b_c~`d[e(f".repeat(n / 11)),
         ("many_lines", "x\n".repeat(n / 2)),
@@ -282,6 +295,23 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         // (it sat just under budget at low load until n grew). md was already floored.
         ("md_latex_open", false, 25_000, |n| "\\(".repeat(n)),
         ("org_latex_open", true, 25_000, |n| "\\(".repeat(n)),
+        // Phase B leaf-linearity: construct-interleaved inline LEAF misses. Homogeneous
+        // opener runs were already covered; these force a fresh dispatch before each opener.
+        ("md_email_domain_interleave", false, 25_000, |n| "*a*<x@".repeat(n)),
+        ("org_email_domain_interleave", true, 25_000, |n| "/a/<x@".repeat(n)),
+        ("md_timestamp_angle_interleave", false, 25_000, |n| "*a*<20".repeat(n)),
+        ("org_timestamp_angle_interleave", true, 25_000, |n| "/a/<20".repeat(n)),
+        ("md_autolink_interleave", false, 25_000, |n| "*a*<a:".repeat(n)),
+        ("md_macro_interleave", false, 25_000, |n| "*a*{{".repeat(n)),
+        ("org_macro_interleave", true, 25_000, |n| "/a/{{".repeat(n)),
+        ("md_blockref_interleave", false, 25_000, |n| "*a*((".repeat(n)),
+        ("org_blockref_interleave", true, 25_000, |n| "/a/((".repeat(n)),
+        ("md_tag_hash_run", false, 25_000, |n| "#".repeat(n)),
+        ("md_tag_word_interleave", false, 25_000, |n| "x #a".repeat(n)),
+        ("md_bare_url_interleave", false, 25_000, |n| "*a*httpx".repeat(n)),
+        ("md_raw_html_unbalanced_interleave", false, 8_000, |n| {
+            "*a*<div><div>x</div>".repeat(n)
+        }),
         // Callout closer-finding adversarial cases. The on-demand dispatch (correct: only
         // top-level openers are reached) finds `#+END_<name>` via the by-all-prefixes index — an
         // O(1) bucket lookup, no EOF scan. So even these stay ~linear, where mldoc's own
