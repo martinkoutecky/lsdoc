@@ -42,7 +42,7 @@
 // in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
 use crate::block_common::{
     displayed_math_opener, drawer_property, find_displayed_math_close, find_drawer_end,
-    find_matching_fence, is_raw_html, leading_ws, para_ws_only, raw_html_block_start,
+    find_matching_fence, leading_ws, para_ws_only, raw_html_block_start,
     raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
     Line, RawHtmlScan, GT_FALLBACK_NEST_CAP, MARKERS,
 };
@@ -1029,13 +1029,6 @@ fn dispatch_md_line<'a>(
                 return Step::Next(cap.next);
             }
         }
-        // Keep lsdoc's pre-existing broad single-line behavior for out-of-scope raw-HTML quirks.
-        if is_raw_html(content) {
-            flush_para(out, para, para_buf, input, trim);
-            empty_bullet!();
-            out.push(Block::RawHtml { text: content.to_string(), span: Some(Span(content_off, line_end)) });
-            return Step::Next(i + 1);
-        }
         // (g) LaTeX environment opener `\begin{X} … \end{X}` (may span lines). CLAMP as in 2b.
         if let Some((name, lc, consumed_end)) =
             crate::inline::parse_latex_env(&input[..body_end], content_off, line_start + t.len())
@@ -1244,14 +1237,6 @@ fn dispatch_md_line<'a>(
         if captured {
             return Step::Next(cur);
         }
-    }
-
-    // Keep lsdoc's pre-existing broad single-line behavior for out-of-scope raw-HTML quirks.
-    if is_raw_html(t) {
-        drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
-        flush_para(out, para, para_buf, input, trim);
-        out.push(Block::RawHtml { text: t.to_string(), span: Some(Span(line_start, line_end)) });
-        return Step::Next(i + 1);
     }
 
     // 11b. block-level displayed math: `$$` after leading indent opens a block;
@@ -2587,9 +2572,12 @@ mod tests {
         assert_eq!(kinds("<kbd>a\nb</kbd>\nc"), ["raw_html", "paragraph"]);
         assert_eq!(kinds("pre\n<kbd>a\nb</kbd>"), ["paragraph", "raw_html"]);
 
-        // D10/D11 and unterminated cases stay on the pre-existing inline/paragraph path.
+        // D10/D11/D12 and unterminated cases stay plain under mldoc Raw_html.parse.
         assert_eq!(kinds("<unknown>a\nb</unknown>"), ["paragraph"]);
+        assert_eq!(kinds("<foo>bar</foo>"), ["paragraph"]);
         assert_eq!(kinds("<br/>"), ["paragraph"]);
+        assert_eq!(kinds("<b>ab</b>"), ["paragraph"]);
+        assert_eq!(raw_html_texts("<b>a\nb</b>"), ["<b>a\nb</b>"]);
         assert_eq!(kinds("<div>a\nb"), ["paragraph"]);
     }
 

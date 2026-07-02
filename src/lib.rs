@@ -312,6 +312,55 @@ mod span_tests {
         assert_s5(s, &out);
     }
 
+    fn plain_concat(inlines: &[Inline]) -> String {
+        let mut out = String::new();
+        for node in inlines {
+            if let Inline::Plain { text, .. } = node {
+                out.push_str(text);
+            }
+        }
+        out
+    }
+
+    fn assert_known_inline_html(inlines: &[Inline], expected: &str) {
+        assert!(matches!(
+            inlines,
+            [
+                Inline::Plain { text: a, .. },
+                Inline::InlineHtml { text: h, .. },
+                Inline::Plain { text: b, .. },
+            ] if a == "x " && h == expected && b == " y"
+        ));
+    }
+
+    #[test]
+    fn test_raw_html_inline_shared_parser() {
+        for parse in [
+            crate::resolver::parse_inline as fn(&str, usize) -> Vec<Inline>,
+            crate::org_resolver::parse_inline_org as fn(&str, usize) -> Vec<Inline>,
+        ] {
+            let unknown = "x <foo>y</foo> z";
+            let out = parse(unknown, 0);
+            assert!(!out.iter().any(|n| matches!(n, Inline::InlineHtml { .. })));
+            assert_eq!(plain_concat(&out), unknown);
+
+            let br = "x <br/> y";
+            let out = parse(br, 0);
+            assert!(!out.iter().any(|n| matches!(n, Inline::InlineHtml { .. })));
+            assert_eq!(plain_concat(&out), br);
+
+            assert_known_inline_html(&parse("x <b>a</b> y", 0), "<b>a</b>");
+            assert_known_inline_html(
+                &parse("x <figcaption>a</figcaption> y", 0),
+                "<figcaption>a</figcaption>",
+            );
+            assert_known_inline_html(
+                &parse("x <blockquote>a</blockquote> y", 0),
+                "<blockquote>a</blockquote>",
+            );
+        }
+    }
+
     #[test]
     fn test_tag_non_ascii() {
         // "#škola" in org mode — š is 2 bytes; Tag [0,7), plain "škola" [1,7).

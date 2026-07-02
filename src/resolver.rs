@@ -165,8 +165,9 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut lbp_cur = 0usize;
     let mut crlf = first_crlf(bb, 0);
     let mut rparen = first_byte(bb, 0, b')');
-    // monotone next-`</` (inline-html name-keyed closer floor: a `<tag>`×n run stays linear).
-    let mut lt_slash = first_seq(bb, b'<', b'/', 0);
+    // Caller-owned raw-HTML miss cache: a `<tag>`×n run with no closer stays linear.
+    let mut raw_html_scan = crate::block_common::RawHtmlScan::new();
+    let mut email_no_at_from = usize::MAX;
     // monotone next-`\)` / `\]` (latex-backslash closer floors: a `\(`×n run stays linear).
     let mut bs_paren = first_seq(bb, b'\\', b')', 0);
     let mut bs_brack = first_seq(bb, b'\\', b']', 0);
@@ -381,10 +382,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     b'{' if ctx.macros => crate::inline::parse_macro_at(s, off),
                     b'(' if ctx.block_refs => crate::inline::parse_block_ref_at(s, off),
                     b'<' if ctx.autolinks || ctx.timestamps || ctx.html => {
-                        if off > lt_slash {
-                            lt_slash = first_seq(bb, b'<', b'/', off);
-                        }
-                        try_angle(s, off, ctx, lt_slash < bb.len())
+                        try_angle(s, off, ctx, &mut raw_html_scan, &mut email_no_at_from)
                     }
                     _ => None,
                 };
@@ -760,9 +758,13 @@ fn is_swallow_byte(c: u8) -> bool {
 }
 
 /// `<…>` angle dispatch (mldoc try_angle order): autolink → timestamp → email → inline-html.
-/// `html_closer` says whether a `</` exists ahead (so the name-keyed closer scan can be
-/// skipped — the by-construction floor that keeps a `<tag>`×n run linear).
-fn try_angle(s: &str, at: usize, ctx: Ctx, html_closer: bool) -> Option<(Inline, usize)> {
+fn try_angle(
+    s: &str,
+    at: usize,
+    ctx: Ctx,
+    raw_html_scan: &mut crate::block_common::RawHtmlScan,
+    email_no_at_from: &mut usize,
+) -> Option<(Inline, usize)> {
     if ctx.autolinks {
         if let Some((e, node)) = crate::inline::parse_autolink(s, at) {
             return Some((node, e));
@@ -774,13 +776,17 @@ fn try_angle(s: &str, at: usize, ctx: Ctx, html_closer: bool) -> Option<(Inline,
         }
     }
     if ctx.autolinks {
-        if let Some((e, node)) = crate::inline::parse_email_autolink(s, at) {
+        if let Some((e, node)) =
+            crate::inline::parse_email_autolink_with_no_at_floor(s, at, email_no_at_from)
+        {
             return Some((node, e));
         }
     }
     if ctx.html {
-        if let Some((e, text)) = crate::inline::parse_inline_html_cached(s, at, html_closer) {
-            return Some((Inline::InlineHtml { text, span: None }, e));
+        if let Some(extent) =
+            crate::block_common::parse_raw_html_at_cached(s, at, s.len(), Some(raw_html_scan))
+        {
+            return Some((Inline::InlineHtml { text: s[at..extent.end].to_string(), span: None }, extent.end));
         }
     }
     None

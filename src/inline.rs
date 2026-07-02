@@ -1041,7 +1041,11 @@ pub(crate) fn parse_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
 }
 
 /// `<a@b.com>` email autolink. Returns (end, node) with the address object.
-pub(crate) fn parse_email_autolink(s: &str, at: usize) -> Option<(usize, Inline)> {
+pub(crate) fn parse_email_autolink_with_no_at_floor(
+    s: &str,
+    at: usize,
+    no_at_from: &mut usize,
+) -> Option<(usize, Inline)> {
     let b = s.as_bytes();
     let n = b.len();
     if b.get(at) != Some(&b'<') {
@@ -1049,8 +1053,21 @@ pub(crate) fn parse_email_autolink(s: &str, at: usize) -> Option<(usize, Inline)
     }
     let mut j = at + 1;
     let local_start = j;
+    if local_start >= *no_at_from {
+        return None;
+    }
+    let mut scanned = 0usize;
     while j < n && b[j] != b'@' && b[j] != b'>' && !is_ws_or_nl(b[j]) {
+        scanned += 1;
         j += 1;
+    }
+    if j < n {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
+    if j >= n {
+        *no_at_from = (*no_at_from).min(local_start);
+        return None;
     }
     if j >= n || b[j] != b'@' || j == local_start {
         return None;
@@ -1058,135 +1075,21 @@ pub(crate) fn parse_email_autolink(s: &str, at: usize) -> Option<(usize, Inline)
     let local = s[local_start..j].to_string();
     j += 1;
     let dom_start = j;
+    let mut domain_scanned = 0usize;
     while j < n && b[j] != b'>' && !is_ws_or_nl(b[j]) {
+        domain_scanned += 1;
         j += 1;
     }
+    if j < n {
+        domain_scanned += 1;
+    }
+    crate::metrics::scan_work(domain_scanned);
     if j >= n || b[j] != b'>' || j == dom_start {
         return None;
     }
     let domain = s[dom_start..j].to_string();
     let val = serde_json::json!({ "local_part": local, "domain": domain });
     Some((j + 1, Inline::Email { text: val, span: None }))
-}
-
-/// Inline raw HTML `<tag ...> ... </tag>` (or self-contained). We capture the same
-/// extent mldoc's Raw_html does for inline: a single tag region. For paired tags we
-/// take up to the matching close; otherwise a single `<...>`.
-/// Parse inline raw HTML `<tag …>…</tag>`. `closer_possible == false` asserts (from a caller's
-/// monotone absence cache) that no `</` exists at/after `at`, so the `</name>` search
-/// is skipped. Every closing tag begins with the literal bytes `</`, so when those are
-/// absent the closer scan can only fail — the result (the bare opening tag) is
-/// byte-identical to the full scan, just O(1). This keeps a run of unclosed `<tag>`s
-/// linear instead of O(n²) (each would otherwise re-scan to EOF for its closer).
-pub(crate) fn parse_inline_html_cached(s: &str, at: usize, closer_possible: bool) -> Option<(usize, String)> {
-    let b = s.as_bytes();
-    let n = b.len();
-    if b.get(at) != Some(&b'<') {
-        return None;
-    }
-    // Raw_html.parse starts with `peek_string 10`; short remaining inputs fail before the
-    // tag/special-form dispatch. This is why bare `<br />` is plain but longer self-closes parse.
-    if n.saturating_sub(at) < 10 {
-        return None;
-    }
-    // tag name
-    let mut j = at + 1;
-    if j < n && b[j] == b'/' {
-        j += 1;
-    }
-    let name_start = j;
-    while j < n && (b[j].is_ascii_alphanumeric() || b[j] == b'-') {
-        j += 1;
-    }
-    if j == name_start || !b[name_start].is_ascii_alphabetic() {
-        return None;
-    }
-    let raw_name = &s[name_start..j];
-    let name = raw_name.to_ascii_lowercase();
-    // find end of the opening tag '>'
-    let open_end = find_sub_line(b, j, b">")?;
-    let self_closing = open_end > 0 && b[open_end - 1] == b'/';
-    if self_closing {
-        return Some((open_end + 1, s[at..open_end + 1].to_string()));
-    }
-    // look for matching </name> (skipped when no `</` exists ahead at all).
-    if closer_possible {
-        if is_known_html_tag(&name) {
-            let (end, saw_close, self_close) = match_known_inline_html(s, j, raw_name);
-            if let Some(end) = end.or(self_close) {
-                return Some((end, s[at..end].to_string()));
-            }
-            if saw_close {
-                return None;
-            }
-        } else {
-            let close_tag = format!("</{}>", name);
-            if let Some(cidx) = find_ci(s, open_end + 1, &close_tag) {
-                let end = cidx + close_tag.len();
-                return Some((end, s[at..end].to_string()));
-            }
-        }
-    }
-    // no closer: just the opening tag
-    Some((open_end + 1, s[at..open_end + 1].to_string()))
-}
-
-fn starts_with_bytes_at(bytes: &[u8], at: usize, needle: &[u8], end: usize) -> bool {
-    at + needle.len() <= end && &bytes[at..at + needle.len()] == needle
-}
-
-fn count_inline_tag_opens(bytes: &[u8], from: usize, end: usize, plain: &[u8], attrs: &[u8]) -> usize {
-    let mut count = 0usize;
-    let mut q = from;
-    while q < end {
-        if starts_with_bytes_at(bytes, q, plain, end) {
-            count += 1;
-            q += plain.len();
-        } else if starts_with_bytes_at(bytes, q, attrs, end) {
-            count += 1;
-            q += attrs.len();
-        } else {
-            q += 1;
-        }
-    }
-    count
-}
-
-fn match_known_inline_html(s: &str, scan_start: usize, raw_name: &str) -> (Option<usize>, bool, Option<usize>) {
-    let bytes = s.as_bytes();
-    let close_tag = format!("</{}>", raw_name);
-    let open_plain = format!("<{}>", raw_name);
-    let open_attrs = format!("<{} ", raw_name);
-    let mut first_self_close = None;
-    let mut p = scan_start;
-    while first_self_close.is_none() {
-        match find_sub(bytes, p, b"/>") {
-            Some(end) => first_self_close = Some(end + 2),
-            None => break,
-        }
-    }
-
-    let mut level = 1isize;
-    let mut chunk_start = scan_start;
-    let mut saw_close = false;
-    while let Some(close_at) = find_ci(s, p, &close_tag) {
-        saw_close = true;
-        level += count_inline_tag_opens(
-            bytes,
-            chunk_start,
-            close_at,
-            open_plain.as_bytes(),
-            open_attrs.as_bytes(),
-        ) as isize;
-        level -= 1;
-        let end = close_at + close_tag.len();
-        if level <= 0 {
-            return (Some(end), saw_close, first_self_close);
-        }
-        p = end;
-        chunk_start = end;
-    }
-    (None, saw_close, first_self_close)
 }
 
 /// Block-level LaTeX environment `\begin{NAME} … \end{NAME}` (mldoc `latex_env.ml`,
@@ -1757,10 +1660,24 @@ pub(crate) fn parse_bracket_date(
         return None;
     }
     let inner_start = at + 1;
+    match b.get(inner_start) {
+        Some(c) if c.is_ascii_digit() || *c == b'+' || is_ws(*c) => {}
+        Some(_) => {
+            crate::metrics::scan_work(1);
+            return None;
+        }
+        None => return None,
+    }
     let mut j = inner_start;
+    let mut scanned = 0usize;
     while j < n && b[j] != close && b[j] != b'\n' {
+        scanned += 1;
         j += 1;
     }
+    if j < n {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
     if j >= n || b[j] != close {
         return None;
     }

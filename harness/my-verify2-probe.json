@@ -1,0 +1,19 @@
+[
+  { "id": "tok_figcaption10", "input": "<figcaption>x</figcaption>" },
+  { "id": "tok_blockquote10", "input": "<blockquote>x</blockquote>" },
+  { "id": "tok_over11_fig",   "input": "<figcaptionz>y</figcaptionz>" },
+  { "id": "tok_over11_bq",    "input": "<blockquotez>y</blockquotez>" },
+  { "id": "tok_section7",     "input": "<section>a</section>" },
+  { "id": "tok_datalist8",    "input": "<datalist>a</datalist>" },
+  { "id": "tok_10_multiline", "input": "<figcaption>a\nb</figcaption>" },
+  { "id": "email_basic",      "input": "<test@example.com>" },
+  { "id": "email_inline",     "input": "x <a@b.co> y" },
+  { "id": "email_noat_run",   "input": "<aaaaaaaaaaaaaaaaaaaa>" },
+  { "id": "ts_md_full",       "input": "<2021-01-01 Mon>" },
+  { "id": "ts_md_date",       "input": "<2021-01-01>" },
+  { "id": "autolink_url",     "input": "<https://example.com/x>" },
+  { "id": "org_ts_full",      "format": "org", "input": "<2021-01-01 Mon>" },
+  { "id": "org_figcap10",     "format": "org", "input": "<figcaption>x</figcaption>" },
+  { "id": "org_over11",       "format": "org", "input": "<figcaptionz>y</figcaptionz>" },
+  { "id": "org_email",        "format": "org", "input": "<a@b.co>" }
+]

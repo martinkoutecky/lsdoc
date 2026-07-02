@@ -119,6 +119,22 @@ fn raw_html_unclosed_tail(n: usize) -> String {
 fn raw_html_repeated_unclosed(n: usize) -> String {
     "<kbd>\n".repeat(n)
 }
+/// Bare `<` run: control for raw-HTML tokenizer batching when no inline construct resets `fresh`.
+fn raw_html_lt_bare(n: usize) -> String {
+    "<".repeat(n)
+}
+/// Emphasis + `<` interleave: exercises raw-HTML tokenizer dispatch after `fresh` reset.
+fn raw_html_emph_lt(n: usize) -> String {
+    "*a*<".repeat(n / 4)
+}
+/// Page-ref + `<` interleave: exercises raw-HTML tokenizer dispatch after bracket construct reset.
+fn raw_html_pageref_lt(n: usize) -> String {
+    "[[a]]<".repeat(n / 6)
+}
+/// Org emphasis + `<` twin for the same construct-interleaved raw-HTML tokenizer shape.
+fn raw_html_org_emph_lt(n: usize) -> String {
+    "/a/<".repeat(n / 4)
+}
 
 fn big_stack(f: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()
@@ -149,6 +165,12 @@ fn complexity_gate() {
         assert_linear("raw_html_unclosed_tail", raw_html_unclosed_tail, 3000, "org");
         assert_linear("raw_html_repeated_unclosed", raw_html_repeated_unclosed, 3000, "md");
         assert_linear("raw_html_repeated_unclosed", raw_html_repeated_unclosed, 3000, "org");
+        assert_linear("raw_html_lt_bare", raw_html_lt_bare, 6000, "md");
+        assert_linear("raw_html_lt_bare", raw_html_lt_bare, 6000, "org");
+        assert_linear("raw_html_emph_lt", raw_html_emph_lt, 6000, "md");
+        assert_linear("raw_html_pageref_lt", raw_html_pageref_lt, 6000, "md");
+        assert_linear("raw_html_org_emph_lt", raw_html_org_emph_lt, 6000, "org");
+        assert_linear("raw_html_org_pageref_lt", raw_html_pageref_lt, 6000, "org");
         // A (container-prefix consume): both formats now dispatch a `>`-line's content ONCE at the
         // final depth (no per-re-dispatch `property` re-scan — 1a) and close many frames at one
         // interior breaker in O(closed) (no per-frame `gt_cont_view` re-peel — 1b).

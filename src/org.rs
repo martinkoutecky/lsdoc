@@ -25,7 +25,7 @@
 // in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
 use crate::block_common::{
     displayed_math_opener, drawer_property, find_displayed_math_close, find_drawer_end,
-    find_matching_fence, is_raw_html, leading_ws, para_ws_only, raw_html_block_start,
+    find_matching_fence, leading_ws, para_ws_only, raw_html_block_start,
     raw_html_end_at,
     raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
     Line, RawHtmlScan, GT_FALLBACK_NEST_CAP, MARKERS,
@@ -1181,17 +1181,6 @@ fn dispatch_org_line<'a>(
         }
     }
 
-    // Keep lsdoc's pre-existing broad single-line behavior for out-of-scope raw-HTML quirks.
-    if is_raw_html(t) {
-        if was_ws_drop && para_ws_only(para, input) {
-            *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
-        }
-        flush_para(out, para, para_buf, input, trim);
-        out.push(Block::RawHtml { text: t.to_string(), span: Some(Span(line_start, line_end)) });
-        *absorb = false;
-        return Step::Next(i + 1);
-    }
-
     // 11. footnote definition `[fn:name] text` — not a list-item content block, and NOT
     // inside a `#+BEGIN_X` / `>`-quote body (mldoc's `block_content_parsers` omits
     // `Footnote`, so `[fn:n] …` there stays a paragraph with an inline footnote ref). The
@@ -1618,7 +1607,6 @@ fn headline_split_opener(
             .is_some()
         || (raw_html_block_start(content)
             && raw_html_end_at(input, content_off, body_end, raw_html_scan).is_some())
-        || is_raw_html(content)
         || footnote_def(content).is_some()
         || is_org_hr(content)
     {
@@ -2465,9 +2453,12 @@ mod tests {
         assert_eq!(bkinds("pre\n<kbd>a\nb</kbd>"), ["paragraph", "raw_html"]);
         assert_eq!(bkinds("* <kbd>a\nb</kbd>"), ["bullet", "raw_html"]);
 
-        // D10/D11 and unterminated cases stay on the pre-existing inline/paragraph path.
+        // D10/D11/D12 and unterminated cases stay plain under mldoc Raw_html.parse.
         assert_eq!(bkinds("<unknown>a\nb</unknown>"), ["paragraph"]);
+        assert_eq!(bkinds("<foo>bar</foo>"), ["paragraph"]);
         assert_eq!(bkinds("<br/>"), ["paragraph"]);
+        assert_eq!(bkinds("<b>ab</b>"), ["paragraph"]);
+        assert_eq!(raw_html_texts("<b>a\nb</b>"), ["<b>a\nb</b>"]);
         assert_eq!(bkinds("<div>a\nb"), ["paragraph"]);
     }
 

@@ -299,7 +299,8 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut sq_rb_lb = first_seq(bb, b']', b'[', 0); // ][
     let mut sq_rr = first_seq(bb, b')', b')', 0); // ))
     let mut sq_rbrace = first_seq(bb, b'}', b'}', 0); // }}
-    let mut sq_lt_sl = first_seq(bb, b'<', b'/', 0); // </
+    let mut raw_html_scan = crate::block_common::RawHtmlScan::new();
+    let mut email_no_at_from = usize::MAX;
     // latex-backslash closer floors: only attempt `\(`/`\[` when a `\)`/`\]` exists ahead, so
     // a `\(`×n run (no closer) stays O(n) instead of an EOF re-scan per `\(` (mirrors resolver.rs).
     let mut bs_paren = first_seq(bb, b'\\', b')', 0); // \)
@@ -523,8 +524,14 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         }
                     }
                     b'<' if ctx.angle && fresh => {
-                        let html_closer = present!(sq_lt_sl, b'<', b'/', off);
-                        if let Some((mut node, e)) = try_target_angle_at(s, bb, off, ctx, html_closer) {
+                        if let Some((mut node, e)) = try_target_angle_at(
+                            s,
+                            bb,
+                            off,
+                            ctx,
+                            &mut raw_html_scan,
+                            &mut email_no_at_from,
+                        ) {
                             flush(&mut out, &mut pending, &mut plain_start, plain_end);
                             crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
                             out.push(node);
@@ -939,9 +946,15 @@ fn try_code_verbatim_at(s: &str, bb: &[u8], i: usize, marker: u8) -> Option<(Inl
     }
 }
 
-/// `<<target>>` then `<…>` angle (autolink → timestamp → inline-html → email) — v1
-/// try_target + try_angle. `html_closer` = a `</` exists ahead.
-fn try_target_angle_at(s: &str, bb: &[u8], i: usize, ctx: Ctx, html_closer: bool) -> Option<(Inline, usize)> {
+/// `<<target>>` then `<…>` angle (autolink → timestamp → inline-html → email) — v1 try_target + try_angle.
+fn try_target_angle_at(
+    s: &str,
+    bb: &[u8],
+    i: usize,
+    ctx: Ctx,
+    raw_html_scan: &mut crate::block_common::RawHtmlScan,
+    email_no_at_from: &mut usize,
+) -> Option<(Inline, usize)> {
     let n = bb.len();
     if s[i..].starts_with("<<") {
         let inner_start = i + 2;
@@ -965,10 +978,14 @@ fn try_target_angle_at(s: &str, bb: &[u8], i: usize, ctx: Ctx, html_closer: bool
             return Some((node, end));
         }
     }
-    if let Some((end, text)) = crate::inline::parse_inline_html_cached(s, i, html_closer) {
-        return Some((Inline::InlineHtml { text, span: None }, end));
+    if let Some(extent) =
+        crate::block_common::parse_raw_html_at_cached(s, i, s.len(), Some(raw_html_scan))
+    {
+        return Some((Inline::InlineHtml { text: s[i..extent.end].to_string(), span: None }, extent.end));
     }
-    if let Some((end, node)) = crate::inline::parse_email_autolink(s, i) {
+    if let Some((end, node)) =
+        crate::inline::parse_email_autolink_with_no_at_floor(s, i, email_no_at_from)
+    {
         return Some((node, end));
     }
     None

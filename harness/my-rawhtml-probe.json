@@ -1,0 +1,39 @@
+[
+  { "id": "pk_b09_plain",   "input": "<b>ab</b>" },
+  { "id": "pk_b10_raw",     "input": "<b>abc</b>" },
+  { "id": "pk_i08_plain",   "input": "<i>x</i>" },
+  { "id": "pk_i09_plain",   "input": "<i>xy</i>" },
+  { "id": "pk_i10_raw",     "input": "<i>xyz</i>" },
+  { "id": "pk_u08_plain",   "input": "<u>a</u>" },
+  { "id": "pk_b07_empty",   "input": "<b></b>" },
+  { "id": "pk_kbd11_empty", "input": "<kbd></kbd>" },
+  { "id": "pk_b_ml_raw",    "input": "<b>a\nb</b>" },
+
+  { "id": "in_short_end_plain", "input": "zzz <i>x</i>" },
+  { "id": "in_short_mid_html",  "input": "z <i>x</i> zz" },
+  { "id": "in_b_end_plain",     "input": "hello <b>a</b>" },
+  { "id": "in_b_pad10_html",    "input": "hi <b>a</b>!!" },
+  { "id": "blk_short_tail",     "input": "<i>x</i> tail" },
+
+  { "id": "up_div_ml_raw",   "input": "<DIV>a\nb</DIV>" },
+  { "id": "up_kbd_single",   "input": "<KBD>abc</KBD>" },
+
+  { "id": "pi_long_raw",     "input": "<?php echo 1; ?>" },
+  { "id": "pi_short_plain",  "input": "<?a?>" },
+  { "id": "doctype_short",   "input": "<!x>" },
+  { "id": "comment_short",   "input": "<!--z-->" },
+  { "id": "comment_10_raw",  "input": "<!--zzzz-->" },
+  { "id": "cdata_raw",       "input": "<![CDATA[abc]]>" },
+
+  { "id": "selfclose_noq",   "input": "<img src=x/>" },
+  { "id": "br_space_pad10",  "input": "<br />wxyz" },
+  { "id": "img_space_pad",   "input": "<img />wxyz" },
+  { "id": "hr_nospace",      "input": "<hr/>xxxxx" },
+
+  { "id": "org_pk_b10_raw",     "format": "org", "input": "<b>abc</b>" },
+  { "id": "org_pk_i09_plain",   "format": "org", "input": "<i>xy</i>" },
+  { "id": "org_in_short_end",   "format": "org", "input": "zzz <i>x</i>" },
+  { "id": "org_in_short_mid",   "format": "org", "input": "z <i>x</i> zz" },
+  { "id": "org_pi_long_raw",    "format": "org", "input": "<?php echo 1; ?>" },
+  { "id": "org_up_div_ml",      "format": "org", "input": "<DIV>a\nb</DIV>" }
+]
