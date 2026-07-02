@@ -4,7 +4,7 @@
 //!
 //! The top-level ctx-aware inline pass (lexer → one-pass resolve) lives in the two format
 //! resolvers — `crate::resolver` (Markdown) and `crate::org_resolver` (Org). THIS module is
-//! their shared leaf kit: byte-class predicates (`is_ws`, `is_underscore_delim`, …), the
+//! their shared leaf kit: byte-class predicates (`is_ws`, `is_ws_or_nl`, …), the
 //! bracket/close pre-pair builders (`build_hiccup_close`, `build_nested_close`, …), and the
 //! per-construct leaf parsers both resolvers call — page refs (`parse_page_ref`), nested links
 //! (`parse_nested_link`), md links/images (`md_link`), autolinks, bare URLs, timestamps, latex
@@ -47,13 +47,6 @@ pub(crate) fn is_ws(c: u8) -> bool {
 pub(crate) fn is_ws_or_nl(c: u8) -> bool {
     is_ws(c) || c == b'\n' || c == b'\r'
 }
-/// mldoc `underline_emphasis_delims`: ASCII punctuation + whitespace (NOT letters/
-/// digits, NOT non-ASCII). Used for `_`/`__` open-backward and close-forward gates.
-#[inline]
-pub(crate) fn is_underscore_delim(c: u8) -> bool {
-    c.is_ascii_punctuation() || is_ws_or_nl(c)
-}
-
 // ---- shared helpers -------------------------------------------------------
 
 #[inline]

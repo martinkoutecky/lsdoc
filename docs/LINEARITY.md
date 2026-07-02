@@ -13,7 +13,7 @@ Line numbers were rechecked against the current tree after Phase B leaf-linearit
 | Markdown page-ref `]]` lookup @ `src/resolver.rs:216` | precomputed-map | `build_real_dbl` positions are shared with a monotone cursor. |
 | Markdown hiccup/nested close lookup @ `src/resolver.rs:199` | precomputed-map | `build_hiccup_close` and `build_nested_close` give O(1) close checks. |
 | Markdown md-link `](`/`)` floors @ `src/resolver.rs:906`, `src/resolver.rs:875` | invalidating-cursor | `lbp_cur`, `crlf`, and `rparen` advance only forward before `md_link`. |
-| Markdown emphasis closer scan @ `src/resolver.rs:639` | suffix-absence miss-cache | `no_closer[class][k]` records no closer for later openers of the same class. |
+| Markdown emphasis body parser @ `src/resolver.rs:255`, dispatch @ `src/resolver.rs:432` | consume-on-match + suffix-absence miss-cache | mldoc `md_em_parser` consumes each body byte once per bounded nesting phase; `no_closer[class][k]` floors EOF/no-closer failures. |
 | Markdown tag dispatch @ `src/resolver.rs:292`, `src/inline.rs:219` | boundary-run | delimiter-run termination is precomputed once by `build_tag_boundary_runs`. |
 | Markdown macro dispatch @ `src/resolver.rs:846`, `src/inline.rs:1844` | suffix-absence miss-cache + invalidating-cursor | `}}` floor proves close presence; first lone `}` cursor prevents repeated invalid misses. |
 | Markdown block-ref dispatch @ `src/resolver.rs:860`, `src/inline.rs:1809` | suffix-absence miss-cache + invalidating-cursor | `))` floor proves close presence; first lone `)` cursor owns body-invalid failures. |
@@ -33,7 +33,7 @@ Line numbers were rechecked against the current tree after Phase B leaf-linearit
 | Org raw HTML angle @ `src/org_resolver.rs:975`, `src/block_common.rs:614` | suffix-absence miss-cache + precomputed-map | same `RawHtmlScan` and unbalanced tag index as Markdown. |
 | Org email domain @ `src/org_resolver.rs:975`, `src/inline.rs:1288` | suffix-absence miss-cache + invalidating-cursor | same email `@` floor plus domain boundary cursor as Markdown. |
 | Org bare URL dispatch/resync @ `src/org_resolver.rs:367`, `src/org_resolver.rs:860` | consume-on-match + suffix-absence miss-cache | accepted URLs consume; resync lead probes share `BareUrlScan`. |
-| Org emphasis closer scan @ `src/org_resolver.rs:610` | suffix-absence miss-cache | `no_closer[class][k]` floors failed closer searches. |
+| Org emphasis body parser @ `src/org_resolver.rs:370`, dispatch @ `src/org_resolver.rs:486` | consume-on-match + suffix-absence miss-cache | Org uses the same mldoc body parser with `include_md_code=false`; `no_closer[class][k]` floors EOF/no-closer failures. |
 | `parse_tag_name` body @ `src/inline.rs:390` | consume-on-match + boundary-run | main bytes are consumed into the tag; delimiter suffixes use the boundary map. |
 | Tag nested/page refs @ `src/inline.rs:454` | precomputed-map at top level, consume-on-match in tag | successful refs advance tag cursor; top-level bracket retries are gated by maps. |
 | Macro arg scans @ `src/inline.rs:569` | consume-on-match | scans are limited to an already accepted macro body. |

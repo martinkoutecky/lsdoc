@@ -4,12 +4,11 @@
 //! pairing emphasis/brackets. Byte-exact to mldoc, validated over the differential harness
 //! gate (`harness/run.mjs`: 1039-input corpus + inlinegate).
 //!
-//! **M0** core (text/break/escape/entity/code). **M1** emphasis: mldoc's *leftmost opener →
-//! first FORWARD valid closer, flat content reparsed* — NOT a CommonMark backward
-//! `openers_bottom` stack (that gives a different tree). Linear via a per-(marker,len)
-//! `no_closer` forward floor. Deferred `Punct` tokens still render literally (M2/M3).
+//! **M0** core (text/break/escape/entity/code). **M1** emphasis ports mldoc's
+//! `md_em_parser` dispatch/body combinators plus phase-2 `nested_emphasis` reparsing.
+//! It is NOT a CommonMark backward `openers_bottom` stack. Linear via bounded body
+//! consumption plus a per-(marker,len) `no_closer` forward floor.
 
-use crate::inline::{is_underscore_delim, is_ws_or_nl};
 use crate::lexer::{lex, Kind, Token};
 use crate::projection::{Inline, Span};
 
@@ -18,6 +17,8 @@ use crate::projection::{Inline, Span};
 /// mldoc's `Ctx::emph` disables.
 #[derive(Clone, Copy)]
 pub(crate) struct Ctx {
+    /// mldoc inline state is only supplied to top-level Markdown `_` emphasis.
+    pub use_state: bool,
     /// Whether a `\n` is a `Break` node (true) or literal text (false — emphasis content).
     pub breaks: bool,
     pub hiccup: bool,
@@ -36,6 +37,7 @@ pub(crate) struct Ctx {
 impl Ctx {
     pub(crate) fn top() -> Ctx {
         Ctx {
+            use_state: true,
             breaks: true,
             hiccup: true,
             footnotes: true,
@@ -55,6 +57,7 @@ impl Ctx {
     /// emphasis on.
     fn emph() -> Ctx {
         Ctx {
+            use_state: false,
             breaks: false,
             hiccup: false,
             footnotes: false,
@@ -95,18 +98,6 @@ fn parse_ctx(text: &str, ctx: Ctx, base: usize) -> Vec<Inline> {
     resolve(text, &mut toks, ctx, base)
 }
 
-/// Emphasis candidate patterns for a marker, longest-first (mldoc dispatch order).
-/// `(k, kind, nested)`: `nested` is the `***`/`___` form → `Italic[Bold[…]]`.
-fn patterns(ch: u8) -> &'static [(usize, &'static str, bool)] {
-    match ch {
-        b'*' | b'_' => &[(3, "Bold", true), (2, "Bold", false), (1, "Italic", false)],
-        b'~' => &[(2, "Strike_through", false)],
-        b'^' => &[(2, "Highlight", false)],
-        b'=' => &[(2, "Highlight", false)],
-        _ => &[],
-    }
-}
-
 fn class_idx(ch: u8) -> usize {
     match ch {
         b'*' => 0,
@@ -115,6 +106,779 @@ fn class_idx(ch: u8) -> usize {
         b'^' => 3,
         _ => 4, // '='
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EmFail {
+    NotMatch,
+    NoCloser,
+}
+
+struct EmParsed {
+    node: Inline,
+    end: usize,
+    closer_start: usize,
+}
+
+/// Port of mldoc `Parsers.whitespace_chars` (`lib/parsers.ml:4`).
+#[inline]
+fn mldoc_whitespace_char(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0c)
+}
+
+/// Port of mldoc `underline_emphasis_delims` (`lib/syntax/inline.ml:259-293`).
+#[inline]
+fn underline_emphasis_delim(c: u8) -> bool {
+    c.is_ascii_punctuation() || mldoc_whitespace_char(c)
+}
+
+/// Port of mldoc `underline_emphasis_delims_backward`
+/// (`lib/syntax/inline.ml:390-399`).
+#[inline]
+fn underline_emphasis_delims_backward(state_char: Option<u8>) -> bool {
+    state_char.map(underline_emphasis_delim).unwrap_or(true)
+}
+
+/// Port of mldoc `underline_emphasis_delims_lookahead`
+/// (`lib/syntax/inline.ml:381-383`).
+#[inline]
+fn underline_emphasis_delims_lookahead(s: &str, at: usize) -> bool {
+    s.as_bytes().get(at).copied().map(underline_emphasis_delim).unwrap_or(true)
+}
+
+/// Port of mldoc `is_left_flanking_delimiter_run`
+/// (`lib/syntax/inline.ml:295-296`).
+#[inline]
+fn is_left_flanking_delimiter_run(s: &str, at: usize, pattern: &[u8]) -> bool {
+    let bb = s.as_bytes();
+    bb.get(at..at + pattern.len()) == Some(pattern)
+        && bb.get(at + pattern.len()).is_some_and(|&c| !mldoc_whitespace_char(c))
+}
+
+/// Port of mldoc `take_while1_include_backslash`
+/// (`lib/parsers.ml:236-248`).
+fn take_while1_include_backslash(
+    s: &str,
+    mut i: usize,
+    chars_can_escape: &[u8],
+    mut pred: impl FnMut(u8) -> bool,
+) -> Option<usize> {
+    let bb = s.as_bytes();
+    let start = i;
+    let mut last_backslash = false;
+    while i < bb.len() {
+        let c = bb[i];
+        let take = if last_backslash && chars_can_escape.contains(&c) {
+            last_backslash = false;
+            true
+        } else if last_backslash {
+            last_backslash = false;
+            pred(c)
+        } else if c == b'\\' {
+            last_backslash = true;
+            true
+        } else {
+            pred(c)
+        };
+        if !take {
+            break;
+        }
+        i += char_len_at(bb, i);
+    }
+    if i > start {
+        crate::metrics::scan_work(i - start);
+        Some(i)
+    } else {
+        None
+    }
+}
+
+#[inline]
+fn char_len_at(bb: &[u8], i: usize) -> usize {
+    crate::inline::char_len(bb[i])
+}
+
+fn push_plain_node(out: &mut Vec<Inline>, text: &str, start: usize, end: usize, base: usize) {
+    let (text, clean) = normalize_cr_plain_text(text);
+    out.push(Inline::Plain {
+        text,
+        span: clean.then_some(Span(base + start, base + end)),
+    });
+}
+
+fn normalize_cr_plain_text(text: &str) -> (String, bool) {
+    if text.as_bytes().contains(&b'\r') {
+        (text.replace('\r', "\n"), false)
+    } else {
+        (text.to_string(), true)
+    }
+}
+
+fn markdown_plain_text(text: &str) -> (String, bool) {
+    let bb = text.as_bytes();
+    if !bb.contains(&b'\\') && !bb.contains(&b'\r') {
+        return (text.to_string(), true);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    let mut clean = true;
+    while i < bb.len() {
+        if bb[i] == b'\r' {
+            out.push('\n');
+            clean = false;
+            i += 1;
+        } else if bb[i] == b'\\' && bb.get(i + 1).is_some_and(|c| c.is_ascii_punctuation()) {
+            let next = i + 1;
+            let end = next + char_len_at(bb, next);
+            out.push_str(&text[next..end]);
+            clean = false;
+            i = end;
+        } else {
+            let end = i + char_len_at(bb, i);
+            out.push_str(&text[i..end]);
+            i = end;
+        }
+    }
+    (out, clean)
+}
+
+fn set_char_before_pattern_from_node(node: &Inline, char_before_pattern: &mut Option<u8>) {
+    match node {
+        Inline::Plain { text, .. } => *char_before_pattern = text.as_bytes().last().copied(),
+        Inline::Code { .. } => *char_before_pattern = Some(b'`'),
+        _ => *char_before_pattern = None,
+    }
+}
+
+/// Port of mldoc `md_em_parser` (`lib/syntax/inline.ml:298-374`).
+#[allow(clippy::too_many_arguments)]
+fn md_em_parser_at(
+    s: &str,
+    at: usize,
+    pattern: &str,
+    typ: &str,
+    nested: bool,
+    include_md_code: bool,
+    base: usize,
+) -> Result<EmParsed, EmFail> {
+    let bb = s.as_bytes();
+    let pat = pattern.as_bytes();
+    let pattern_c = pat[0];
+    if !is_left_flanking_delimiter_run(s, at, pat) {
+        return Err(EmFail::NotMatch);
+    }
+
+    let content_start = at + pat.len();
+    let mut i = content_start;
+    let mut body: Vec<Inline> = Vec::new();
+    let mut char_before_pattern: Option<u8> = None;
+    let mut saw_non_ws = false;
+
+    let parse_non_ws = |i: usize,
+                        body: &mut Vec<Inline>,
+                        char_before_pattern: &mut Option<u8>|
+     -> Option<usize> {
+        let stop_chars = |c: u8| c == pattern_c || mldoc_whitespace_char(c);
+        let stop_chars_with_code =
+            |c: u8| c == pattern_c || (include_md_code && c == b'`') || mldoc_whitespace_char(c);
+
+        // Alternative 1: non-whitespace run, stopping at pattern/whitespace/code.
+        let escape_chars_with_code = [pattern_c, b' ', b'\t', b'\n', b'\r', 0x0c, b'`'];
+        let escape_chars_without_code = [pattern_c, b' ', b'\t', b'\n', b'\r', 0x0c];
+        let escape_chars = if include_md_code {
+            &escape_chars_with_code[..]
+        } else {
+            &escape_chars_without_code[..]
+        };
+        if let Some(end) = take_while1_include_backslash(
+            s,
+            i,
+            escape_chars,
+            |c| !stop_chars_with_code(c),
+        ) {
+            push_plain_node(body, &s[i..end], i, end, base);
+            set_char_before_pattern_from_node(body.last().unwrap(), char_before_pattern);
+            return Some(end);
+        }
+
+        // Alternative 2: Markdown inline code has precedence inside md emphasis.
+        if include_md_code && bb.get(i) == Some(&b'`') {
+            if let Some((mut node, end)) = crate::lexer::code_span(s, i) {
+                if let Inline::Code { text, .. } = &mut node {
+                    if text.as_bytes().contains(&b'\r') {
+                        *text = text.replace('\r', "\n");
+                    }
+                }
+                crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+                set_char_before_pattern_from_node(&node, char_before_pattern);
+                body.push(node);
+                return Some(end);
+            }
+        }
+
+        // Alternative 3: non-whitespace run, allowing invalid backticks as plain.
+        let escape_chars = [pattern_c, b' ', b'\t', b'\n', b'\r', 0x0c];
+        if let Some(end) =
+            take_while1_include_backslash(s, i, &escape_chars, |c| !stop_chars(c))
+        {
+            push_plain_node(body, &s[i..end], i, end, base);
+            set_char_before_pattern_from_node(body.last().unwrap(), char_before_pattern);
+            return Some(end);
+        }
+
+        // Alternative 4: not the same full pattern, so consume one Angstrom `any_char`.
+        if bb.get(i..i + pat.len()) != Some(pat) {
+            if i < bb.len() {
+                let end = i + char_len_at(bb, i);
+                push_plain_node(body, &s[i..end], i, end, base);
+                set_char_before_pattern_from_node(body.last().unwrap(), char_before_pattern);
+                return Some(end);
+            }
+            return None;
+        }
+
+        // Alternative 5: pattern-as-plain.
+        let following = bb.get(i + pat.len()).copied()?;
+        let pattern_as_plain = match (pattern_c, *char_before_pattern, following) {
+            (b'_', Some(c), _) if mldoc_whitespace_char(c) => true,
+            (b'_', _, fc) if !underline_emphasis_delim(fc) => true,
+            (_, Some(c), _) if mldoc_whitespace_char(c) => true,
+            _ => false,
+        };
+        if pattern_as_plain {
+            let end = i + pat.len();
+            push_plain_node(body, &s[i..end], i, end, base);
+            set_char_before_pattern_from_node(body.last().unwrap(), char_before_pattern);
+            return Some(end);
+        }
+        None
+    };
+
+    loop {
+        if i >= bb.len() {
+            return Err(EmFail::NoCloser);
+        }
+        if mldoc_whitespace_char(bb[i]) {
+            let ws_start = i;
+            while i < bb.len() && mldoc_whitespace_char(bb[i]) {
+                i += 1;
+            }
+            crate::metrics::scan_work(i - ws_start);
+            push_plain_node(&mut body, &s[ws_start..i], ws_start, i, base);
+            set_char_before_pattern_from_node(body.last().unwrap(), &mut char_before_pattern);
+            let before = i;
+            match parse_non_ws(i, &mut body, &mut char_before_pattern) {
+                Some(end) => {
+                    i = end;
+                    saw_non_ws = true;
+                    continue;
+                }
+                None if before >= bb.len() => return Err(EmFail::NoCloser),
+                None if bb.get(before..before + pat.len()) == Some(pat) && saw_non_ws => {
+                    let close_end = before + pat.len();
+                    let children = concat_plains_without_pos(body);
+                    let full = Some(Span(base + at, base + close_end));
+                    let node = if nested {
+                        Inline::Emphasis {
+                            emph: "Italic".to_string(),
+                            children: vec![Inline::Emphasis {
+                                emph: "Bold".to_string(),
+                                children,
+                                span: full,
+                            }],
+                            span: full,
+                        }
+                    } else {
+                        Inline::Emphasis { emph: typ.to_string(), children, span: full }
+                    };
+                    return Ok(EmParsed { node, end: close_end, closer_start: before });
+                }
+                None if bb.get(before..before + pat.len()) == Some(pat) => return Err(EmFail::NotMatch),
+                None => return Err(EmFail::NoCloser),
+            }
+        }
+
+        match parse_non_ws(i, &mut body, &mut char_before_pattern) {
+            Some(end) => {
+                i = end;
+                saw_non_ws = true;
+            }
+            None if bb.get(i..i + pat.len()) == Some(pat) && saw_non_ws => {
+                let close_end = i + pat.len();
+                let children = concat_plains_without_pos(body);
+                let full = Some(Span(base + at, base + close_end));
+                let node = if nested {
+                    Inline::Emphasis {
+                        emph: "Italic".to_string(),
+                        children: vec![Inline::Emphasis {
+                            emph: "Bold".to_string(),
+                            children,
+                            span: full,
+                        }],
+                        span: full,
+                    }
+                } else {
+                    Inline::Emphasis { emph: typ.to_string(), children, span: full }
+                };
+                return Ok(EmParsed { node, end: close_end, closer_start: i });
+            }
+            None if bb.get(i..i + pat.len()) == Some(pat) => return Err(EmFail::NotMatch),
+            None => return Err(EmFail::NoCloser),
+        }
+    }
+}
+
+/// Port of mldoc `markdown_emphasis` dispatch
+/// (`lib/syntax/inline.ml:406-427`).
+fn markdown_emphasis_at(
+    s: &str,
+    at: usize,
+    state_char: Option<u8>,
+    no_closer: &mut [[bool; 3]; 5],
+    base: usize,
+) -> Result<EmParsed, EmFail> {
+    let Some(&ch) = s.as_bytes().get(at) else {
+        return Err(EmFail::NotMatch);
+    };
+    match ch {
+        b'*' => {
+            for &(pattern, typ, nested, k) in &[
+                ("***", "Bold", true, 3usize),
+                ("**", "Bold", false, 2usize),
+                ("*", "Italic", false, 1usize),
+            ] {
+                let cls = class_idx(ch);
+                if no_closer[cls][k - 1] {
+                    continue;
+                }
+                match md_em_parser_at(s, at, pattern, typ, nested, true, base) {
+                    Ok(hit) => return Ok(hit),
+                    Err(EmFail::NoCloser) => no_closer[cls][k - 1] = true,
+                    Err(EmFail::NotMatch) => {}
+                }
+            }
+            Err(EmFail::NotMatch)
+        }
+        b'_' => {
+            if !underline_emphasis_delims_backward(state_char) {
+                return Err(EmFail::NotMatch);
+            }
+            for &(pattern, typ, nested, k) in &[
+                ("___", "Bold", true, 3usize),
+                ("__", "Bold", false, 2usize),
+                ("_", "Italic", false, 1usize),
+            ] {
+                let cls = class_idx(ch);
+                if no_closer[cls][k - 1] {
+                    continue;
+                }
+                match md_em_parser_at(s, at, pattern, typ, nested, true, base) {
+                    Ok(hit) if underline_emphasis_delims_lookahead(s, hit.end) => return Ok(hit),
+                    Ok(_) => {}
+                    Err(EmFail::NoCloser) => no_closer[cls][k - 1] = true,
+                    Err(EmFail::NotMatch) => {}
+                }
+            }
+            Err(EmFail::NotMatch)
+        }
+        b'~' => {
+            let cls = class_idx(ch);
+            if no_closer[cls][1] {
+                return Err(EmFail::NotMatch);
+            }
+            match md_em_parser_at(s, at, "~~", "Strike_through", false, true, base) {
+                Ok(hit) => Ok(hit),
+                Err(EmFail::NoCloser) => {
+                    no_closer[cls][1] = true;
+                    Err(EmFail::NotMatch)
+                }
+                Err(e) => Err(e),
+            }
+        }
+        b'^' => {
+            let cls = class_idx(ch);
+            if no_closer[cls][1] {
+                return Err(EmFail::NotMatch);
+            }
+            match md_em_parser_at(s, at, "^^", "Highlight", false, true, base) {
+                Ok(hit) => Ok(hit),
+                Err(EmFail::NoCloser) => {
+                    no_closer[cls][1] = true;
+                    Err(EmFail::NotMatch)
+                }
+                Err(e) => Err(e),
+            }
+        }
+        b'=' => {
+            let cls = class_idx(ch);
+            if no_closer[cls][1] {
+                return Err(EmFail::NotMatch);
+            }
+            match md_em_parser_at(s, at, "==", "Highlight", false, true, base) {
+                Ok(hit) => Ok(hit),
+                Err(EmFail::NoCloser) => {
+                    no_closer[cls][1] = true;
+                    Err(EmFail::NotMatch)
+                }
+                Err(e) => Err(e),
+            }
+        }
+        _ => Err(EmFail::NotMatch),
+    }
+}
+
+/// Port of mldoc `nested_emphasis` entry (`lib/syntax/inline.ml:919-954`).
+fn nested_emphasis_at_md(
+    s: &str,
+    at: usize,
+    state_char: Option<u8>,
+    no_closer: &mut [[bool; 3]; 5],
+    base: usize,
+) -> Result<EmParsed, EmFail> {
+    let mut hit = markdown_emphasis_at(s, at, state_char, no_closer, base)?;
+    hit.node = aux_nested_emphasis_md(hit.node);
+    Ok(hit)
+}
+
+/// Port of mldoc `nested_emphasis` / `aux_nested_emphasis`
+/// (`lib/syntax/inline.ml:922-947`).
+fn aux_nested_emphasis_md(node: Inline) -> Inline {
+    if is_synthetic_nested_emphasis(&node) {
+        return node;
+    }
+    match node {
+        Inline::Emphasis { emph, children, span } => {
+            let mut reparsed = Vec::new();
+            for child in children {
+                match child {
+                    Inline::Plain { text, span: plain_span } => {
+                        match parse_nested_plain_md(&text, plain_span.map(|s| s.0).unwrap_or(0)) {
+                            Ok(result) if result.len() == 1 && matches!(result[0], Inline::Plain { .. }) => {
+                                let (text, clean) = markdown_plain_text(&text);
+                                reparsed.push(Inline::Plain {
+                                    text,
+                                    span: if clean { plain_span } else { None },
+                                });
+                            }
+                            Ok(mut result) => {
+                                if plain_span.is_none() {
+                                    for node in &mut result {
+                                        clear_inline_spans(node);
+                                    }
+                                }
+                                reparsed.extend(result.into_iter().map(aux_nested_emphasis_md));
+                            }
+                            Err(()) => reparsed.push(Inline::Plain { text, span: plain_span }),
+                        }
+                    }
+                    other => reparsed.push(other),
+                }
+            }
+            Inline::Emphasis { emph, children: concat_plains_without_pos(reparsed), span }
+        }
+        other => other,
+    }
+}
+
+fn clear_inline_spans(node: &mut Inline) {
+    match node {
+        Inline::Plain { span, .. }
+        | Inline::Code { span, .. }
+        | Inline::Verbatim { span, .. }
+        | Inline::Break { span }
+        | Inline::HardBreak { span }
+        | Inline::NestedLink { span, .. }
+        | Inline::Target { span, .. }
+        | Inline::Macro { span, .. }
+        | Inline::Latex { span, .. }
+        | Inline::Timestamp { span, .. }
+        | Inline::Fnref { span, .. }
+        | Inline::InlineHtml { span, .. }
+        | Inline::Email { span, .. }
+        | Inline::Entity { span, .. }
+        | Inline::Hiccup { span, .. } => *span = None,
+        Inline::Emphasis { children, span, .. }
+        | Inline::Subscript { children, span }
+        | Inline::Superscript { children, span }
+        | Inline::Tag { children, span } => {
+            *span = None;
+            for child in children {
+                clear_inline_spans(child);
+            }
+        }
+        Inline::Link { label, span, .. } => {
+            *span = None;
+            for child in label {
+                clear_inline_spans(child);
+            }
+        }
+    }
+}
+
+#[inline]
+fn is_synthetic_nested_emphasis(node: &Inline) -> bool {
+    matches!(
+        node,
+        Inline::Emphasis {
+            emph,
+            children,
+            ..
+        } if emph == "Italic"
+            && children.len() == 1
+            && matches!(&children[0], Inline::Emphasis { emph: inner, .. } if inner == "Bold")
+    )
+}
+
+/// Port of the phase-2 parser inside mldoc `nested_emphasis`
+/// (`lib/syntax/inline.ml:927-934`) for Markdown.
+fn parse_nested_plain_md(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
+    let bb = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let mut no_closer = [[false; 3]; 5];
+    while i < bb.len() {
+        if matches!(bb[i], b'*' | b'_' | b'~' | b'^' | b'=') {
+            if let Ok(hit) = markdown_emphasis_at(text, i, None, &mut no_closer, base) {
+                out.push(hit.node);
+                i = hit.end;
+                continue;
+            }
+        }
+        if matches!(bb[i], b'_' | b'^') {
+            if let Some((node, end)) = try_markdown_script_at(text, bb, i, base) {
+                out.push(node);
+                i = end;
+                continue;
+            }
+        }
+        if bb[i] == b'[' {
+            if let Some((node, end)) = try_nested_link_or_link_md(text, i, base) {
+                out.push(node);
+                i = end;
+                continue;
+            }
+        }
+        let (node, end) = markdown_plain_at(text, i, base).ok_or(())?;
+        out.push(node);
+        i = end;
+    }
+    Ok(concat_plains_without_pos(out))
+}
+
+/// Port of mldoc Markdown `plain` fallback as used by `nested_emphasis`
+/// (`lib/syntax/inline.ml:211-236`).
+fn markdown_plain_at(s: &str, i: usize, base: usize) -> Option<(Inline, usize)> {
+    let bb = s.as_bytes();
+    if i >= bb.len() {
+        return None;
+    }
+    let in_plain_delims = |c: u8| {
+        matches!(c, b'\\' | b'_' | b'^' | b'[' | b'*' | b'~' | b'`' | b'=' | b'$' | b'#')
+            || mldoc_whitespace_char(c)
+    };
+    if !mldoc_whitespace_char(bb[i]) && bb[i] != b'\n' && bb[i] != b'\r' && !in_plain_delims(bb[i]) {
+        let mut end = i + char_len_at(bb, i);
+        while end < bb.len()
+            && bb[end] != b'\n'
+            && bb[end] != b'\r'
+            && !in_plain_delims(bb[end])
+        {
+            end += char_len_at(bb, end);
+        }
+        crate::metrics::scan_work(end - i);
+        return Some((
+            Inline::Plain { text: s[i..end].to_string(), span: Some(Span(base + i, base + end)) },
+            end,
+        ));
+    }
+    if matches!(bb[i], b' ' | b'\t' | 0x0c) {
+        let mut end = i + 1;
+        while end < bb.len() && matches!(bb[end], b' ' | b'\t' | 0x1a | 0x0c) {
+            end += 1;
+        }
+        crate::metrics::scan_work(end - i);
+        return Some((
+            Inline::Plain { text: s[i..end].to_string(), span: Some(Span(base + i, base + end)) },
+            end,
+        ));
+    }
+    if bb[i] == b'\\' {
+        if let Some(&next) = bb.get(i + 1) {
+            if next.is_ascii_punctuation() {
+                let end = i + 1 + char_len_at(bb, i + 1);
+                return Some((
+                    Inline::Plain { text: s[i + 1..end].to_string(), span: None },
+                    end,
+                ));
+            }
+        }
+    }
+    if in_plain_delims(bb[i]) {
+        let end = i + char_len_at(bb, i);
+        return Some((
+            Inline::Plain { text: s[i..end].to_string(), span: Some(Span(base + i, base + end)) },
+            end,
+        ));
+    }
+    None
+}
+
+/// Port of mldoc Markdown `nested_link_or_link`
+/// (`lib/syntax/inline.ml:915-917`) for phase-2 emphasis reparsing.
+fn try_nested_link_or_link_md(s: &str, at: usize, base: usize) -> Option<(Inline, usize)> {
+    if s[at..].starts_with("[[") {
+        if let Some((end, content)) = crate::inline::parse_nested_link(s, at) {
+            return Some((Inline::NestedLink { content, span: Some(Span(base + at, base + end)) }, end));
+        }
+        if let Some((end, name, full)) = crate::inline::parse_page_ref(s, at) {
+            return Some((
+                Inline::Link {
+                    url: crate::projection::Url::PageRef { v: name },
+                    label: vec![],
+                    full,
+                    image: false,
+                    metadata: String::new(),
+                    title: None,
+                    span: Some(Span(base + at, base + end)),
+                },
+                end,
+            ));
+        }
+    }
+    let (mut node, end) = crate::inline::md_link(s, at, false, base)?;
+    crate::projection::set_inline_span(&mut node, Some(Span(base + at, base + end)));
+    Some((node, end))
+}
+
+/// Port of mldoc `gen_script` for Markdown braced script bodies
+/// (`lib/syntax/inline.ml:492-514`).
+fn try_markdown_script_at(s: &str, bb: &[u8], i: usize, base: usize) -> Option<(Inline, usize)> {
+    let marker = bb[i];
+    if !matches!(marker, b'_' | b'^') || bb.get(i + 1) != Some(&b'{') {
+        return None;
+    }
+    let body_start = i + 2;
+    let mut j = body_start;
+    while j < bb.len() && bb[j] != b'}' && bb[j] != b'\n' && bb[j] != b'\r' {
+        j += char_len_at(bb, j);
+    }
+    if j == body_start || bb.get(j) != Some(&b'}') {
+        return None;
+    }
+    let children = parse_markdown_script_body(&s[body_start..j], base + body_start);
+    let span = Some(Span(base + i, base + j + 1));
+    let node = if marker == b'_' {
+        Inline::Subscript { children, span }
+    } else {
+        Inline::Superscript { children, span }
+    };
+    Some((node, j + 1))
+}
+
+/// Port of the inner parser in mldoc `gen_script`
+/// (`lib/syntax/inline.ml:503-510`) for Markdown braced script bodies.
+fn parse_markdown_script_body(text: &str, base: usize) -> Vec<Inline> {
+    let bb = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let mut no_closer = [[false; 3]; 5];
+    while i < bb.len() {
+        if matches!(bb[i], b'*' | b'_' | b'~' | b'^' | b'=') {
+            if let Ok(hit) = markdown_emphasis_at(text, i, None, &mut no_closer, base) {
+                out.push(aux_nested_emphasis_md(hit.node));
+                i = hit.end;
+                continue;
+            }
+        }
+        if bb[i] == b'\\' {
+            if let Some((node, end)) = markdown_entity_or_plain_at(text, i, base) {
+                out.push(node);
+                i = end;
+                continue;
+            }
+        }
+        let Some((node, end)) = markdown_plain_at(text, i, base) else {
+            break;
+        };
+        out.push(node);
+        i = end;
+    }
+    concat_plains_without_pos(out)
+}
+
+/// Port of mldoc `entity` fallback used by `gen_script`
+/// (`lib/syntax/inline.ml:481-488`).
+fn markdown_entity_or_plain_at(s: &str, i: usize, base: usize) -> Option<(Inline, usize)> {
+    let bb = s.as_bytes();
+    if bb.get(i) != Some(&b'\\') {
+        return None;
+    }
+    let start = i + 1;
+    if !bb.get(start).is_some_and(|c| c.is_ascii_alphabetic()) {
+        return markdown_plain_at(s, i, base);
+    }
+    let mut end = start;
+    while end < bb.len() && bb[end].is_ascii_alphabetic() {
+        end += 1;
+    }
+    let name = &s[start..end];
+    if s[end..].starts_with("{}") {
+        end += 2;
+    }
+    match crate::entities::find(name) {
+        Some(e) => Some((
+            Inline::Entity {
+                name: e.name.to_string(),
+                latex: e.latex.to_string(),
+                latex_mathp: e.latex_mathp,
+                html: e.html.to_string(),
+                ascii: e.ascii.to_string(),
+                unicode: e.unicode.to_string(),
+                span: Some(Span(base + i, base + end)),
+            },
+            end,
+        )),
+        None => Some((
+            Inline::Plain { text: name.to_string(), span: None },
+            end,
+        )),
+    }
+}
+
+fn concat_plains_without_pos(nodes: Vec<Inline>) -> Vec<Inline> {
+    let mut out: Vec<Inline> = Vec::new();
+    for node in nodes {
+        match (out.last_mut(), node) {
+            (Some(Inline::Plain { text: prev, span: prev_span }), Inline::Plain { text, span }) => {
+                prev.push_str(&text);
+                *prev_span = match (*prev_span, span) {
+                    (Some(Span(start, _)), Some(Span(_, end))) => Some(Span(start, end)),
+                    _ => None,
+                };
+            }
+            (_, node) => out.push(node),
+        }
+    }
+    out
+}
+
+fn last_plain_char_after_append(s: &str, last_plain_char: &mut Option<u8>) {
+    if let Some(b) = s.as_bytes().last().copied() {
+        *last_plain_char = Some(b);
+    }
+}
+
+fn find_delim_token_containing(toks: &[Token], mut t: usize, start: usize, end: usize, ch: u8) -> Option<usize> {
+    while t < toks.len() {
+        match toks[t].kind {
+            Kind::Delim { ch: dch, len } if dch == ch && toks[t].off <= start && start < toks[t].off + len => {
+                return Some(t);
+            }
+            _ if toks[t].off >= end => return None,
+            _ => t += 1,
+        }
+    }
+    None
 }
 
 /// Dispatch-time code span (Phase D): reuse the lexer's byte-exact `code_span` builder and set the
@@ -135,6 +899,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let bb = s.as_bytes();
     let mut out: Vec<Inline> = Vec::new();
     let mut pending = String::new();
+    let mut last_plain_char: Option<u8> = None;
     // Span tracking for the pending plain run: `plain_start` is the ABSOLUTE byte offset of
     // the run's first byte (None once a `\`-transform makes it non-1:1 → S5 can't hold),
     // `plain_end` its absolute end. `flush` turns them into the `Plain.span`.
@@ -266,6 +1031,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     if pending.is_empty() { plain_start = Some(base + off); }
                     if plain_start.is_some() { plain_end = base + off + 1; }
                     pending.push('[');
+                    last_plain_char = Some(b'[');
                     t += 1;
                     fresh = true; // `[` is a marker-delim → fresh point
                 }
@@ -308,6 +1074,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     if pending.is_empty() { plain_start = Some(base + off); }
                     if plain_start.is_some() { plain_end = base + off + 1; }
                     pending.push(c as char);
+                    last_plain_char = Some(c);
                     t += 1;
                     fresh = true; // `$`/`#` are marker-delims → fresh point
                 }
@@ -330,6 +1097,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 if pending.is_empty() { plain_start = Some(base + off); }
                 if plain_start.is_some() { plain_end = base + off + 1; }
                 pending.push('`');
+                last_plain_char = Some(b'`');
                 t += 1;
                 fresh = true; // `` ` `` is a marker-delim → fresh point
             }
@@ -374,6 +1142,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     // longer 1:1 with source, so S5 can't hold for it.
                     plain_start = None;
                     pending.push(c as char);
+                    last_plain_char = Some(c);
                     t += 1;
                     fresh = true;
                 }
@@ -436,6 +1205,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             if pending.is_empty() { plain_start = Some(base + off); }
             if plain_start.is_some() { plain_end = base + off + 1; }
             pending.push(c as char);
+            last_plain_char = Some(c);
             fresh = false;
             t += 1;
             continue;
@@ -474,6 +1244,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             if pending.is_empty() { plain_start = Some(base + off); }
             if plain_start.is_some() { plain_end = base + off + txt_len; }
             pending.push_str(txt);
+            last_plain_char_after_append(txt, &mut last_plain_char);
             fresh = trailing_ws(txt) > 0;
             t += 1;
             continue;
@@ -503,6 +1274,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         if pending.is_empty() { plain_start = Some(base + off); }
                         if plain_start.is_some() { plain_end = base + off + 1; }
                         pending.push(c as char);
+                        last_plain_char = Some(c);
                     }
                     fresh = true;
                 }
@@ -522,6 +1294,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     // the backslash is dropped from the text → S5 can't hold for this run.
                     plain_start = None;
                     pending.push_str(x.as_str());
+                    last_plain_char_after_append(x, &mut last_plain_char);
                     fresh = true;
                 }
                 // `$`/`#` (M3 markers) render literally for now; they are marker-delims → fresh.
@@ -530,6 +1303,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     if pending.is_empty() { plain_start = Some(base + off); }
                     if plain_start.is_some() { plain_end = base + off + 1; }
                     pending.push(c as char);
+                    last_plain_char = Some(c);
                     fresh = true;
                 }
                 // Text/Delim/LatexBs are handled by dedicated blocks above.
@@ -544,128 +1318,45 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             Kind::Delim { ch, len } => (*ch, *len, toks[t].off),
             _ => unreachable!(),
         };
-        // `_` open gate (md): the char before the opener must be an underscore-delim (or BOL).
-        let before_ok = ch != b'_' || off == 0 || is_underscore_delim(bb[off - 1]);
-        let mut matched = false;
-        if before_ok {
-            for &(k, kind, nested) in patterns(ch) {
-                if len < k {
-                    continue;
-                }
-                let content_start = off + k;
-                // left-flank: the char after the k opener markers must be non-ws.
-                match bb.get(content_start) {
-                    Some(&a) if !is_ws_or_nl(a) => {}
-                    _ => continue,
-                }
-                // empty content: opener immediately followed by its closing pattern.
-                if content_start + k <= bb.len()
-                    && bb[content_start..content_start + k].iter().all(|&x| x == ch)
-                {
-                    continue;
-                }
-                let cls = class_idx(ch);
-                if no_closer[cls][k - 1] {
-                    continue;
-                }
-                let Some((closer_t, closer_off)) = find_closer(s, toks, t, ch, k) else {
-                    no_closer[cls][k - 1] = true;
-                    continue;
-                };
-                // `_` close gate (post-check on the FIRST closer): char after the k closing
-                // markers must be an underscore-delim (or EOF) — else this pattern fails.
-                if ch == b'_' && bb.get(closer_off + k).is_some_and(|&a| !is_underscore_delim(a)) {
-                    continue;
-                }
-                let children = parse_ctx(&s[content_start..closer_off], Ctx::emph(), base + content_start);
-                // full source extent of the emphasis: opener `off` … past the k closing markers.
-                let full = Some(Span(base + off, base + closer_off + k));
-                let node = if nested {
-                    // `***x***` → Italic[Bold[…]]: the synthetic inner Bold has no delimiters of
-                    // its own (it is the same run split by mldoc), so it shares the full extent —
-                    // trivially satisfying S3 (child ⊆ parent) with the outer Italic.
-                    Inline::Emphasis {
-                        emph: "Italic".to_string(),
-                        children: vec![Inline::Emphasis { emph: kind.to_string(), children, span: full }],
-                        span: full,
-                    }
-                } else {
-                    Inline::Emphasis { emph: kind.to_string(), children, span: full }
-                };
-                flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                out.push(node);
-                // Resume past the k closing markers; closer-run surplus re-enters as a fresh
-                // Delim (mldoc re-dispatches at byte closer_off + k).
-                let closer_len = match &toks[closer_t].kind {
-                    Kind::Delim { len, .. } => *len,
+        let state_char = if ctx.use_state {
+            pending.as_bytes().last().copied().or(last_plain_char)
+        } else {
+            None
+        };
+        if let Ok(hit) = nested_emphasis_at_md(s, off, state_char, &mut no_closer, base) {
+            flush(&mut out, &mut pending, &mut plain_start, plain_end);
+            out.push(hit.node);
+            if let Some(closer_t) = find_delim_token_containing(toks, t, hit.closer_start, hit.end, ch) {
+                let closer_end = match toks[closer_t].kind {
+                    Kind::Delim { len, .. } => toks[closer_t].off + len,
                     _ => unreachable!(),
                 };
-                if closer_len > k {
-                    toks[closer_t] = Token {
-                        off: closer_off + k,
-                        kind: Kind::Delim { ch, len: closer_len - k },
-                    };
+                if closer_end > hit.end {
+                    toks[closer_t] =
+                        Token { off: hit.end, kind: Kind::Delim { ch, len: closer_end - hit.end } };
                     t = closer_t;
                 } else {
                     t = closer_t + 1;
                 }
-                matched = true;
-                break;
-            }
-        }
-        if !matched {
-            // failed opener: emit ONE marker char, re-dispatch the rest of the run at off+1.
-            if pending.is_empty() { plain_start = Some(base + off); }
-            if plain_start.is_some() { plain_end = base + off + 1; }
-            pending.push(ch as char);
-            if len > 1 {
-                toks[t] = Token { off: off + 1, kind: Kind::Delim { ch, len: len - 1 } };
             } else {
-                t += 1;
+                t = resync(s, toks, t, hit.end, &mut out, &mut pending, &mut fresh, ctx, &mut plain_start, &mut plain_end, base, &mut bare_url_scan);
             }
+            fresh = true;
+            continue;
         }
-        // a marker run (matched emphasis or a literal marker char) is a marker-delim → fresh.
+        if pending.is_empty() { plain_start = Some(base + off); }
+        if plain_start.is_some() { plain_end = base + off + 1; }
+        pending.push(ch as char);
+        last_plain_char = Some(ch);
+        if len > 1 {
+            toks[t] = Token { off: off + 1, kind: Kind::Delim { ch, len: len - 1 } };
+        } else {
+            t += 1;
+        }
         fresh = true;
     }
     flush(&mut out, &mut pending, &mut plain_start, plain_end);
     out
-}
-
-/// First valid closer for an opener of pattern `(ch, k)` at token `open_t`: the first later
-/// `Delim` token of the same `ch`, len ≥ k, right-flanking (the byte before its start is
-/// non-ws). Code/escapes are already collapsed into Leaf/Text tokens, so scanning `Delim`
-/// tokens reproduces v1's byte scan that skips them. The `_` forward gate is the caller's
-/// post-check. Returns `(closer_token_index, closer_byte_offset)`.
-fn find_closer(s: &str, toks: &[Token], open_t: usize, ch: u8, k: usize) -> Option<(usize, usize)> {
-    let bb = s.as_bytes();
-    let mut q = open_t + 1;
-    while q < toks.len() {
-        match &toks[q].kind {
-            // a `` ` `` code span PROTECTS its content: a `*`/`_` inside `` `…` `` is not a valid
-            // closer (mldoc recognizes code spans while scanning emphasis content). Skip past the
-            // span. Phase D dispatches code lazily, so this must be explicit — the old pre-built
-            // code `Leaf` hid the inner markers from this token scan implicitly; the skip restores
-            // that exact behavior byte-for-byte (reuses the dispatch's `code_span`, zero drift).
-            Kind::Punct(b'`') => {
-                if let Some((_, e)) = crate::lexer::code_span(s, toks[q].off) {
-                    q += 1;
-                    while q < toks.len() && toks[q].off < e {
-                        q += 1;
-                    }
-                    continue;
-                }
-            }
-            Kind::Delim { ch: dch, len } => {
-                let qoff = toks[q].off;
-                if *dch == ch && *len >= k && qoff > 0 && !is_ws_or_nl(bb[qoff - 1]) {
-                    return Some((q, qoff));
-                }
-            }
-            _ => {}
-        }
-        q += 1;
-    }
-    None
 }
 
 /// Flush the pending plain run as a `Plain` node. `plain_start` is the absolute byte offset

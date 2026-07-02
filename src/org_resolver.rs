@@ -13,7 +13,7 @@
 //! break / escape / entity; markers + specials are emitted as deferred tokens (rendered
 //! literally until the emphasis / leaf / bracket sub-steps refine them).
 
-use crate::inline::{char_len, is_underscore_delim, is_ws, is_ws_or_nl};
+use crate::inline::{char_len, is_ws, is_ws_or_nl};
 use crate::lexer::{Kind, Token};
 use crate::projection::{Inline, Span};
 
@@ -261,11 +261,452 @@ fn flush(
     }
 }
 
-/// Resolver: ONE ctx-aware pass + stack over the Org tokens. M6 emphasis sub-step: real
-/// emphasis (the stateful backward gate + forward gate / `continue_search`) and sub/super-
-/// script; the remaining specials (`Punct`/`LatexBs`) still render literally (refined by the
-/// leaf / bracket sub-steps). `last_plain_char` mirrors mldoc `push_plain`: updated on EVERY
-/// plain append and PERSISTS across nodes/flush (an emphasis node does NOT reset it).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EmFail {
+    NotMatch,
+    NoCloser,
+}
+
+struct EmParsed {
+    node: Inline,
+    end: usize,
+}
+
+/// Port of mldoc `Parsers.whitespace_chars` (`lib/parsers.ml:4`).
+#[inline]
+fn mldoc_whitespace_char(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0c)
+}
+
+/// Port of mldoc `underline_emphasis_delims` (`lib/syntax/inline.ml:259-293`).
+#[inline]
+fn underline_emphasis_delim(c: u8) -> bool {
+    c.is_ascii_punctuation() || mldoc_whitespace_char(c)
+}
+
+/// Port of mldoc `underline_emphasis_delims_backward`
+/// (`lib/syntax/inline.ml:390-399`).
+#[inline]
+fn underline_emphasis_delims_backward(state_char: Option<u8>) -> bool {
+    state_char.map(underline_emphasis_delim).unwrap_or(true)
+}
+
+/// Port of mldoc `underline_emphasis_delims_lookahead`
+/// (`lib/syntax/inline.ml:381-383`).
+#[inline]
+fn underline_emphasis_delims_lookahead(s: &str, at: usize) -> bool {
+    s.as_bytes().get(at).copied().map(underline_emphasis_delim).unwrap_or(true)
+}
+
+/// Port of mldoc `is_left_flanking_delimiter_run`
+/// (`lib/syntax/inline.ml:295-296`).
+#[inline]
+fn is_left_flanking_delimiter_run(s: &str, at: usize, pattern: &[u8]) -> bool {
+    let bb = s.as_bytes();
+    bb.get(at..at + pattern.len()) == Some(pattern)
+        && bb.get(at + pattern.len()).is_some_and(|&c| !mldoc_whitespace_char(c))
+}
+
+/// Port of mldoc `take_while1_include_backslash`
+/// (`lib/parsers.ml:236-248`).
+fn take_while1_include_backslash(
+    s: &str,
+    mut i: usize,
+    chars_can_escape: &[u8],
+    mut pred: impl FnMut(u8) -> bool,
+) -> Option<usize> {
+    let bb = s.as_bytes();
+    let start = i;
+    let mut last_backslash = false;
+    while i < bb.len() {
+        let c = bb[i];
+        let take = if last_backslash && chars_can_escape.contains(&c) {
+            last_backslash = false;
+            true
+        } else if last_backslash {
+            last_backslash = false;
+            pred(c)
+        } else if c == b'\\' {
+            last_backslash = true;
+            true
+        } else {
+            pred(c)
+        };
+        if !take {
+            break;
+        }
+        i += char_len(c);
+    }
+    if i > start {
+        crate::metrics::scan_work(i - start);
+        Some(i)
+    } else {
+        None
+    }
+}
+
+fn push_plain_node(out: &mut Vec<Inline>, text: &str, start: usize, end: usize, base: usize) {
+    let text = if text.as_bytes().contains(&b'\r') {
+        text.replace('\r', "\n")
+    } else {
+        text.to_string()
+    };
+    out.push(Inline::Plain {
+        text,
+        span: Some(Span(base + start, base + end)),
+    });
+}
+
+fn set_char_before_pattern_from_node(node: &Inline, char_before_pattern: &mut Option<u8>) {
+    match node {
+        Inline::Plain { text, .. } => *char_before_pattern = text.as_bytes().last().copied(),
+        Inline::Code { .. } => *char_before_pattern = Some(b'`'),
+        _ => *char_before_pattern = None,
+    }
+}
+
+/// Port of mldoc `md_em_parser` as `org_em_parser = md_em_parser ~include_md_code:false`
+/// (`lib/syntax/inline.ml:298-375`).
+fn org_md_em_parser_at(
+    s: &str,
+    at: usize,
+    pattern: &str,
+    typ: &str,
+    base: usize,
+) -> Result<EmParsed, EmFail> {
+    let bb = s.as_bytes();
+    let pat = pattern.as_bytes();
+    let pattern_c = pat[0];
+    if !is_left_flanking_delimiter_run(s, at, pat) {
+        return Err(EmFail::NotMatch);
+    }
+
+    let mut i = at + pat.len();
+    let mut body: Vec<Inline> = Vec::new();
+    let mut char_before_pattern: Option<u8> = None;
+    let mut saw_non_ws = false;
+
+    let parse_non_ws = |i: usize,
+                        body: &mut Vec<Inline>,
+                        char_before_pattern: &mut Option<u8>|
+     -> Option<usize> {
+        let stop_chars = |c: u8| c == pattern_c || mldoc_whitespace_char(c);
+        let escape_chars = [pattern_c, b' ', b'\t', b'\n', b'\r', 0x0c];
+        if let Some(end) =
+            take_while1_include_backslash(s, i, &escape_chars, |c| !stop_chars(c))
+        {
+            push_plain_node(body, &s[i..end], i, end, base);
+            set_char_before_pattern_from_node(body.last().unwrap(), char_before_pattern);
+            return Some(end);
+        }
+        if bb.get(i..i + pat.len()) != Some(pat) {
+            if i < bb.len() {
+                let end = i + char_len(bb[i]);
+                push_plain_node(body, &s[i..end], i, end, base);
+                set_char_before_pattern_from_node(body.last().unwrap(), char_before_pattern);
+                return Some(end);
+            }
+            return None;
+        }
+        let following = bb.get(i + pat.len()).copied()?;
+        let pattern_as_plain = match (pattern_c, *char_before_pattern, following) {
+            (b'_', Some(c), _) if mldoc_whitespace_char(c) => true,
+            (b'_', _, fc) if !underline_emphasis_delim(fc) => true,
+            (_, Some(c), _) if mldoc_whitespace_char(c) => true,
+            _ => false,
+        };
+        if pattern_as_plain {
+            let end = i + pat.len();
+            push_plain_node(body, &s[i..end], i, end, base);
+            set_char_before_pattern_from_node(body.last().unwrap(), char_before_pattern);
+            return Some(end);
+        }
+        None
+    };
+
+    loop {
+        if i >= bb.len() {
+            return Err(EmFail::NoCloser);
+        }
+        if mldoc_whitespace_char(bb[i]) {
+            let ws_start = i;
+            while i < bb.len() && mldoc_whitespace_char(bb[i]) {
+                i += 1;
+            }
+            crate::metrics::scan_work(i - ws_start);
+            push_plain_node(&mut body, &s[ws_start..i], ws_start, i, base);
+            set_char_before_pattern_from_node(body.last().unwrap(), &mut char_before_pattern);
+            let before = i;
+            match parse_non_ws(i, &mut body, &mut char_before_pattern) {
+                Some(end) => {
+                    i = end;
+                    saw_non_ws = true;
+                    continue;
+                }
+                None if before >= bb.len() => return Err(EmFail::NoCloser),
+                None if bb.get(before..before + pat.len()) == Some(pat) && saw_non_ws => {
+                    let close_end = before + pat.len();
+                    let full = Some(Span(base + at, base + close_end));
+                    return Ok(EmParsed {
+                        node: Inline::Emphasis {
+                            emph: typ.to_string(),
+                            children: concat_plains_without_pos(body),
+                            span: full,
+                        },
+                        end: close_end,
+                    });
+                }
+                None if bb.get(before..before + pat.len()) == Some(pat) => return Err(EmFail::NotMatch),
+                None => return Err(EmFail::NoCloser),
+            }
+        }
+        match parse_non_ws(i, &mut body, &mut char_before_pattern) {
+            Some(end) => {
+                i = end;
+                saw_non_ws = true;
+            }
+            None if bb.get(i..i + pat.len()) == Some(pat) && saw_non_ws => {
+                let close_end = i + pat.len();
+                let full = Some(Span(base + at, base + close_end));
+                return Ok(EmParsed {
+                    node: Inline::Emphasis {
+                        emph: typ.to_string(),
+                        children: concat_plains_without_pos(body),
+                        span: full,
+                    },
+                    end: close_end,
+                });
+            }
+            None if bb.get(i..i + pat.len()) == Some(pat) => return Err(EmFail::NotMatch),
+            None => return Err(EmFail::NoCloser),
+        }
+    }
+}
+
+/// Port of mldoc `org_emphasis` dispatch (`lib/syntax/inline.ml:429-449`).
+fn org_emphasis_at(
+    s: &str,
+    at: usize,
+    state_char: Option<u8>,
+    no_closer: &mut [[bool; 2]; 5],
+    base: usize,
+) -> Result<EmParsed, EmFail> {
+    let Some(&ch) = s.as_bytes().get(at) else {
+        return Err(EmFail::NotMatch);
+    };
+    let mut parse = |pattern: &str, typ: &str, k: usize, lookahead: bool| {
+        let cls = class_idx(ch);
+        if no_closer[cls][k - 1] {
+            return Err(EmFail::NotMatch);
+        }
+        match org_md_em_parser_at(s, at, pattern, typ, base) {
+            Ok(hit) if !lookahead || underline_emphasis_delims_lookahead(s, hit.end) => Ok(hit),
+            Ok(_) => Err(EmFail::NotMatch),
+            Err(EmFail::NoCloser) => {
+                no_closer[cls][k - 1] = true;
+                Err(EmFail::NotMatch)
+            }
+            Err(e) => Err(e),
+        }
+    };
+    match ch {
+        b'*' => parse("*", "Bold", 1, false),
+        b'_' if underline_emphasis_delims_backward(state_char) => parse("_", "Underline", 1, true),
+        b'/' if underline_emphasis_delims_backward(state_char) => parse("/", "Italic", 1, true),
+        b'+' if underline_emphasis_delims_backward(state_char) => parse("+", "Strike_through", 1, true),
+        b'^' => parse("^^", "Highlight", 2, false),
+        _ => Err(EmFail::NotMatch),
+    }
+}
+
+/// Port of mldoc `nested_emphasis` entry (`lib/syntax/inline.ml:919-954`).
+fn nested_emphasis_at_org(
+    s: &str,
+    at: usize,
+    state_char: Option<u8>,
+    no_closer: &mut [[bool; 2]; 5],
+    base: usize,
+) -> Result<EmParsed, EmFail> {
+    let mut hit = org_emphasis_at(s, at, state_char, no_closer, base)?;
+    hit.node = aux_nested_emphasis_org(hit.node);
+    Ok(hit)
+}
+
+/// Port of mldoc `nested_emphasis` / `aux_nested_emphasis`
+/// (`lib/syntax/inline.ml:922-947`).
+fn aux_nested_emphasis_org(node: Inline) -> Inline {
+    if is_synthetic_nested_emphasis(&node) {
+        return node;
+    }
+    match node {
+        Inline::Emphasis { emph, children, span } => {
+            let mut reparsed = Vec::new();
+            for child in children {
+                match child {
+                    Inline::Plain { text, span: plain_span } => {
+                        match parse_nested_plain_org(&text, plain_span.map(|s| s.0).unwrap_or(0)) {
+                            Ok(result) if result.len() == 1 && matches!(result[0], Inline::Plain { .. }) => {
+                                reparsed.push(Inline::Plain { text, span: plain_span });
+                            }
+                            Ok(result) => {
+                                reparsed.extend(result.into_iter().map(aux_nested_emphasis_org));
+                            }
+                            Err(()) => reparsed.push(Inline::Plain { text, span: plain_span }),
+                        }
+                    }
+                    other => reparsed.push(other),
+                }
+            }
+            Inline::Emphasis { emph, children: concat_plains_without_pos(reparsed), span }
+        }
+        other => other,
+    }
+}
+
+#[inline]
+fn is_synthetic_nested_emphasis(node: &Inline) -> bool {
+    matches!(
+        node,
+        Inline::Emphasis {
+            emph,
+            children,
+            ..
+        } if emph == "Italic"
+            && children.len() == 1
+            && matches!(&children[0], Inline::Emphasis { emph: inner, .. } if inner == "Bold")
+    )
+}
+
+/// Port of the phase-2 parser inside mldoc `nested_emphasis`
+/// (`lib/syntax/inline.ml:927-934`) for Org.
+fn parse_nested_plain_org(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
+    let bb = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let mut no_closer = [[false; 2]; 5];
+    while i < bb.len() {
+        if matches!(bb[i], b'*' | b'_' | b'/' | b'+' | b'^') {
+            if let Ok(hit) = org_emphasis_at(text, i, None, &mut no_closer, base) {
+                out.push(hit.node);
+                i = hit.end;
+                continue;
+            }
+        }
+        if matches!(bb[i], b'_' | b'^') {
+            if let Some((mut node, end)) = try_script(text, bb, i, bb[i], base) {
+                crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+                out.push(node);
+                i = end;
+                continue;
+            }
+        }
+        if bb[i] == b'[' {
+            if let Some((node, end)) = try_nested_link_or_link_org(text, bb, i, base) {
+                out.push(node);
+                i = end;
+                continue;
+            }
+        }
+        let (node, end) = org_plain_at(text, i, base).ok_or(())?;
+        out.push(node);
+        i = end;
+    }
+    Ok(concat_plains_without_pos(out))
+}
+
+/// Port of mldoc Org `plain` fallback as used by `nested_emphasis`
+/// (`lib/syntax/inline.ml:211-236`).
+fn org_plain_at(s: &str, i: usize, base: usize) -> Option<(Inline, usize)> {
+    let bb = s.as_bytes();
+    if i >= bb.len() {
+        return None;
+    }
+    let in_plain_delims = |c: u8| {
+        matches!(c, b'\\' | b'_' | b'^' | b'[' | b'*' | b'/' | b'+' | b'$' | b'#')
+            || mldoc_whitespace_char(c)
+    };
+    if bb[i] != b'\n' && bb[i] != b'\r' && !in_plain_delims(bb[i]) {
+        let mut end = i + char_len(bb[i]);
+        while end < bb.len() && bb[end] != b'\n' && bb[end] != b'\r' && !in_plain_delims(bb[end]) {
+            end += char_len(bb[end]);
+        }
+        crate::metrics::scan_work(end - i);
+        return Some((
+            Inline::Plain { text: s[i..end].to_string(), span: Some(Span(base + i, base + end)) },
+            end,
+        ));
+    }
+    if matches!(bb[i], b' ' | b'\t' | 0x0c) {
+        let mut end = i + 1;
+        while end < bb.len() && matches!(bb[end], b' ' | b'\t' | 0x1a | 0x0c) {
+            end += 1;
+        }
+        crate::metrics::scan_work(end - i);
+        return Some((
+            Inline::Plain { text: s[i..end].to_string(), span: Some(Span(base + i, base + end)) },
+            end,
+        ));
+    }
+    if bb[i] == b'\\' {
+        if let Some(&next) = bb.get(i + 1) {
+            if next.is_ascii_punctuation() {
+                let end = i + 1 + char_len(next);
+                return Some((
+                    Inline::Plain { text: s[i..end].to_string(), span: Some(Span(base + i, base + end)) },
+                    end,
+                ));
+            }
+        }
+    }
+    if in_plain_delims(bb[i]) {
+        let end = i + char_len(bb[i]);
+        return Some((
+            Inline::Plain { text: s[i..end].to_string(), span: Some(Span(base + i, base + end)) },
+            end,
+        ));
+    }
+    None
+}
+
+/// Port of mldoc Org `nested_link_or_link`
+/// (`lib/syntax/inline.ml:915-917`) for phase-2 emphasis reparsing.
+fn try_nested_link_or_link_org(s: &str, bb: &[u8], at: usize, base: usize) -> Option<(Inline, usize)> {
+    if s[at..].starts_with("[[") {
+        if let Some((end, node)) = org_link_1_at(s, bb, at, base) {
+            return Some((node, end));
+        }
+        if let Some((end, content)) = crate::inline::parse_nested_link(s, at) {
+            return Some((Inline::NestedLink { content, span: Some(Span(base + at, base + end)) }, end));
+        }
+        if let Some((end, node)) = org_link_2_at(s, bb, at, base) {
+            return Some((node, end));
+        }
+    }
+    None
+}
+
+fn concat_plains_without_pos(nodes: Vec<Inline>) -> Vec<Inline> {
+    let mut out: Vec<Inline> = Vec::new();
+    for node in nodes {
+        match (out.last_mut(), node) {
+            (Some(Inline::Plain { text: prev, span: prev_span }), Inline::Plain { text, span }) => {
+                prev.push_str(&text);
+                *prev_span = match (*prev_span, span) {
+                    (Some(Span(start, _)), Some(Span(_, end))) => Some(Span(start, end)),
+                    _ => None,
+                };
+            }
+            (_, node) => out.push(node),
+        }
+    }
+    out
+}
+
+/// Resolver: ONE ctx-aware pass over the Org tokens. M6 emphasis ports mldoc's
+/// `org_emphasis` dispatch and `org_em_parser = md_em_parser ~include_md_code:false`,
+/// followed by phase-2 `nested_emphasis`; sub/superscript remains the fallback for `_`/`^`.
+/// `last_plain_char` mirrors mldoc `push_plain`: updated on EVERY plain append and PERSISTS
+/// across nodes/flush (an emphasis node does NOT reset it).
 #[allow(unused_assignments)] // last_plain_char / fresh are running state; final writes may be unread
 fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let bb = s.as_bytes();
@@ -418,23 +859,12 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             }
             Kind::Delim { ch, .. } => {
                 let ch = *ch;
-                let (k, kind, fwd_gate, bwd_gate, continue_search) = match ch {
-                    b'*' => (1, "Bold", false, false, false),
-                    b'/' => (1, "Italic", true, true, false),
-                    b'+' => (1, "Strike_through", true, true, false),
-                    b'_' => (1, "Underline", true, true, true),
-                    b'^' => (2, "Highlight", false, false, false),
-                    _ => unreachable!(),
-                };
-                if let Some((mut node, end)) = parse_emphasis(
-                    s, bb, off, k, kind, fwd_gate, bwd_gate, continue_search, ctx,
-                    last_plain_char, &mut no_closer, base,
-                ) {
+                let state_char = if ctx.use_state { last_plain_char } else { None };
+                if let Ok(hit) = nested_emphasis_at_org(s, off, state_char, &mut no_closer, base) {
                     flush(&mut out, &mut pending, &mut plain_start, plain_end);
-                    crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + end)));
-                    out.push(node);
+                    out.push(hit.node);
                     fresh = true;
-                    t = resync(toks, t, end);
+                    t = resync(toks, t, hit.end);
                     continue;
                 }
                 if (ch == b'_' || ch == b'^') && ctx.scripts {
@@ -606,110 +1036,6 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     out
 }
 
-#[allow(clippy::too_many_arguments)]
-fn parse_emphasis(
-    s: &str,
-    bb: &[u8],
-    open_start: usize,
-    k: usize,
-    kind: &str,
-    fwd_gate: bool,
-    bwd_gate: bool,
-    continue_search: bool,
-    ctx: Ctx,
-    before: Option<u8>,
-    no_closer: &mut [[bool; 2]; 5],
-    base: usize,
-) -> Option<(Inline, usize)> {
-    let n = bb.len();
-    let c = bb[open_start];
-    let content_start = open_start + k;
-    if content_start > n || bb[open_start..content_start].iter().any(|&x| x != c) {
-        return None;
-    }
-    // left-flanking: opener followed by non-whitespace.
-    let after = *bb.get(content_start)?;
-    if is_ws_or_nl(after) {
-        return None;
-    }
-    // empty content: the next k bytes are themselves the closer pattern.
-    if content_start + k <= n && bb[content_start..content_start + k].iter().all(|&x| x == c) {
-        return None;
-    }
-    // backward gate (top level only): char before opener ∈ punct/whitespace.
-    if bwd_gate && ctx.use_state {
-        let ok = match before {
-            Some(ch) => is_underscore_delim(ch),
-            None => true,
-        };
-        if !ok {
-            return None;
-        }
-    }
-    let ki = k - 1;
-    let ci = class_idx(c);
-    if no_closer[ci][ki] {
-        return None;
-    }
-    let closer = match find_closer(bb, c, k, content_start, fwd_gate, continue_search) {
-        Some(q) => q,
-        None => {
-            no_closer[ci][ki] = true;
-            return None;
-        }
-    };
-    let content = s[content_start..closer].to_string();
-    let children = parse_ctx(&content, Ctx::emph(), base + content_start);
-    // span set by the caller over [open_start, closer + k).
-    Some((Inline::Emphasis { emph: kind.to_string(), children, span: None }, closer + k))
-}
-
-/// First closing run (len ≥ k) of `c` with a non-ws byte before it (escapes skipped); the
-/// forward gate / `continue_search` exactly as v1 `find_closer`.
-fn find_closer(bb: &[u8], c: u8, k: usize, from: usize, fwd_gate: bool, continue_search: bool) -> Option<usize> {
-    let n = bb.len();
-    let mut j = from;
-    while j < n {
-        let cur = bb[j];
-        if cur == b'\\' {
-            j += 1;
-            if j < n {
-                j += char_len(bb[j]);
-            }
-            continue;
-        }
-        if cur == c {
-            let rl = run_len(bb, j, c);
-            if rl >= k {
-                let before = bb[j - 1];
-                if !is_ws_or_nl(before) {
-                    if fwd_gate {
-                        let fwd_ok = match bb.get(j + k) {
-                            None => true,
-                            Some(&a) => is_underscore_delim(a),
-                        };
-                        if fwd_ok {
-                            return Some(j);
-                        }
-                        if !continue_search {
-                            return None;
-                        }
-                        j += k;
-                        continue;
-                    }
-                    return Some(j);
-                }
-                j += rl;
-                continue;
-            }
-            j += rl;
-            continue;
-        }
-        j += char_len(cur);
-    }
-    None
-}
-
 /// `_x`/`_{x}` → Subscript, `^x`/`^{x}` → Superscript (mldoc `gen_script`). Returns the node
 /// and the consumed byte extent; `None` if no valid script body.
 fn try_script(s: &str, bb: &[u8], i: usize, c: u8, base: usize) -> Option<(Inline, usize)> {
@@ -750,14 +1076,6 @@ fn try_script(s: &str, bb: &[u8], i: usize, c: u8, base: usize) -> Option<(Inlin
         Inline::Superscript { children, span: None }
     };
     Some((node, end))
-}
-
-fn run_len(b: &[u8], pos: usize, c: u8) -> usize {
-    let mut k = pos;
-    while k < b.len() && b[k] == c {
-        k += 1;
-    }
-    k - pos
 }
 
 fn is_org_space(c: u8) -> bool {
