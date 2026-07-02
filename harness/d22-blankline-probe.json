@@ -1,0 +1,10 @@
+[
+ {"id":"w1","format":"org","input":"#+BEGIN_X: v\n\n\n#+BEGIN_Y: w"},
+ {"id":"w2","format":"org","input":"#+BEGIN_X: v\n \n#+BEGIN_Y: w"},
+ {"id":"w3","format":"org","input":":PROPERTIES:\n:END:\n\n#+BEGIN_X: v"},
+ {"id":"w4","format":"org","input":"#+BEGIN_X: v\n\n:PROPERTIES:\n:k: a\n:END:"},
+ {"id":"w5","format":"org","input":"#+BEGIN_X: v\n\na"},
+ {"id":"w6","format":"org","input":"#+A: 1\n\n#+B: 2"},
+ {"id":"w7","format":"org","input":"a\n\n#+BEGIN_X: v\n\n#+BEGIN_Y: w"},
+ {"id":"w8","format":"org","input":"#+BEGIN_X: v\n\n  #+BEGIN_Y: w"}
+]

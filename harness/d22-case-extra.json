@@ -1,0 +1,6 @@
+[
+  {"id":"case_begin_alt1","format":"org","input":"#+BeGiN_X: v"},
+  {"id":"case_begin_alt2","format":"org","input":"#+bEGIN_X: v"},
+  {"id":"case_begin_alt3","format":"org","input":"#+BEGin_X: v"},
+  {"id":"case_begin_no_underscore_mixed","format":"org","input":"#+BeGiNX: v"}
+]

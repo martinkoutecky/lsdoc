@@ -1,0 +1,77 @@
+[
+  {
+    "id": "floor_01",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE~:END::key: value#+BEGIN_QUOTE[fn:1]:PROPERTIES:\n_😀/+"
+  },
+  {
+    "id": "floor_02",
+    "format": "org",
+    "input": "*** #+END_QUOTE _SCHEDULED: ="
+  },
+  {
+    "id": "floor_03",
+    "format": "org",
+    "input": "#+BEGIN_QUOTEDEADLINE: * "
+  },
+  {
+    "id": "floor_04",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE:key: value[[t][l]]][abb** "
+  },
+  {
+    "id": "floor_05",
+    "format": "org",
+    "input": ":PROPERTIES:\n:END:word:tag1:tag2:*"
+  },
+  {
+    "id": "floor_06",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE[[target]]#+NAME: caféb\na[[[#A] :key: value#+END_QUOTESCHEDULED: DEADLINE: café"
+  },
+  {
+    "id": "floor_08",
+    "format": "org",
+    "input": "[#A] \n*** #+END_QUOTE^1. | a | b |#+END_QUOTE+ *^y+:END:"
+  },
+  {
+    "id": "floor_09",
+    "format": "org",
+    "input": "*** #+END_QUOTE[[t][l]]** #+BEGIN_QUOTE** #+BEGIN_SRC DEADLINE: \\DEADLINE: "
+  },
+  {
+    "id": "floor_12",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE:tag1:tag2::END:/#+BEGIN_QUOTE/:key: value<2026-06-26 Fri>\\"
+  },
+  {
+    "id": "floor_13",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE:tag1:tag2:😀]][[target]]SCHEDULED: 😀[fn:1]"
+  },
+  {
+    "id": "floor_15",
+    "format": "org",
+    "input": "  #+BEGIN_QUOTE:PROPERTIES:[#A] "
+  },
+  {
+    "id": "floor_16",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE:tag1:tag2::END:*** #+BEGIN_SRC ^+\n- "
+  },
+  {
+    "id": "floor_18",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE==#+NAME: ~ /"
+  },
+  {
+    "id": "floor_19",
+    "format": "org",
+    "input": ":PROPERTIES:\n#+BEGIN_QUOTEDEADLINE: SCHEDULED: [#A] <2026-06-26 Fri>* :END:=+ ]]#+TITLE: * "
+  },
+  {
+    "id": "floor_21",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE:tag1:tag2:/:END:][]]b#+END_SRC"
+  }
+]

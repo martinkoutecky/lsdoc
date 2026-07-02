@@ -24,11 +24,10 @@
 // `EndTrie`, fence/drawer lookups, the task-marker table, `Builder`, `GT_FALLBACK_NEST_CAP` — live once
 // in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
 use crate::block_common::{
-    displayed_math_opener, drawer_property, find_displayed_math_close, find_drawer_end,
-    find_matching_fence, leading_ws, para_ws_only, raw_html_block_start,
-    raw_html_end_at,
-    raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
-    Line, RawHtmlScan, GT_FALLBACK_NEST_CAP, MARKERS,
+    displayed_math_opener, find_displayed_math_close, find_drawer_end, find_matching_fence,
+    leading_ws, para_ws_only, raw_html_block_start, raw_html_end_at, raw_html_raw_capture,
+    raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie, Line, RawHtmlScan,
+    GT_FALLBACK_NEST_CAP, MARKERS,
 };
 use crate::projection::{Block, Inline, ListItem, Span, Url};
 
@@ -58,14 +57,26 @@ pub fn parse(input: &str) -> Vec<Block> {
     // top-level recursion and NO parity cap. Byte-exact to mldoc (gated by `harness/`). The legacy
     // recurse-on-body driver — mldoc's O(n²) + stack-overflow on deep callouts/`>` — is gone; the
     // depth guard now lives ONLY inside `streaming_reparse`'s §3 fallback (`GT_FALLBACK_NEST_CAP`).
-    parse_org_streaming(input, Ctx { in_item: false, in_quote: false })
+    parse_org_streaming(
+        input,
+        Ctx {
+            in_item: false,
+            in_quote: false,
+        },
+    )
 }
 
 /// The streaming Org block driver at the document root — identical to `parse`, but re-exported
 /// `#[doc(hidden)]` as `lsdoc::__parse_org_streaming` so the perf / overflow gates can name the
 /// streaming entry point directly (and `forget` its result on a small stack). Not stable API.
 pub(crate) fn parse_streaming_root(input: &str) -> Vec<Block> {
-    parse_org_streaming(input, Ctx { in_item: false, in_quote: false })
+    parse_org_streaming(
+        input,
+        Ctx {
+            in_item: false,
+            in_quote: false,
+        },
+    )
 }
 
 /// The bounded, L-attributed Org block context — exactly two booleans (the linearity
@@ -88,7 +99,12 @@ struct Ctx {
 /// de-indented body stays local.
 enum Step {
     Next(usize),
-    Open { close: usize, builder: Builder, child_ctx: Ctx, indent_strip: usize },
+    Open {
+        close: usize,
+        builder: Builder,
+        child_ctx: Ctx,
+        indent_strip: usize,
+    },
     /// A `>`-frame body line whose de-`>`'d view opens a construct that CANNOT be classified
     /// copy-free against the global raw-input indexes/scanners (fenced code / `#+BEGIN_X` callout /
     /// LaTeX env / block hiccup) or needs a raw-input multi-line builder (table / verbatim / list).
@@ -104,7 +120,10 @@ enum Step {
 /// frames / sub-recursions); both absorb, matching mldoc's `absorb = true` after a
 /// `#+BEGIN_X` block.
 fn block_absorbs(b: &Block) -> bool {
-    matches!(b, Block::Quote { .. } | Block::Custom { .. } | Block::Example { .. })
+    matches!(
+        b,
+        Block::Quote { .. } | Block::Custom { .. } | Block::Example { .. }
+    )
 }
 
 /// Per-line de-indent view: equivalent to `block_code_texts` applied to ONE line, O(1), no
@@ -258,7 +277,10 @@ fn close_top(stack: &mut Vec<Frame>, lines: &[Line], input: &str, i: usize, cons
         debug_assert!(f.open_line < i);
         lines[i - 1].end
     };
-    let block = f.builder.unwrap().finish(f.out, Some(Span(f.open_span_start, span_end)));
+    let block = f
+        .builder
+        .unwrap()
+        .finish(f.out, Some(Span(f.open_span_start, span_end)));
     let absorbs = block_absorbs(&block);
     let parent = stack.last_mut().unwrap();
     parent.out.push(block);
@@ -280,11 +302,11 @@ struct Frame {
     // the cumulative indent (via `strip`) and `\r\n`→`\n` in one move. Some IFF a paragraph is
     // open in a null_spans frame (clean frames keep `para`'s `(start,end)` fast path).
     para_buf: Option<String>,
-    absorb: bool,                 // did this body's last child swallow a following blank?
-    builder: Option<Builder>,     // the opener → emitted on pop (None for the root).
-    open_span_start: usize,       // byte offset of the opener line start (for the span).
-    strip: usize,       // cumulative de-indent applied to every body-line view (0 = root/clean).
-    null_spans: bool,   // body was transformed (strip>0 or nonstd eol) → null inline spans on pop.
+    absorb: bool,             // did this body's last child swallow a following blank?
+    builder: Option<Builder>, // the opener → emitted on pop (None for the root).
+    open_span_start: usize,   // byte offset of the opener line start (for the span).
+    strip: usize, // cumulative de-indent applied to every body-line view (0 = root/clean).
+    null_spans: bool, // body was transformed (strip>0 or nonstd eol) → null inline spans on pop.
     // A-org `>`-blockquote container frame (`gt_level == 0` for the root / `#+BEGIN_X` callout
     // frames). `gt_level` = the cumulative `>`-peel applied to CONTINUATION lines (composes on top
     // of the indent `strip`). The per-line `scan_gt_prefix` walk decides close/open/content for the
@@ -316,7 +338,10 @@ fn streaming_reparse(input: &str, ctx: Ctx) -> Vec<Block> {
             if input.is_empty() {
                 Vec::new()
             } else {
-                vec![Block::Paragraph { inline: org_inline(input, 0), span: Some(Span(0, input.len())) }]
+                vec![Block::Paragraph {
+                    inline: org_inline(input, 0),
+                    span: Some(Span(0, input.len())),
+                }]
             }
         } else {
             BLOCK_DEPTH.with(|c| c.set(depth + 1));
@@ -338,9 +363,17 @@ fn streaming_reparse(input: &str, ctx: Ctx) -> Vec<Block> {
 fn build_org_indexes(
     lines: &[Line],
     input: &str,
-) -> (EndTrie, Vec<usize>, Vec<usize>, Vec<usize>, Vec<usize>) {
+) -> (
+    EndTrie,
+    Vec<usize>,
+    Vec<usize>,
+    Vec<usize>,
+    Vec<usize>,
+    Vec<usize>,
+) {
     let mut end_trie = EndTrie::new();
-    let mut drawer_end_idxs: Vec<usize> = Vec::new(); // `:END:` lines (drawer closers)
+    let mut drawer_end_idxs: Vec<usize> = Vec::new(); // whole-line `:END:` generic drawer closers
+    let mut property_end_idxs: Vec<usize> = Vec::new(); // parse1 `:END:` prefixes, incl. spill
     let mut fence_lines: Vec<usize> = Vec::new();
     let mut nonstd_eol_lines: Vec<usize> = Vec::new();
     let bytes = input.as_bytes();
@@ -348,6 +381,9 @@ fn build_org_indexes(
         let t = l.text.trim_start();
         if t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
             end_trie.insert(&t[6..], idx);
+        }
+        if org_property_end_spill(l.text).is_some() {
+            property_end_idxs.push(idx);
         }
         if l.text.trim().eq_ignore_ascii_case(":END:") {
             drawer_end_idxs.push(idx);
@@ -375,7 +411,14 @@ fn build_org_indexes(
     } else {
         Vec::new()
     };
-    (end_trie, drawer_end_idxs, fence_lines, nonstd_eol_lines, hiccup_close)
+    (
+        end_trie,
+        drawer_end_idxs,
+        property_end_idxs,
+        fence_lines,
+        nonstd_eol_lines,
+        hiccup_close,
+    )
 }
 
 /// The Org block driver: ONE
@@ -390,7 +433,7 @@ fn build_org_indexes(
 fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
     let mut lines = split_lines(input);
     let last_rbracket = input.rfind(']');
-    let (end_trie, drawer_end_idxs, fence_lines, nonstd_eol_lines, hiccup_close) =
+    let (end_trie, drawer_end_idxs, property_end_idxs, fence_lines, nonstd_eol_lines, hiccup_close) =
         build_org_indexes(&lines, input);
     let n = lines.len();
 
@@ -411,11 +454,12 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
     let mut collapse_floor = 0usize; // shared & monotone (i is monotone across frames).
     let mut fence_cursor: usize = 0;
     let mut drawer_cursor: usize = 0; // monotone `:END:` cursor (find_drawer_end), shared across the pass.
+    let mut property_end_cursor: usize = 0; // monotone parse1 `:END:` prefix cursor.
     let mut raw_html_scan = RawHtmlScan::new(); // monotone failed known-tag raw-HTML scanner.
     let mut nonstd_cursor: usize = 0; // monotone nonstd-eol cursor (body_is_clean_window), ditto.
     let mut offs: Vec<usize> = Vec::new(); // reused `>`-prefix offset scratch (scan_gt_prefix)
-    // F4: set by an empty headline marker (`* ` trailing-ws para), consumed by the NEXT line's
-    // dispatch — a drop-trigger block drops the para, anything else clears the flag.
+                                           // F4: set by an empty headline marker (`* ` trailing-ws para), consumed by the NEXT line's
+                                           // dispatch — a drop-trigger block drops the para, anything else clears the flag.
     let mut ws_drop = false;
     let mut i = 0;
 
@@ -453,8 +497,11 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
             // per pop.
             while stack.len() > 1 && stack.last().unwrap().gt_level > 0 {
                 let l = stack.last().unwrap().gt_level;
-                if quote_line_content_line_slice(&line2[offs[(l - 1).min(g)]..], line_has_eol(&lines[i]))
-                    .is_some()
+                if quote_line_content_line_slice(
+                    &line2[offs[(l - 1).min(g)]..],
+                    line_has_eol(&lines[i]),
+                )
+                .is_some()
                 {
                     break;
                 }
@@ -470,8 +517,11 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
             let mut cur = if h == 0 {
                 line2
             } else {
-                quote_line_content_line_slice(&line2[offs[(h - 1).min(g)]..], line_has_eol(&lines[i]))
-                    .unwrap_or("")
+                quote_line_content_line_slice(
+                    &line2[offs[(h - 1).min(g)]..],
+                    line_has_eol(&lines[i]),
+                )
+                .unwrap_or("")
             };
             let mut opened_any = false;
             while let Some(inner) = quote_first_line_slice(cur) {
@@ -484,14 +534,23 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                         if was && para_ws_only(&top.para, input) {
                             top.para = None;
                         }
-                        flush_para(&mut top.out, &mut top.para, &mut top.para_buf, input, top.ctx.in_item || top.ctx.in_quote);
+                        flush_para(
+                            &mut top.out,
+                            &mut top.para,
+                            &mut top.para_buf,
+                            input,
+                            top.ctx.in_item || top.ctx.in_quote,
+                        );
                         opened_any = true;
                     }
                     (top.hi, top.strip, top.gt_level)
                 };
                 stack.push(Frame {
                     hi: p_hi, // inherit the enclosing hard bound (a `>`-quote can't cross a callout closer)
-                    ctx: Ctx { in_item: false, in_quote: true },
+                    ctx: Ctx {
+                        in_item: false,
+                        in_quote: true,
+                    },
                     out: Vec::new(),
                     para: None,
                     para_buf: None,
@@ -529,12 +588,14 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                 &mut collapse_floor,
                 &mut fence_cursor,
                 &mut drawer_cursor,
+                &mut property_end_cursor,
                 &mut raw_html_scan,
                 &mut ws_drop,
                 ctx,
                 hi,
                 &end_trie,
                 &drawer_end_idxs,
+                &property_end_idxs,
                 &fence_lines,
                 last_rbracket,
                 &hiccup_close,
@@ -547,13 +608,24 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
         };
         match step {
             Step::Next(ni) => i = ni,
-            Step::Open { close, builder, child_ctx, indent_strip } => {
+            Step::Open {
+                close,
+                builder,
+                child_ctx,
+                indent_strip,
+            } => {
                 let top_strip = stack.last().unwrap().strip;
                 {
                     let top = stack.last_mut().unwrap();
                     // Preceding paragraph drops its trailing Break before this container opener
                     // when already inside a list-item / blockquote body (`between_eols`).
-                    flush_para(&mut top.out, &mut top.para, &mut top.para_buf, input, top.ctx.in_item || top.ctx.in_quote);
+                    flush_para(
+                        &mut top.out,
+                        &mut top.para,
+                        &mut top.para_buf,
+                        input,
+                        top.ctx.in_item || top.ctx.in_quote,
+                    );
                 }
                 // A `#+BEGIN_X` callout body — clean-window (spans global) or strip-view / nonstd
                 // (spans nulled on pop). Callouts only open at `gt_level==0` (inside a `>`-frame they
@@ -604,7 +676,13 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
                         None => break,
                     }
                 }
-                let children = streaming_reparse(&de_gt, Ctx { in_item: false, in_quote: true });
+                let children = streaming_reparse(
+                    &de_gt,
+                    Ctx {
+                        in_item: false,
+                        in_quote: true,
+                    },
+                );
                 stack.last_mut().unwrap().out.extend(children);
                 i = end; // the frame closes next iteration (i == end ⇒ continuation `None` or `hi`)
             }
@@ -612,7 +690,13 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
     }
 
     let mut root = stack.pop().unwrap();
-    flush_para(&mut root.out, &mut root.para, &mut root.para_buf, input, false);
+    flush_para(
+        &mut root.out,
+        &mut root.para,
+        &mut root.para_buf,
+        input,
+        false,
+    );
     root.out
 }
 
@@ -625,7 +709,12 @@ fn parse_org_streaming<'a>(input: &'a str, root_ctx: Ctx) -> Vec<Block> {
 /// reached with non-decreasing `lo`, so the first nonstd-eol `>= lo` only moves forward ⇒ O(1)
 /// amortized, O(n) total. The cursor stops AT (does not consume) that line, so the `< hi`
 /// emptiness test is unaffected and a later opener (larger `lo`) advances past lines now behind it.
-fn body_is_clean_window(nonstd_eol_lines: &[usize], cursor: &mut usize, lo: usize, hi: usize) -> bool {
+fn body_is_clean_window(
+    nonstd_eol_lines: &[usize],
+    cursor: &mut usize,
+    lo: usize,
+    hi: usize,
+) -> bool {
     while *cursor < nonstd_eol_lines.len() && nonstd_eol_lines[*cursor] < lo {
         *cursor += 1;
     }
@@ -653,12 +742,14 @@ fn dispatch_org_line<'a>(
     collapse_floor: &mut usize,
     fence_cursor: &mut usize,
     drawer_cursor: &mut usize,
+    property_end_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
     ws_drop: &mut bool,
     ctx: Ctx,
     hi: usize,
     end_trie: &EndTrie,
     drawer_end_idxs: &[usize],
+    property_end_idxs: &[usize],
     fence_lines: &[usize],
     last_rbracket: Option<usize>,
     hiccup_close: &[usize], // B: precomputed block-hiccup `[:`…`]` balance (position-indexed)
@@ -698,15 +789,20 @@ fn dispatch_org_line<'a>(
     let trim = in_item || ctx.in_quote;
     // Byte offset where THIS body ends (the closer line's start, or EOF at the root). CLAMPs
     // the to-end-of-input forward-scanners (`parse_latex_env`, `parse_hiccup`).
-    let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
+    let body_end = if hi < lines.len() {
+        lines[hi].start
+    } else {
+        input.len()
+    };
 
-    // blank line: extend an open paragraph, else swallow (if absorbing) or start one.
+    // blank line: extend an open paragraph, else swallow a pure EOL (if absorbing) or start one.
     if t.trim().is_empty() {
+        let swallow = *absorb && t.is_empty();
         // Is a paragraph open OR being started (not swallowed by a preceding block)?
-        let open_para = para.is_some() || !*absorb;
+        let open_para = para.is_some() || !swallow;
         if let Some((s, _)) = *para {
             *para = Some((s, line_end));
-        } else if *absorb {
+        } else if swallow {
             // swallowed by the preceding block.
         } else {
             *para = Some((line_start, line_end));
@@ -745,25 +841,60 @@ fn dispatch_org_line<'a>(
     }
 
     // 1. directive `#+KEY: value` (KEY != BEGIN_…) — not a list-item content block.
-    if let Some((name, value)) = directive(t).filter(|_| !in_item) {
+    if let Some((name, value)) = org_directive(t).filter(|_| !in_item) {
         flush_para(out, para, para_buf, input, trim);
-        out.push(Block::Directive { name, value, span: Some(Span(line_start, line_end)) });
+        out.push(Block::Directive {
+            name,
+            value,
+            span: Some(Span(line_start, line_end)),
+        });
         *absorb = true;
         return Step::Next(i + 1);
     }
 
-    // 1b. comment `# text` (mldoc Comment) — IS a valid list-item content block (not gated).
+    // 2. Drawer.parse (`drawer.ml`): fold consecutive parse1 (`:PROPERTIES:` drawers) and
+    // parse2 (`#+NAME: VALUE` properties) into ONE Property_Drawer before the generic drawer
+    // fallback. Directive.parse already ran, so a non-BEGIN `#+NAME:` starts as a directive but
+    // can still extend an active fold, exactly as `many1 (parse1 <|> parse2)` does.
+    if !in_item && !ctx.in_quote {
+        if let Some((props, next, span_end, absorb_after)) = org_property_group(
+            lines,
+            i,
+            hi,
+            strip,
+            input,
+            property_end_idxs,
+            property_end_cursor,
+        ) {
+            if was_ws_drop && para_ws_only(para, input) {
+                *para = None;
+            }
+            flush_para(out, para, para_buf, input, trim);
+            out.push(Block::Properties {
+                props,
+                span: Some(Span(line_start, span_end)),
+            });
+            *absorb = absorb_after;
+            return Step::Next(next);
+        }
+    }
+
+    // 2b. comment `# text` (mldoc Comment) — IS a valid list-item content block (not gated).
     if let Some(text) = org_comment(t) {
         flush_para(out, para, para_buf, input, trim);
-        out.push(Block::Comment { text: text.to_string(), span: Some(Span(line_start, line_end)) });
+        out.push(Block::Comment {
+            text: text.to_string(),
+            span: Some(Span(line_start, line_end)),
+        });
         *absorb = true;
         return Step::Next(i + 1);
     }
 
-    // 2. drawer `:PROPERTIES:`/`:NAME:` … `:END:` — not a list-item content block, and NOT
+    // 2c. Generic drawer `:NAME:` … whole-line `:END:` — not a list-item content block, and NOT
     // inside a `#+BEGIN_X` / `>`-quote body (mldoc's `block_content_parsers` omits `Drawer`,
     // so a `:NAME:` there is verbatim/text). The `:END:` must lie inside THIS body (`< hi`);
-    // else it belongs to an enclosing body. F2.
+    // else it belongs to an enclosing body. This path intentionally keeps the old whole-line
+    // trimmed `:END:` semantics; property-drawer `:END:` spill is handled above.
     if let Some(name) = drawer_begin(t).filter(|_| !in_item && !ctx.in_quote) {
         if let Some(close) = find_drawer_end(drawer_end_idxs, drawer_cursor, i) {
             if close < hi {
@@ -771,38 +902,10 @@ fn dispatch_org_line<'a>(
                     *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
                 }
                 flush_para(out, para, para_buf, input, trim);
-                // mldoc (`drawer.ml`) makes a `Property_Drawer` ONLY when the WHOLE body
-                // parses as `many1 property` — every body line a valid `:key: value` (empty
-                // body allowed). If ANY line fails (plain text, blank, markdown `key:: v`),
-                // `parse1` can't reach `:END:` → it falls back to `drawer_parse` → a generic
-                // `Drawer{name:"properties"}` (no props, no directive folding, no value
-                // ref-walking). C3.
-                if name == "properties"
-                    && (i + 1..close)
-                        .all(|k| drawer_property(line_text(lines, k, strip)).is_some())
-                {
-                    let mut props: Vec<(String, String)> = (i + 1..close)
-                        .filter_map(|k| drawer_property(line_text(lines, k, strip)))
-                        .collect();
-                    // mldoc `Drawer.parse` folds trailing `#+NAME: value` directives into the
-                    // same Property_Drawer. Bounded by `hi` (don't cross the frame closer).
-                    let mut j = close + 1;
-                    let mut folded = false;
-                    while j < hi {
-                        if let Some(kv) = directive(line_text(lines, j, strip)) {
-                            props.push(kv);
-                            folded = true;
-                            j += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    let end = lines[j - 1].end;
-                    out.push(Block::Properties { props, span: Some(Span(line_start, end)) });
-                    *absorb = folded;
-                    return Step::Next(j);
-                }
-                out.push(Block::Drawer { name, span: Some(Span(line_start, lines[close].end)) });
+                out.push(Block::Drawer {
+                    name,
+                    span: Some(Span(line_start, lines[close].end)),
+                });
                 *absorb = false;
                 return Step::Next(close + 1);
             }
@@ -855,7 +958,11 @@ fn dispatch_org_line<'a>(
                         String::new()
                     };
                     let lang = content[frun..].trim().to_string();
-                    out.push(Block::Src { lang, code, span: Some(Span(content_off, lines[close].end)) });
+                    out.push(Block::Src {
+                        lang,
+                        code,
+                        span: Some(Span(content_off, lines[close].end)),
+                    });
                     *absorb = true;
                     return Step::Next(close + 1);
                 }
@@ -864,7 +971,11 @@ fn dispatch_org_line<'a>(
             // advancing `i` (the rewrite never creates an END/fence/drawer opener, so the
             // precompute + open frames' `hi` stay valid). Terminates: `content` begins a
             // non-`*` opener, so the headline branch can't re-fire.
-            lines[i] = Line { start: content_off, end: line_end, text: content };
+            lines[i] = Line {
+                start: content_off,
+                end: line_end,
+                text: content,
+            };
             *absorb = false;
             return Step::Next(i);
         }
@@ -906,7 +1017,12 @@ fn dispatch_org_line<'a>(
         while ni < hi && is_table_row(line_text(lines, ni, strip)) {
             ni += 1;
         }
-        out.push(build_table(&lines[start..ni], lines[start].start, lines[ni - 1].end, input));
+        out.push(build_table(
+            &lines[start..ni],
+            lines[start].start,
+            lines[ni - 1].end,
+            input,
+        ));
         *absorb = false;
         return Step::Next(ni);
     }
@@ -943,10 +1059,18 @@ fn dispatch_org_line<'a>(
         } else {
             content
         };
-        out.push(Block::LatexEnv { name, content, span: Some(Span(line_start, consumed_end)) });
+        out.push(Block::LatexEnv {
+            name,
+            content,
+            span: Some(Span(line_start, consumed_end)),
+        });
         *absorb = false;
         if ctx.in_quote {
-            let trail_end = if ni < lines.len() { lines[ni].start } else { body_end };
+            let trail_end = if ni < lines.len() {
+                lines[ni].start
+            } else {
+                body_end
+            };
             if consumed_end < trail_end {
                 *para = Some((consumed_end, trail_end));
                 // Keep para/para_buf in lockstep in a null_spans frame: the trailing region is a
@@ -982,7 +1106,11 @@ fn dispatch_org_line<'a>(
                     String::new()
                 };
                 let lang = t[mend..].trim().to_string();
-                out.push(Block::Src { lang, code, span: Some(Span(line_start, lines[close].end)) });
+                out.push(Block::Src {
+                    lang,
+                    code,
+                    span: Some(Span(line_start, lines[close].end)),
+                });
                 *absorb = true;
                 return Step::Next(close + 1);
             }
@@ -1007,17 +1135,26 @@ fn dispatch_org_line<'a>(
                         let lang = begin_lang(t);
                         // Body via line_text: applies the cumulative strip (matching block_code
                         // semantics for nested indented bodies; no-op for strip==0).
-                        let texts: Vec<&str> = (i + 1..close).map(|k| line_text(lines, k, strip)).collect();
+                        let texts: Vec<&str> =
+                            (i + 1..close).map(|k| line_text(lines, k, strip)).collect();
                         let inner = block_code_texts(&texts);
-                        out.push(Block::Src { lang, code: inner, span: Some(Span(line_start, lines[close].end)) });
+                        out.push(Block::Src {
+                            lang,
+                            code: inner,
+                            span: Some(Span(line_start, lines[close].end)),
+                        });
                         *absorb = true;
                         return Step::Next(close + 1);
                     }
                     "example" => {
                         flush_para(out, para, para_buf, input, trim);
-                        let texts: Vec<&str> = (i + 1..close).map(|k| line_text(lines, k, strip)).collect();
+                        let texts: Vec<&str> =
+                            (i + 1..close).map(|k| line_text(lines, k, strip)).collect();
                         let inner = block_code_texts(&texts);
-                        out.push(Block::Example { code: inner, span: Some(Span(line_start, lines[close].end)) });
+                        out.push(Block::Example {
+                            code: inner,
+                            span: Some(Span(line_start, lines[close].end)),
+                        });
                         *absorb = true;
                         return Step::Next(close + 1);
                     }
@@ -1025,18 +1162,27 @@ fn dispatch_org_line<'a>(
                         // indent_strip: leading ws of the VIEWED first body line (parent strip
                         // already applied via line_text; child_strip = strip + indent_strip in
                         // the Step::Open handler).
-                        let indent_strip =
-                            if close > i + 1 { leading_ws(line_text(lines, i + 1, strip)) } else { 0 };
+                        let indent_strip = if close > i + 1 {
+                            leading_ws(line_text(lines, i + 1, strip))
+                        } else {
+                            0
+                        };
                         return Step::Open {
                             close,
                             builder: Builder::Quote,
-                            child_ctx: Ctx { in_item: false, in_quote: true },
+                            child_ctx: Ctx {
+                                in_item: false,
+                                in_quote: true,
+                            },
                             indent_strip,
                         };
                     }
                     _ => {
-                        let indent_strip =
-                            if close > i + 1 { leading_ws(line_text(lines, i + 1, strip)) } else { 0 };
+                        let indent_strip = if close > i + 1 {
+                            leading_ws(line_text(lines, i + 1, strip))
+                        } else {
+                            0
+                        };
                         // mldoc reparses a custom `#+BEGIN_X` body with `block_content_parsers`
                         // — the SAME grammar as a QUOTE body (omits headline/drawer/footnote)
                         // — so the child context is "in block content" (`in_quote: true`),
@@ -1045,7 +1191,10 @@ fn dispatch_org_line<'a>(
                         return Step::Open {
                             close,
                             builder: Builder::Custom(lname),
-                            child_ctx: Ctx { in_item: false, in_quote: true },
+                            child_ctx: Ctx {
+                                in_item: false,
+                                in_quote: true,
+                            },
                             indent_strip,
                         };
                     }
@@ -1069,7 +1218,10 @@ fn dispatch_org_line<'a>(
             code.push('\n');
             ni += 1;
         }
-        out.push(Block::Example { code, span: Some(Span(lines[start].start, lines[ni - 1].end)) });
+        out.push(Block::Example {
+            code,
+            span: Some(Span(lines[start].start, lines[ni - 1].end)),
+        });
         *absorb = true;
         return Step::Next(ni);
     }
@@ -1102,7 +1254,11 @@ fn dispatch_org_line<'a>(
             let cap = if null_spans || (cur == i && !captured && view.is_some()) {
                 displayed_math_view_capture(lines, cur, hi, strip, cur_view, opener_off)
             } else {
-                let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
+                let body_end = if hi < lines.len() {
+                    lines[hi].start
+                } else {
+                    input.len()
+                };
                 displayed_math_raw_capture(lines, cur, hi, body_end, input, opener_off)
             };
             let Some(cap) = cap else {
@@ -1114,11 +1270,18 @@ fn dispatch_org_line<'a>(
                 }
                 flush_para(out, para, para_buf, input, trim);
             }
-            out.push(Block::DisplayedMath { text: cap.text, span: Some(Span(cap.span_start, cap.span_end)) });
+            out.push(Block::DisplayedMath {
+                text: cap.text,
+                span: Some(Span(cap.span_start, cap.span_end)),
+            });
             *absorb = false;
             captured = true;
             if let Some((ri, start, content_end)) = cap.rewrite {
-                lines[ri] = Line { start, end: lines[ri].end, text: &input[start..content_end] };
+                lines[ri] = Line {
+                    start,
+                    end: lines[ri].end,
+                    text: &input[start..content_end],
+                };
                 rewritten_line = Some(ri);
             } else {
                 rewritten_line = None;
@@ -1152,7 +1315,11 @@ fn dispatch_org_line<'a>(
             let cap = if null_spans || (cur == i && !captured && view.is_some()) {
                 raw_html_view_capture(lines, cur, hi, strip, cur_view)
             } else {
-                let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
+                let body_end = if hi < lines.len() {
+                    lines[hi].start
+                } else {
+                    input.len()
+                };
                 raw_html_raw_capture(lines, cur, hi, body_end, input, cur_view, raw_html_scan)
             };
             let Some(cap) = cap else {
@@ -1164,11 +1331,18 @@ fn dispatch_org_line<'a>(
                 }
                 flush_para(out, para, para_buf, input, trim);
             }
-            out.push(Block::RawHtml { text: cap.text, span: Some(Span(cap.span_start, cap.span_end)) });
+            out.push(Block::RawHtml {
+                text: cap.text,
+                span: Some(Span(cap.span_start, cap.span_end)),
+            });
             *absorb = false;
             captured = true;
             if let Some((ri, start, content_end)) = cap.rewrite {
-                lines[ri] = Line { start, end: lines[ri].end, text: &input[start..content_end] };
+                lines[ri] = Line {
+                    start,
+                    end: lines[ri].end,
+                    text: &input[start..content_end],
+                };
                 rewritten_line = Some(ri);
             } else {
                 rewritten_line = None;
@@ -1214,14 +1388,27 @@ fn dispatch_org_line<'a>(
     // 12. list — bounded by `hi`; item content re-parsed via `streaming_reparse`. Disabled in
     // list-item content; `collapse_floor` skips list-starts inside an already-collapsed region.
     if !in_item && i >= *collapse_floor && list_marker(t).is_some() {
-        match collect_list(lines, i, hi, Ctx { in_item: true, in_quote: ctx.in_quote }, strip) {
+        match collect_list(
+            lines,
+            i,
+            hi,
+            Ctx {
+                in_item: true,
+                in_quote: ctx.in_quote,
+            },
+            strip,
+        ) {
             Ok((block, next)) => {
                 flush_para(out, para, para_buf, input, trim);
                 out.push(block);
                 *absorb = false;
                 return Step::Next(next);
             }
-            Err(Collapse { kept, resume, trigger }) => {
+            Err(Collapse {
+                kept,
+                resume,
+                trigger,
+            }) => {
                 *collapse_floor = trigger;
                 if let Some(block) = kept {
                     flush_para(out, para, para_buf, input, trim);
@@ -1240,7 +1427,9 @@ fn dispatch_org_line<'a>(
             *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
         }
         flush_para(out, para, para_buf, input, trim);
-        out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
+        out.push(Block::Hr {
+            span: Some(Span(line_start, line_end)),
+        });
         *absorb = false;
         return Step::Next(i + 1);
     }
@@ -1272,7 +1461,10 @@ fn dispatch_org_line<'a>(
             // is byte-exact to the old clamped scan (a global 0-crossing `< body_end` == the clamped
             // scan's; one `>= body_end` == the clamped scan hitting the bound → None).
             let cap_end = hiccup_close.get(rec).copied().unwrap_or(usize::MAX);
-            if cap_end == usize::MAX || cap_end > body_end || !crate::inline::hiccup_head_ok(input, rec) {
+            if cap_end == usize::MAX
+                || cap_end > body_end
+                || !crate::inline::hiccup_head_ok(input, rec)
+            {
                 break;
             }
             // A preceding paragraph drops its trailing Break before a Hiccup inside a blockquote
@@ -1303,7 +1495,11 @@ fn dispatch_org_line<'a>(
             }
             if resume > lines[ri].start {
                 let content_end = lines[ri].start + lines[ri].text.len();
-                lines[ri] = Line { start: resume, end: lines[ri].end, text: &input[resume..content_end] };
+                lines[ri] = Line {
+                    start: resume,
+                    end: lines[ri].end,
+                    text: &input[resume..content_end],
+                };
             }
             cur = ri;
         }
@@ -1482,7 +1678,10 @@ fn flush_para(
         // Base offset 0: the inline spans are relative to `buf` and get nulled by
         // none_out_blocks on the frame's pop (every null_spans frame runs it), so they never
         // reach the output.
-        out.push(Block::Paragraph { inline: org_inline(&buf, 0), span: None });
+        out.push(Block::Paragraph {
+            inline: org_inline(&buf, 0),
+            span: None,
+        });
         return;
     }
     if let Some((s, mut e)) = para.take() {
@@ -1503,8 +1702,9 @@ fn flush_para(
 /// `#+KEY: value` where KEY is non-empty and not `BEGIN_…`. Returns (key, value).
 /// Leading whitespace is allowed (mldoc: `  #+KEY: v` is a directive). The value is
 /// **left-trimmed only** — mldoc keeps trailing whitespace (`#+TITLE: x  ` → `x  `).
-/// `pub(crate)` so the markdown driver (`parse.rs`) mirrors this EXACT classifier for a
-/// standalone `#+name: value` directive line — mldoc parses it identically in both formats.
+/// `pub(crate)` for the markdown driver (`parse.rs`), which keeps this legacy shared
+/// classifier. Org block dispatch uses `org_directive` below for source-faithful
+/// `Parsers.spaces` handling without changing md behavior.
 pub(crate) fn directive(s: &str) -> Option<(String, String)> {
     let rest = s.trim_start().strip_prefix("#+")?;
     let pos = rest.find(':')?;
@@ -1514,11 +1714,212 @@ pub(crate) fn directive(s: &str) -> Option<(String, String)> {
     }
     // `key.get(..6)` not `key[..6]`: a directive key is user text, so a multibyte char
     // straddling byte 6 (`#+END_中:`) would panic on a raw slice. char-boundary-safe.
-    if key.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("begin_")) {
+    if key
+        .get(..6)
+        .is_some_and(|p| p.eq_ignore_ascii_case("begin_"))
+    {
         return None;
     }
     let value = rest[pos + 1..].trim_start();
     Some((key.to_string(), value.to_string()))
+}
+
+#[inline]
+fn org_space(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | 0x1a | 0x0c)
+}
+
+#[inline]
+fn org_spaces_len(s: &str) -> usize {
+    s.as_bytes().iter().take_while(|&&b| org_space(b)).count()
+}
+
+#[inline]
+fn org_trim_spaces_start(s: &str) -> &str {
+    &s[org_spaces_len(s)..]
+}
+
+/// Org Directive.parse (`directive.ml`): optional `Parsers.spaces`, `#+`, a non-empty name
+/// up to `:`, then `spaces *> optional_line`. The npm 1.5.7 oracle rejects `BEGIN_`
+/// case-insensitively even though the cloned source only names two spellings; D22 pins the
+/// oracle behavior, so the check is ASCII-ci here.
+fn org_directive(s: &str) -> Option<(String, String)> {
+    let rest = org_trim_spaces_start(s).strip_prefix("#+")?;
+    let pos = rest.find(':')?;
+    let key = &rest[..pos];
+    if key.is_empty() || key.bytes().any(|b| b == b'\n' || b == b'\r') {
+        return None;
+    }
+    if key
+        .get(..6)
+        .is_some_and(|p| p.eq_ignore_ascii_case("begin_"))
+    {
+        return None;
+    }
+    let value = org_trim_spaces_start(&rest[pos + 1..]);
+    Some((key.to_string(), value.to_string()))
+}
+
+/// Drawer.parse2 (`drawer.ml`): optional `Parsers.spaces`, `#+`, no-space/non-colon name,
+/// `:`, then `spaces *> optional_line`. No `BEGIN_` rejection; this is the property fallback
+/// for Directive.parse refusals and the name-agnostic continuation inside an active fold.
+fn org_parse2_property(s: &str) -> Option<(String, String)> {
+    let rest = org_trim_spaces_start(s).strip_prefix("#+")?;
+    let pos = rest.find(':')?;
+    let key = &rest[..pos];
+    if key.is_empty()
+        || key
+            .bytes()
+            .any(|b| b == b':' || b == b'\n' || b == b'\r' || org_space(b))
+    {
+        return None;
+    }
+    let value = org_trim_spaces_start(&rest[pos + 1..]);
+    Some((key.to_string(), value.to_string()))
+}
+
+fn org_properties_begin(s: &str) -> bool {
+    org_trim_spaces_start(s).eq_ignore_ascii_case(":PROPERTIES:")
+}
+
+/// One parse1 property body line. Source note: `drawer.ml` rejects `:` and literal space
+/// in the key (`c <> ':' && c <> ' ' && non_eol c`) and rejects lowercase `"end"`.
+/// Values use `Parsers.spaces *> optional_line`: left spaces-set skip only, trailing raw.
+fn org_drawer_property(s: &str) -> Option<(String, String)> {
+    let rest = org_trim_spaces_start(s).strip_prefix(':')?;
+    let pos = rest.find(':')?;
+    let key = &rest[..pos];
+    if key.is_empty()
+        || key
+            .bytes()
+            .any(|b| b == b':' || b == b' ' || b == b'\n' || b == b'\r')
+        || key.eq_ignore_ascii_case("end")
+    {
+        return None;
+    }
+    let value = org_trim_spaces_start(&rest[pos + 1..]);
+    Some((key.to_string(), value.to_string()))
+}
+
+/// parse1's closer is `spaces *> string_ci ":END:" <* optional eol`, so trailing same-line
+/// bytes are NOT part of the drawer. Return the byte offset just after the matched `:END:`.
+fn org_property_end_spill(s: &str) -> Option<usize> {
+    let off = org_spaces_len(s);
+    s[off..]
+        .get(..5)
+        .is_some_and(|p| p.eq_ignore_ascii_case(":END:"))
+        .then_some(off + 5)
+}
+
+struct OrgParse1 {
+    props: Vec<(String, String)>,
+    next: usize,
+    span_end: usize,
+    absorb_after: bool,
+}
+
+fn org_parse1_properties<'a>(
+    lines: &mut [Line<'a>],
+    opener: usize,
+    hi: usize,
+    strip: usize,
+    input: &'a str,
+    property_end_idxs: &[usize],
+    property_end_cursor: &mut usize,
+) -> Option<OrgParse1> {
+    if !org_properties_begin(line_text(lines, opener, strip)) {
+        return None;
+    }
+    let close = find_drawer_end(property_end_idxs, property_end_cursor, opener)?;
+    if close >= hi {
+        return None;
+    }
+
+    let mut props = Vec::new();
+    for k in opener + 1..close {
+        props.push(org_drawer_property(line_text(lines, k, strip))?);
+    }
+
+    let close_view = line_text(lines, close, strip);
+    let spill_rel = org_property_end_spill(close_view)?;
+    let close_view_start = view_abs_start(&lines[close], close_view);
+    let spill_abs = close_view_start + spill_rel;
+    let content_end = lines[close].start + lines[close].text.len();
+    if spill_rel < close_view.len() {
+        lines[close] = Line {
+            start: spill_abs,
+            end: lines[close].end,
+            text: &input[spill_abs..content_end],
+        };
+        Some(OrgParse1 {
+            props,
+            next: close,
+            span_end: spill_abs,
+            absorb_after: false,
+        })
+    } else {
+        Some(OrgParse1 {
+            props,
+            next: close + 1,
+            span_end: lines[close].end,
+            absorb_after: false,
+        })
+    }
+}
+
+fn org_property_group<'a>(
+    lines: &mut [Line<'a>],
+    start: usize,
+    hi: usize,
+    strip: usize,
+    input: &'a str,
+    property_end_idxs: &[usize],
+    property_end_cursor: &mut usize,
+) -> Option<(Vec<(String, String)>, usize, usize, bool)> {
+    let mut props = Vec::new();
+    let mut cur = start;
+    let mut matched = false;
+    let mut span_end = lines[start].start;
+    let mut absorb_after = false;
+
+    while cur < hi {
+        // `drawer.ml` wraps each `parse1 <|> parse2` element in `between_eols`:
+        // a run of pure EOLs between elements is consumed, but a line containing
+        // spaces is not an EOL token and must fall through as the next paragraph.
+        if matched {
+            while cur < hi && line_text(lines, cur, strip).is_empty() {
+                span_end = lines[cur].end;
+                cur += 1;
+            }
+        }
+        if let Some(p1) = org_parse1_properties(
+            lines,
+            cur,
+            hi,
+            strip,
+            input,
+            property_end_idxs,
+            property_end_cursor,
+        ) {
+            props.extend(p1.props);
+            cur = p1.next;
+            span_end = p1.span_end;
+            absorb_after = p1.absorb_after;
+            matched = true;
+            continue;
+        }
+        if let Some(kv) = org_parse2_property(line_text(lines, cur, strip)) {
+            props.push(kv);
+            span_end = lines[cur].end;
+            cur += 1;
+            absorb_after = false;
+            matched = true;
+            continue;
+        }
+        break;
+    }
+
+    matched.then_some((props, cur, span_end, absorb_after))
 }
 
 /// Org comment `# text` (mldoc `Comment`): optional leading ws, a single `#`, then
@@ -1573,8 +1974,8 @@ fn headline_level(s: &str) -> Option<u32> {
 /// than the Paragraph / Comment / List / Heading fallbacks that mldoc keeps as (or after)
 /// the heading title. Mirrors mldoc's Org heading-title lookahead (heading0.ml).
 ///
-/// Single-line / always-terminating openers (`#+KEY:` directive, any `:`-line → Drawer
-/// or Example, `| … |` table, `\begin{}` latex env — which consumes to EOF when unclosed,
+/// Single-line / always-terminating openers (Drawer.parse2 `#+KEY:` with no spaces in the
+/// key, any `:`-line → Drawer or Example, `| … |` table, `\begin{}` latex env — which consumes to EOF when unclosed,
 /// `> ` quote, `$$…$$`, complete `<tag>…</tag>` html, valid `[fn:n] body`, `-----` hr)
 /// always produce their block, so they split unconditionally. A `#+BEGIN_X` block or a
 /// markdown ```/~~~ fence only becomes a block when it CLOSES; an unclosed one reparses
@@ -1594,7 +1995,7 @@ fn headline_split_opener(
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
 ) -> bool {
-    if directive(content).is_some()
+    if org_parse2_property(content).is_some()
         || is_verbatim_line(content)
         || is_table_row(content)
         // CLAMP the `\end{}` scan to THIS body (streaming): an env that closes outside the
@@ -1671,7 +2072,10 @@ fn extract_htags(title: &mut Vec<Inline>) -> Vec<String> {
     title.pop();
     if !prefix.is_empty() {
         // reformatted (trimmed) text → no source span.
-        title.push(Inline::Plain { text: prefix, span: None });
+        title.push(Inline::Plain {
+            text: prefix,
+            span: None,
+        });
     }
     // last_plain: if the (new) last inline is Plain, rtrim it and add one trailing space.
     if let Some(Inline::Plain { text, span }) = title.last_mut() {
@@ -1699,7 +2103,11 @@ fn parse_org_tags(s: &str) -> Option<Vec<String>> {
         }
         out.push(tok.to_string());
     }
-    if out.is_empty() { None } else { Some(out) }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 // ---- blocks (#+BEGIN_X / fences / verbatim / quote / math / html) ---------
@@ -1710,7 +2118,10 @@ fn block_begin(s: &str) -> Option<String> {
         // mldoc's block name = `take_while1(non-space)` immediately after `#+BEGIN_`; an empty
         // name (`#+BEGIN_` / `#+BEGIN_ X`) is NOT a block (a plain paragraph). C: don't skip ws.
         let rest = &t[8..];
-        let n = rest.bytes().take_while(|&b| b != b' ' && b != b'\t').count();
+        let n = rest
+            .bytes()
+            .take_while(|&b| b != b' ' && b != b'\t')
+            .count();
         (n > 0).then(|| rest[..n].to_string())
     } else {
         None
@@ -1765,7 +2176,11 @@ fn fence_marker(s: &str) -> Option<(u8, usize)> {
     }
     // mldoc's fence marker is EXACTLY 3 chars; extra run chars + the rest of the line are the
     // info/lang (so `~~~~` → lang "~"). Info begins at `ws + 3`, not past the whole run.
-    if k - ws >= 3 { Some((c, ws + 3)) } else { None }
+    if k - ws >= 3 {
+        Some((c, ws + 3))
+    } else {
+        None
+    }
 }
 
 /// A line that is part of an Org fixed-width block: starts (after optional ws) with a
@@ -1792,11 +2207,7 @@ fn quote_opens(s: &str) -> bool {
 /// list / heading / `id::`). On the FIRST line such content also makes mldoc reject
 /// the quote outright (→ Paragraph), not just stop the run.
 fn quote_line_breaker(s: &str) -> bool {
-    s.starts_with("- ")
-        || s.starts_with("# ")
-        || s.starts_with("id:: ")
-        || s == "-"
-        || s == "#"
+    s.starts_with("- ") || s.starts_with("# ") || s.starts_with("id:: ") || s == "-" || s == "#"
 }
 
 /// First line of an Org blockquote — the de-`>`'d opener content as a SUFFIX slice of `s` (no
@@ -1948,9 +2359,19 @@ fn list_marker(s: &str) -> Option<Marker> {
         if body.trim().is_empty() {
             return None;
         }
-        Some(Marker { ordered, number, checkbox, indent: ws, body: body.to_string() })
+        Some(Marker {
+            ordered,
+            number,
+            checkbox,
+            indent: ws,
+            body: body.to_string(),
+        })
     };
-    let dash = if ws == 0 { rest.strip_prefix('-') } else { None };
+    let dash = if ws == 0 {
+        rest.strip_prefix('-')
+    } else {
+        None
+    };
     let star = if ws > 0 { rest.strip_prefix('*') } else { None };
     if let Some(after) = dash.or(star).or_else(|| rest.strip_prefix('+')) {
         if after.starts_with(' ') || after.starts_with('\t') {
@@ -1998,7 +2419,11 @@ fn check_listitem(line: &str) -> (usize, bool) {
 /// begin with an integer (optional `+`/`-` then ≥1 digit)?
 fn scan_leading_int(t: &str) -> bool {
     let b = t.as_bytes();
-    let i = if matches!(b.first(), Some(b'+' | b'-')) { 1 } else { 0 };
+    let i = if matches!(b.first(), Some(b'+' | b'-')) {
+        1
+    } else {
+        0
+    };
     b.get(i).is_some_and(u8::is_ascii_digit)
 }
 
@@ -2082,7 +2507,11 @@ fn collect_list(
         if let Some(trigger) = trigger {
             // The failing item P is the one at line `i` (indent `cur_indent`), NOT pushed.
             let r = collapse_resume(&flat_indents, cur_indent as u32);
-            let resume = if r < flat_lines.len() { flat_lines[r] } else { i };
+            let resume = if r < flat_lines.len() {
+                flat_lines[r]
+            } else {
+                i
+            };
             flat.truncate(r);
             let kept = if flat.is_empty() {
                 None
@@ -2093,7 +2522,11 @@ fn collect_list(
                     span: Some(Span(lines[start].start, lines[resume - 1].end)),
                 })
             };
-            return Err(Collapse { kept, resume, trigger });
+            return Err(Collapse {
+                kept,
+                resume,
+                trigger,
+            });
         }
         flat.push(ListItem {
             ordered: marker.ordered,
@@ -2110,10 +2543,20 @@ fn collect_list(
     }
     if flat.is_empty() {
         // defensive: caller gates on `list_marker`, so unreachable.
-        return Err(Collapse { kept: None, resume: start, trigger: start });
+        return Err(Collapse {
+            kept: None,
+            resume: start,
+            trigger: start,
+        });
     }
     let span = Some(Span(lines[start].start, lines[i - 1].end));
-    Ok((Block::List { items: crate::projection::nest_items(flat), span }, i))
+    Ok((
+        Block::List {
+            items: crate::projection::nest_items(flat),
+            span,
+        },
+        i,
+    ))
 }
 
 /// Given the indents of the successfully-collected list items and the indent of the
@@ -2127,9 +2570,11 @@ fn collapse_resume(flat_indents: &[u32], p_indent: u32) -> usize {
     let mut cur_index = flat_indents.len();
     loop {
         // nearest earlier item with indent <= cur_indent.
-        let q = (0..cur_index).rev().find(|&j| flat_indents[j] <= cur_indent);
+        let q = (0..cur_index)
+            .rev()
+            .find(|&j| flat_indents[j] <= cur_indent);
         match q {
-            None => return cur_index,                              // first item overall
+            None => return cur_index, // first item overall
             Some(j) if flat_indents[j] == cur_indent => return cur_index, // prior sibling
             Some(j) => {
                 cur_index = j; // a parent → bubble up
@@ -2188,7 +2633,12 @@ fn build_table(rows: &[Line], start: usize, end: usize, input: &str) -> Block {
     // cookie row (using `+` junctions), NOT a markdown `:--` separator, so reusing the
     // markdown separator parser here produced WRONG alignment. mldoc discards org alignment
     // entirely (no oracle truth), so `data-align` is markdown-only.
-    Block::Table { header, rows: body, aligns: None, span: Some(Span(start, end)) }
+    Block::Table {
+        header,
+        rows: body,
+        aligns: None,
+        span: Some(Span(start, end)),
+    }
 }
 
 // ===========================================================================
@@ -2201,16 +2651,19 @@ pub(crate) fn org_inline(text: &str, base: usize) -> Vec<Inline> {
     crate::org_resolver::parse_inline_org(text, base)
 }
 
-
 /// Classify an `[[url][label]]` destination (mldoc `org_link_1`): `file:` → File;
 /// empty label → Search; `proto:link` (single colon, strip leading `//`) → Complex;
 /// else Search.
 pub(crate) fn classify_org_link_1(url_text: &str, label_text: &str) -> Url {
     if url_text.len() > 5 && url_text.starts_with("file:") {
-        return Url::File { v: url_text.to_string() };
+        return Url::File {
+            v: url_text.to_string(),
+        };
     }
     if label_text.is_empty() {
-        return Url::Search { v: url_text.to_string() };
+        return Url::Search {
+            v: url_text.to_string(),
+        };
     }
     if let Some(idx) = url_text.find(':') {
         let protocol = &url_text[..idx];
@@ -2219,17 +2672,24 @@ pub(crate) fn classify_org_link_1(url_text: &str, label_text: &str) -> Url {
             if let Some(stripped) = link.strip_prefix("//") {
                 link = stripped;
             }
-            return Url::Complex { protocol: Some(protocol.to_string()), link: Some(link.to_string()) };
+            return Url::Complex {
+                protocol: Some(protocol.to_string()),
+                link: Some(link.to_string()),
+            };
         }
     }
-    Url::Search { v: url_text.to_string() }
+    Url::Search {
+        v: url_text.to_string(),
+    }
 }
 
 /// Classify a `[[url]]` destination (mldoc `org_link_2`): `file:` → File;
 /// `proto://link` → Complex; else Page_ref.
 pub(crate) fn classify_org_link_2(name: &str) -> Url {
     if name.len() > 5 && name.starts_with("file:") {
-        return Url::File { v: name.to_string() };
+        return Url::File {
+            v: name.to_string(),
+        };
     }
     if let Some(idx) = name.find("://") {
         let protocol = &name[..idx];
@@ -2240,7 +2700,9 @@ pub(crate) fn classify_org_link_2(name: &str) -> Url {
             };
         }
     }
-    Url::PageRef { v: name.to_string() }
+    Url::PageRef {
+        v: name.to_string(),
+    }
 }
 
 // ===========================================================================
@@ -2278,7 +2740,9 @@ mod tests {
             Inline::Latex { mode, body, .. } => format!("latex({mode}:{body})"),
             Inline::Fnref { name, .. } => format!("fn({name})"),
             Inline::Timestamp { ts, .. } => format!("ts({ts})"),
-            Inline::Cookie { kind, value, total, .. } => match total {
+            Inline::Cookie {
+                kind, value, total, ..
+            } => match total {
                 Some(total) => format!("cookie({kind}:{value}/{total})"),
                 None => format!("cookie({kind}:{value})"),
             },
@@ -2359,7 +2823,7 @@ mod tests {
         assert_eq!(bkinds("#+TITLE: x"), ["directive"]); // #+ is a directive
         assert_eq!(bkinds("# a\n# b"), ["comment", "comment"]);
         assert_eq!(bkinds("- a\n# c"), ["list", "comment"]); // col-0 # terminates the list
-        // content: leading spaces stripped, trailing kept; not inline-parsed.
+                                                             // content: leading spaces stripped, trailing kept; not inline-parsed.
         match &parse("   # x  ")[0] {
             Block::Comment { text, .. } => assert_eq!(text, "x  "),
             _ => panic!("expected Comment"),
@@ -2377,7 +2841,9 @@ mod tests {
         assert_eq!(bkinds("* [:div]"), ["bullet"]); // headline (inline-hiccup title)
         assert_eq!(bkinds("#+BEGIN_SRC\n[:div]\n#+END_SRC"), ["src"]);
         match &parse("- [:div]")[0] {
-            Block::List { items, .. } => assert!(matches!(items[0].content[0], Block::Hiccup { .. })),
+            Block::List { items, .. } => {
+                assert!(matches!(items[0].content[0], Block::Hiccup { .. }))
+            }
             _ => panic!("expected List"),
         }
     }
@@ -2451,11 +2917,23 @@ mod tests {
     #[test]
     fn headline_marker_priority_tags() {
         match &parse("* TODO [#A] task with :tag1:tag2:")[0] {
-            Block::Bullet { marker, priority, htags, inline, .. } => {
+            Block::Bullet {
+                marker,
+                priority,
+                htags,
+                inline,
+                ..
+            } => {
                 assert_eq!(marker.as_deref(), Some("TODO"));
                 assert_eq!(priority.as_deref(), Some("A"));
                 assert_eq!(htags, &vec!["tag1".to_string(), "tag2".to_string()]);
-                assert_eq!(ns(inline), vec![Inline::Plain { text: "task with ".into(), span: None }]);
+                assert_eq!(
+                    ns(inline),
+                    vec![Inline::Plain {
+                        text: "task with ".into(),
+                        span: None
+                    }]
+                );
             }
             _ => panic!(),
         }
@@ -2471,7 +2949,13 @@ mod tests {
         match &parse("* plain :only:tags:")[0] {
             Block::Bullet { htags, inline, .. } => {
                 assert_eq!(htags, &vec!["only".to_string(), "tags".to_string()]);
-                assert_eq!(ns(inline), vec![Inline::Plain { text: "plain ".into(), span: None }]);
+                assert_eq!(
+                    ns(inline),
+                    vec![Inline::Plain {
+                        text: "plain ".into(),
+                        span: None
+                    }]
+                );
             }
             _ => panic!(),
         }
@@ -2484,12 +2968,18 @@ mod tests {
         // a headline whose post-marker CONTENT is a block construct splits into
         // [empty bullet, <block>] — the org analog of the md `-` bullet-opener split.
         assert_eq!(bkinds("* #+TITLE: x"), ["bullet", "directive"]);
-        assert_eq!(bkinds("* :PROPERTIES:\n:a: b\n:END:"), ["bullet", "properties"]);
+        assert_eq!(
+            bkinds("* :PROPERTIES:\n:a: b\n:END:"),
+            ["bullet", "properties"]
+        );
         assert_eq!(bkinds("* :LOGBOOK:\nx\n:END:"), ["bullet", "drawer"]);
         assert_eq!(bkinds("* :NAME:"), ["bullet", "example"]); // bare drawer → verbatim
         assert_eq!(bkinds("* : text"), ["bullet", "example"]);
         assert_eq!(bkinds("* #+BEGIN_SRC\ncode\n#+END_SRC"), ["bullet", "src"]);
-        assert_eq!(bkinds("* #+BEGIN_QUOTE\nq\n#+END_QUOTE"), ["bullet", "quote"]);
+        assert_eq!(
+            bkinds("* #+BEGIN_QUOTE\nq\n#+END_QUOTE"),
+            ["bullet", "quote"]
+        );
         assert_eq!(bkinds("* #+BEGIN_FOO\nf\n#+END_FOO"), ["bullet", "custom"]);
         assert_eq!(bkinds("* | a | b |"), ["bullet", "table"]);
         assert_eq!(bkinds("* | a | b |\n| c | d |"), ["bullet", "table"]);
@@ -2532,7 +3022,14 @@ mod tests {
     fn headline_split_keeps_marker_priority_level_empty_title() {
         // the empty bullet KEEPS level/marker/priority but has an empty title + no htags.
         match &parse("*** TODO [#A] #+TITLE: x")[0] {
-            Block::Bullet { level, marker, priority, inline, htags, .. } => {
+            Block::Bullet {
+                level,
+                marker,
+                priority,
+                inline,
+                htags,
+                ..
+            } => {
                 assert_eq!(*level, 3);
                 assert_eq!(marker.as_deref(), Some("TODO"));
                 assert_eq!(priority.as_deref(), Some("A"));
@@ -2575,9 +3072,18 @@ mod tests {
     fn headline_split_following_blocks() {
         // the split block absorbs following blanks / continues paragraphs like a col-0
         // block, and adjacent headlines are unaffected.
-        assert_eq!(bkinds("* #+TITLE: x\n\ny"), ["bullet", "directive", "paragraph"]);
-        assert_eq!(bkinds("* #+TITLE: x\n* Second"), ["bullet", "directive", "bullet"]);
-        assert_eq!(bkinds("* :PROPERTIES:\n:a: b\n:END:\n#+FOO: bar"), ["bullet", "properties"]);
+        assert_eq!(
+            bkinds("* #+TITLE: x\n\ny"),
+            ["bullet", "directive", "paragraph"]
+        );
+        assert_eq!(
+            bkinds("* #+TITLE: x\n* Second"),
+            ["bullet", "directive", "bullet"]
+        );
+        assert_eq!(
+            bkinds("* :PROPERTIES:\n:a: b\n:END:\n#+FOO: bar"),
+            ["bullet", "properties"]
+        );
     }
 
     // ---- links ------------------------------------------------------------
@@ -2614,7 +3120,10 @@ mod tests {
             _ => panic!(),
         }
         // #+BEGIN_X blocks
-        assert_eq!(bkinds("#+BEGIN_SRC clojure\n(defn x [])\n#+END_SRC"), ["src"]);
+        assert_eq!(
+            bkinds("#+BEGIN_SRC clojure\n(defn x [])\n#+END_SRC"),
+            ["src"]
+        );
         assert_eq!(bkinds("#+BEGIN_QUOTE\nq\n#+END_QUOTE"), ["quote"]);
         assert_eq!(bkinds("#+BEGIN_EXAMPLE\nlit\n#+END_EXAMPLE"), ["example"]);
         // a `*` line inside SRC stays code, not a headline.
@@ -2628,7 +3137,13 @@ mod tests {
     fn drawers_and_properties() {
         match &parse(":PROPERTIES:\n:key: value\n:another: 2\n:END:")[0] {
             Block::Properties { props, .. } => {
-                assert_eq!(props, &vec![("key".into(), "value".into()), ("another".into(), "2".into())]);
+                assert_eq!(
+                    props,
+                    &vec![
+                        ("key".into(), "value".into()),
+                        ("another".into(), "2".into())
+                    ]
+                );
             }
             _ => panic!(),
         }
@@ -2636,7 +3151,10 @@ mod tests {
         // #+NAME directives fold into a preceding property drawer.
         match &parse(":PROPERTIES:\n:a: 1\n:END:\n#+b: 2")[0] {
             Block::Properties { props, .. } => {
-                assert_eq!(props, &vec![("a".into(), "1".into()), ("b".into(), "2".into())]);
+                assert_eq!(
+                    props,
+                    &vec![("a".into(), "1".into()), ("b".into(), "2".into())]
+                );
             }
             _ => panic!(),
         }
@@ -2673,9 +3191,15 @@ mod tests {
             Block::Paragraph { inline, .. } => assert_eq!(
                 ns(inline),
                 vec![
-                    Inline::Plain { text: "a plain paragraph".into(), span: None },
+                    Inline::Plain {
+                        text: "a plain paragraph".into(),
+                        span: None
+                    },
                     Inline::Break { span: None },
-                    Inline::Plain { text: "second line".into(), span: None },
+                    Inline::Plain {
+                        text: "second line".into(),
+                        span: None
+                    },
                 ]
             ),
             _ => panic!(),
@@ -2688,7 +3212,10 @@ mod tests {
     fn latex_entities_and_environment_org() {
         // block-level LaTeX environment in Org.
         match &parse("\\begin{equation}\nx=1\n\\end{equation}")[0] {
-            Block::LatexEnv { name, content, .. } => { assert_eq!(name, "equation"); assert_eq!(content, "x=1\n"); }
+            Block::LatexEnv { name, content, .. } => {
+                assert_eq!(name, "equation");
+                assert_eq!(content, "x=1\n");
+            }
             _ => panic!(),
         }
         assert_eq!(bkinds("\\begin{eq}a b\\end{eq}"), ["latex_env"]);
@@ -2742,9 +3269,15 @@ mod tests {
         assert_eq!(bkinds(":PROPERTIES:\n:k: v\n:END:"), ["properties"]);
         assert_eq!(bkinds(":LOGBOOK:\nCLOCK: x\n:END:"), ["drawer"]);
         // properties drawer followed by a `:`-line → drawer + Example.
-        assert_eq!(bkinds(":PROPERTIES:\n:k: v\n:END:\n:more: stuff"), ["properties", "example"]);
+        assert_eq!(
+            bkinds(":PROPERTIES:\n:k: v\n:END:\n:more: stuff"),
+            ["properties", "example"]
+        );
         // verbatim run swallows an embedded `:NAME:` (drawer not re-tried mid-run).
-        assert_eq!(bkinds(": text\n:NAME:\ncontent\n:END:"), ["example", "paragraph", "example"]);
+        assert_eq!(
+            bkinds(": text\n:NAME:\ncontent\n:END:"),
+            ["example", "paragraph", "example"]
+        );
     }
 
     #[test]
@@ -2755,7 +3288,7 @@ mod tests {
         assert_eq!(bkinds("[fn:1]body"), ["footnote_def"]); // no space ok
         assert_eq!(bkinds("[fn:1]:x"), ["footnote_def"]);
         assert_eq!(bkinds(" [fn:1] body"), ["footnote_def"]); // leading ws ok
-        // forbidden first char (`* # [ -`) → inline ref in a paragraph.
+                                                              // forbidden first char (`* # [ -`) → inline ref in a paragraph.
         for s in ["[fn:1]*x", "[fn:1]#x", "[fn:1][x", "[fn:1]-x"] {
             assert_eq!(bkinds(s), ["paragraph"], "{s}");
         }
@@ -2879,8 +3412,8 @@ mod tests {
         assert_eq!(bkinds("1. a\n   more"), ["list"]);
         assert_eq!(bkinds("- [ ] a\n  more"), ["list"]);
         assert_eq!(bkinds("  + x\n    more"), ["list"]); // list starting at indent>0
-        // blank-line handling (mldoc two_eols): one blank between items is absorbed;
-        // a blank right after the marker breaks the fold.
+                                                         // blank-line handling (mldoc two_eols): one blank between items is absorbed;
+                                                         // a blank right after the marker breaks the fold.
         assert_eq!(bkinds("- a\n  more\n\n- b"), ["list"]);
         assert_eq!(bkinds("- a\n\n  more"), ["list", "paragraph"]);
         assert_eq!(bkinds("- a\n b\nc"), ["list", "paragraph"]);
@@ -2899,7 +3432,10 @@ mod tests {
         assert_eq!(item_content_kinds("- a\n  : ex"), ["paragraph", "example"]);
         assert_eq!(item_content_kinds("- a\n  | t |"), ["paragraph", "table"]);
         assert_eq!(item_content_kinds("- a\n  -----"), ["paragraph", "hr"]);
-        assert_eq!(item_content_kinds("- a\n  $$x$$"), ["paragraph", "displayed_math"]);
+        assert_eq!(
+            item_content_kinds("- a\n  $$x$$"),
+            ["paragraph", "displayed_math"]
+        );
         assert_eq!(
             item_content_kinds("- a\n  #+BEGIN_SRC\n  x\n  #+END_SRC"),
             ["paragraph", "src"]
@@ -2928,9 +3464,9 @@ mod tests {
             "1. a\n   more\n   - x",
             "- a\n  - x\n  more",
             "- a\n  more\n  - x",
-            "- a\n  + ",       // empty deeper marker
-            "- a\n  12abc",    // integer-prefixed, no `.`
-            "- a\n  -5",       // `-5` is is_item but unparseable
+            "- a\n  + ",           // empty deeper marker
+            "- a\n  12abc",        // integer-prefixed, no `.`
+            "- a\n  -5",           // `-5` is is_item but unparseable
             "+ a\n  + b\n    - c", // collapse propagates from a grandchild
         ] {
             assert_eq!(bkinds(s), ["paragraph"], "should collapse: {s:?}");
@@ -2941,9 +3477,9 @@ mod tests {
         // breakout (NOT collapse): an indented `-` at indent <= the current item.
         assert_eq!(bkinds("+ a\n  + b\n  - c"), ["list", "paragraph"]);
         assert_eq!(bkinds("- a\n- "), ["list", "paragraph"]); // empty trailing marker
-        // PARTIAL collapse: items before the failing item survive as a List; the
-        // failing item onward is a Paragraph (mldoc bubbles up only through
-        // first-at-level items).
+                                                              // PARTIAL collapse: items before the failing item survive as a List; the
+                                                              // failing item onward is a Paragraph (mldoc bubbles up only through
+                                                              // first-at-level items).
         let kept_len = |s: &str| match &parse(s)[0] {
             Block::List { items, .. } => items.len(),
             b => panic!("not a list: {b:?}"),
@@ -2975,7 +3511,7 @@ mod tests {
         assert_eq!(bkinds("[fn:1]:x"), ["footnote_def"]);
         assert_eq!(bkinds("[fn:1]/x"), ["footnote_def"]);
         assert_eq!(bkinds("[fn:1] é"), ["footnote_def"]); // 2 bytes
-        // bad first char stays a paragraph regardless of length.
+                                                          // bad first char stays a paragraph regardless of length.
         assert_eq!(bkinds("[fn:1]-x"), ["paragraph"]);
         assert_eq!(bkinds("[fn:1]*x"), ["paragraph"]);
         assert_eq!(bkinds("[fn:1]#x"), ["paragraph"]);
@@ -3003,7 +3539,10 @@ mod tests {
         };
         // absorbed: de-indented, joined with Break_Line, trailing spaces kept.
         assert_eq!(fnbody("[fn:1] body\ncont"), "body\u{23ce}cont");
-        assert_eq!(fnbody("[fn:1] body\ncont\nmore"), "body\u{23ce}cont\u{23ce}more");
+        assert_eq!(
+            fnbody("[fn:1] body\ncont\nmore"),
+            "body\u{23ce}cont\u{23ce}more"
+        );
         assert_eq!(fnbody("[fn:1] body\n  indented"), "body\u{23ce}indented");
         assert_eq!(fnbody("[fn:1] body\n\tcont"), "body\u{23ce}cont");
         assert_eq!(fnbody("[fn:1] body\ncont  "), "body\u{23ce}cont  ");
@@ -3024,11 +3563,23 @@ mod tests {
         assert_eq!(bkinds("[fn:1] body\n\ncont"), ["footnote_def", "paragraph"]); // blank
         assert_eq!(bkinds("[fn:1] body\n* h"), ["footnote_def", "bullet"]); // headline
         assert_eq!(bkinds("[fn:1] body\n- x"), ["footnote_def", "list"]); // col-0 `-`
-        assert_eq!(bkinds("[fn:1] body\n#+TITLE: x"), ["footnote_def", "directive"]);
-        assert_eq!(bkinds("[fn:1] body\n#+BEGIN_SRC\nx\n#+END_SRC"), ["footnote_def", "src"]);
+        assert_eq!(
+            bkinds("[fn:1] body\n#+TITLE: x"),
+            ["footnote_def", "directive"]
+        );
+        assert_eq!(
+            bkinds("[fn:1] body\n#+BEGIN_SRC\nx\n#+END_SRC"),
+            ["footnote_def", "src"]
+        );
         assert_eq!(bkinds("[fn:1] body\n-----"), ["footnote_def", "hr"]); // `-` hr
-        assert_eq!(bkinds("[fn:1] ab\n[fn:2] cd"), ["footnote_def", "footnote_def"]);
-        assert_eq!(bkinds("[fn:1] body\n[fn:2] b"), ["footnote_def", "paragraph"]); // `[`
+        assert_eq!(
+            bkinds("[fn:1] ab\n[fn:2] cd"),
+            ["footnote_def", "footnote_def"]
+        );
+        assert_eq!(
+            bkinds("[fn:1] body\n[fn:2] b"),
+            ["footnote_def", "paragraph"]
+        ); // `[`
         assert_eq!(bkinds("[fn:1] body\nx"), ["footnote_def", "paragraph"]); // 1-byte cont
         assert_eq!(bkinds("[fn:1] body\n  * x"), ["footnote_def", "list"]); // indented `*`
         assert_eq!(fnbody("[fn:1] body\n- x"), "body");
@@ -3043,7 +3594,7 @@ mod tests {
         assert_eq!(footnote_cont("cont  ", true), Some("cont  ")); // trailing kept
         assert_eq!(footnote_cont("+ x", true), Some("+ x")); // `+` folds as text
         assert_eq!(footnote_cont("cont\r", true), Some("cont")); // CRLF `\r` dropped
-        // terminators → None
+                                                                 // terminators → None
         assert_eq!(footnote_cont("", true), None); // blank
         assert_eq!(footnote_cont("   ", true), None); // whitespace-only
         assert_eq!(footnote_cont("x", true), None); // 1-byte body
@@ -3070,7 +3621,7 @@ mod tests {
     #[test]
     fn directive_leading_ws_and_value_trim() {
         assert_eq!(bkinds("  #+TODO: x"), ["directive"]); // leading ws allowed
-        // value is left-trimmed only (mldoc keeps trailing whitespace).
+                                                          // value is left-trimmed only (mldoc keeps trailing whitespace).
         match &parse("#+TITLE: hello  ")[0] {
             Block::Directive { name, value, .. } => {
                 assert_eq!(name, "TITLE");
@@ -3102,9 +3653,15 @@ mod tests {
             Block::Paragraph { inline, .. } => assert_eq!(
                 ns(inline),
                 vec![
-                    Inline::Plain { text: " ".into(), span: None },
+                    Inline::Plain {
+                        text: " ".into(),
+                        span: None
+                    },
                     Inline::Break { span: None },
-                    Inline::Plain { text: "real content".into(), span: None },
+                    Inline::Plain {
+                        text: "real content".into(),
+                        span: None
+                    },
                 ]
             ),
             _ => panic!(),
