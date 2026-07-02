@@ -28,6 +28,7 @@ pub(crate) struct Ctx {
     pub tags: bool,
     pub block_refs: bool,
     pub macros: bool,
+    pub export_snippets: bool,
     pub latex: bool,
     pub urls: bool,
     pub timestamps: bool,
@@ -48,6 +49,7 @@ impl Ctx {
             tags: true,
             block_refs: true,
             macros: true,
+            export_snippets: true,
             latex: true,
             urls: true,
             timestamps: true,
@@ -71,6 +73,7 @@ impl Ctx {
             tags: false,
             block_refs: false,
             macros: false,
+            export_snippets: false,
             latex: false,
             urls: false,
             timestamps: false,
@@ -96,6 +99,7 @@ impl Ctx {
             tags: false,
             block_refs: false,
             macros: false,
+            export_snippets: false,
             urls: false,
             timestamps: false,
             angle: false,
@@ -114,7 +118,7 @@ fn is_marker(c: u8) -> bool {
 }
 
 /// Bytes the Org lexer treats specially (stop a plain run). `~`/`=` (code/verbatim) and the
-/// brackets / `$` / `#` / `<` / `{` / `(` / `!` become deferred `Punct` tokens; the resolver
+/// brackets / `$` / `#` / `<` / `{` / `(` / `!` / `@` become deferred `Punct` tokens; the resolver
 /// decides per-ctx. (Org has no backtick code span.)
 #[inline]
 fn is_special(c: u8) -> bool {
@@ -122,7 +126,7 @@ fn is_special(c: u8) -> bool {
         || is_marker(c)
         || matches!(
             c,
-            b'~' | b'=' | b'$' | b'[' | b']' | b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b'#' | b'!'
+            b'~' | b'=' | b'$' | b'[' | b']' | b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b'#' | b'!' | b'@'
         )
 }
 
@@ -727,6 +731,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut sq_rb_lb = first_seq(bb, b']', b'[', 0); // ][
     let mut sq_rr = first_seq(bb, b')', b')', 0); // ))
     let mut sq_rbrace = first_seq(bb, b'}', b'}', 0); // }}
+    let mut sq_at = first_seq(bb, b'@', b'@', 0); // @@
     let mut raw_html_scan = crate::block_common::RawHtmlScan::new();
     let mut autolink_scan = crate::inline::AutolinkScan::new();
     let mut timestamp_scan = crate::inline::TimestampCloseScan::new();
@@ -745,7 +750,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut dollar_scan = crate::inline::ByteBeforeEolScan::new(b'$');
     let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
     // `fresh` = a dispatch point (mldoc `plain_run` stops at PLAIN_DELIMS `\ _ ^ [ * / + $ #`
-    // + ws/eol). The SWALLOW openers `~ = < { (` fire only when fresh; mid-plain-run they are
+    // + ws/eol). The SWALLOW openers `~ = < { ( @` fire only when fresh; mid-plain-run they are
     // absorbed as literal text.
     let mut fresh = true;
 
@@ -907,7 +912,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             }
             Kind::Punct(c) => {
                 let c = *c;
-                // PLAIN_DELIMS `# $ [` always dispatch; SWALLOW `~ = < { (` only when fresh.
+                // PLAIN_DELIMS `# $ [` always dispatch; SWALLOW `~ = < { ( @` only when fresh.
                 let mut hit: Option<usize> = None;
                 match c {
                     b'#' if ctx.tags => {
@@ -995,6 +1000,16 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                             }
                         }
                     }
+                    b'@' if ctx.export_snippets && fresh => {
+                        if present!(sq_at, b'@', b'@', off + 2) {
+                            if let Some((mut node, e)) = crate::inline::parse_export_snippet_at(s, off) {
+                                flush(&mut out, &mut pending, &mut plain_start, plain_end);
+                                crate::projection::set_inline_span(&mut node, Some(Span(base + off, base + e)));
+                                out.push(node);
+                                hit = Some(e);
+                            }
+                        }
+                    }
                     b'(' if ctx.block_refs && fresh => {
                         if present!(sq_rr, b')', b')', off) {
                             if let Some((mut node, e)) = try_block_ref_at(s, bb, off) {
@@ -1012,7 +1027,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     continue;
                 }
                 // not consumed: plain. `# $ [` are PLAIN_DELIMS (fresh); the swallow bytes
-                // and non-openers (`] ) } > !` …) are absorbed mid-run (not fresh).
+                // and non-openers (`] ) } > ! @` …) are absorbed mid-run (not fresh).
                 push_byte!(off, c);
                 fresh = matches!(c, b'#' | b'$' | b'[');
             }
@@ -1683,18 +1698,34 @@ fn read_metadata(s: &str, bb: &[u8], end: &mut usize) -> String {
 /// `[fn:name]` / `[fn:name:def]` / `[fn::def]` → name — v1 org_footnote_ref.
 fn org_footnote_at(s: &str, i: usize) -> Option<(usize, String)> {
     let rest = s[i..].strip_prefix("[fn:")?;
+    if let Some(def) = rest.strip_prefix(':') {
+        let close = def.find(']')?;
+        if close == 0 || def[..close].contains('\n') || def[..close].contains('\r') {
+            return None;
+        }
+        return Some((i + 5 + close + 1, String::new()));
+    }
     let rb = rest.as_bytes();
     let mut j = 0;
     while j < rb.len() && rb[j] != b':' && rb[j] != b']' && rb[j] != b'\n' && rb[j] != b'\r' {
         j += 1;
     }
-    let name = rest[..j].to_string();
-    let after = &rest[j..];
-    let close = after.find(']')?;
-    if after[..close].contains('\n') || after[..close].contains('\r') {
+    if j == 0 {
         return None;
     }
-    Some((i + 4 + j + close + 1, name))
+    let name = rest[..j].to_string();
+    let after = &rest[j..];
+    if after.starts_with(':') {
+        let def = &after[1..];
+        let close = def.find(']')?;
+        if def[..close].contains('\n') || def[..close].contains('\r') {
+            return None;
+        }
+        Some((i + 4 + j + 1 + close + 1, name))
+    } else {
+        after.strip_prefix(']')?;
+        Some((i + 4 + j + 1, name))
+    }
 }
 
 /// First byte `c` at/after `from`, else `bb.len()` (monotone-cursor helper).

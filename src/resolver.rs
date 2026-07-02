@@ -27,6 +27,7 @@ pub(crate) struct Ctx {
     pub latex: bool,
     pub tags: bool,
     pub macros: bool,
+    pub export_snippets: bool,
     pub block_refs: bool,
     pub urls: bool,
     pub timestamps: bool,
@@ -45,6 +46,7 @@ impl Ctx {
             latex: true,
             tags: true,
             macros: true,
+            export_snippets: true,
             block_refs: true,
             urls: true,
             timestamps: true,
@@ -654,6 +656,7 @@ fn clear_inline_spans(node: &mut Inline) {
         | Inline::NestedLink { span, .. }
         | Inline::Target { span, .. }
         | Inline::Macro { span, .. }
+        | Inline::ExportSnippet { span, .. }
         | Inline::Latex { span, .. }
         | Inline::Timestamp { span, .. }
         | Inline::Cookie { span, .. }
@@ -1015,6 +1018,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let tag_boundary_runs = (!tag_boundary_runs.is_empty()).then_some(tag_boundary_runs);
     let mut sq_rr = first_seq(bb, b')', b')', 0);
     let mut sq_rbrace = first_seq(bb, b'}', b'}', 0);
+    let mut sq_at = first_seq(bb, b'@', b'@', 0);
     let mut block_rparen = first_byte(bb, 0, b')');
     let mut macro_rbrace = first_byte(bb, 0, b'}');
     // monotone next-`\)` / `\]` (latex-backslash closer floors: a `\(`×n run stays linear).
@@ -1024,7 +1028,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
 
     // `fresh` = at a fresh dispatch point (BOL, or after ws / a marker-delim / a construct /
-    // a Break). A SWALLOW opener (`! ( { <`) tries its construct only when `fresh`; mid-plain-
+    // a Break). A SWALLOW opener (`! ( { < @`) tries its construct only when `fresh`; mid-plain-
     // run (after ordinary non-ws text) it is swallowed as plain (mldoc `plain_run` semantics).
     let mut fresh = true;
     let mut t = 0usize;
@@ -1259,8 +1263,8 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
         };
         if let Some(c) = swallow {
             let off = toks[t].off;
-            // Opener construct, only at a fresh dispatch point. `!` image, `{` macro, `(`
-            // block-ref (M3); `<` angle constructs land in M3b. `] ) } >` never open.
+            // Opener construct, only at a fresh dispatch point. `!` image, `{` macro, `@`
+            // export-snippet, `(` block-ref, `<` angle. `] ) } >` never open.
             if fresh {
                 let opened = match c {
                     b'!' if ctx.images && bb.get(off + 1) == Some(&b'[') => {
@@ -1270,6 +1274,11 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         && macro_close_is_viable(bb, off, &mut sq_rbrace, &mut macro_rbrace) =>
                     {
                         crate::inline::parse_macro_at(s, off)
+                    }
+                    b'@' if ctx.export_snippets
+                        && export_snippet_close_is_viable(bb, off, &mut sq_at) =>
+                    {
+                        crate::inline::parse_export_snippet_at(s, off)
                     }
                     b'(' if ctx.block_refs
                         && block_ref_close_is_viable(bb, off, &mut sq_rr, &mut block_rparen) =>
@@ -1606,15 +1615,15 @@ fn is_special_lead(c: u8) -> bool {
     matches!(
         c,
         b'#' | b'$' | b'[' | b'(' | b'{' | b'<' | b'!' | b'*' | b'_' | b'~' | b'^' | b'=' | b'`'
-            | b'\\'
+            | b'\\' | b'@'
     )
 }
 
 /// Is `c` a SWALLOW byte — `mldoc` dispatches it but a failure runs `plain_run` (rather than
-/// emitting a single literal char like a marker-delim). Openers `! ( { <` and the closers
+/// emitting a single literal char like a marker-delim). Openers `! ( { < @` and the closers
 /// `] ) } >` (which never open an inline construct at top level).
 fn is_swallow_byte(c: u8) -> bool {
-    matches!(c, b'!' | b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b']')
+    matches!(c, b'!' | b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b']' | b'@')
 }
 
 /// `<…>` angle dispatch (mldoc order): quick_link → timestamp → inline_html → email.
@@ -1666,6 +1675,14 @@ fn macro_close_is_viable(bb: &[u8], off: usize, sq_rbrace: &mut usize, rbrace: &
         *rbrace = first_byte(bb, inner, b'}');
     }
     *rbrace + 1 < bb.len() && bb[*rbrace + 1] == b'}'
+}
+
+fn export_snippet_close_is_viable(bb: &[u8], off: usize, sq_at: &mut usize) -> bool {
+    let inner = off + 2;
+    if *sq_at < inner {
+        *sq_at = first_seq(bb, b'@', b'@', inner);
+    }
+    *sq_at < bb.len()
 }
 
 fn block_ref_close_is_viable(bb: &[u8], off: usize, sq_rr: &mut usize, rparen: &mut usize) -> bool {

@@ -414,6 +414,16 @@ pub enum Inline {
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },
+    /// Org/Markdown export snippet `@@name: content@@` (mldoc
+    /// `Export_Snippet`). The parser keeps both fields; rendering decides whether
+    /// the named backend is visible.
+    #[serde(rename = "export_snippet")]
+    ExportSnippet {
+        name: String,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
     #[serde(rename = "latex")]
     Latex {
         mode: String,
@@ -501,6 +511,7 @@ pub(crate) fn set_inline_span(n: &mut Inline, span: Option<Span>) {
         | Inline::Target { span: s, .. }
         | Inline::Tag { span: s, .. }
         | Inline::Macro { span: s, .. }
+        | Inline::ExportSnippet { span: s, .. }
         | Inline::Latex { span: s, .. }
         | Inline::Timestamp { span: s, .. }
         | Inline::Cookie { span: s, .. }

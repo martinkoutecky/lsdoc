@@ -37,6 +37,7 @@ const KEPT = {
   Timestamp: ["*array*"],                                 // [ts, date]
   Cookie: ["*array*"],                                    // [Absolute,n,m] | [Percent,n]
   Footnote_Reference: ["name"],
+  Export_Snippet: ["*array*"],                            // [name, content]
   Target: ["*scalar*"],
   Radio_Target: ["*scalar*"],
   Email: ["*whole*"],                                     // carried opaque
@@ -140,6 +141,8 @@ const extra = [
   ["* TODO [#A] important :work:urgent:", "org"],
   // footnote
   ["text[^1]\n\n[^1]: def body", "md"],
+  ["@@html: <b>x</b>@@", "md"],
+  ["@@name: c@@", "org"],
   // timestamps
   ["<2026-06-28 Sun>", "org"],
   ["<2026-06-28 Sun 10:00-11:00>", "org"],

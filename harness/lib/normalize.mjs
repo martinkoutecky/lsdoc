@@ -62,6 +62,7 @@ export function normInline(seg) {
       return r;
     }
     case "Footnote_Reference": return { k: "fnref", name: seg[1]?.name };
+    case "Export_Snippet": return { k: "export_snippet", name: seg[1], content: seg[2] };
     case "Target": return { k: "target", text: seg[1] };
     case "Radio_Target": return { k: "target", text: seg[1] };
     case "Email": return { k: "email", text: seg[1] };

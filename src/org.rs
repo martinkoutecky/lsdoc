@@ -2270,6 +2270,7 @@ mod tests {
             Inline::Link { url, .. } => format!("link({})", uk(url)),
             Inline::Tag { children, .. } => format!("tag({})", txt(children)),
             Inline::Macro { name, args, .. } => format!("macro({name};{})", args.join("|")),
+            Inline::ExportSnippet { name, content, .. } => format!("export({name}:{content})"),
             Inline::NestedLink { content, .. } => format!("nested({content})"),
             Inline::Target { text, .. } => format!("target({text})"),
             Inline::Break { .. } => "break".into(),

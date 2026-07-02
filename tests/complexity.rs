@@ -156,6 +156,12 @@ fn macro_interleave(n: usize) -> String {
 fn org_macro_interleave(n: usize) -> String {
     "/a/{{".repeat(n / 5)
 }
+fn export_snippet_interleave(n: usize) -> String {
+    "*a*@@a: b\n".repeat(n / 10)
+}
+fn org_export_snippet_interleave(n: usize) -> String {
+    "/a/@@a: b\n".repeat(n / 10)
+}
 fn blockref_interleave(n: usize) -> String {
     "*a*((".repeat(n / 5)
 }
@@ -217,6 +223,8 @@ fn complexity_gate() {
         assert_linear("autolink_interleave", autolink_interleave, 6000, "md");
         assert_linear("macro_interleave", macro_interleave, 6000, "md");
         assert_linear("org_macro_interleave", org_macro_interleave, 6000, "org");
+        assert_linear("export_snippet_interleave", export_snippet_interleave, 6000, "md");
+        assert_linear("org_export_snippet_interleave", org_export_snippet_interleave, 6000, "org");
         assert_linear("blockref_interleave", blockref_interleave, 6000, "md");
         assert_linear("org_blockref_interleave", org_blockref_interleave, 6000, "org");
         assert_linear("raw_html_unbalanced_interleave", raw_html_unbalanced_interleave, 6000, "md");

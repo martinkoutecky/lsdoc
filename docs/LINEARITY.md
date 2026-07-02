@@ -5,7 +5,8 @@ must have exactly one owner: constant/local, consume-on-match, suffix-absence mi
 invalidating cursor, precomputed map, or boundary-run map. A new unfloored scan in these
 paths is a bug.
 
-Line numbers were rechecked against the current tree after the C6 hashtag/bare-url port.
+C7 export-snippet rows were added against the current tree; older row line numbers retain
+their last audit positions.
 
 | scan @ file:line | owner | argument |
 |---|---|---|
@@ -18,6 +19,7 @@ Line numbers were rechecked against the current tree after the C6 hashtag/bare-u
 | Markdown entity lexer @ `src/lexer.rs:173` | consume-on-match | `\` plus the maximal ASCII-letter run and optional `{}` are consumed once; known names emit `Entity`, unknown names emit the same consumed bare name as `Plain`. |
 | Markdown tag dispatch @ `src/resolver.rs:1156`, `src/inline.rs:394` | boundary-run | delimiter-run termination is precomputed once by `build_tag_boundary_runs`. |
 | Markdown macro dispatch @ `src/resolver.rs:846`, `src/inline.rs:1844` | suffix-absence miss-cache + invalidating-cursor | `}}` floor proves close presence; first lone `}` cursor prevents repeated invalid misses. |
+| Markdown export-snippet dispatch @ `src/resolver.rs:1278`, parser @ `src/inline.rs:2275` | suffix-absence miss-cache + consume-on-match | `@@` closer floor skips parser calls when no closer exists after the opener; accepted snippets consume through the closing `@@`, and invalid candidates scan only to the first `@`/EOL in that candidate. |
 | Markdown block-ref dispatch @ `src/resolver.rs:860`, `src/inline.rs:1809` | suffix-absence miss-cache + invalidating-cursor | `))` floor proves close presence; first lone `)` cursor owns body-invalid failures. |
 | Markdown angle autolink @ `src/resolver.rs:810`, `src/inline.rs:1206` | suffix-absence miss-cache + invalidating-cursor | one cursor owns first `>`/ws after `<scheme:`; EOF and ws-before-`>` are cached outcomes. |
 | Markdown angle timestamp @ `src/resolver.rs:1253`, `src/inline.rs:2011` | suffix-absence miss-cache + invalidating-cursor | active `<...>` bodies and active range halves are gated by the `>` half of `TimestampCloseScan`. |
@@ -30,6 +32,7 @@ Line numbers were rechecked against the current tree after the C6 hashtag/bare-u
 | Org resolver token loop @ `src/org_resolver.rs:270` | consume-on-match | `t` advances monotonically; accepted leaves resync past consumed bytes. |
 | Org bracket/page/link floors @ `src/org_resolver.rs:337`, `src/org_resolver.rs:1141` | precomputed-map + invalidating-cursor | bracket close maps plus `rbracket`, `sq_rb_lb`, `real_dbl_cur`, and `crlf` gate scans. |
 | Org macro/block-ref dispatch @ `src/org_resolver.rs:550`, `src/org_resolver.rs:558` | suffix-absence miss-cache | `sq_rbrace` and `sq_rr` must be present before parsers run. |
+| Org export-snippet dispatch @ `src/org_resolver.rs:1003`, parser @ `src/inline.rs:2275` | suffix-absence miss-cache + consume-on-match | `sq_at` proves a closing `@@` after the opener before the parser runs; accepted snippets consume through the closer, failed candidates are bounded by the first `@`/EOL. |
 | Org tag dispatch @ `src/org_resolver.rs:914`, `src/inline.rs:394` | boundary-run | same delimiter-run precompute as Markdown. |
 | Org angle target @ `src/org_resolver.rs:975` | constant/local | `<<target>>` stops at `<`, `>`, or EOL and is tried once at the dispatch byte. |
 | Org autolink @ `src/org_resolver.rs:975`, `src/org.rs:2210` | suffix-absence miss-cache + invalidating-cursor | shared first `>`/ws cursor gates `parse_org_autolink`. |

@@ -475,6 +475,11 @@ impl Renderer {
                 push_attr(&mut self.out, "data-args", &json);
                 self.out.push_str("></span>");
             }
+            Inline::ExportSnippet { name, content, .. } => {
+                if name == "html" {
+                    self.out.push_str(content);
+                }
+            }
             Inline::Latex { mode, body, .. } => {
                 let cls = if mode == "Displayed" { "math math-display" } else { "math" };
                 self.out.push_str("<span class=\"");
@@ -704,6 +709,7 @@ fn flatten_into(inlines: &[Inline], out: &mut String) {
             Inline::Break { .. }
             | Inline::HardBreak { .. }
             | Inline::Macro { .. }
+            | Inline::ExportSnippet { .. }
             | Inline::Timestamp { .. }
             | Inline::Fnref { .. }
             | Inline::InlineHtml { .. }

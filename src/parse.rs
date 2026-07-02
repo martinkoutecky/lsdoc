@@ -2432,11 +2432,16 @@ fn raw_callout_block(
 
 /// `:NAME:` (alone on a line, NAME != END) ⇒ opens a drawer.
 fn drawer_begin(s: &str) -> Option<String> {
-    let inner = s.trim().strip_prefix(':')?.strip_suffix(':')?;
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    while start < bytes.len() && matches!(bytes[start], b' ' | b'\t' | 0x0c | 0x1a) {
+        start += 1;
+    }
+    let inner = s[start..].strip_prefix(':')?.strip_suffix(':')?;
     if inner.is_empty() || inner.eq_ignore_ascii_case("END") {
         return None;
     }
-    if inner.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+    if inner.bytes().all(|b| b != b':' && b != b' ' && b != b'\n' && b != b'\r') {
         Some(inner.to_ascii_lowercase())
     } else {
         None

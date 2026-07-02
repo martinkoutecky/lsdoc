@@ -48,7 +48,7 @@ pub(crate) enum Kind {
     /// `(`/`[` literal, backslash dropped). Deferred here because the lexer is ctx-free.
     LatexBs(u8),
     /// A single special byte deferred to a later milestone's resolver logic (`$ [ ] ( ) { }
-    /// < > # !`). M0/M1 render it as its literal char; M2/M3 reclassify into bracket/leaf.
+    /// < > # ! @`). M0/M1 render it as its literal char; M2/M3 reclassify into bracket/leaf.
     Punct(u8),
 }
 
@@ -64,7 +64,7 @@ fn is_marker(c: u8) -> bool {
 fn is_special(c: u8) -> bool {
     matches!(c, b'\\' | b'`')
         || is_marker(c)
-        || matches!(c, b'$' | b'[' | b']' | b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b'#' | b'!')
+        || matches!(c, b'$' | b'[' | b']' | b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b'#' | b'!' | b'@')
 }
 
 /// mldoc `md_escape_chars`: every ASCII punctuation char.

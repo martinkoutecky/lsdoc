@@ -2262,6 +2262,64 @@ pub(crate) fn parse_macro_at(s: &str, at: usize) -> Option<(Inline, usize)> {
     None
 }
 
+// ---- export snippet -------------------------------------------------------
+
+#[inline]
+fn is_export_name_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | 0x0c | 0x1a)
+}
+
+/// `@@name: content@@` export snippet. Mirrors mldoc `Export_Snippet`:
+/// nonempty name excluding space/EOL/`:`, literal `": "`, nonempty content
+/// excluding every `@`/EOL, then `@@`.
+pub(crate) fn parse_export_snippet_at(s: &str, at: usize) -> Option<(Inline, usize)> {
+    if !s[at..].starts_with("@@") {
+        return None;
+    }
+    let b = s.as_bytes();
+    let n = b.len();
+    let name_start = at + 2;
+    let mut j = name_start;
+    let mut scanned = 0usize;
+    while j < n
+        && b[j] != b':'
+        && b[j] != b'\n'
+        && b[j] != b'\r'
+        && !is_export_name_space(b[j])
+    {
+        scanned += 1;
+        j += char_len(b[j]);
+    }
+    if j < n {
+        scanned += 1;
+    }
+    if j == name_start || j + 1 >= n || b[j] != b':' || b[j + 1] != b' ' {
+        crate::metrics::scan_work(scanned);
+        return None;
+    }
+    let content_start = j + 2;
+    let mut k = content_start;
+    while k < n && b[k] != b'@' && b[k] != b'\n' && b[k] != b'\r' {
+        scanned += 1;
+        k += char_len(b[k]);
+    }
+    if k < n {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
+    if k == content_start || k + 1 >= n || b[k] != b'@' || b[k + 1] != b'@' {
+        return None;
+    }
+    Some((
+        Inline::ExportSnippet {
+            name: s[name_start..j].to_string(),
+            content: s[content_start..k].to_string(),
+            span: None,
+        },
+        k + 2,
+    ))
+}
+
 // ---- timestamps -----------------------------------------------------------
 
 /// `<...>` timestamp dispatch. Mirrors mldoc `timestamp = range <|> general_timestamp`

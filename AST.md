@@ -83,11 +83,12 @@ Markdown and Org produce the **same** AST.
 | `target` | `text: string` | org dedicated/radio target `<<name>>` |
 | `tag` | `children: Inline[]` | `#tag` / `#[[bracket tag]]` |
 | `macro` | `name: string`, `args: string[]` | `{{name arg1, arg2}}` (incl. `{{embed …}}`, `{{query …}}`) |
+| `export_snippet` | `name: string`, `content: string` | `@@name: content@@`; render exposes only `name == "html"` as raw HTML |
 | `latex` | `mode: string`, `body: string` | `mode` ∈ {`"Inline"`, `"Displayed"`}; `$x$` / `$$x$$` / `\(x\)` / `\[x\]` |
 | `timestamp` | `ts: string`, `date: Value` | `ts` ∈ {`"Date"`,`"Range"`,`"Scheduled"`,`"Deadline"`,`"Closed"`,`"Clock"`}; `date` = opaque (see below) |
 | `cookie` | `kind: string`, `value: number`, **opt** `total: number` | statistics cookie; `kind` ∈ {`"Absolute"`,`"Percent"`}; `total` only for absolute cookies |
-| `fnref` | `name: string` | footnote reference `[^id]` / `[fn:id]` |
-| `inline_html` | `text: string` | inline raw HTML `<span>…` (org `@@html:` etc.) |
+| `fnref` | `name: string` | footnote reference `[^id]` / `[fn:id]`; inline definitions are parsed by mldoc but projection-invisible |
+| `inline_html` | `text: string` | inline raw HTML `<span>…` |
 | `email` | `text: Value` | `<a@b.com>` autolink; `text` opaque (see below) |
 | `entity` | `name, latex, html, ascii, unicode: string`, `latex_mathp: bool` | LaTeX entity `\Delta` → resolved record (see `src/entities.rs`) |
 | `hiccup` | `v: string` | inline Clojure-hiccup vector `[:tag …]` mixed with text (mldoc `Inline_Hiccup`). `v` = the RAW bracket text verbatim (children NOT parsed) |
@@ -160,4 +161,5 @@ as opaque for display.
   render contract; inline nodes have none. Source-rewriting features (media-resize, checkbox
   toggle) operate on the block's raw text, not the AST.
 - Dropped mldoc internals with no render impact: `Heading.anchor`/`meta`,
-  `Footnote_Reference.id`, `Nested_link.children` (use `content`), `Src.options`/`pos_meta`.
+  `Footnote_Reference.id` and inline `definition`, `Nested_link.children` (use `content`),
+  `Src.options`/`pos_meta`.

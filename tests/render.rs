@@ -144,6 +144,12 @@ fn macro_emits_hooks_not_output() {
 }
 
 #[test]
+fn export_snippet_html_renders_raw_other_names_empty() {
+    assert_eq!(md("x @@html: <b>raw</b>@@ y @@name: hidden@@"), "x <b>raw</b> y ");
+    assert_eq!(org("@@html: <i>raw</i>@@"), "<i>raw</i>");
+}
+
+#[test]
 fn inline_and_block_math_are_empty_with_tex_hook() {
     assert_eq!(md("math $a<b$ here"), r#"math <span class="math" data-tex="a&lt;b"></span> here"#);
     assert_eq!(md("$$x^2 < y$$"), r#"<span class="math math-display" data-tex="x^2 &lt; y"></span>"#);
