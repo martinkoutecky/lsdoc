@@ -9,7 +9,9 @@ oracle harness. Consumed by Tine as a public AGPL git-dependency.
 ```sh
 source scripts/env.sh                 # shared /aux toolchain — REQUIRED before cargo
 cd harness && node run.mjs            # corpus + blockgate + inlinegate, exits non-zero on any diff
-node fuzz.mjs 40000 99                # md fuzz floor 555;  append `org` for the org floor 1522
+node fuzz.mjs 40000 99                # append `org` for org. FLOOR IS ZERO (both formats, blocks+refs,
+                                      # any seed) — ANY mismatch = regression or new divergence (file a
+                                      # D-entry in DIVERGENCES.md); adjudicate with vdiff_iso (isolated)
 cargo test --lib                      # unit tests
 cargo test --test render              # render_html tests
 cargo test --release --test perf -- --ignored   # perf ratio + linearity + stack gates

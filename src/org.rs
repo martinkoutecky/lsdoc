@@ -2652,9 +2652,9 @@ pub(crate) fn org_inline(text: &str, base: usize) -> Vec<Inline> {
     crate::org_resolver::parse_inline_org(text, base)
 }
 
-/// Classify an `[[url][label]]` destination (mldoc `org_link_1`): `file:` → File;
-/// empty label → Search; `proto:link` (single colon, strip leading `//`) → Complex;
-/// else Search.
+/// Classify an `[[url][label]]` destination (mldoc `org_link_1`): `file:` -> File;
+/// empty label -> Search; first `:` split, empty protocol allowed, link scanned
+/// only through the first LF and stripped of leading `//` -> Complex; else Search.
 pub(crate) fn classify_org_link_1(url_text: &str, label_text: &str) -> Url {
     if url_text.len() > 5 && url_text.starts_with("file:") {
         return Url::File {
@@ -2668,16 +2668,17 @@ pub(crate) fn classify_org_link_1(url_text: &str, label_text: &str) -> Url {
     }
     if let Some(idx) = url_text.find(':') {
         let protocol = &url_text[..idx];
-        if !protocol.is_empty() {
-            let mut link = &url_text[idx + 1..];
-            if let Some(stripped) = link.strip_prefix("//") {
-                link = stripped;
-            }
-            return Url::Complex {
-                protocol: Some(protocol.to_string()),
-                link: Some(link.to_string()),
-            };
+        let mut link = &url_text[idx + 1..];
+        if let Some(lf) = link.find('\n') {
+            link = &link[..lf];
         }
+        if let Some(stripped) = link.strip_prefix("//") {
+            link = stripped;
+        }
+        return Url::Complex {
+            protocol: Some(protocol.to_string()),
+            link: Some(link.to_string()),
+        };
     }
     Url::Search {
         v: url_text.to_string(),

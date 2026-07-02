@@ -1893,7 +1893,7 @@ fn try_angle(
 ) -> Option<(Inline, usize)> {
     if ctx.autolinks {
         if crate::inline::autolink_has_closing_boundary(s, at, autolink_scan) {
-            if let Some((e, node)) = crate::inline::parse_quick_link(s, at) {
+            if let Some((e, node)) = crate::inline::parse_quick_link_md(s, at) {
                 return Some((node, e));
             }
         }

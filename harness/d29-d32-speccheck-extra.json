@@ -1,0 +1,18 @@
+[
+  { "id": "d30_md_colon", "format": "md", "input": "<https://a\\:b>" },
+  { "id": "d30_md_gt_escape", "format": "md", "input": "<https://a\\>b>" },
+  { "id": "d30_md_bracket_escape", "format": "md", "input": "<https://a\\[b>" },
+  { "id": "d30_org_colon", "format": "org", "input": "<https://a\\:b>" },
+  { "id": "d30_org_gt_escape", "format": "org", "input": "<https://a\\>b>" },
+  { "id": "d30_org_bracket_escape", "format": "org", "input": "<https://a\\[b>" },
+
+  { "id": "d31_colon_after_newline", "format": "org", "input": "[[a\nb:c][l]]" },
+  { "id": "d31_empty_protocol_newline_link", "format": "org", "input": "[[:a\nb][l]]" },
+  { "id": "d31_file_newline", "format": "org", "input": "[[file:\nx][l]]" },
+  { "id": "d31_file_empty_label", "format": "org", "input": "[[file:x][]]" },
+
+  { "id": "d32_tag_label_newline", "format": "org", "input": "#a[[x][l\ny]]" },
+  { "id": "d32_tag_url_colon_newline", "format": "org", "input": "#a[[x:\ny][l]]" },
+  { "id": "d32_tag_url_newline_colon", "format": "org", "input": "#a[[x\ny:z][l]]" },
+  { "id": "d32_top_target_colon_after_newline", "format": "org", "input": "[[x\ny:z][l]]" }
+]

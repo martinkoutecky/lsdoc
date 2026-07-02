@@ -34,6 +34,15 @@ the fuzz floor** (more mldoc parity) — how each fix was verified.
 | D25 | org heading tags accepted empty segments (mldoc: `:seg(:seg)*:` consume-all — interior `::` kills ALL tags, all-empty `::` = empty tags + title rewrite; `heading0.ml:79-82`) | **FIXED** | `7d835c3` |
 | D26 | org non-braced `^`-script at `\`+EOL — floor row 10 was reclassified: it was D24 (hardbreak) + D22 (directive) compounds; the minimal script case matches | **CLOSED (not a divergence)** | — |
 | D28 | org `#+NAME: v` (Drawer.parse2) property values ref-scanned — mldoc hardcodes refs `[]` for parse2 entries, per-entry provenance within a folded drawer (`drawer.ml:74`); also made `vdiff_iso` refs-aware (was blocks-only) | **FIXED** | `76df562` |
+| D29 | md block-ref `((…))` inner text unescaped (mldoc: verbatim `String.sub` slice — `\`` kept; `inline.ml` block_reference) | **FIXED** | see log |
+| D30 | md `<quick_link>` kept `\X` in label/url (1.5.7 ARTIFACT unescapes label + url.link, keeps full_text + protocol raw; published quick_link_aux can't produce label≠full — oracle wins; org quick links stay raw) | **FIXED** | see log |
+| D31 | org `[[url][label]]` with `:`-target → Search (mldoc Scanf `%[^:]:%[^\n]`: EMPTY protocol ok, link truncated at LF, `//` stripped, file-first, Search only when no colon; `inline.ml:647-664`) | **FIXED** | see log |
+| D32 | org hash-tag captured `[[…]]` across a newline (mldoc tag capture is EOL-bounded via `page_ref`'s `non_eol`; top-level link targets/labels MAY span newlines; script bodies never parse links) | **FIXED** | see log |
+
+**FLOOR = 0 (Jul 2 2026):** after D19–D32, `node fuzz.mjs 40000 <seed>` (+` org`) is **0/0 (blocks AND
+refs) on every tested seed** (99, 7, 42, 12345, 31337, 271828, 2718, 555555 × both formats). The fuzz
+floor is now an INVARIANT: any nonzero fuzz result on any seed is either a REGRESSION or a NEW
+divergence — file a D-entry, never a ratchet.
 
 D16 surfaced during Phase B verification (pre-existing — fuzz floors held exactly across the perf-only
 change); fix belongs to the `<`-family construct port (inline-restructure-SPEC Phase C4).

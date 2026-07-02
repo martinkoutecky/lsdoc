@@ -1,0 +1,12 @@
+[
+ {"id":"q1","format":"md","input":"((a\\`b\\#c))"},
+ {"id":"q2","format":"md","input":"x <https://y.io/a\\]b\\~c> z"},
+ {"id":"q3","format":"org","input":"x <https://y.io/a\\]b> z"},
+ {"id":"q4","format":"org","input":"[[::x][l]]"},
+ {"id":"q5","format":"org","input":"[[a::b][l]]"},
+ {"id":"q6","format":"org","input":"[[FILE:x][l]]"},
+ {"id":"q7","format":"org","input":"#t[[a][b]]c[[d\ne][f]]"},
+ {"id":"q8","format":"org","input":"[[x\n:y][l]]"},
+ {"id":"q9","format":"md","input":"<mailto:a\\#b>"},
+ {"id":"q10","format":"org","input":"#x[[\n"}
+]

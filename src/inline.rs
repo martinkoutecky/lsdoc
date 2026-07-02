@@ -615,11 +615,15 @@ fn capture_tag_name_end(s: &str, start: usize, boundary_runs: Option<&[bool]>) -
         }
         if c == b'[' {
             // `hashtag_name_part` case 2: raw `page_ref` capture. Nested-link
-            // recognition happens only in the second-stage reparse.
+            // recognition happens only in the second-stage reparse. The source
+            // `page_ref` capture is EOL-bounded, even when a backslash precedes
+            // the newline.
             if let Some((end, _, _)) = parse_page_ref(s, i) {
-                i = end;
-                consumed = true;
-                continue;
+                if !b[start..end].iter().any(|&c| c == b'\n' || c == b'\r') {
+                    i = end;
+                    consumed = true;
+                    continue;
+                }
             }
         }
 
@@ -1473,6 +1477,17 @@ fn read_metadata(s: &str, b: &[u8], end: &mut usize) -> String {
 /// mldoc `quick_link`: `<protocol:optional//link>`, where `link` is nonempty
 /// and stops before whitespace or `>`. Returns (end, node).
 pub(crate) fn parse_quick_link(s: &str, at: usize) -> Option<(usize, Inline)> {
+    parse_quick_link_with_mode(s, at, false)
+}
+
+/// Markdown quick links in the compiled mldoc 1.5.7 artifact unescape the
+/// synthetic label and url link, while published `quick_link_aux` cannot produce
+/// label != full_text. The npm oracle is the compatibility target here.
+pub(crate) fn parse_quick_link_md(s: &str, at: usize) -> Option<(usize, Inline)> {
+    parse_quick_link_with_mode(s, at, true)
+}
+
+fn parse_quick_link_with_mode(s: &str, at: usize, md_unescape: bool) -> Option<(usize, Inline)> {
     let b = s.as_bytes();
     let n = b.len();
     if b.get(at) != Some(&b'<') {
@@ -1513,15 +1528,25 @@ pub(crate) fn parse_quick_link(s: &str, at: usize) -> Option<(usize, Inline)> {
     if j >= n || b[j] != b'>' || j == link_start {
         return None;
     }
-    let link = s[link_start..j].to_string();
-    let full = format!("{}:{}{}", protocol, slashes, link);
+    let raw_link = &s[link_start..j];
+    let link = if md_unescape {
+        unescape(raw_link)
+    } else {
+        raw_link.to_string()
+    };
+    let full = format!("{}:{}{}", protocol, slashes, raw_link);
+    let label = if md_unescape {
+        unescape(&full)
+    } else {
+        full.clone()
+    };
     let node = Inline::Link {
         url: Url::Complex {
             protocol: Some(protocol),
             link: Some(link),
         },
-        // synthetic label (== full, no `<>`): no clean source slice → no span.
-        label: vec![Inline::Plain { text: full.clone(), span: None }],
+        // synthetic label (no `<>`): no clean source slice -> no span.
+        label: vec![Inline::Plain { text: label, span: None }],
         full,
         image: false,
         metadata: String::new(),
@@ -2211,7 +2236,7 @@ fn latex_display_body_end(b: &[u8], body_start: usize) -> Option<usize> {
     None
 }
 
-/// `(( … ))` block ref (inner has no `)`; value unescaped, `full` raw).
+/// `(( … ))` block ref (inner has no `)`; value and `full` are raw).
 pub(crate) fn parse_block_ref_at(s: &str, at: usize) -> Option<(Inline, usize)> {
     let b = s.as_bytes();
     let n = b.len();
@@ -2234,7 +2259,9 @@ pub(crate) fn parse_block_ref_at(s: &str, at: usize) -> Option<(Inline, usize)> 
     }
     Some((
         Inline::Link {
-            url: Url::BlockRef { v: unescape(&s[inner_start..j]) },
+            url: Url::BlockRef {
+                v: s[inner_start..j].to_string(),
+            },
             label: vec![],
             full: s[at..j + 2].to_string(),
             image: false,
