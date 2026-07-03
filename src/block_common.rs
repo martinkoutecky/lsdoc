@@ -377,6 +377,70 @@ pub(crate) fn leading_ws(s: &str) -> usize {
     s.bytes().take_while(|&b| b == b' ' || b == b'\t').count()
 }
 
+/// mldoc `Parsers.is_space` (`lib/parsers.ml`): space, tab, SUB, FF.
+pub(crate) fn mldoc_is_space(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | 0x1a | 0x0c)
+}
+
+/// Count leading mldoc parser spaces (`Parsers.spaces` / `tabs_or_ws`).
+pub(crate) fn mldoc_spaces_len(s: &str) -> usize {
+    s.as_bytes().iter().take_while(|&&b| mldoc_is_space(b)).count()
+}
+
+pub(crate) fn mldoc_trim_spaces_start(s: &str) -> &str {
+    &s[mldoc_spaces_len(s)..]
+}
+
+/// Byte length after trimming trailing mldoc parser spaces.
+pub(crate) fn mldoc_trim_spaces_end_len(s: &str) -> usize {
+    let b = s.as_bytes();
+    let mut k = b.len();
+    while k > 0 && mldoc_is_space(b[k - 1]) {
+        k -= 1;
+    }
+    k
+}
+
+pub(crate) fn mldoc_trim_spaces(s: &str) -> &str {
+    let s = mldoc_trim_spaces_start(s);
+    &s[..mldoc_trim_spaces_end_len(s)]
+}
+
+/// In-line projection of mldoc `whitespace_chars` for heading marker boundaries
+/// (`lib/parsers.ml`, `lib/syntax/heading0.ml`): space, tab, FF, or line end.
+/// CR/LF are absent from `Line::text`; SUB is intentionally not accepted.
+pub(crate) fn mldoc_heading_boundary(s: &str) -> bool {
+    s.is_empty() || matches!(s.as_bytes()[0], b' ' | b'\t' | 0x0c)
+}
+
+#[inline]
+pub(crate) fn ocaml_trim_byte(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0c)
+}
+
+/// OCaml `String.trim` byte set: space, tab, LF, CR, FF. SUB is not trimmed.
+pub(crate) fn ocaml_trim(s: &str) -> &str {
+    let b = s.as_bytes();
+    let mut start = 0usize;
+    let mut end = b.len();
+    while start < end && ocaml_trim_byte(b[start]) {
+        start += 1;
+    }
+    while end > start && ocaml_trim_byte(b[end - 1]) {
+        end -= 1;
+    }
+    &s[start..end]
+}
+
+pub(crate) fn ocaml_trim_end(s: &str) -> &str {
+    let b = s.as_bytes();
+    let mut end = b.len();
+    while end > 0 && ocaml_trim_byte(b[end - 1]) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// mldoc `get_indent` for the first body line of a `#+BEGIN_X` frame.
 pub(crate) fn first_body_indent(s: &str) -> usize {
     let indent = leading_ws(s);
@@ -415,26 +479,28 @@ pub(crate) fn para_ws_only(para: &Option<(usize, usize)>, input: &str) -> bool {
 /// state (if any) and the trimmed remainder.
 pub(crate) fn split_checkbox(s: &str) -> (Option<bool>, &str) {
     if let Some(r) = s.strip_prefix("[ ]") {
-        (Some(false), r.trim_start())
+        (Some(false), mldoc_trim_spaces_start(r))
     } else if let Some(r) = s.strip_prefix("[x]").or_else(|| s.strip_prefix("[X]")) {
-        (Some(true), r.trim_start())
+        (Some(true), mldoc_trim_spaces_start(r))
     } else {
         (None, s)
     }
 }
 
-/// Parse a drawer/property line `:KEY: value` → `(key, value)`. `None` for `:END:`, an empty
-/// key, or a key containing whitespace.
+/// Parse a drawer/property line `:KEY: value` → `(key, value)`.
+/// mldoc `drawer.ml:25-41`: leading/value `spaces` are MSPACE; key rejects
+/// `:` and literal space only (tab is a legal key byte), plus eol and `end`.
 pub(crate) fn drawer_property(s: &str) -> Option<(String, String)> {
-    let t = s.trim_start().strip_prefix(':')?;
+    let t = mldoc_trim_spaces_start(s).strip_prefix(':')?;
     let pos = t.find(':')?;
     let key = &t[..pos];
-    if key.is_empty() || key.contains(' ') || key.contains('\t') || key.eq_ignore_ascii_case("end") {
+    if key.is_empty()
+        || key.bytes().any(|b| b == b':' || b == b' ' || b == b'\n' || b == b'\r')
+        || key.eq_ignore_ascii_case("end")
+    {
         return None;
     }
-    // value = rest of line after the key's closing `:`, trimmed (drops a leading space
-    // and a trailing CR from CRLF inputs).
-    let value = t[pos + 1..].trim();
+    let value = mldoc_trim_spaces_start(&t[pos + 1..]);
     Some((key.to_string(), value.to_string()))
 }
 
@@ -442,7 +508,7 @@ pub(crate) fn drawer_property(s: &str) -> Option<(String, String)> {
 /// spaces/tabs are indentation, but trailing bytes after the closing delimiter
 /// are a separate block.
 pub(crate) fn displayed_math_opener(s: &str) -> Option<usize> {
-    let off = leading_ws(s);
+    let off = mldoc_spaces_len(s);
     s[off..].starts_with("$$").then_some(off)
 }
 
@@ -972,10 +1038,6 @@ enum RawHtmlAttempt {
     Miss(RawHtmlMiss),
 }
 
-fn mldoc_is_space(b: u8) -> bool {
-    matches!(b, b' ' | b'\t' | 0x0c | 0x1a)
-}
-
 fn raw_html_head_at(input: &str, at: usize, limit: usize, require_peek: bool) -> Option<RawHtmlHead<'_>> {
     if at >= limit || limit > input.len() || input.as_bytes().get(at) != Some(&b'<') {
         return None;
@@ -1031,7 +1093,7 @@ fn raw_html_head_at(input: &str, at: usize, limit: usize, require_peek: bool) ->
 }
 
 fn raw_html_head_prefix(s: &str) -> Option<(usize, RawHtmlHead<'_>)> {
-    let off = leading_ws(s);
+    let off = mldoc_spaces_len(s);
     Some((off, raw_html_head_at(s, off, s.len(), false)?))
 }
 

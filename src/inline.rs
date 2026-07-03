@@ -1844,7 +1844,7 @@ fn scan_percent_cookie(body: &str) -> Option<i64> {
 
 /// Block-level LaTeX environment `\begin{NAME} … \end{NAME}` (mldoc `latex_env.ml`,
 /// shared by the Markdown and Org block segmenters). The opener must be at the start
-/// of the line at `line_start` after optional leading spaces/tabs (`spaces *>`); text
+/// of the line at `line_start` after optional leading mldoc spaces (`spaces *>`); text
 /// before `\begin` disqualifies it. mldoc grammar:
 ///   `spaces *> "\begin{" *> take_while1(≠'}') <* '}' <* spaces_or_eols`,
 ///   content = all chars until a case-insensitive `\end{NAME}` (or EOF); the node
@@ -1859,7 +1859,7 @@ pub(crate) fn parse_latex_env(
 ) -> Option<(String, String, usize)> {
     let b = input.as_bytes();
     let mut p = line_start;
-    while p < line_end && (b[p] == b' ' || b[p] == b'\t') {
+    while p < line_end && crate::block_common::mldoc_is_space(b[p]) {
         p += 1;
     }
     if !input[p..].starts_with("\\begin{") {
@@ -1874,9 +1874,11 @@ pub(crate) fn parse_latex_env(
         return None;
     }
     let name = &input[name_start..j];
-    // spaces_or_eols after `\begin{NAME}` (spaces, tabs, newlines, CR).
+    // spaces_or_eols after `\begin{NAME}` (mldoc spaces plus CR/LF).
     let mut cs = j + 1;
-    while cs < input.len() && matches!(b[cs], b' ' | b'\t' | b'\n' | b'\r') {
+    while cs < input.len()
+        && (crate::block_common::mldoc_is_space(b[cs]) || matches!(b[cs], b'\n' | b'\r'))
+    {
         cs += 1;
     }
     let ending = format!("\\end{{{}}}", name);
@@ -2218,8 +2220,9 @@ pub(crate) fn hiccup_head_ok(s: &str, at: usize) -> bool {
     if j == name_start || !is_hiccup_tag(&s[name_start..j]) {
         return false;
     }
-    // (2) keyword boundary: `]`, space, tab, `.` or `#` (CSS-selector start / end).
-    matches!(b.get(j), Some(b']') | Some(b' ') | Some(b'\t') | Some(b'.') | Some(b'#'))
+    // (2) keyword boundary: `]`, mldoc `is_space`, `.` or `#` (CSS-selector start / end).
+    matches!(b.get(j), Some(b']') | Some(b'.') | Some(b'#'))
+        || b.get(j).is_some_and(|&c| crate::block_common::mldoc_is_space(c))
 }
 
 /// Pair EVERY `[:`…`]` hiccup vector in `s` in one linear pass (a delimiter stack:

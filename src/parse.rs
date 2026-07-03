@@ -42,7 +42,9 @@
 // in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
 use crate::block_common::{
     displayed_math_opener, drawer_property, find_displayed_math_close, find_drawer_end,
-    find_matching_fence, first_body_indent, leading_ws, para_ws_only, raw_html_block_start,
+    find_matching_fence, first_body_indent, leading_ws, mldoc_heading_boundary,
+    mldoc_is_space, mldoc_spaces_len, mldoc_trim_spaces, mldoc_trim_spaces_end_len,
+    mldoc_trim_spaces_start, ocaml_trim, ocaml_trim_end, para_ws_only, raw_html_block_start,
     raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
     Line, RawHtmlScan, StripCtx, StripSeqTree, GT_FALLBACK_NEST_CAP, MARKERS,
 };
@@ -75,14 +77,14 @@ fn line_text<'a>(lines: &[crate::block_common::Line<'a>], k: usize, ctx: StripCt
     lines[k].viewed_text(ctx)
 }
 
-/// Peel `n` blockquote `>`-levels off `s` (CONTINUATION semantics: `trim_start` then strip one
+/// Peel `n` blockquote `>`-levels off `s` (CONTINUATION semantics: mldoc `spaces`, then strip one
 /// leading `>` per level; a level with no `>` stops early — the lazy case). O(min(n, #`>`)) =
 /// O(len). The md twin of org's `gt_peel`; composes the cumulative `>`-strip of a stack of
 /// `>`-frames, the `>`-analogue of `strip_view`'s indent strip.
 fn gt_peel(s: &str, n: usize) -> &str {
     let mut cur = s;
     for _ in 0..n {
-        let t = cur.trim_start();
+        let t = mldoc_trim_spaces_start(cur);
         match t.strip_prefix('>') {
             Some(rest) => cur = rest, // next iteration's trim_start handles the ws
             None => {
@@ -125,7 +127,7 @@ fn scan_gt_prefix(line2: &str, offs: &mut Vec<usize>) -> usize {
     offs.push(0); // offs[0] = gt_peel(line2, 0) = line2 itself
     let mut cur = line2;
     loop {
-        let t = cur.trim_start();
+        let t = mldoc_trim_spaces_start(cur);
         match t.strip_prefix('>') {
             Some(rest) => {
                 cur = rest;
@@ -137,7 +139,7 @@ fn scan_gt_prefix(line2: &str, offs: &mut Vec<usize>) -> usize {
     let g = offs.len() - 1;
     // Bytes examined = the whole prefix up to the (trimmed) content — the same charge a full
     // `gt_peel(line2, g)` would make, but once per line instead of once per frame / re-dispatch.
-    let content = line2[offs[g]..].trim_start();
+    let content = mldoc_trim_spaces_start(&line2[offs[g]..]);
     crate::metrics::scan_work(line2.len() - content.len());
     g
 }
@@ -263,14 +265,14 @@ fn build_indexes(lines: &[Line], input: &str) -> (EndTrie, Vec<usize>, Vec<usize
     // later 3+ run of EITHER char (length/info-agnostic), so closing is char-AGNOSTIC: one list.
     let mut fence_lines: Vec<usize> = Vec::new();
     for (idx, l) in lines.iter().enumerate() {
-        let t = l.text.trim_start();
+        let t = ocaml_trim(l.text);
         if t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
             end_trie.insert(&t[6..], idx);
         }
-        if l.text.trim().eq_ignore_ascii_case(":END:") {
+        if ocaml_trim(l.text).eq_ignore_ascii_case(":END:") {
             drawer_end_idxs.push(idx);
         }
-        if fence_marker(l.text).is_some() {
+        if fence_closer_marker(l.text).is_some() {
             fence_lines.push(idx);
         }
     }
@@ -388,7 +390,8 @@ fn parse_md_streaming<'a>(
         let strip = stack.last().unwrap().strip;
         let strip_ctx = StripCtx::new(strip, &strip_seq);
         let line2 = line_text(&lines, i, strip_ctx);
-        let scanned = stack.last().unwrap().gt_level > 0 || line2.trim_start().starts_with('>');
+            let scanned =
+                stack.last().unwrap().gt_level > 0 || mldoc_trim_spaces_start(line2).starts_with('>');
 
         let (dispatch_view, gt_level_disp): (Option<&str>, usize) = if scanned {
             let g = scan_gt_prefix(line2, &mut offs); // ONE `>`-prefix walk; charges scan_work once
@@ -767,13 +770,13 @@ fn dispatch_md_line<'a>(
         && (fence_marker(t).is_some()
             || callout_begin(t).is_some()
             || crate::org::directive(t).is_some()
-            || t.trim_start().starts_with("\\begin{")
-            || t.trim_start().starts_with("[:")
+            || mldoc_trim_spaces_start(t).starts_with("\\begin{")
+            || mldoc_trim_spaces_start(t).starts_with("[:")
             || displayed_math_opener(t).is_some()
             || raw_html_block_start(t)
             || md_table_row(t)
             || md_marker(t).is_some()
-            || (!t.trim_start().is_empty()
+            || (!mldoc_trim_spaces_start(t).is_empty()
                 && i + 1 < hi
                 && gt_cont_line_view(&lines[i + 1], strip_ctx, gt_level).is_some_and(is_def_opener)))
     {
@@ -948,8 +951,8 @@ fn dispatch_md_line<'a>(
     // so `# h` / a `-` bullet there stay paragraph text. F1.)
     if let Some((level, size, hend)) = heading_at(t).filter(|_| !in_block_content) {
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
-        let (marker, priority, title) = split_markers(t[hend..].trim_start());
-        let trail = trim_end_ws_len(t);
+        let (marker, priority, title) = split_markers(mldoc_trim_spaces_start(&t[hend..]));
+        let trail = mldoc_trim_spaces_end_len(t);
         if title.is_empty() && trail < t.len() {
             out.push(Block::Heading {
                 level,
@@ -992,8 +995,8 @@ fn dispatch_md_line<'a>(
         // an EMPTY title and the construct is parsed as the next block. We replicate
         // the two openers that occur in real outlines: a fenced code block and a
         // markdown blockquote (only on `-` bullets; `*`/`+` are Lists, untouched).
-        let dw = leading_ws(t);
-        let after = t[dw + 1..].trim_start(); // after '-' + spaces
+        let dw = mldoc_spaces_len(t);
+        let after = mldoc_trim_spaces_start(&t[dw + 1..]); // after '-' + mldoc spaces
         let (size, content) = atx_size(after); // heading `#{1,n}` size + the rest
         let content_off = line_start + (t.len() - content.len());
         // emit the empty (title-less) bullet that precedes a split-off sibling block.
@@ -1204,7 +1207,7 @@ fn dispatch_md_line<'a>(
         // / `- ##` / `- TODO` with no trailing ws stays a single empty bullet).
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let (marker, priority, title) = split_markers(content);
-        let trail = trim_end_ws_len(t);
+        let trail = mldoc_trim_spaces_end_len(t);
         if title.is_empty() && trail < t.len() {
             out.push(Block::Bullet {
                 level,
@@ -1547,7 +1550,7 @@ fn dispatch_md_line<'a>(
             }
             let cur_start = lines[cur].start;
             let cur_text = lines[cur].text;
-            let lw = leading_ws(cur_text);
+            let lw = mldoc_spaces_len(cur_text);
             let rec = cur_start + lw;
             if !(last_rbracket.is_some_and(|last| rec <= last) && input[rec..].starts_with("[:")) {
                 break;
@@ -1619,7 +1622,7 @@ fn dispatch_md_line<'a>(
     // Suppressed in list-item content (`in_item`): mldoc's `list_content_parsers` omits the WHOLE
     // `Lists.parse` (= regular list <|> `md_definition`), so a def-list never nests inside an item.
     if !in_item
-        && !t.trim_start().is_empty()
+        && !mldoc_trim_spaces_start(t).is_empty()
         && i + 1 < hi
         && is_def_opener(lines[i + 1].text)
     {
@@ -1944,8 +1947,8 @@ fn atx_size(s: &str) -> (Option<u32>, &str) {
     let hashes = s.bytes().take_while(|&b| b == b'#').count();
     if hashes > 0 {
         let after = &s[hashes..];
-        if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
-            return (Some(hashes as u32), after.trim_start());
+        if mldoc_heading_boundary(after) {
+            return (Some(hashes as u32), mldoc_trim_spaces_start(after));
         }
     }
     (None, s)
@@ -1960,7 +1963,7 @@ fn split_markers(s: &str) -> (Option<String>, Option<String>, &str) {
         if let Some(rest) = s.strip_prefix(m) {
             if rest.starts_with(' ') {
                 marker = Some((*m).to_string());
-                s = rest.trim_start();
+                s = mldoc_trim_spaces_start(rest);
                 break;
             }
         }
@@ -1969,7 +1972,7 @@ fn split_markers(s: &str) -> (Option<String>, Option<String>, &str) {
     let b = s.as_bytes();
     let priority = if b.len() >= 4 && b[0] == b'[' && b[1] == b'#' && b[2] < 0x80 && b[3] == b']' {
         let p = (b[2] as char).to_string();
-        s = s[4..].trim_start();
+        s = mldoc_trim_spaces_start(&s[4..]);
         Some(p)
     } else {
         None
@@ -1982,7 +1985,9 @@ fn split_markers(s: &str) -> (Option<String>, Option<String>, &str) {
 /// `language` is the FIRST whitespace-delimited token (`clj :results` → `clj`, the
 /// `:results` is a separate `options` field we don't model).
 fn fence_lang(info: &str) -> String {
-    info.split_whitespace().next().unwrap_or("").to_string()
+    let info = mldoc_trim_spaces_start(info);
+    let end = info.bytes().take_while(|&b| !mldoc_is_space(b)).count();
+    info[..end].to_string()
 }
 
 /// A code-fence marker line: 3+ ` or ~ after optional leading whitespace (Logseq
@@ -1990,7 +1995,7 @@ fn fence_lang(info: &str) -> String {
 /// run — i.e. where the language tag begins).
 fn fence_marker(s: &str) -> Option<(u8, usize)> {
     let b = s.as_bytes();
-    let ws = leading_ws(s);
+    let ws = mldoc_spaces_len(s);
     let c = *b.get(ws)?;
     if c != b'`' && c != b'~' {
         return None;
@@ -2009,6 +2014,27 @@ fn fence_marker(s: &str) -> Option<(u8, usize)> {
     }
 }
 
+/// Fence closer path (`block0.ml:67-70`): `String.trim line` before `starts_with`.
+/// OCaml trims FF but not SUB, unlike opener `between_eols` / `spaces`.
+fn fence_closer_marker(s: &str) -> Option<(u8, usize)> {
+    let b0 = s.as_bytes();
+    let mut off = 0usize;
+    while off < b0.len() && crate::block_common::ocaml_trim_byte(b0[off]) {
+        off += 1;
+    }
+    let t = ocaml_trim_end(&s[off..]);
+    let b = t.as_bytes();
+    let c = *b.first()?;
+    if c != b'`' && c != b'~' {
+        return None;
+    }
+    let mut k = 0usize;
+    while k < b.len() && b[k] == c {
+        k += 1;
+    }
+    (k >= 3).then_some((c, off + 3))
+}
+
 /// Heading detection, allowing leading whitespace. Returns `(level, size, hend)`:
 /// `level` = 1 + leading-ws count (mldoc bumps `level` per leading space/tab,
 /// uncapped — it does NOT apply CommonMark's ≤3-space rule), `size` = the `#`-count
@@ -2016,34 +2042,22 @@ fn fence_marker(s: &str) -> Option<(u8, usize)> {
 /// space/tab must follow the hashes — or the line is just (ws +) the hashes. `None`
 /// when the first non-ws char isn't such a `#`-run.
 fn heading_at(s: &str) -> Option<(u32, u32, usize)> {
-    let lw = leading_ws(s);
+    let lw = mldoc_spaces_len(s);
     let rest0 = &s[lw..];
     let hashes = rest0.bytes().take_while(|&b| b == b'#').count();
     if hashes == 0 {
         return None;
     }
     let rest = &rest0[hashes..];
-    if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+    if mldoc_heading_boundary(rest) {
         Some((1 + lw as u32, hashes as u32, lw + hashes))
     } else {
         None
     }
 }
 
-/// Byte length of `s` with trailing spaces/tabs removed (the index just past the
-/// last char that is not a space/tab). Used to locate the trailing-whitespace run
-/// that mldoc splits into a paragraph after an empty heading/bullet.
-fn trim_end_ws_len(s: &str) -> usize {
-    let b = s.as_bytes();
-    let mut k = b.len();
-    while k > 0 && (b[k - 1] == b' ' || b[k - 1] == b'\t') {
-        k -= 1;
-    }
-    k
-}
-
 fn is_hr(s: &str) -> bool {
-    let t = s.trim();
+    let t = mldoc_trim_spaces(s);
     if t.len() < 3 {
         return false;
     }
@@ -2056,14 +2070,10 @@ fn is_hr(s: &str) -> bool {
 /// end-of-line (`- ` and a bare `-` are both empty bullets), OR directly by an ATX
 /// heading run (`-## x` → bullet with size 2, no space needed; but `-#x`/`-x` are not).
 fn dash_bullet_level(s: &str) -> Option<u32> {
-    let ws = leading_ws(s);
+    let ws = mldoc_spaces_len(s);
     let rest = &s[ws..];
     let after = rest.strip_prefix('-')?;
-    if after.is_empty()
-        || after.starts_with(' ')
-        || after.starts_with('\t')
-        || atx_size(after).0.is_some()
-    {
+    if mldoc_heading_boundary(after) || atx_size(after).0.is_some() {
         Some(1 + ws as u32)
     } else {
         None
@@ -2087,11 +2097,11 @@ struct MdMarker {
 /// (those fall through to a Paragraph). `-` is a Bullet in markdown, never a list marker; `N)` is
 /// not a list. The body is the raw rest after the marker+ws+checkbox+spaces.
 fn md_marker(s: &str) -> Option<MdMarker> {
-    let ws = leading_ws(s);
+    let ws = mldoc_spaces_len(s);
     let rest = &s[ws..];
     let mk = |ordered, number, content: &str| {
         let (checkbox, body) = split_checkbox(content);
-        if body.trim().is_empty() {
+        if ocaml_trim(body).is_empty() {
             return None;
         }
         Some(MdMarker {
@@ -2104,17 +2114,17 @@ fn md_marker(s: &str) -> Option<MdMarker> {
     };
     // unordered * or +
     if let Some(after) = rest.strip_prefix('*').or_else(|| rest.strip_prefix('+')) {
-        if after.starts_with(' ') || after.starts_with('\t') {
-            return mk(false, None, after.trim_start());
+        if after.as_bytes().first().is_some_and(|&b| mldoc_is_space(b)) {
+            return mk(false, None, mldoc_trim_spaces_start(after));
         }
     }
     // ordered N.  (NOT N))
     let digits = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
     if digits > 0 {
         if let Some(after) = rest[digits..].strip_prefix('.') {
-            if after.starts_with(' ') || after.starts_with('\t') {
+            if after.as_bytes().first().is_some_and(|&b| mldoc_is_space(b)) {
                 if let Ok(number) = rest[..digits].parse::<u32>() {
-                    return mk(true, Some(number), after.trim_start());
+                    return mk(true, Some(number), mldoc_trim_spaces_start(after));
                 }
             }
         }
@@ -2131,7 +2141,7 @@ fn md_marker(s: &str) -> Option<MdMarker> {
 /// a leading int that is not `N. `) is exactly what drives the collapse.
 fn check_listitem_md(line: &str) -> (u32, bool, bool) {
     let indent = leading_ws(line);
-    if scan_leading_int(line.trim()) {
+    if scan_leading_int(ocaml_trim(line)) {
         return (indent as u32, true, false);
     }
     let b = line.as_bytes();
@@ -2246,7 +2256,7 @@ fn collect_list_md(
             &mut item_origin_cursor,
             input,
             origin,
-            first_raw.trim(),
+            ocaml_trim(first_raw),
         );
         let mut last_content_line = i;
         let mut j = i + 1;
@@ -2261,7 +2271,7 @@ fn collect_list_md(
                 break;
             }
             let (ci, is_item, is_heading) = check_listitem_md(cl);
-            if ci == 0 {
+            if ci == 0 && !cl.as_bytes().first().is_some_and(|&b| mldoc_is_space(b)) {
                 break; // a col-0 line ends the content (left for the outer loop)
             }
             if is_heading {
@@ -2287,7 +2297,7 @@ fn collect_list_md(
                 &mut item_origin_cursor,
                 input,
                 origin,
-                cl.trim(),
+                ocaml_trim(cl),
             );
             last_content_line = j;
             j += 1;
@@ -2382,9 +2392,10 @@ fn quote_para_trigger(core: &str) -> bool {
 /// de-`>`'d content is non-empty and does NOT start a new block (`- `/`# `/`id:: `/bare `-`/`#`).
 /// Returns the content as a SUFFIX slice (no alloc) so `build_md_quote` peels in place. F1/F5.
 fn md_quote_first_slice(s: &str) -> Option<&str> {
-    let r1 = s.trim_start().strip_prefix('>')?.trim_start();
+    let r1 = mldoc_trim_spaces_start(s).strip_prefix('>')?;
+    let r1 = mldoc_trim_spaces_start(r1);
     let content = match r1.strip_prefix('>') {
-        Some(r2) => r2.trim_start(),
+        Some(r2) => mldoc_trim_spaces_start(r2),
         None => r1,
     };
     if content.is_empty() || quote_para_trigger(content) {
@@ -2399,9 +2410,9 @@ fn md_quote_first_slice(s: &str) -> Option<&str> {
 /// (no `>`), EOF bare `>`, or a de-`>`'d line that starts a new block. Strips exactly ONE `>` (the F5
 /// fix vs the old recursive flatten). Borrowing suffix slice. F1/F5.
 fn md_quote_cont_line_slice(s: &str, has_eol: bool) -> Option<&str> {
-    let t = s.trim_start();
+    let t = mldoc_trim_spaces_start(s);
     let had_gt = t.starts_with('>');
-    let rest = if had_gt { t[1..].trim_start() } else { t };
+    let rest = if had_gt { mldoc_trim_spaces_start(&t[1..]) } else { t };
     if rest.is_empty() {
         return if had_gt && has_eol { Some("") } else { None };
     }
@@ -2538,13 +2549,17 @@ fn footnote_def(s: &str) -> Option<(String, &str)> {
 /// `#+name: value` org directive line, folded into an adjacent markdown property
 /// drawer (mldoc drawer.ml `parse2`). Returns (name, value).
 fn directive_property(s: &str) -> Option<(String, String)> {
-    let t = s.trim_start().strip_prefix("#+")?;
+    let t = mldoc_trim_spaces_start(s).strip_prefix("#+")?;
     let pos = t.find(':')?;
     let key = &t[..pos];
-    if key.is_empty() || key.contains(' ') || key.contains('\t') {
+    if key.is_empty()
+        || key
+            .bytes()
+            .any(|b| b == b':' || b == b'\n' || b == b'\r' || mldoc_is_space(b))
+    {
         return None;
     }
-    let value = t[pos + 1..].trim();
+    let value = mldoc_trim_spaces_start(&t[pos + 1..]);
     Some((key.to_string(), value.to_string()))
 }
 
@@ -2555,21 +2570,21 @@ fn directive_property(s: &str) -> Option<(String, String)> {
 /// not `:`/`#` (the quirky take_till1-after-satisfy gives the ≥2 rule, e.g. `: a` is
 /// NOT a def but `: ab` is).
 fn is_def_opener(s: &str) -> bool {
-    let rest = match s.trim_start().strip_prefix(':') {
+    let rest = match mldoc_trim_spaces_start(s).strip_prefix(':') {
         Some(r) => r,
         None => return false,
     };
-    // ws = take_while1 is_space: ≥1 space/tab required (`:nospace` is not a def).
-    if !(rest.starts_with(' ') || rest.starts_with('\t')) {
+    // ws = take_while1 is_space: ≥1 MSPACE required (`:nospace` is not a def).
+    if !rest.as_bytes().first().is_some_and(|&b| mldoc_is_space(b)) {
         return false;
     }
-    def_line_content_ok(rest.trim_start())
+    def_line_content_ok(mldoc_trim_spaces_start(rest))
 }
 
 /// A definition continuation line (mldoc term_definition `l`): after leading spaces,
 /// the same ≥2-chars / first-∉`:`#` rule (`: ab\nx` stops at `ab`; `: ab\ncc` joins).
 fn is_def_continuation(s: &str) -> bool {
-    def_line_content_ok(s.trim_start())
+    def_line_content_ok(mldoc_trim_spaces_start(s))
 }
 
 /// The shared `satisfy(∉ ':' '#' eol) *> take_till1 eol` test on the content (already
@@ -2600,7 +2615,7 @@ fn build_def_list(
     // before); inside a callout body the closer line (`#+END_X`) is never a def
     // opener/continuation/blank, so the bound matches the legacy body-local scan exactly.
     // The term is a raw sub-slice of `lines[i].text` → its inline spans are absolute (S2).
-    let term = lines[i].text.trim_start(); // mldoc name = `spaces *> line`
+    let term = mldoc_trim_spaces_start(lines[i].text); // mldoc name = `spaces *> line`
     let name = stub_inline_mapped(
         term,
         crate::inline::ptr_base(term, input),
@@ -2613,7 +2628,8 @@ fn build_def_list(
     let mut j = i + 1;
     while j < hi && is_def_opener(lines[j].text) {
         // item first line: drop `<spaces>:` then the required ws (and any more spaces).
-        let first = lines[j].text.trim_start().strip_prefix(':').unwrap_or("").trim_start();
+        let first =
+            mldoc_trim_spaces_start(mldoc_trim_spaces_start(lines[j].text).strip_prefix(':').unwrap_or(""));
         let mut item_text = String::new();
         let mut item_map = OriginMap::new();
         append_view_with_origin(
@@ -2642,13 +2658,13 @@ fn build_def_list(
                 origin_cursor,
                 input,
                 origin,
-                lines[j].text.trim_start(),
+                mldoc_trim_spaces_start(lines[j].text),
             );
             last_content_line = j;
             j += 1;
         }
         // mldoc inline-parses `String.trim`-ed of the joined item.
-        let trimmed = item_text.trim();
+        let trimmed = ocaml_trim(&item_text);
         let trim_base = crate::inline::ptr_base(trimmed, &item_text);
         let mut item_map_cursor = OriginCursor::new();
         let inl = stub_inline_mapped(
@@ -2681,14 +2697,14 @@ fn build_def_list(
 }
 
 fn callout_begin(s: &str) -> Option<String> {
-    let t = s.trim_start();
+    let t = mldoc_trim_spaces_start(s);
     // `get(..8)` is char-boundary-safe (returns None on a multibyte split).
     if t.get(..8)?.eq_ignore_ascii_case("#+BEGIN_") {
         // mldoc's block name is `take_while1(non-space)` IMMEDIATELY after `#+BEGIN_`: the name
         // is the leading non-ws run, and an empty one (`#+BEGIN_`, or `#+BEGIN_ X` where ws
         // leads) is NOT a block — a plain paragraph. (Do NOT `split_whitespace`-skip leading ws.)
         let rest = &t[8..];
-        let n = rest.bytes().take_while(|&b| b != b' ' && b != b'\t').count();
+        let n = rest.bytes().take_while(|&b| !mldoc_is_space(b)).count();
         (n > 0).then(|| rest[..n].to_string())
     } else {
         None
@@ -3438,7 +3454,7 @@ mod tests {
 /// (and org's `is_table_row`) require BOTH ends — a bare leading `|` (`|a`, `| a | b`)
 /// is a Paragraph, not a Table (C3: prevents table over-detection + phantom refs).
 fn md_table_row(s: &str) -> bool {
-    let t = s.trim();
+    let t = ocaml_trim_end(mldoc_trim_spaces_start(s));
     t.len() >= 2 && t.starts_with('|') && t.ends_with('|')
 }
 
@@ -3469,24 +3485,24 @@ fn build_table_from_texts(
     origin_cursor: &mut OriginCursor,
 ) -> Block {
     let mut split_cells = |s: &str| -> Vec<Vec<Inline>> {
-        let t = s.trim();
+        let t = ocaml_trim_end(mldoc_trim_spaces_start(s));
         let t = t.strip_prefix('|').unwrap_or(t);
         let t = t.strip_suffix('|').unwrap_or(t);
         t.split('|')
             .map(|c| {
-                let c = c.trim();
+                let c = ocaml_trim(c);
                 let base = crate::inline::ptr_base(c, input);
                 stub_inline_mapped(c, base, input, origin, source_body, origin_cursor)
             })
             .collect()
     };
     let is_sep = |s: &str| -> bool {
-        let t = s.trim();
+        let t = ocaml_trim_end(mldoc_trim_spaces_start(s));
         let t = t.strip_prefix('|').unwrap_or(t);
         let t = t.strip_suffix('|').unwrap_or(t);
         !t.is_empty()
             && t.split('|').all(|c| {
-                let c = c.trim();
+                let c = ocaml_trim(c);
                 !c.is_empty() && c.bytes().all(|b| b == b'-' || b == b':')
             })
     };
