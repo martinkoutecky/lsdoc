@@ -131,25 +131,45 @@ fn block_absorbs(b: &Block) -> bool {
     )
 }
 
-/// Per-line de-indent view: equivalent to mldoc's clear-indents map on ONE line, O(1), no
-/// alloc. `strip` = the cumulative first-line indent cleared by ancestor frames. Leading ws are
-/// ASCII (space/tab) ⇒ byte-safe. Matches mldoc's `safe_sub` quirk: an all-ws line whose length
-/// is exactly `strip` is returned unchanged rather than sliced to `""`.
+#[inline]
+fn mldoc_ltrim_byte(b: u8) -> bool {
+    matches!(b, b' ' | b'\x0c' | b'\n' | b'\r' | b'\t')
+}
+
+#[inline]
+fn mldoc_ltrim_prefix_at_most(text: &str, limit: usize) -> usize {
+    let mut n = 0;
+    for &b in text.as_bytes() {
+        if n == limit || !mldoc_ltrim_byte(b) {
+            break;
+        }
+        n += 1;
+    }
+    crate::metrics::scan_work(n);
+    n
+}
+
+/// Per-line de-indent view: equivalent to mldoc's clear-indents map on ONE line, with a
+/// bounded prefix scan and no alloc. `strip` = the cumulative first-line indent cleared by
+/// ancestor frames. Branch tests use mldoc's ltrim byte set (`' '`, `'\f'`, `'\n'`, `'\r'`,
+/// `'\t'`), while the branch-1 removal blindly strips `strip` bytes. Matches mldoc's
+/// `safe_sub` quirk: a line whose length is exactly `strip` is returned unchanged rather than
+/// sliced to `""`.
 pub(crate) fn strip_view(text: &str, strip: usize) -> &str {
     if strip == 0 {
         return text;
     }
-    let lw = leading_ws(text);
-    if lw >= strip {
+    let prefix = mldoc_ltrim_prefix_at_most(text, strip);
+    if prefix >= strip {
         if text.len() > strip {
             &text[strip..]
         } else {
             text
         }
-    } else if text.trim().is_empty() {
+    } else if prefix == text.len() {
         text
     } else {
-        text.trim_start()
+        &text[prefix..]
     }
 }
 
@@ -2444,13 +2464,17 @@ pub(crate) fn block_code_texts(texts: &[&str]) -> String {
     let indent = leading_ws(texts[0]);
     let mut out = String::new();
     for &t in texts {
-        let lw = leading_ws(t);
-        let cleared = if lw >= indent {
-            &t[indent..] // leading ws are ASCII (space/tab) ⇒ byte-safe
-        } else if t.trim().is_empty() {
+        let prefix = mldoc_ltrim_prefix_at_most(t, indent);
+        let cleared = if prefix >= indent {
+            if t.len() > indent {
+                &t[indent..]
+            } else {
+                t
+            }
+        } else if prefix == t.len() {
             t
         } else {
-            t.trim_start()
+            &t[prefix..]
         };
         crate::metrics::scan_work(cleared.len());
         out.push_str(cleared);
@@ -3193,6 +3217,22 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn clear_indents_match_mldoc_whitespace_set() {
+        assert_eq!(strip_view("\x0c  ", 2), " "); // M1: branch 1 strips two bytes blindly.
+        assert_eq!(strip_view("\x0c ", 2), "\x0c "); // safe_sub no-op when len == strip.
+        assert_eq!(strip_view("\u{000b}word", 2), "\u{000b}word"); // VT is not mldoc-ltrim ws.
+        assert_eq!(strip_view("\u{00a0}word", 2), "\u{00a0}word"); // NBSP is not either.
+    }
+
+    #[test]
+    fn block_code_texts_preserves_exact_indent_ws_line() {
+        assert_eq!(
+            block_code_texts(&["  seed", "  ", "  tail"]),
+            "seed\n  \ntail\n"
+        );
     }
 
     #[test]

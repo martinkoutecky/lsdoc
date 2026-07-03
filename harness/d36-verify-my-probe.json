@@ -1,0 +1,62 @@
+[
+ {
+  "id": "z01",
+  "format": "org",
+  "input": "#+BEGIN_QUOTE\n  a\n\f \n  x\n#+END_QUOTE"
+ },
+ {
+  "id": "z02",
+  "format": "org",
+  "input": "#+BEGIN_QUOTE\n  a\n \f \n  x\n#+END_QUOTE"
+ },
+ {
+  "id": "z03",
+  "format": "org",
+  "input": "#+BEGIN_QUOTE\n  a\n\t\f\t\n  x\n#+END_QUOTE"
+ },
+ {
+  "id": "z04",
+  "format": "org",
+  "input": "#+BEGIN_QUOTE\n  a\n\u000bword\n  x\n#+END_QUOTE"
+ },
+ {
+  "id": "z05",
+  "format": "org",
+  "input": "#+BEGIN_QUOTE\n  a\n\u00a0word\n  x\n#+END_QUOTE"
+ },
+ {
+  "id": "z06",
+  "format": "org",
+  "input": "#+BEGIN_EXAMPLE\n  code\n  \n  more\n#+END_EXAMPLE"
+ },
+ {
+  "id": "z07",
+  "format": "org",
+  "input": "#+BEGIN_SRC txt\n  code\n  \n  more\n#+END_SRC"
+ },
+ {
+  "id": "z08",
+  "format": "markdown",
+  "input": "- #+BEGIN_NOTE\n  a\n\f  \n  x\n  #+END_NOTE"
+ },
+ {
+  "id": "z09",
+  "format": "org",
+  "input": "#+BEGIN_C\n  a\n\f  b\n  x\n#+END_C"
+ },
+ {
+  "id": "z10",
+  "format": "org",
+  "input": "#+BEGIN_QUOTE\n  <b>a\n\f  </b>\n#+END_QUOTE"
+ },
+ {
+  "id": "z11",
+  "format": "org",
+  "input": "#+BEGIN_EXAMPLE\n  code\n\f  raw\n  more\n#+END_EXAMPLE"
+ },
+ {
+  "id": "z12",
+  "format": "org",
+  "input": "#+BEGIN_QUOTE\n\f  a\n  x\n#+END_QUOTE"
+ }
+]
