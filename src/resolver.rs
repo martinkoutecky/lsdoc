@@ -695,15 +695,15 @@ fn nested_emphasis_at_md(
     base: usize,
 ) -> Result<EmParsed, EmFail> {
     let mut hit = markdown_emphasis_at(s, at, state_char, no_closer, base)?;
-    hit.node = aux_nested_emphasis_md(hit.node);
+    hit.node = aux_nested_emphasis_md(hit.node, s, base);
     Ok(hit)
 }
 
 /// Port of mldoc `nested_emphasis` / `aux_nested_emphasis`
 /// (`lib/syntax/inline.ml:922-947`).
-fn aux_nested_emphasis_md(node: Inline) -> Inline {
+fn aux_nested_emphasis_md(node: Inline, source: &str, source_base: usize) -> Inline {
     if is_synthetic_nested_emphasis(&node) {
-        return node;
+        return unescape_synthetic_nested_emphasis_md(node, source, source_base);
     }
     match node {
         Inline::Emphasis {
@@ -757,12 +757,17 @@ fn aux_nested_emphasis_md(node: Inline) -> Inline {
                             }
                         }
                         Ok(mut result) => {
+                            let child_base = plain_span.map(|s| s.0).unwrap_or(0);
                             if plain_span.is_none() {
                                 for node in &mut result {
                                     clear_inline_spans(node);
                                 }
                             }
-                            reparsed.extend(result.into_iter().map(aux_nested_emphasis_md));
+                            reparsed.extend(
+                                result
+                                    .into_iter()
+                                    .map(|node| aux_nested_emphasis_md(node, &text, child_base)),
+                            );
                         }
                         Err(()) => reparsed.push(Inline::Plain {
                             text,
@@ -781,6 +786,97 @@ fn aux_nested_emphasis_md(node: Inline) -> Inline {
         }
         other => other,
     }
+}
+
+fn unescape_synthetic_nested_emphasis_md(
+    node: Inline,
+    source: &str,
+    source_base: usize,
+) -> Inline {
+    match node {
+        Inline::Emphasis {
+            emph,
+            mut children,
+            span,
+        } if emph == "Italic" && children.len() == 1 => {
+            match children.pop().unwrap() {
+                Inline::Emphasis {
+                    emph: inner_emph,
+                    children: inner_children,
+                    span: inner_span,
+                } if inner_emph == "Bold" => {
+                    let children = inner_children
+                        .into_iter()
+                        .map(|node| unescape_synthetic_plain_md(node, source, source_base))
+                        .collect();
+                    Inline::Emphasis {
+                        emph,
+                        children: vec![Inline::Emphasis {
+                            emph: inner_emph,
+                            children: concat_plains_without_pos(children),
+                            span: inner_span,
+                        }],
+                        span,
+                    }
+                }
+                child => Inline::Emphasis {
+                    emph,
+                    children: vec![child],
+                    span,
+                },
+            }
+        }
+        other => other,
+    }
+}
+
+fn unescape_synthetic_plain_md(node: Inline, source: &str, source_base: usize) -> Inline {
+    match node {
+        Inline::Plain {
+            text,
+            span,
+            span_map: _,
+        } => {
+            if let Some(span) = span {
+                let raw = source_slice_for_span(source, source_base, span).unwrap_or(&text);
+                let (text, clean) = markdown_plain_text(&raw);
+                if clean {
+                    Inline::Plain {
+                        text,
+                        span: Some(span),
+                        span_map: None,
+                    }
+                } else {
+                    crate::source_map::make_plain(
+                        text,
+                        span,
+                        markdown_plain_origins(&raw, span.0),
+                        &raw,
+                        span.0,
+                    )
+                }
+            } else {
+                let raw = text;
+                let (text, clean) = markdown_plain_text(&raw);
+                if clean {
+                    Inline::Plain {
+                        text,
+                        span: None,
+                        span_map: None,
+                    }
+                } else {
+                    crate::source_map::make_plain(text, Span(0, 0), Vec::new(), "", 0)
+                }
+            }
+        }
+        other => other,
+    }
+}
+
+fn source_slice_for_span(source: &str, source_base: usize, span: Span) -> Option<&str> {
+    let start = span.0.checked_sub(source_base)?;
+    let end = start + (span.1 - span.0);
+    source.get(start..end)
 }
 
 fn clear_inline_spans(node: &mut Inline) {
@@ -1019,7 +1115,7 @@ fn parse_markdown_script_body(text: &str, base: usize) -> Vec<Inline> {
     while i < bb.len() {
         if matches!(bb[i], b'*' | b'_' | b'~' | b'^' | b'=') {
             if let Ok(hit) = markdown_emphasis_at(text, i, None, &mut no_closer, base) {
-                out.push(aux_nested_emphasis_md(hit.node));
+                out.push(aux_nested_emphasis_md(hit.node, text, base));
                 i = hit.end;
                 continue;
             }
@@ -1167,6 +1263,9 @@ fn find_delim_token_containing(
 /// absolute span, so a `` ` `` is recognized at resolve time (like tags/links) instead of pre-built
 /// as a multi-byte `Leaf`. A backtick consumed by a construct is then never dispatched → no straddle.
 fn try_code_span(s: &str, off: usize, base: usize) -> Option<(Inline, usize)> {
+    if s.as_bytes().get(off) != Some(&b'`') {
+        return None;
+    }
     let (mut node, end) = crate::lexer::code_span(s, off)?;
     if let Inline::Code { text, .. } = &mut node {
         if text.as_bytes().contains(&b'\r') {

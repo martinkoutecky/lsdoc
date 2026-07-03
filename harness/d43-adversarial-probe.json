@@ -1,0 +1,14 @@
+[
+  {"id":"adv1-triple-two-escaped-backticks","format":"markdown","input":"***a\\`b\\`c***"},
+  {"id":"adv2-triple-two-double-layer-backticks","format":"markdown","input":"***\\\\`x\\\\`***"},
+  {"id":"adv3-label-lone-backtick-start","format":"markdown","input":"[`abc](u)"},
+  {"id":"adv4-label-lone-backtick-end","format":"markdown","input":"[abc`](u)"},
+  {"id":"adv5-label-two-lone-backticks-after-bs","format":"markdown","input":"[a\\\\`b\\\\`c](u)"},
+  {"id":"adv6-synthetic-emphasis-inside-label","format":"markdown","input":"[***\\`***](u)"},
+  {"id":"adv7-under-synthetic-inside-star-synthetic","format":"markdown","input":"***___\\`___***"},
+  {"id":"adv8-star-synthetic-inside-under-synthetic","format":"markdown","input":"___***\\`***___"},
+  {"id":"adv9-triple-crlf-before-escaped-backtick","format":"markdown","input":"***a\r\n\\`***"},
+  {"id":"adv10-label-valid-code-after-escaped-backslash","format":"markdown","input":"[a\\\\`x`z](u)"},
+  {"id":"adv11-triple-valid-code-between-escaped-backticks","format":"markdown","input":"***\\``x`\\`***"},
+  {"id":"adv12-label-lone-backtick-after-synthetic","format":"markdown","input":"[***x***\\\\`](u)"}
+]
