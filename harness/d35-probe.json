@@ -1,0 +1,1 @@
+[{"id":"x01","format":"org","input":"#+BEGIN_A\n  #+BEGIN_QUOTE\n   a\n   \n   x\n  #+END_QUOTE\n#+END_A"},{"id":"x02","format":"org","input":"#+BEGIN_A\n  #+BEGIN_QUOTE\n   a\n  \n   x\n  #+END_QUOTE\n#+END_A"},{"id":"x03","format":"org","input":"#+BEGIN_QUOTE\n  a\n   \n  x\n#+END_QUOTE"}]
