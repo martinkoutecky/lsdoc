@@ -483,9 +483,10 @@ fn parse_org_streaming<'a>(
     let mut nonstd_cursor: usize = 0; // monotone nonstd-eol cursor (body_is_clean_window), ditto.
     let mut origin_cursor = OriginCursor::new(); // one cursor for this parse pass's parent OriginMap.
     let mut offs: Vec<usize> = Vec::new(); // reused `>`-prefix offset scratch (scan_gt_prefix)
-                                           // F4: set by an empty headline marker (`* ` trailing-ws para), consumed by the NEXT line's
-                                           // dispatch — a drop-trigger block drops the para, anything else clears the flag.
-    let mut ws_drop = false;
+    // F4/M3: set by an empty headline marker to the marker line's END offset (the boundary
+    // between the marker's trailing-ws `" \n"` and following true blank lines). A drop-trigger
+    // block drops `[para.start, boundary)` while preserving `[boundary, para.end)`.
+    let mut ws_drop: Option<usize> = None;
     let mut i = 0;
 
     loop {
@@ -578,10 +579,7 @@ fn parse_org_streaming<'a>(
                     if !opened_any {
                         // F4: drop the empty `* ` trailing-ws para before this quote opener, then
                         // flush the parent's paragraph (`between_eols`) before the nested quote.
-                        let was = std::mem::replace(&mut ws_drop, false);
-                        if was && para_ws_only(&top.para, input) {
-                            top.para = None;
-                        }
+                        drop_marker_ws(&mut top.para, ws_drop.take(), input);
                         flush_para(
                             &mut top.out,
                             &mut top.para,
@@ -848,7 +846,7 @@ fn dispatch_org_line<'a>(
     drawer_cursor: &mut usize,
     property_end_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
-    ws_drop: &mut bool,
+    ws_drop: &mut Option<usize>,
     ctx: Ctx,
     hi: usize,
     end_trie: &EndTrie,
@@ -884,10 +882,10 @@ fn dispatch_org_line<'a>(
     let line_end = lines[i].end;
     let line_content_end_orig = line_start + lines[i].text.len(); // for parse_latex_env
     let in_item = ctx.in_item;
-    // F4: read + clear the empty-marker ws-drop flag set by the PREVIOUS line. A drop-trigger
-    // block (drawer/table/fence/`#+BEGIN`/verbatim/`>`-quote/`$$`/raw-html/hr) drops the empty
-    // `* ` headline's trailing-ws paragraph; any other line leaves the flag cleared.
-    let was_ws_drop = std::mem::replace(ws_drop, false);
+    // F4/M3: read + clear the empty-marker ws-drop flag (the marker line's END offset) set by a
+    // PREVIOUS line. A drop-trigger block drops the marker's `" \n"` portion while preserving any
+    // intervening true blank lines; a truly-empty line re-arms it below.
+    let was_ws_drop = ws_drop.take();
     // A paragraph flushed because a following BLOCK begins drops its trailing `Break_Line` when
     // that block parser claims the eol first (mldoc `between_eols`) — true in BOTH list-item
     // content (`in_item`) AND a blockquote body (`in_quote`); at the document level
@@ -920,6 +918,9 @@ fn dispatch_org_line<'a>(
             append_view_with_origin(b, para_map, origin_cursor, input, origin, t);
             append_line_joiner(b, para_map, origin_cursor, lines, i, origin);
         }
+        if was_ws_drop.is_some() && t.is_empty() {
+            *ws_drop = was_ws_drop;
+        }
         return Step::Next(i + 1);
     }
 
@@ -948,6 +949,7 @@ fn dispatch_org_line<'a>(
 
     // 1. directive `#+KEY: value` (KEY != BEGIN_…) — not a list-item content block.
     if let Some((name, value)) = org_directive(t).filter(|_| !in_item) {
+        drop_marker_ws(para, was_ws_drop, input);
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         out.push(Block::Directive {
             name,
@@ -972,9 +974,7 @@ fn dispatch_org_line<'a>(
             property_end_idxs,
             property_end_cursor,
         ) {
-            if was_ws_drop && para_ws_only(para, input) {
-                *para = None;
-            }
+            drop_marker_ws(para, was_ws_drop, input);
             flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             out.push(Block::Properties {
                 props,
@@ -1004,9 +1004,7 @@ fn dispatch_org_line<'a>(
     if let Some(name) = drawer_begin(t).filter(|_| !in_item && !ctx.in_quote) {
         if let Some(close) = find_drawer_end(drawer_end_idxs, drawer_cursor, i) {
             if close < hi {
-                if was_ws_drop && para_ws_only(para, input) {
-                    *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
-                }
+                drop_marker_ws(para, was_ws_drop, input);
                 flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                 out.push(Block::Drawer {
                     name,
@@ -1109,7 +1107,7 @@ fn dispatch_org_line<'a>(
             let content_len = mldoc_trim_spaces_end_len(t);
             if content_len < t.len() {
                 *para = Some((line_start + content_len, line_end));
-                *ws_drop = true; // F4: droppable if the next line opens a block.
+                *ws_drop = Some(line_end); // F4/M3: marker line-end boundary.
             }
         }
         return Step::Next(i + 1);
@@ -1117,9 +1115,7 @@ fn dispatch_org_line<'a>(
 
     // 4. table (group of consecutive well-formed `|…|` rows), bounded by `hi`.
     if is_table_row(t) {
-        if was_ws_drop && para_ws_only(para, input) {
-            *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
-        }
+        drop_marker_ws(para, was_ws_drop, input);
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let start = i;
         let mut ni = i;
@@ -1202,9 +1198,7 @@ fn dispatch_org_line<'a>(
     if let Some((_c, mend)) = fence_marker(t) {
         if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
             if close < hi {
-                if was_ws_drop && para_ws_only(para, input) {
-                    *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
-                }
+                drop_marker_ws(para, was_ws_drop, input);
                 flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                 // Body lines via line_text: strip-view drops the cumulative indent (= block_code
                 // semantics for strip>0) and is identical to `input[start..end]` for strip==0
@@ -1241,10 +1235,7 @@ fn dispatch_org_line<'a>(
     if let Some(name) = block_begin(t) {
         if let Some(close) = end_trie.find(&name, i) {
             if close < hi {
-                if was_ws_drop && para_ws_only(para, input) {
-                    *para = None; // F4: drop the empty `* ` trailing-ws para (driver flushes
-                                  // for QUOTE/custom Open; src/example flush in place below).
-                }
+                drop_marker_ws(para, was_ws_drop, input);
                 let lname = name.to_ascii_lowercase();
                 match lname.as_str() {
                     "src" => {
@@ -1323,9 +1314,7 @@ fn dispatch_org_line<'a>(
 
     // 7. verbatim block (Org): consecutive lines starting with `:` → Example. Bounded by `hi`.
     if is_verbatim_line(t) {
-        if was_ws_drop && para_ws_only(para, input) {
-            *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
-        }
+        drop_marker_ws(para, was_ws_drop, input);
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let start = i;
         let mut code = String::new();
@@ -1385,9 +1374,7 @@ fn dispatch_org_line<'a>(
                 break;
             };
             if !captured {
-                if was_ws_drop && para_ws_only(para, input) {
-                    *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
-                }
+                drop_marker_ws(para, was_ws_drop, input);
                 flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             }
             out.push(Block::DisplayedMath {
@@ -1447,9 +1434,7 @@ fn dispatch_org_line<'a>(
                 break;
             };
             if !captured {
-                if was_ws_drop && para_ws_only(para, input) {
-                    *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
-                }
+                drop_marker_ws(para, was_ws_drop, input);
                 flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             }
             out.push(Block::RawHtml {
@@ -1583,9 +1568,7 @@ fn dispatch_org_line<'a>(
 
     // 13. horizontal rule (exactly 5 dashes).
     if is_org_hr(t) {
-        if was_ws_drop && para_ws_only(para, input) {
-            *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
-        }
+        drop_marker_ws(para, was_ws_drop, input);
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         out.push(Block::Hr {
             span: Some(Span(line_start, line_end)),
@@ -1883,6 +1866,19 @@ fn flush_para(
             ),
             span: Some(Span(s, e)),
         });
+    }
+}
+
+/// F4/M3: a block follows an empty headline marker whose whitespace paragraph is open.
+/// Drop only the marker-line whitespace `[para.start, boundary)`, preserving any true blank
+/// lines `[boundary, para.end)` as their own break paragraph.
+fn drop_marker_ws(para: &mut Option<(usize, usize)>, was_ws_drop: Option<usize>, input: &str) {
+    if let Some(boundary) = was_ws_drop {
+        if let Some((_, e)) = *para {
+            if para_ws_only(para, input) {
+                *para = if boundary < e { Some((boundary, e)) } else { None };
+            }
+        }
     }
 }
 

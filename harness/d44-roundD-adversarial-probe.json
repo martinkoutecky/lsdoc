@@ -1,0 +1,14 @@
+[
+  {"id":"adv-quote-suppressed","format":"markdown","input":"> # ---"},
+  {"id":"adv-list-suppressed","format":"markdown","input":"* # |-|"},
+  {"id":"adv-h2-hr","format":"markdown","input":"## ---"},
+  {"id":"adv-h3-quote","format":"markdown","input":"### > q"},
+  {"id":"adv-h4-table","format":"markdown","input":"#### |-|"},
+  {"id":"adv-h5-latex","format":"markdown","input":"##### \\begin{x}a\\end{x}"},
+  {"id":"adv-h6-footnote","format":"markdown","input":"###### [^n]: body"},
+  {"id":"adv-h3-block","format":"markdown","input":"### #+BEGIN_QUOTE\nx\n#+END_QUOTE"},
+  {"id":"adv-unclosed-guard","format":"markdown","input":"### #+BEGIN_QUOTE"},
+  {"id":"adv-eof-quote","format":"markdown","input":"# >"},
+  {"id":"adv-heading-after-heading","format":"markdown","input":"# one\n## ---"},
+  {"id":"adv-org-marker-priority-tags","format":"org","input":"* TODO [#A] :tag:\n#+TITLE: x"}
+]

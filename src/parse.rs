@@ -45,8 +45,8 @@ use crate::block_common::{
     find_matching_fence, first_body_indent, leading_ws, mldoc_heading_boundary,
     mldoc_is_space, mldoc_spaces_len, mldoc_trim_spaces, mldoc_trim_spaces_end_len,
     mldoc_trim_spaces_start, ocaml_trim, ocaml_trim_end, para_ws_only, raw_html_block_start,
-    raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
-    Line, RawHtmlScan, StripCtx, StripSeqTree, GT_FALLBACK_NEST_CAP, MARKERS,
+    raw_html_end_at, raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines,
+    Builder, EndTrie, Line, RawHtmlScan, StripCtx, StripSeqTree, GT_FALLBACK_NEST_CAP, MARKERS,
 };
 use crate::projection::{Block, Inline, ListItem, Property, Span, SpanMapSegment};
 use crate::source_map::{OriginCursor, OriginMap};
@@ -1147,8 +1147,44 @@ fn dispatch_md_line<'a>(
     // (suppressed inside a `>`-blockquote body — mldoc `block_content_parsers` omits Heading,
     // so `# h` / a `-` bullet there stay paragraph text. F1.)
     if let Some((level, size, hend)) = heading_at(t).filter(|_| !in_block_content) {
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let (marker, priority, title) = split_markers(mldoc_trim_spaces_start(&t[hend..]));
+        let title_off = line_start + (t.len() - title.len());
+        if !title.is_empty()
+            && md_heading_split_opener(
+                title,
+                input,
+                title_off,
+                i,
+                hi,
+                body_end,
+                line_has_nl(input, &lines[i]),
+                end_trie,
+                drawer_end_idxs,
+                drawer_cursor,
+                fence_lines,
+                fence_cursor,
+                raw_html_scan,
+            )
+        {
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+            out.push(Block::Heading {
+                level,
+                size: Some(size),
+                inline: vec![],
+                marker,
+                priority,
+                htags: vec![],
+                span: Some(Span(line_start, title_off)),
+            });
+            lines[i] = Line {
+                start: title_off,
+                end: line_end,
+                text: title,
+                no_strip: false,
+            };
+            return Step::Next(i);
+        }
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let trail = mldoc_trim_spaces_end_len(t);
         if title.is_empty() && trail < t.len() {
             out.push(Block::Heading {
@@ -2312,6 +2348,67 @@ fn split_markers(s: &str) -> (Option<String>, Option<String>, &str) {
         None
     };
     (marker, priority, s)
+}
+
+/// Markdown heading title lookahead (mldoc `heading0.ml`): after marker/priority parsing,
+/// split only when the title suffix would parse as Drawer, Hr, Table, Latex_env, selected
+/// Block forms, or Footnote. The looked-ahead node is not emitted; the caller rewrites to
+/// `content` and lets the normal top-level ladder reparse it, so e.g. `#+TITLE:` becomes a
+/// Directive there.
+fn md_heading_split_opener(
+    content: &str,
+    input: &str,
+    content_off: usize,
+    i: usize,
+    hi: usize,
+    body_end: usize,
+    followed_by_nl: bool,
+    end_trie: &EndTrie,
+    drawer_end_idxs: &[usize],
+    drawer_cursor: &mut usize,
+    fence_lines: &[usize],
+    fence_cursor: &mut usize,
+    raw_html_scan: &mut RawHtmlScan,
+) -> bool {
+    // Drawer.parse: markdown properties, parse2 `#+KEY:`, and org-style drawers with a
+    // matching `:END:` inside this body.
+    if property(content).is_some() || directive_property(content).is_some() {
+        return true;
+    }
+    if drawer_begin(content)
+        .and_then(|_| find_drawer_end(drawer_end_idxs, drawer_cursor, i))
+        .is_some_and(|close| close < hi)
+    {
+        return true;
+    }
+    // Hr, Table, Latex_env.
+    if is_hr(content)
+        || md_table_row(content)
+        || crate::inline::parse_latex_env(&input[..body_end], content_off, content_off + content.len()).is_some()
+    {
+        return true;
+    }
+    // Block.parse succeeds only for genuinely closed block forms where a closer is required.
+    if md_quote_first_slice(content).is_some() {
+        return true;
+    }
+    if let Some(name) = callout_begin(content) {
+        return end_trie.find(&name, i).is_some_and(|close| close < hi);
+    }
+    if fence_marker(content).is_some() {
+        return find_matching_fence(fence_lines, fence_cursor, i).is_some_and(|close| close < hi);
+    }
+    if displayed_math_opener(content)
+        .and_then(|off| find_displayed_math_close(input, content_off + off, body_end))
+        .is_some()
+        || raw_html_block_start(content) && raw_html_end_at(input, content_off, body_end, raw_html_scan).is_some()
+    {
+        return true;
+    }
+    // Footnote.parse. Paragraph is the sentinel and therefore returns false.
+    md_footnote_def_start(content)
+        .and_then(|(_, body)| md_footnote_body_line(body, followed_by_nl))
+        .is_some()
 }
 
 
