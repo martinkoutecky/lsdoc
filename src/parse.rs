@@ -2780,10 +2780,12 @@ fn collect_list_md(
     origin_cursor: &mut OriginCursor,
 ) -> Result<(Block, usize), Collapse> {
     let mut flat: Vec<ListItem> = Vec::new();
+    let mut flat_boundaries: Vec<bool> = Vec::new();
     let mut flat_lines: Vec<usize> = Vec::new();
     let mut flat_indents: Vec<u32> = Vec::new();
     let mut flat_cursors: Vec<OriginCursor> = Vec::new();
     let start_cursor = *origin_cursor;
+    let mut after_two_eols = false;
     let mut i = start;
     while i < hi {
         let t = lines[i].text;
@@ -2796,6 +2798,8 @@ fn collect_list_md(
             Some(m) => m,
             None => break,
         };
+        let boundary_before = after_two_eols;
+        after_two_eols = false;
         let cur_indent = marker.indent;
         // content = first line (marker body) + folded indented continuation lines, each trimmed.
         let mut joined = String::new();
@@ -2820,6 +2824,7 @@ fn collect_list_md(
             let cl = lines[j].text;
             if cl.is_empty() {
                 j += 1; // mldoc `two_eols`: a (truly) blank line ends the content AND is consumed
+                after_two_eols = true;
                 break;
             }
             let (ci, is_item, is_heading) = check_listitem_md(cl);
@@ -2860,12 +2865,14 @@ fn collect_list_md(
             let resume = if r < flat_lines.len() { flat_lines[r] } else { i };
             *origin_cursor = if r == 0 { start_cursor } else { flat_cursors[r - 1] };
             flat.truncate(r);
+            flat_boundaries.truncate(r);
             let kept = if flat.is_empty() {
                 None
             } else {
                 let items = std::mem::take(&mut flat);
+                let boundaries = std::mem::take(&mut flat_boundaries);
                 Some(Block::List {
-                    items: crate::projection::nest_items(items),
+                    items: crate::projection::nest_items_with_boundaries(items, boundaries),
                     span: Some(Span(lines[start].start, lines[resume - 1].end)),
                 })
             };
@@ -2890,6 +2897,7 @@ fn collect_list_md(
             name,
             checkbox: marker.checkbox,
         });
+        flat_boundaries.push(boundary_before);
         *origin_cursor = item_origin_cursor;
         flat_cursors.push(item_origin_cursor);
         flat_lines.push(i);
@@ -2901,7 +2909,13 @@ fn collect_list_md(
         return Err(Collapse { kept: None, resume: start, trigger: start });
     }
     let span = Some(Span(lines[start].start, lines[i - 1].end));
-    Ok((Block::List { items: crate::projection::nest_items(flat), span }, i))
+    Ok((
+        Block::List {
+            items: crate::projection::nest_items_with_boundaries(flat, flat_boundaries),
+            span,
+        },
+        i,
+    ))
 }
 
 /// Given the indents of the successfully-collected list items and the indent of the failing item
@@ -4207,6 +4221,13 @@ mod tests {
         assert_eq!(shape(&items("* a\n  * b\n  * b2\n    * c")), "a[b,b2[c]]");
         // mid (indent 2) unwinds past deep's run floor (4) → TOP sibling of a, not a child.
         assert_eq!(shape(&items("* a\n    * deep\n  * mid")), "a[deep],mid");
+        // A consumed `two_eols` boundary prevents the previous item from opening the
+        // post-blank item as its child, while ancestor child-run floors still apply.
+        assert_eq!(shape(&items("* a\n\n * h")), "a,h");
+        assert_eq!(shape(&items("1. a\n\n 1. b")), "a,b");
+        assert_eq!(shape(&items("* a\n  * b\n\n   * c")), "a[b,c]");
+        assert_eq!(shape(&items("* a\n  * b\n\n * c")), "a[b],c");
+        assert_eq!(shape(&items("* a\n  more\n\n * b")), "a,b");
     }
 
     #[test]

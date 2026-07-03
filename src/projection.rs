@@ -386,6 +386,58 @@ pub fn nest_items(flat: Vec<ListItem>) -> Vec<ListItem> {
     roots
 }
 
+/// Fold list items like [`nest_items`], but do not let an item open a child run
+/// across a consumed `two_eols` item boundary. The item after such a boundary still
+/// flows through the existing ancestor child-run floors; only the immediately
+/// preceding item is barred from becoming its parent.
+pub(crate) fn nest_items_with_boundaries(
+    flat: Vec<ListItem>,
+    boundary_before: Vec<bool>,
+) -> Vec<ListItem> {
+    if !boundary_before.iter().any(|&b| b) {
+        return nest_items(flat);
+    }
+
+    struct Frame {
+        item: ListItem,
+        children: Vec<ListItem>,
+        child_min_indent: u32,
+    }
+    let n = flat.len();
+    let indents: Vec<u32> = flat.iter().map(|it| it.indent).collect();
+    let mut roots: Vec<ListItem> = Vec::new();
+    let mut stack: Vec<Frame> = Vec::new();
+
+    let push_done = |item: ListItem, stack: &mut Vec<Frame>, roots: &mut Vec<ListItem>| {
+        match stack.last_mut() {
+            Some(parent) => parent.children.push(item),
+            None => roots.push(item),
+        }
+    };
+
+    for (i, mut cur) in flat.into_iter().enumerate() {
+        while stack.last().is_some_and(|top| cur.indent < top.child_min_indent) {
+            let f = stack.pop().unwrap();
+            let mut done = f.item;
+            done.items = f.children;
+            push_done(done, &mut stack, &mut roots);
+        }
+        cur.items = Vec::new();
+        let blocked_by_blank = boundary_before.get(i + 1).copied().unwrap_or(false);
+        if i + 1 < n && !blocked_by_blank && indents[i + 1] > cur.indent {
+            stack.push(Frame { item: cur, children: Vec::new(), child_min_indent: indents[i + 1] });
+        } else {
+            push_done(cur, &mut stack, &mut roots);
+        }
+    }
+    while let Some(f) = stack.pop() {
+        let mut done = f.item;
+        done.items = f.children;
+        push_done(done, &mut stack, &mut roots);
+    }
+    roots
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "k")]
 pub enum Inline {

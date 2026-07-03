@@ -2866,10 +2866,12 @@ fn collect_list(
     origin_cursor: &mut OriginCursor,
 ) -> Result<(Block, usize), Collapse> {
     let mut flat: Vec<ListItem> = Vec::new();
+    let mut flat_boundaries: Vec<bool> = Vec::new();
     let mut flat_lines: Vec<usize> = Vec::new();
     let mut flat_indents: Vec<u32> = Vec::new();
     let mut flat_cursors: Vec<OriginCursor> = Vec::new();
     let start_cursor = *origin_cursor;
+    let mut after_two_eols = false;
     let mut i = start;
     while i < hi {
         let t = line_text(lines, i, strip_ctx);
@@ -2882,6 +2884,8 @@ fn collect_list(
             Some(m) => m,
             None => break,
         };
+        let boundary_before = after_two_eols;
+        after_two_eols = false;
         let cur_indent = marker.indent;
         // content = first line (after marker) + folded indented continuation lines.
         let mut content = String::new();
@@ -2906,6 +2910,7 @@ fn collect_list(
             let cl = line_text(lines, j, strip_ctx);
             if cl.is_empty() {
                 j += 1; // mldoc `two_eols`: a blank ends the content AND is consumed
+                after_two_eols = true;
                 break;
             }
             let (ci, is_item) = check_listitem(cl);
@@ -2947,12 +2952,14 @@ fn collect_list(
             };
             *origin_cursor = if r == 0 { start_cursor } else { flat_cursors[r - 1] };
             flat.truncate(r);
+            flat_boundaries.truncate(r);
             let kept = if flat.is_empty() {
                 None
             } else {
                 let items = std::mem::take(&mut flat);
+                let boundaries = std::mem::take(&mut flat_boundaries);
                 Some(Block::List {
-                    items: crate::projection::nest_items(items),
+                    items: crate::projection::nest_items_with_boundaries(items, boundaries),
                     span: Some(Span(lines[start].start, lines[resume - 1].end)),
                 })
             };
@@ -2971,6 +2978,7 @@ fn collect_list(
             name: vec![],
             checkbox: marker.checkbox,
         });
+        flat_boundaries.push(boundary_before);
         *origin_cursor = item_origin_cursor;
         flat_cursors.push(item_origin_cursor);
         flat_lines.push(i);
@@ -2988,7 +2996,7 @@ fn collect_list(
     let span = Some(Span(lines[start].start, lines[i - 1].end));
     Ok((
         Block::List {
-            items: crate::projection::nest_items(flat),
+            items: crate::projection::nest_items_with_boundaries(flat, flat_boundaries),
             span,
         },
         i,
@@ -3978,6 +3986,13 @@ mod tests {
         assert_eq!(shape(&items("1. a\n   2. b\n   3. c")), "a[b,c]");
         assert_eq!(shape(&items("- a\n  1. b")), "a[b]"); // col-0 `-` parent + numbered child
         assert_eq!(shape(&items("+ a\n    + deep\n  + mid")), "a[deep],mid");
+        // A consumed `two_eols` boundary blocks only the immediately preceding item
+        // from owning the post-blank item; existing ancestor floors still decide unwind.
+        assert_eq!(shape(&items("- a\n\n * h")), "a,h");
+        assert_eq!(shape(&items("1. a\n\n 1. b")), "a,b");
+        assert_eq!(shape(&items("- a\n  * b\n\n   * h")), "a[b,h]");
+        assert_eq!(shape(&items("- a\n  * b\n\n * c")), "a[b],c");
+        assert_eq!(shape(&items("- [ ] a\n\n * [X] h")), "a,h");
     }
 
     // ---- multi-line list continuation + collapse (mldoc lists0.ml) -----------

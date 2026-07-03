@@ -1,0 +1,20 @@
+[
+  {"id": "v1", "format": "markdown", "input": "* a\n\n * h\n\n  * i"},
+  {"id": "v2", "format": "markdown", "input": "+ a\n  + b\n    + c\n\n     + d"},
+  {"id": "v3", "format": "markdown", "input": "1. a\n\n 2. b\n\n 3. c"},
+  {"id": "v4", "format": "markdown", "input": "* a\n\n\t* h"},
+  {"id": "v5", "format": "markdown", "input": "* a\n\n\u001a* h"},
+  {"id": "v6", "format": "markdown", "input": "* a\n\u001a* h"},
+  {"id": "v7", "format": "markdown", "input": "* a\n  * b\n\n  * c\n    * d"},
+  {"id": "v8", "format": "markdown", "input": "* a\n\n* b\n  * c"},
+  {"id": "v9", "format": "markdown", "input": "* a\n  cont\n\n * h\n   tail"},
+  {"id": "v10", "format": "org", "input": "- a\n\n + h\n\n  + i"},
+  {"id": "v11", "format": "org", "input": "+ a\n  * b\n\n   * h\n\n    * j"},
+  {"id": "v12", "format": "org", "input": "- a\n\n\u001a- h"},
+  {"id": "v13", "format": "org", "input": "1. a\n   1. b\n\n    2. c"},
+  {"id": "v14", "format": "org", "input": "- a\n\n- b\n  * c"},
+  {"id": "v15", "format": "org", "input": "- [ ] a\n\n + [X] b\n\n  - [-] c"},
+  {"id": "v16", "format": "org", "input": "- a\nb\n\n * h"},
+  {"id": "v17", "format": "org", "input": "- a\n  * b\n\n  * c\n    * d"},
+  {"id": "v18", "format": "org", "input": "- a\n\n \u000c* h"}
+]
