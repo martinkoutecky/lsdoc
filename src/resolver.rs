@@ -1474,13 +1474,14 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                     _ => unreachable!(),
                 };
                 if ctx.breaks {
-                    let tw = trailing_ws(&pending);
-                    if c == b'\n' && tw >= 2 {
+                    if let Some(hardbreak_start) = markdown_hardbreak_start(&pending) {
+                        let kept_source_end =
+                            plain_origin_boundary(&plain_origins, hardbreak_start, plain_extent_end);
                         if plain_start.is_some() {
-                            plain_end -= tw;
+                            plain_end = kept_source_end;
                         }
-                        pending.truncate(pending.len() - tw);
-                        plain_extent_end = plain_end;
+                        pending.truncate(hardbreak_start);
+                        plain_extent_end = kept_source_end;
                         truncate_plain_origins(&mut plain_origins, pending.len());
                         flush(
         &mut out,
@@ -2142,12 +2143,58 @@ fn truncate_plain_origins(origins: &mut Vec<OriginSegment>, len: usize) {
     origins.truncate(keep);
 }
 
-/// Count of trailing space/tab bytes in `s` (for hard-break detection).
-fn trailing_ws(s: &str) -> usize {
-    s.bytes()
-        .rev()
-        .take_while(|&b| b == b' ' || b == b'\t')
-        .count()
+/// mldoc markdown hard-break dispatch rule (`inline.ml` + `markdown_line_breaks.ml`):
+/// the parser is reached only when the inline dispatcher lands on a literal space, but
+/// the consumed run counts `space_chars` (`' '`, tab, SUB, form feed). Leading SUB bytes
+/// in the trailing run belong to the preceding plain word, so dispatch advances past
+/// them before checking for the literal-space arm.
+fn markdown_hardbreak_start(s: &str) -> Option<usize> {
+    let bb = s.as_bytes();
+    let mut start = bb.len();
+    let mut scanned = 0usize;
+    while start > 0 {
+        scanned += 1;
+        if !matches!(bb[start - 1], b' ' | b'\t' | 0x0c | 0x1a) {
+            break;
+        }
+        start -= 1;
+    }
+    crate::metrics::scan_work(scanned);
+
+    let mut q = start;
+    let mut sub_scanned = 0usize;
+    while q < bb.len() && bb[q] == 0x1a {
+        q += 1;
+        sub_scanned += 1;
+    }
+    crate::metrics::scan_work(sub_scanned);
+
+    (q < bb.len() && bb[q] == b' ' && bb.len() - q >= 2).then_some(q)
+}
+
+fn plain_origin_boundary(origins: &[OriginSegment], len: usize, fallback: usize) -> usize {
+    let mut result = fallback;
+    let mut scanned = 0usize;
+    for seg in origins {
+        scanned += 1;
+        if len < seg.text_off {
+            crate::metrics::scan_work(scanned);
+            return result;
+        }
+        if len <= seg.text_off + seg.text_len {
+            crate::metrics::scan_work(scanned);
+            return if seg.text_len == seg.src_len {
+                seg.src_off + (len - seg.text_off).min(seg.src_len)
+            } else if len == seg.text_off {
+                seg.src_off
+            } else {
+                seg.src_off + seg.src_len
+            };
+        }
+        result = seg.src_off + seg.src_len;
+    }
+    crate::metrics::scan_work(scanned);
+    result
 }
 
 /// Count of trailing mldoc whitespace bytes that make the next byte a fresh
@@ -2486,4 +2533,41 @@ fn try_md_link(
         return None; // no closing `)` ahead
     }
     crate::inline::md_link(s, at, image, base)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::markdown_hardbreak_start;
+
+    #[test]
+    fn markdown_hardbreak_dispatch_truth_table() {
+        let cases: &[(&str, Option<usize>)] = &[
+            ("x  ", Some(1)),
+            ("x \t", Some(1)),
+            ("x \t ", Some(1)),
+            ("x \x0c", Some(1)),
+            ("x \x1a", Some(1)),
+            ("x\x1a  ", Some(2)),
+            ("x\t ", None),
+            ("x\t  ", None),
+            ("x\x0c  ", None),
+            ("\t ", None),
+            ("\t  ", None),
+            ("\x0c  ", None),
+            (" \t", Some(0)),
+            ("x \x1a\t", Some(1)),
+            ("\x1a  ", Some(1)),
+            ("x\x1a\x1a ", None),
+            ("x  ", Some(1)),
+            ("x\t  ", None),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                markdown_hardbreak_start(input),
+                *expected,
+                "pending input {input:?}"
+            );
+        }
+    }
 }

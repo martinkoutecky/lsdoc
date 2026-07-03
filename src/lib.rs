@@ -206,6 +206,13 @@ mod span_tests {
         assert_eq!(*span, Some(expected_span));
     }
 
+    fn assert_hardbreak(node: &Inline, expected_span: Span) {
+        let Inline::HardBreak { span } = node else {
+            panic!("expected hardbreak, got {node:?}");
+        };
+        assert_eq!(*span, Some(expected_span));
+    }
+
     fn quote_paragraph(input: &str, format: &str) -> Vec<Inline> {
         match &crate::parse(input, format)[0] {
             Block::Quote { children, .. } => match &children[0] {
@@ -580,6 +587,17 @@ mod span_tests {
         assert_break(&inline[1], Span(5, 7));
         assert_plain(&inline[2], "d", Span(9, 10), None);
         assert_break(&inline[3], Span(10, 10));
+    }
+
+    #[test]
+    fn markdown_hardbreak_truncates_multibyte_plain_span() {
+        let s = "é \x1a\t\ny";
+        let out = parse_md(s);
+        assert_eq!(out.len(), 3);
+        assert_plain(&out[0], "é", Span(0, 2), None);
+        assert_hardbreak(&out[1], Span(5, 6));
+        assert_plain(&out[2], "y", Span(6, 7), None);
+        assert_s5(s, &out);
     }
 
     #[test]
