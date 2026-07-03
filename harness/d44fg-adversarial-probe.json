@@ -1,0 +1,12 @@
+[
+  {"id": "adv1-crlf-short-html-comment", "format": "markdown", "input": "<!--\r\n-->"},
+  {"id": "adv2-unclosed-html-comment-eof", "format": "markdown", "input": "<!--\nbody"},
+  {"id": "adv3-gt-double-gt-mix", "format": "markdown", "input": "> >>\n> x"},
+  {"id": "adv4-line-comment-in-list-item", "format": "markdown", "input": "* a\n  [//]: # hidden\n  b"},
+  {"id": "adv5-three-dash-with-body-raw-gate", "format": "markdown", "input": "<!---\nx\n-->"},
+  {"id": "adv6-deep-quote-empty-lines", "format": "markdown", "input": "> >\n> >\n> x"},
+  {"id": "adv7-quote-short-html-comment", "format": "markdown", "input": "> <!--\n> -->\n> x"},
+  {"id": "adv8-line-comment-no-body-in-quote", "format": "markdown", "input": "> [//]: # \n> x"},
+  {"id": "adv9-leading-space-short-html-comment", "format": "markdown", "input": "  <!--\n-->"},
+  {"id": "adv10-leading-space-line-comment", "format": "markdown", "input": "  [//]: # hidden"}
+]

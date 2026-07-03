@@ -573,7 +573,7 @@ fn parse_org_streaming<'a>(
                 .unwrap_or("")
             };
             let mut opened_any = false;
-            while let Some(inner) = quote_first_line_slice(cur) {
+            while let Some(inner) = quote_first_line_slice(cur, line_has_eol(&lines[i])) {
                 let (p_hi, p_strip, p_gt) = {
                     let top = stack.last_mut().unwrap();
                     if !opened_any {
@@ -1037,6 +1037,7 @@ fn dispatch_org_line<'a>(
                 i,
                 hi,
                 body_end,
+                line_has_eol(&lines[i]),
                 end_trie,
                 fence_lines,
                 fence_cursor,
@@ -2246,6 +2247,7 @@ fn headline_split_opener(
     i: usize,
     hi: usize,
     body_end: usize,
+    followed_by_eol: bool,
     end_trie: &EndTrie,
     fence_lines: &[usize],
     fence_cursor: &mut usize,
@@ -2257,7 +2259,7 @@ fn headline_split_opener(
         // CLAMP the `\end{}` scan to THIS body (streaming): an env that closes outside the
         // frame is not a split. At the top level `body_end == input.len()` (no-op there).
         || crate::inline::parse_latex_env(&input[..body_end], content_off, content_off + content.len()).is_some()
-        || quote_opens(content)
+        || quote_opens(content, followed_by_eol)
         || displayed_math_opener(content)
             .and_then(|off| find_displayed_math_close(input, content_off + off, body_end))
             .is_some()
@@ -2592,8 +2594,8 @@ fn verbatim_content(s: &str) -> &str {
     mldoc_trim_spaces_start(rest)
 }
 
-fn quote_opens(s: &str) -> bool {
-    quote_first_line_slice(s).is_some()
+fn quote_opens(s: &str, has_eol: bool) -> bool {
+    quote_first_line_slice(s, has_eol).is_some()
 }
 
 /// A de-`>`'d line content that ENDS an Org blockquote run (it starts a new block:
@@ -2604,19 +2606,23 @@ fn quote_line_breaker(s: &str) -> bool {
 }
 
 /// First line of an Org blockquote — the de-`>`'d opener content as a SUFFIX slice of `s` (no
-/// allocation). mldoc enters the quote by stripping one leading `>` (+ws); the remainder is itself
-/// a body line that drops one MORE `>` (+ws) — i.e. up to TWO `>` on the opener (so N leading `>`
-/// on ONE line ultimately nest ⌈N/2⌉ Quotes). The quote OPENS only if the result is non-empty and
-/// does not start a block construct (a list/heading/`id::` marker makes mldoc reject the quote
-/// entirely, leaving the raw line a Paragraph). This slice is the P3 `>`-frame's `opener_content`.
-fn quote_first_line_slice(s: &str) -> Option<&str> {
+/// allocation). mldoc enters the quote by stripping one leading `>` (`char '>'`), and
+/// `lines_while`'s first item may strip a SECOND `>` followed only by spaces and a real EOL,
+/// yielding an empty first body line (`>>\n`, `> >\n`). Otherwise the de-`>`'d content must be
+/// non-empty and must not start a block construct (a list/heading/`id::` marker makes mldoc reject
+/// the quote entirely, leaving the raw line a Paragraph). This slice is the P3 `>`-frame's
+/// `opener_content`.
+fn quote_first_line_slice(s: &str, has_eol: bool) -> Option<&str> {
     let r1 = mldoc_trim_spaces_start(s).strip_prefix('>')?;
     let r1 = mldoc_trim_spaces_start(r1);
-    let content = match r1.strip_prefix('>') {
-        Some(r2) => mldoc_trim_spaces_start(r2),
-        None => r1,
+    let (content, had_second_gt) = match r1.strip_prefix('>') {
+        Some(r2) => (mldoc_trim_spaces_start(r2), true),
+        None => (r1, false),
     };
-    if content.is_empty() || quote_line_breaker(content) {
+    if content.is_empty() {
+        return (had_second_gt && has_eol).then_some(content);
+    }
+    if quote_line_breaker(content) {
         return None;
     }
     Some(content)

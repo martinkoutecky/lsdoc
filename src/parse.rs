@@ -678,7 +678,7 @@ fn parse_md_streaming<'a>(
                         .unwrap_or("")
                 };
                 let mut opened_any = false;
-                while let Some(inner) = md_quote_first_slice(cur) {
+                while let Some(inner) = md_quote_first_slice(cur, line_has_eol(&lines[i])) {
                     let (p_hi, p_strip, p_gt) = {
                         let top = stack.last_mut().unwrap();
                         if !opened_any {
@@ -1316,7 +1316,7 @@ fn dispatch_md_line<'a>(
         // through the same prefix consume on later iterations. Fires only at the document root
         // (bullets suppressed in every in-block-content body), so `strip == 0` / `content_off` maps
         // straight into `input`. C2.
-        if md_quote_first_slice(content).is_some() {
+        if md_quote_first_slice(content, line_has_eol(&lines[i])).is_some() {
             flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             empty_bullet!();
             lines[i] = Line { start: content_off, end: line_end, text: content, no_strip: false };
@@ -1945,6 +1945,30 @@ fn dispatch_md_line<'a>(
         return Step::Next(ni);
     }
 
+    // 11e. markdown comments (mldoc `Markdown_comment`), after every earlier block/list
+    // construct including definition lists and before Paragraph. Raw HTML has already had first
+    // refusal, so the short `<!--\n-->` family falls through here while f1/f12 stay raw_html.
+    if let Some(comment) = md_comment_capture(lines, i, hi, strip_ctx, t) {
+        drop_marker_ws(para, was_ws_drop, input);
+        // Markdown Comment is not wrapped in `between_eols`, so neither the preceding paragraph
+        // EOL nor the comment line/closer EOL is absorbed.
+        flush_para(out, para, para_buf, para_map, input, false, origin, source_body, origin_cursor);
+        out.push(Block::Comment {
+            text: comment.text,
+            span: Some(Span(comment.span_start, comment.span_end)),
+        });
+        retain_tblfm_line_eol_as_para(
+            &lines[comment.eol_line],
+            para,
+            para_buf,
+            para_map,
+            origin,
+            origin_cursor,
+            remap_spans,
+        );
+        return Step::Next(comment.next);
+    }
+
     // 12. plain line — accumulate into the current paragraph.
     // In remap_spans (strip>0) frames, the content lives in para_buf (viewed, de-indented).
     // Each viewed line is appended with its trailing `\n` so that flush_para's trim_eol=false
@@ -2392,7 +2416,7 @@ fn md_heading_split_opener(
         return true;
     }
     // Block.parse succeeds only for genuinely closed block forms where a closer is required.
-    if md_quote_first_slice(content).is_some() {
+    if md_quote_first_slice(content, followed_by_nl).is_some() {
         return true;
     }
     if let Some(name) = callout_begin(content) {
@@ -2412,6 +2436,100 @@ fn md_heading_split_opener(
     md_footnote_def_start(content)
         .and_then(|(_, body)| md_footnote_body_line(body, followed_by_nl))
         .is_some()
+}
+
+struct MdCommentCapture {
+    text: String,
+    span_start: usize,
+    span_end: usize,
+    eol_line: usize,
+    next: usize,
+}
+
+#[inline]
+fn md_view_abs_start(line: &Line<'_>, view: &str) -> usize {
+    debug_assert!(line.text.ends_with(view));
+    line.start + line.text.len() - view.len()
+}
+
+fn md_comment_capture(
+    lines: &[Line<'_>],
+    i: usize,
+    hi: usize,
+    strip_ctx: StripCtx<'_>,
+    first_view: &str,
+) -> Option<MdCommentCapture> {
+    md_line_comment_capture(lines, i, first_view)
+        .or_else(|| md_html_comment_capture(lines, i, hi, strip_ctx, first_view))
+}
+
+fn md_line_comment_capture(
+    lines: &[Line<'_>],
+    i: usize,
+    first_view: &str,
+) -> Option<MdCommentCapture> {
+    let lead = mldoc_spaces_len(first_view);
+    let body = first_view[lead..].strip_prefix("[//]: #")?;
+    let body = mldoc_trim_spaces_start(body);
+    if body.is_empty() {
+        return None;
+    }
+    crate::metrics::scan_work(body.len());
+    let start = md_view_abs_start(&lines[i], first_view) + lead;
+    Some(MdCommentCapture {
+        text: body.to_string(),
+        span_start: start,
+        span_end: md_view_abs_start(&lines[i], first_view) + first_view.len(),
+        eol_line: i,
+        next: i + 1,
+    })
+}
+
+fn md_html_comment_opener(first_view: &str) -> Option<usize> {
+    let tail = first_view
+        .strip_prefix("<!---")
+        .or_else(|| first_view.strip_prefix("<!--"))?;
+    if !tail.is_empty() {
+        return None;
+    }
+    Some(0)
+}
+
+fn md_html_comment_capture(
+    lines: &[Line<'_>],
+    i: usize,
+    hi: usize,
+    strip_ctx: StripCtx<'_>,
+    first_view: &str,
+) -> Option<MdCommentCapture> {
+    let lead = md_html_comment_opener(first_view)?;
+    if !line_has_eol(&lines[i]) {
+        return None;
+    }
+    let span_start = md_view_abs_start(&lines[i], first_view) + lead;
+    let mut text = String::new();
+    let mut k = i + 1;
+    while k < hi {
+        let view = line_text(lines, k, strip_ctx);
+        if ocaml_trim(view) == "-->" {
+            let close_start = md_view_abs_start(&lines[k], view);
+            return Some(MdCommentCapture {
+                text,
+                span_start,
+                span_end: close_start + view.len(),
+                eol_line: k,
+                next: k + 1,
+            });
+        }
+        crate::metrics::scan_work(view.len());
+        text.push_str(view);
+        if line_has_eol(&lines[k]) {
+            crate::metrics::scan_work(1);
+            text.push('\n');
+        }
+        k += 1;
+    }
+    None
 }
 
 
@@ -2821,18 +2939,22 @@ fn quote_para_trigger(core: &str) -> bool {
 }
 
 /// First line of a markdown blockquote (mldoc `md_blockquote = char '>' *> lines_while …`):
-/// the opener consumes one `>` (`char '>'`) and `lines_while`'s `optional (char '>')` strips a
-/// SECOND — so up to TWO `>` on the opener (N leading `>` nest ⌈N/2⌉ Quotes). Opens only if the
-/// de-`>`'d content is non-empty and does NOT start a new block (`- `/`# `/`id:: `/bare `-`/`#`).
-/// Returns the content as a SUFFIX slice (no alloc) so `build_md_quote` peels in place. F1/F5.
-fn md_quote_first_slice(s: &str) -> Option<&str> {
+/// the opener consumes one `>` (`char '>'`) and `lines_while`'s first item may strip a SECOND
+/// `>` followed only by spaces and eol, yielding an empty first body line (`>>\n`, `> >\n`).
+/// Otherwise the de-`>`'d content must be non-empty and must not start a new block
+/// (`- `/`# `/`id:: `/bare `-`/`#`). Returns the content as a SUFFIX slice (no alloc) so the
+/// streaming driver peels in place. F1/F5.
+fn md_quote_first_slice(s: &str, has_eol: bool) -> Option<&str> {
     let r1 = mldoc_trim_spaces_start(s).strip_prefix('>')?;
     let r1 = mldoc_trim_spaces_start(r1);
-    let content = match r1.strip_prefix('>') {
-        Some(r2) => mldoc_trim_spaces_start(r2),
-        None => r1,
+    let (content, had_second_gt) = match r1.strip_prefix('>') {
+        Some(r2) => (mldoc_trim_spaces_start(r2), true),
+        None => (r1, false),
     };
-    if content.is_empty() || quote_para_trigger(content) {
+    if content.is_empty() {
+        return (had_second_gt && has_eol).then_some(content);
+    }
+    if quote_para_trigger(content) {
         return None;
     }
     Some(content)
