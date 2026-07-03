@@ -1,0 +1,18 @@
+[
+  {"id":"w01","format":"org","input":"#+BEGIN_QUOTE\n    <b>ab</b>\n#+END_QUOTE"},
+  {"id":"w02","format":"org","input":"#+BEGIN_QUOTE\n  <i>ab</i>\n#+END_QUOTE"},
+  {"id":"w03","format":"org","input":"#+BEGIN_QUOTE\n  <em>a</em>\n#+END_QUOTE"},
+  {"id":"w04","format":"org","input":"#+BEGIN_A\n  #+BEGIN_B\n  <b>ab</b>\n  #+END_B\n#+END_A"},
+  {"id":"w05","format":"org","input":"#+BEGIN_QUOTE\r\n  <i>a\r\n  </i>\r\n#+END_QUOTE"},
+  {"id":"w06","format":"org","input":"#+BEGIN_QUOTE\n\t<b>ab</b>\n\t\n\tx\n#+END_QUOTE"},
+  {"id":"w07","format":"org","input":"#+BEGIN_QUOTE\n  <b>a</b>\ttail\n#+END_QUOTE"},
+  {"id":"w08","format":"org","input":"#+BEGIN_QUOTE\n  <b>ab</b>"},
+  {"id":"w09","format":"org","input":"#+BEGIN_QUOTE\n\n  x\n#+END_QUOTE"},
+  {"id":"w10","format":"org","input":"#+BEGIN_QUOTE\n  \n  <b>ab</b>\n#+END_QUOTE"},
+  {"id":"w11","format":"markdown","input":"- #+BEGIN_NOTE\n  <hr><hr/>\n  #+END_NOTE"},
+  {"id":"w12","format":"markdown","input":"- #+BEGIN_NOTE\n  <b>a</b> t\n  \n  u\n  #+END_NOTE"},
+  {"id":"w13","format":"org","input":"#+BEGIN_QUOTE\n  <b>a</B>x\n#+END_QUOTE"},
+  {"id":"w14","format":"org","input":"#+BEGIN_QUOTE\n   a\n  \n   x\n#+END_QUOTE"},
+  {"id":"w15","format":"org","input":"#+BEGIN_QUOTE\n  <b>a\n  b\n  c</b> tail\n#+END_QUOTE"},
+  {"id":"w16","format":"markdown","input":"> <b>ab</b>\n> x"}
+]

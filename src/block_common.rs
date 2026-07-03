@@ -38,6 +38,23 @@ pub(crate) struct Line<'a> {
     pub(crate) start: usize, // byte offset of line start
     pub(crate) end: usize,   // byte offset just past the trailing '\n' (or EOF)
     pub(crate) text: &'a str, // line content WITHOUT the trailing '\n'
+    /// Synthetic mid-line remainders have already passed the frame's clear-indent point.
+    /// Re-dispatch must see them verbatim, not through the enclosing strip view.
+    pub(crate) no_strip: bool,
+}
+
+impl<'a> Line<'a> {
+    pub(crate) fn viewed_text(&self, strip: usize) -> &'a str {
+        if self.no_strip {
+            self.text
+        } else {
+            crate::org::strip_view(self.text, strip)
+        }
+    }
+
+    fn has_eol(&self) -> bool {
+        self.end > self.start + self.text.len()
+    }
 }
 
 /// The Logseq task markers (mldoc `marker` set), matched as a leading whole word on a
@@ -80,7 +97,7 @@ pub(crate) fn split_lines(input: &str) -> Vec<Line<'_>> {
         } else {
             j
         };
-        lines.push(Line { start, end, text: &input[start..content_end] });
+        lines.push(Line { start, end, text: &input[start..content_end], no_strip: false });
         i = end;
     }
     lines
@@ -539,7 +556,7 @@ mod raw_html_index_tests {
     }
 
     fn legacy_attempt(input: &str, opener: usize, body_end: usize) -> RawHtmlAttempt {
-        parse_raw_html_impl(input, opener, body_end, None)
+        parse_raw_html_impl(input, opener, body_end, None, true)
     }
 
     fn assert_cached_matches_legacy(input: &str, openers: &[usize], body_ends: &[usize]) {
@@ -549,7 +566,7 @@ mod raw_html_index_tests {
                 if opener >= body_end || body_end > input.len() {
                     continue;
                 }
-                let cached = parse_raw_html_impl(input, opener, body_end, Some(&mut state));
+                let cached = parse_raw_html_impl(input, opener, body_end, Some(&mut state), true);
                 let legacy = legacy_attempt(input, opener, body_end);
                 assert_eq!(cached, legacy, "input={input:?} opener={opener} body_end={body_end}");
             }
@@ -582,7 +599,7 @@ mod raw_html_index_tests {
         assert_eq!(idx.matching_close_event(outer.event_rank), RAW_HTML_NO_NSE);
         let mut state = RawHtmlScan::new();
         assert_eq!(
-            parse_raw_html_impl(equal_prefix, 0, equal_prefix.len(), Some(&mut state)),
+            parse_raw_html_impl(equal_prefix, 0, equal_prefix.len(), Some(&mut state), true),
             RawHtmlAttempt::Miss(RawHtmlMiss::UnbalancedTag)
         );
 
@@ -795,8 +812,9 @@ fn parse_raw_html_impl(
     opener: usize,
     body_end: usize,
     state: Option<&mut RawHtmlScan>,
+    require_peek: bool,
 ) -> RawHtmlAttempt {
-    let Some(head) = raw_html_head_at(input, opener, body_end, true) else {
+    let Some(head) = raw_html_head_at(input, opener, body_end, require_peek) else {
         return RawHtmlAttempt::Miss(RawHtmlMiss::NoGrammar);
     };
     match head {
@@ -866,17 +884,18 @@ fn parse_raw_html_impl(
     }
 }
 
-pub(crate) fn parse_raw_html_at_cached(
+fn parse_raw_html_at_cached_with_gate(
     input: &str,
     opener: usize,
     body_end: usize,
     state: Option<&mut RawHtmlScan>,
+    require_peek: bool,
 ) -> Option<RawHtmlExtent> {
     if opener > body_end || body_end > input.len() {
         return None;
     }
     let mut state = state;
-    let head = raw_html_head_at(input, opener, body_end, true)?;
+    let head = raw_html_head_at(input, opener, body_end, require_peek)?;
     if let Some(s) = state.as_deref() {
         match head {
             RawHtmlHead::Tag { index, .. } if s.no_tag_end_until[index] >= body_end => return None,
@@ -884,7 +903,7 @@ pub(crate) fn parse_raw_html_at_cached(
             _ => {}
         }
     }
-    match parse_raw_html_impl(input, opener, body_end, state.as_deref_mut()) {
+    match parse_raw_html_impl(input, opener, body_end, state.as_deref_mut(), require_peek) {
         RawHtmlAttempt::Match(extent) => Some(extent),
         RawHtmlAttempt::Miss(RawHtmlMiss::MissingTagCloser { index }) => {
             if let Some(s) = state.as_deref_mut() {
@@ -900,6 +919,24 @@ pub(crate) fn parse_raw_html_at_cached(
         }
         RawHtmlAttempt::Miss(_) => None,
     }
+}
+
+pub(crate) fn parse_raw_html_at_cached(
+    input: &str,
+    opener: usize,
+    body_end: usize,
+    state: Option<&mut RawHtmlScan>,
+) -> Option<RawHtmlExtent> {
+    parse_raw_html_at_cached_with_gate(input, opener, body_end, state, true)
+}
+
+fn parse_raw_html_at_cached_after_view_peek(
+    input: &str,
+    opener: usize,
+    body_end: usize,
+    state: Option<&mut RawHtmlScan>,
+) -> Option<RawHtmlExtent> {
+    parse_raw_html_at_cached_with_gate(input, opener, body_end, state, false)
 }
 
 pub(crate) fn raw_html_end_at(
@@ -1024,13 +1061,15 @@ fn view_tail_has_peek(
     opener_off: usize,
 ) -> bool {
     let mut seen = first_view.len().saturating_sub(opener_off).min(10);
+    if seen < 10 && lines[cur].has_eol() {
+        seen += 1;
+    }
     let mut k = cur + 1;
     while seen < 10 && k < hi {
-        seen += 1; // view line join
-        if seen >= 10 {
-            break;
+        seen = (seen + lines[k].viewed_text(strip).len()).min(10);
+        if seen < 10 && lines[k].has_eol() {
+            seen += 1;
         }
-        seen = (seen + crate::org::strip_view(lines[k].text, strip).len()).min(10);
         k += 1;
     }
     seen >= 10
@@ -1096,7 +1135,7 @@ pub(crate) fn raw_html_view_capture<'a>(
     let opener = line_view_abs_start(&lines[cur], first_view) + opener_off;
     let view_body_raw_end = lines[hi - 1].start + lines[hi - 1].text.len();
     debug_assert!(view_body_raw_end <= body_end);
-    let close_end = parse_raw_html_at_cached(input, opener, view_body_raw_end, Some(state))?.end;
+    let close_end = parse_raw_html_at_cached_after_view_peek(input, opener, view_body_raw_end, Some(state))?.end;
     let mut close_line = cur;
     while close_line < hi && lines[close_line].start + lines[close_line].text.len() < close_end {
         close_line += 1;
@@ -1107,7 +1146,7 @@ pub(crate) fn raw_html_view_capture<'a>(
     let close_view = if close_line == cur {
         first_view
     } else {
-        crate::org::strip_view(lines[close_line].text, strip)
+        lines[close_line].viewed_text(strip)
     };
     let close_view_start = line_view_abs_start(&lines[close_line], close_view);
     if close_end < close_view_start || close_end > close_view_start + close_view.len() {
@@ -1124,7 +1163,7 @@ pub(crate) fn raw_html_view_capture<'a>(
         push_capture_str(&mut text, &first_view[opener_off..]);
         for line_idx in cur + 1..close_line {
             push_capture_joiner(&mut text);
-            push_capture_str(&mut text, crate::org::strip_view(lines[line_idx].text, strip));
+            push_capture_str(&mut text, lines[line_idx].viewed_text(strip));
         }
         push_capture_joiner(&mut text);
         push_capture_str(&mut text, &close_view[..close_end_in_line]);

@@ -67,12 +67,12 @@ pub fn parse(input: &str) -> Vec<Block> {
     parse_md_streaming(input, false, false, None, input)
 }
 
-/// Per-line de-indent view reused from org.rs: `pub(crate) strip_view` strips `strip` bytes
-/// of leading ASCII whitespace from `text`. See `crate::org::strip_view` for the full spec and
-/// the composition proof (strip_view(strip_view(t,A),B) == strip_view(t,A+B)).
+/// Per-line de-indent view reused from org.rs. Synthetic mid-line remainders bypass the strip:
+/// in mldoc they continue inside the same already-cleared body string, so the tail's leading
+/// bytes are paragraph content, not a fresh line indent.
 #[inline]
 fn line_text<'a>(lines: &[crate::block_common::Line<'a>], k: usize, strip: usize) -> &'a str {
-    crate::org::strip_view(lines[k].text, strip)
+    lines[k].viewed_text(strip)
 }
 
 /// Peel `n` blockquote `>`-levels off `s` (CONTINUATION semantics: `trim_start` then strip one
@@ -106,7 +106,7 @@ fn line_has_eol(line: &Line) -> bool {
 /// `>`, or a de-`>`'d breaker) ⇒ the `>`-frame closes. `gt_level >= 1` (only `>`-frames call this).
 fn gt_cont_line_view<'a>(line: &Line<'a>, strip: usize, gt_level: usize) -> Option<&'a str> {
     md_quote_cont_line_slice(
-        gt_peel(crate::org::strip_view(line.text, strip), gt_level - 1),
+        gt_peel(line.viewed_text(strip), gt_level - 1),
         line_has_eol(line),
     )
 }
@@ -379,7 +379,7 @@ fn parse_md_streaming<'a>(
         // there are open `>`-frames OR the line might open one; a plain non-`>` line at a hard frame
         // skips to a normal dispatch (`view = None`).
         let strip = stack.last().unwrap().strip;
-        let line2 = crate::org::strip_view(lines[i].text, strip);
+        let line2 = line_text(&lines, i, strip);
         let scanned = stack.last().unwrap().gt_level > 0 || line2.trim_start().starts_with('>');
 
         let (dispatch_view, gt_level_disp): (Option<&str>, usize) = if scanned {
@@ -1060,7 +1060,7 @@ fn dispatch_md_line<'a>(
         if md_quote_first_slice(content).is_some() {
             flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             empty_bullet!();
-            lines[i] = Line { start: content_off, end: line_end, text: content };
+            lines[i] = Line { start: content_off, end: line_end, text: content, no_strip: false };
             return Step::Next(i);
         }
         // (c) property line on the bullet line (mldoc heading0.ml: the title is a
@@ -1103,7 +1103,7 @@ fn dispatch_md_line<'a>(
         {
             flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             empty_bullet!();
-            lines[i] = Line { start: content_off, end: line_end, text: content };
+            lines[i] = Line { start: content_off, end: line_end, text: content, no_strip: false };
             return Step::Next(i);
         }
         // (f) raw-HTML opener (mldoc Raw_html.parse: known tags/special forms may span lines).
@@ -1117,7 +1117,12 @@ fn dispatch_md_line<'a>(
                     span: Some(Span(cap.span_start, cap.span_end)),
                 });
                 if let Some((ri, start, content_end)) = cap.rewrite {
-                    lines[ri] = Line { start, end: lines[ri].end, text: &input[start..content_end] };
+                    lines[ri] = Line {
+                        start,
+                        end: lines[ri].end,
+                        text: &input[start..content_end],
+                        no_strip: true,
+                    };
                 }
                 return Step::Next(cap.next);
             }
@@ -1348,7 +1353,12 @@ fn dispatch_md_line<'a>(
             });
             captured = true;
             if let Some((ri, start, content_end)) = cap.rewrite {
-                lines[ri] = Line { start, end: lines[ri].end, text: &input[start..content_end] };
+                lines[ri] = Line {
+                    start,
+                    end: lines[ri].end,
+                    text: &input[start..content_end],
+                    no_strip: true,
+                };
                 rewritten_line = Some(ri);
             } else {
                 rewritten_line = None;
@@ -1400,7 +1410,12 @@ fn dispatch_md_line<'a>(
             });
             captured = true;
             if let Some((ri, start, content_end)) = cap.rewrite {
-                lines[ri] = Line { start, end: lines[ri].end, text: &input[start..content_end] };
+                lines[ri] = Line {
+                    start,
+                    end: lines[ri].end,
+                    text: &input[start..content_end],
+                    no_strip: false,
+                };
                 rewritten_line = Some(ri);
             } else {
                 rewritten_line = None;
@@ -1560,6 +1575,7 @@ fn dispatch_md_line<'a>(
                     start: resume,
                     end: lines[ri].end,
                     text: &input[resume..content_end],
+                    no_strip: false,
                 };
             }
             cur = ri;
@@ -1785,6 +1801,10 @@ fn flush_para(
                 buf.pop();
             }
             para_map.truncate_text_len(buf.len());
+            if buf.is_empty() {
+                para_map.clear();
+                return;
+            }
         }
         let mut para_map_cursor = OriginCursor::new();
         let inline = stub_inline_mapped(
@@ -1803,6 +1823,9 @@ fn flush_para(
         if trim_eol {
             while e > s && matches!(input.as_bytes()[e - 1], b'\n' | b'\r') {
                 e -= 1;
+            }
+            if e == s {
+                return;
             }
         }
         out.push(Block::Paragraph {

@@ -248,13 +248,17 @@ fn raw_html_block_escapes_into_data_raw() {
 
 #[test]
 fn raw_html_view_capture_preserves_view_peek_horizon() {
-    let blocks = lsdoc::parse("#+BEGIN_QUOTE\n  <b>ab</b>\n#+END_QUOTE", "org");
-    match &blocks[..] {
-        [Block::Quote { children, .. }] => {
-            assert!(matches!(&children[..], [Block::Paragraph { .. }]));
-        }
-        other => panic!("expected an org quote, got {other:?}"),
-    }
+    let short = lsdoc::parse("#+BEGIN_QUOTE\n  <b>a</b>\n#+END_QUOTE", "org");
+    assert!(matches!(
+        &short[..],
+        [Block::Quote { children, .. }] if matches!(&children[..], [Block::Paragraph { .. }])
+    ));
+
+    let enough_with_virtual_eol = lsdoc::parse("#+BEGIN_QUOTE\n  <b>ab</b>\n#+END_QUOTE", "org");
+    assert!(matches!(
+        &enough_with_virtual_eol[..],
+        [Block::Quote { children, .. }] if matches!(&children[..], [Block::RawHtml { text, .. }] if text == "<b>ab</b>")
+    ));
 }
 
 // ===========================================================================

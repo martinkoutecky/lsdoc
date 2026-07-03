@@ -131,17 +131,21 @@ fn block_absorbs(b: &Block) -> bool {
     )
 }
 
-/// Per-line de-indent view: equivalent to `block_code_texts` applied to ONE line, O(1), no
-/// alloc. `strip` = the cumulative first-line indent cleared by all ancestor frames. Leading
-/// ws are ASCII (space/tab) ⇒ byte-safe. Composition:
-/// `strip_view(strip_view(t, A), B) == strip_view(t, A+B)` for all t, A, B (see spec).
+/// Per-line de-indent view: equivalent to mldoc's clear-indents map on ONE line, O(1), no
+/// alloc. `strip` = the cumulative first-line indent cleared by ancestor frames. Leading ws are
+/// ASCII (space/tab) ⇒ byte-safe. Matches mldoc's `safe_sub` quirk: an all-ws line whose length
+/// is exactly `strip` is returned unchanged rather than sliced to `""`.
 pub(crate) fn strip_view(text: &str, strip: usize) -> &str {
     if strip == 0 {
         return text;
     }
     let lw = leading_ws(text);
     if lw >= strip {
-        &text[strip..]
+        if text.len() > strip {
+            &text[strip..]
+        } else {
+            text
+        }
     } else if text.trim().is_empty() {
         text
     } else {
@@ -152,7 +156,7 @@ pub(crate) fn strip_view(text: &str, strip: usize) -> &str {
 /// View line `k` through the cumulative de-indent `strip` (no-op fast path when strip == 0).
 #[inline]
 fn line_text<'a>(lines: &[Line<'a>], k: usize, strip: usize) -> &'a str {
-    strip_view(lines[k].text, strip)
+    lines[k].viewed_text(strip)
 }
 
 /// Peel `n` blockquote `>`-levels off `s` (CONTINUATION semantics: each level is `trim_start`
@@ -187,7 +191,7 @@ fn line_has_eol(line: &Line) -> bool {
 /// bare `>`, or a de-`>`'d breaker) ⇒ the `>`-frame closes. `gt_level >= 1`.
 fn gt_cont_line_view<'a>(line: &Line<'a>, strip: usize, gt_level: usize) -> Option<&'a str> {
     quote_line_content_line_slice(
-        gt_peel(strip_view(line.text, strip), gt_level - 1),
+        gt_peel(line.viewed_text(strip), gt_level - 1),
         line_has_eol(line),
     )
 }
@@ -486,7 +490,7 @@ fn parse_org_streaming<'a>(
         // line. Run the walk iff there are open `>`-frames OR the line might open one; a plain non-`>`
         // line at a hard frame skips to a normal dispatch (`view = None`).
         let strip = stack.last().unwrap().strip;
-        let line2 = strip_view(lines[i].text, strip);
+        let line2 = line_text(&lines, i, strip);
         let scanned = stack.last().unwrap().gt_level > 0 || line2.trim_start().starts_with('>');
 
         let (dispatch_view, gt_level_disp): (Option<&str>, usize) = if scanned {
@@ -1042,6 +1046,7 @@ fn dispatch_org_line<'a>(
                 start: content_off,
                 end: line_end,
                 text: content,
+                no_strip: false,
             };
             *absorb = false;
             return Step::Next(i);
@@ -1369,6 +1374,7 @@ fn dispatch_org_line<'a>(
                     start,
                     end: lines[ri].end,
                     text: &input[start..content_end],
+                    no_strip: false,
                 };
                 rewritten_line = Some(ri);
             } else {
@@ -1430,6 +1436,7 @@ fn dispatch_org_line<'a>(
                     start,
                     end: lines[ri].end,
                     text: &input[start..content_end],
+                    no_strip: true,
                 };
                 rewritten_line = Some(ri);
             } else {
@@ -1626,6 +1633,7 @@ fn dispatch_org_line<'a>(
                     start: resume,
                     end: lines[ri].end,
                     text: &input[resume..content_end],
+                    no_strip: false,
                 };
             }
             cur = ri;
@@ -1807,6 +1815,10 @@ fn flush_para(
                 buf.pop();
             }
             para_map.truncate_text_len(buf.len());
+            if buf.is_empty() {
+                para_map.clear();
+                return;
+            }
         }
         let mut para_map_cursor = OriginCursor::new();
         let inline = org_inline_mapped(
@@ -1828,6 +1840,9 @@ fn flush_para(
         if trim_eol {
             while e > s && matches!(input.as_bytes()[e - 1], b'\n' | b'\r') {
                 e -= 1;
+            }
+            if e == s {
+                return;
             }
         }
         out.push(Block::Paragraph {
@@ -2032,6 +2047,7 @@ fn org_parse1_properties<'a>(
             start: spill_abs,
             end: lines[close].end,
             text: &input[spill_abs..content_end],
+            no_strip: false,
         };
         Some(OrgParse1 {
             props,

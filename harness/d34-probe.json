@@ -1,0 +1,18 @@
+[
+  {"id":"i10","format":"org","input":"#+BEGIN_QUOTE\n  <b>a</b>x\n#+END_QUOTE"},
+  {"id":"i11","format":"org","input":"#+BEGIN_QUOTE\n   <b>ab</b>\n#+END_QUOTE"},
+  {"id":"h01","format":"org","input":"#+BEGIN_QUOTE\n  <b>a</b>\n#+END_QUOTE"},
+  {"id":"h02","format":"org","input":"#+BEGIN_QUOTE\n  <b>ab</b>\n#+END_QUOTE"},
+  {"id":"c04","format":"org","input":"#+BEGIN_QUOTE\r\n  <b>ab</b>\r\n#+END_QUOTE"},
+  {"id":"c01","format":"org","input":"#+BEGIN_QUOTE\n  <b>ab</b>\n    \n  x\n#+END_QUOTE"},
+  {"id":"c05","format":"org","input":"#+BEGIN_QUOTE\n  a\n  \n  x\n#+END_QUOTE"},
+  {"id":"c07","format":"markdown","input":"- #+BEGIN_NOTE\n  a\n  \n  x\n  #+END_NOTE"},
+  {"id":"c06","format":"org","input":"#+BEGIN_QUOTE\n\n  <b>ab</b>\n#+END_QUOTE"},
+  {"id":"eof01","format":"org","input":"#+BEGIN_QUOTE\n  <b>ab</b>"},
+  {"id":"eof02","format":"org","input":"#+BEGIN_QUOTE\n  <b>abc</b>"},
+  {"id":"m01","format":"markdown","input":"- #+BEGIN_NOTE\n  <b>a</b>x\n  #+END_NOTE"},
+  {"id":"t01","format":"org","input":"#+BEGIN_QUOTE\n\t<b>ab</b>\n\t\n\tx\n#+END_QUOTE"},
+  {"id":"c06m","format":"markdown","input":"- #+BEGIN_NOTE\n\n  <b>ab</b>\n  #+END_NOTE"},
+  {"id":"c06p","format":"org","input":"#+BEGIN_QUOTE\n\n  x\n#+END_QUOTE"},
+  {"id":"c06pm","format":"markdown","input":"- #+BEGIN_NOTE\n\n  x\n  #+END_NOTE"}
+]
