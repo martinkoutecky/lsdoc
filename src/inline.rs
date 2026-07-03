@@ -21,6 +21,7 @@
 
 use crate::projection::{Inline, Span, Url};
 use crate::source_map::OriginSegment;
+use std::ops::Range;
 
 /// Byte offset of `sub` within `parent` (both must share the same backing buffer — `sub`
 /// is a sub-slice of `parent`). Used to recover the absolute base for a sub-slice inline
@@ -678,6 +679,7 @@ fn reparse_tag_name(
     let mut plain = String::new();
     let mut plain_start = 0usize;
     let mut plain_end = 0usize;
+    let mut md_link_scan = MdLinkScan::new();
 
     macro_rules! push_plain_raw {
         ($local_start:expr, $local_end:expr) => {{
@@ -717,7 +719,9 @@ fn reparse_tag_name(
         }
         if b[i] == b'[' {
             let parsed = match format {
-                TagReparse::Markdown => try_nested_link_or_link_md_tag(tag, i, tag_base),
+                TagReparse::Markdown => {
+                    try_nested_link_or_link_md_tag(tag, i, tag_base, &mut md_link_scan)
+                }
                 TagReparse::Org => crate::org_resolver::try_nested_link_or_link_org(tag, b, i, tag_base),
             };
             if let Some((node, next)) = parsed {
@@ -755,7 +759,12 @@ fn tag_plain(raw: &str, abs_start: usize, abs_end: usize, unescape_plain: bool) 
     }
 }
 
-fn try_nested_link_or_link_md_tag(s: &str, at: usize, base: usize) -> Option<(Inline, usize)> {
+fn try_nested_link_or_link_md_tag(
+    s: &str,
+    at: usize,
+    base: usize,
+    scan: &mut MdLinkScan,
+) -> Option<(Inline, usize)> {
     if s[at..].starts_with("[[") {
         if let Some((end, content)) = parse_nested_link(s, at) {
             return Some((Inline::NestedLink { content, span: Some(Span(base + at, base + end)) }, end));
@@ -775,7 +784,7 @@ fn try_nested_link_or_link_md_tag(s: &str, at: usize, base: usize) -> Option<(In
             ));
         }
     }
-    let (mut node, end) = md_link(s, at, false, base)?;
+    let (mut node, end) = md_link_with_scan(s, at, false, base, scan)?;
     crate::projection::set_inline_span(&mut node, Some(Span(base + at, base + end)));
     Some((node, end))
 }
@@ -972,28 +981,269 @@ struct MdLink {
     end: usize,
 }
 
+const MD_LINK_NONE: usize = usize::MAX;
+
+pub(crate) struct MdLinkScan {
+    source_len: Option<usize>,
+    label_brackets: Option<BalancedEndTable>,
+    url_parens: Option<BalancedEndTable>,
+    page_refs: Option<Vec<usize>>,
+    code_spans: Option<Vec<usize>>,
+}
+
+impl MdLinkScan {
+    pub(crate) fn new() -> Self {
+        Self {
+            source_len: None,
+            label_brackets: None,
+            url_parens: None,
+            page_refs: None,
+            code_spans: None,
+        }
+    }
+
+    fn check_source(&mut self, s: &str) {
+        match self.source_len {
+            Some(len) => debug_assert_eq!(len, s.len()),
+            None => self.source_len = Some(s.len()),
+        }
+    }
+
+    fn label_bracket_end(&mut self, s: &str, at: usize) -> usize {
+        self.check_source(s);
+        self.label_brackets
+            .get_or_insert_with(|| BalancedEndTable::build(s, b'[', b']', b"[]", b"", b""))
+            .end(at)
+    }
+
+    fn url_paren_end(&mut self, s: &str, at: usize) -> usize {
+        self.check_source(s);
+        self.url_parens
+            .get_or_insert_with(|| BalancedEndTable::build(s, b'(', b')', b"()", b"\r\n", b""))
+            .end(at)
+    }
+
+    fn page_ref_end(&mut self, s: &str, at: usize) -> Option<usize> {
+        self.check_source(s);
+        let ends = self.page_refs.get_or_insert_with(|| build_page_ref_ends(s));
+        let end = ends.get(at).copied().unwrap_or(MD_LINK_NONE);
+        (end != MD_LINK_NONE).then_some(end)
+    }
+
+    fn code_span_end(&mut self, s: &str, at: usize) -> Option<usize> {
+        self.check_source(s);
+        let ends = self.code_spans.get_or_insert_with(|| build_code_span_ends(s));
+        let end = ends.get(at).copied().unwrap_or(MD_LINK_NONE);
+        (end != MD_LINK_NONE).then_some(end)
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BalancedToken {
+    Other,
+    Stop,
+    Left,
+    Right,
+}
+
+struct BalancedEndTable {
+    end: Vec<usize>,
+}
+
+impl BalancedEndTable {
+    fn build(
+        s: &str,
+        left: u8,
+        right: u8,
+        escape_chars: &[u8],
+        other_delims: &[u8],
+        excluded_ending_chars: &[u8],
+    ) -> Self {
+        let b = s.as_bytes();
+        let n = b.len();
+        let mut kind = vec![BalancedToken::Other; n];
+        let mut next = vec![n; n];
+
+        for i in 0..n {
+            let c = b[i];
+            if other_delims.contains(&c) {
+                kind[i] = BalancedToken::Stop;
+                next[i] = (i + 1).min(n);
+                continue;
+            }
+            if excluded_ending_chars.contains(&c) {
+                let remain = n - i;
+                if remain < 2 || b.get(i + 1).is_some_and(|c2| other_delims.contains(c2)) {
+                    kind[i] = BalancedToken::Stop;
+                    next[i] = (i + 1).min(n);
+                } else {
+                    next[i] = i + 1;
+                }
+                continue;
+            }
+            if c == left {
+                kind[i] = BalancedToken::Left;
+                next[i] = i + 1;
+                continue;
+            }
+            if c == right {
+                kind[i] = BalancedToken::Right;
+                next[i] = i + 1;
+                continue;
+            }
+            if c == b'\\' {
+                let mut ni = i + 1;
+                if ni < n {
+                    let escaped = b[ni];
+                    let next_plain = !other_delims.contains(&escaped)
+                        && !excluded_ending_chars.contains(&escaped)
+                        && escaped != left
+                        && escaped != right;
+                    if escape_chars.contains(&escaped) || next_plain {
+                        ni = (ni + char_len(escaped)).min(n);
+                    }
+                }
+                next[i] = ni;
+                continue;
+            }
+            next[i] = (i + char_len(c)).min(n);
+        }
+
+        let mut end = vec![n; n + 1];
+        for i in (0..n).rev() {
+            end[i] = match kind[i] {
+                BalancedToken::Stop | BalancedToken::Right => i,
+                BalancedToken::Other => end[next[i]],
+                BalancedToken::Left => {
+                    let r = end[next[i]];
+                    if r < n && kind[r] == BalancedToken::Right {
+                        end[next[r]]
+                    } else {
+                        r
+                    }
+                }
+            };
+        }
+        crate::metrics::scan_work(n);
+        Self { end }
+    }
+
+    fn end(&self, at: usize) -> usize {
+        crate::metrics::scan_work(1);
+        self.end.get(at).copied().unwrap_or_else(|| self.end.len().saturating_sub(1))
+    }
+}
+
+fn build_page_ref_ends(s: &str) -> Vec<usize> {
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut first_close_or_stop = vec![n; n + 2];
+    for i in (0..n).rev() {
+        let c = b[i];
+        first_close_or_stop[i] = if c == b'\n' || c == b'\r' {
+            i
+        } else if c == b'\\' && i + 1 < n {
+            first_close_or_stop[(i + 2).min(n)]
+        } else if c == b']' && i + 1 < n && b[i + 1] == b']' {
+            i
+        } else {
+            first_close_or_stop[(i + char_len(c)).min(n)]
+        };
+    }
+
+    let mut out = vec![MD_LINK_NONE; n];
+    for i in 0..n.saturating_sub(1) {
+        if b[i] != b'[' || b[i + 1] != b'[' {
+            continue;
+        }
+        let name_start = i + 2;
+        let close = first_close_or_stop[name_start.min(n)];
+        if close > name_start && close + 1 < n && b[close] == b']' && b[close + 1] == b']' {
+            out[i] = close + 2;
+        }
+    }
+    crate::metrics::scan_work(n);
+    out
+}
+
+fn build_code_span_ends(s: &str) -> Vec<usize> {
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut next_backtick = vec![n; n + 1];
+    let mut next_eol = vec![n; n + 1];
+    let mut next_double = vec![n; n + 1];
+    for i in (0..n).rev() {
+        next_backtick[i] = if b[i] == b'`' { i } else { next_backtick[i + 1] };
+        next_eol[i] = if b[i] == b'\n' || b[i] == b'\r' { i } else { next_eol[i + 1] };
+        next_double[i] = if i + 1 < n && b[i] == b'`' && b[i + 1] == b'`' {
+            i
+        } else {
+            next_double[i + 1]
+        };
+    }
+
+    let mut out = vec![MD_LINK_NONE; n];
+    for pos in 0..n {
+        if b[pos] != b'`' {
+            continue;
+        }
+        if b.get(pos + 1) == Some(&b'`') {
+            let start = (pos + 2).min(n);
+            let close = next_double[start];
+            if close < n {
+                out[pos] = close + 2;
+            }
+        } else {
+            let start = (pos + 1).min(n);
+            let close = next_backtick[start];
+            if close > start && close < next_eol[start] {
+                out[pos] = close + 1;
+            }
+        }
+    }
+    crate::metrics::scan_work(n);
+    out
+}
+
 /// Resolver entry for mldoc `markdown_link` / `markdown_image`
 /// (`lib/syntax/inline.ml:723-890,1138-1160`). `at` points at the `[`; when
 /// `image` is true the caller consumed the leading `!` at `at - 1`.
 /// `base` is the absolute byte offset of `s` in the block body (for label-child spans).
 pub(crate) fn md_link(s: &str, at: usize, image: bool, base: usize) -> Option<(Inline, usize)> {
-    parse_md_link(s, at, image, base).map(|l| (l.node, l.end))
+    let mut scan = MdLinkScan::new();
+    md_link_with_scan(s, at, image, base, &mut scan)
 }
 
-fn parse_md_link(s: &str, at: usize, image: bool, base: usize) -> Option<MdLink> {
+pub(crate) fn md_link_with_scan(
+    s: &str,
+    at: usize,
+    image: bool,
+    base: usize,
+    scan: &mut MdLinkScan,
+) -> Option<(Inline, usize)> {
+    parse_md_link(s, at, image, base, scan).map(|l| (l.node, l.end))
+}
+
+fn parse_md_link(
+    s: &str,
+    at: usize,
+    image: bool,
+    base: usize,
+    scan: &mut MdLinkScan,
+) -> Option<MdLink> {
     if image {
-        if let Some(link) = markdown_embed_image(s, at, base) {
+        if let Some(link) = markdown_embed_image(s, at, base, scan) {
             return Some(link);
         }
     }
-    markdown_link(s, at, image, base)
+    markdown_link(s, at, image, base, scan)
 }
 
 /// mldoc `markdown_embed_image` (`syntax/inline.ml:1138-1152`): this branch is
 /// first and separate from `markdown_link`, so `data:` payloads do not go through
 /// URL-piece parsing or title parsing.
-fn markdown_embed_image(s: &str, at: usize, base: usize) -> Option<MdLink> {
-    let label = label_part(s, at, base, false)?;
+fn markdown_embed_image(s: &str, at: usize, base: usize, scan: &mut MdLinkScan) -> Option<MdLink> {
+    let label = label_part(s, at, base, false, scan)?;
     let b = s.as_bytes();
     let data_start = label.url_start;
     if !s[data_start..].starts_with("data:") {
@@ -1010,6 +1260,7 @@ fn markdown_embed_image(s: &str, at: usize, base: usize) -> Option<MdLink> {
         return None;
     }
     let data = s[data_start..j].to_string();
+    crate::metrics::scan_work(data.len());
     let mut end = j + 1;
     let metadata = read_metadata(s, b, &mut end);
     let full = format!("![{}]({}){}", label.label_text, data, metadata);
@@ -1028,9 +1279,17 @@ fn markdown_embed_image(s: &str, at: usize, base: usize) -> Option<MdLink> {
 }
 
 /// mldoc `markdown_link` (`syntax/inline.ml:822-890`).
-fn markdown_link(s: &str, at: usize, image: bool, base: usize) -> Option<MdLink> {
-    let label = label_part(s, at, base, true)?;
-    let (url_text, after_url) = link_url_part(s, label.url_start)?;
+fn markdown_link(
+    s: &str,
+    at: usize,
+    image: bool,
+    base: usize,
+    scan: &mut MdLinkScan,
+) -> Option<MdLink> {
+    let label = label_part(s, at, base, true, scan)?;
+    let (url_range, after_url) = link_url_part_range(s, label.url_start, scan)?;
+    let url_text = s[url_range.clone()].to_string();
+    crate::metrics::scan_work(url_range.len());
     let mut end = after_url;
     let metadata = read_metadata(s, s.as_bytes(), &mut end);
     let (link_type, url_value, title) = link_url_part_inner(&url_text)
@@ -1059,30 +1318,96 @@ struct MdLabelPart {
 }
 
 /// mldoc `label_part` / `label_part_choices` (`syntax/inline.ml:735-770`).
-fn label_part(s: &str, at: usize, base: usize, reparse_plain: bool) -> Option<MdLabelPart> {
+fn label_part(
+    s: &str,
+    at: usize,
+    base: usize,
+    reparse_plain: bool,
+    scan: &mut MdLinkScan,
+) -> Option<MdLabelPart> {
+    let url_start = label_part_url_start(s, at, scan)?;
+    let delimiter = url_start.checked_sub(2)?;
+    let raw_nodes = materialize_label_part(s, at, delimiter, base, scan)?;
+    let label_text = label_text_for_full(&raw_nodes);
+    let label = finish_markdown_label(raw_nodes, reparse_plain);
+    Some(MdLabelPart { label, label_text, url_start })
+}
+
+fn label_part_url_start(s: &str, at: usize, scan: &mut MdLinkScan) -> Option<usize> {
     let b = s.as_bytes();
     let n = b.len();
     if s[at..].starts_with("[](") {
-        return Some(MdLabelPart { label: vec![], label_text: String::new(), url_start: at + 3 });
+        return Some(at + 3);
     }
     let mut j = at + 1;
-    let mut raw_nodes: Vec<Inline> = Vec::new();
     while j < n {
         if s[j..].starts_with("](") {
-            let label_text = label_text_for_full(&raw_nodes);
-            let label = finish_markdown_label(raw_nodes, reparse_plain);
-            return Some(MdLabelPart { label, label_text, url_start: j + 2 });
+            return Some(j + 2);
         }
         let c = b[j];
         if let Some(end) = take_while1_include_backslash_len(s, j, b"[]", |c| {
             c != b'\n' && c != b'\r' && !matches!(c, b'`' | b'[' | b']')
         }) {
+            j = end;
+            continue;
+        }
+        if c == b'`' {
+            if let Some(end) = scan.code_span_end(s, j) {
+                j = end;
+                continue;
+            }
+            j += 1;
+            continue;
+        }
+        if c == b'\\' && j + 1 < n {
+            j = j + 1 + char_len(b[j + 1]);
+            continue;
+        }
+        if c == b'\\' {
+            j += 1;
+            continue;
+        }
+        if c == b'[' {
+            if let Some(end) = scan.page_ref_end(s, j) {
+                j = end;
+                continue;
+            }
+            let end = scan.label_bracket_end(s, j);
+            if end > j {
+                j = end;
+                continue;
+            }
+        }
+        if c == b']' || c == b'\n' || c == b'\r' {
+            return None;
+        }
+        j += char_len(c);
+    }
+    None
+}
+
+fn materialize_label_part(
+    s: &str,
+    at: usize,
+    delimiter: usize,
+    base: usize,
+    scan: &mut MdLinkScan,
+) -> Option<Vec<Inline>> {
+    let b = s.as_bytes();
+    let mut j = at + 1;
+    let mut raw_nodes: Vec<Inline> = Vec::new();
+    while j < delimiter {
+        let c = b[j];
+        if let Some(end) = take_while1_include_backslash_len(s, j, b"[]", |c| {
+            c != b'\n' && c != b'\r' && !matches!(c, b'`' | b'[' | b']')
+        }) {
+            let end = end.min(delimiter);
             push_label_plain(&mut raw_nodes, &s[j..end], base + j);
             j = end;
             continue;
         }
         if c == b'`' {
-            if let Some(end) = code_span_end_str(s, j) {
+            if let Some(end) = scan.code_span_end(s, j).filter(|&end| end <= delimiter) {
                 raw_nodes.push(Inline::Code {
                     text: code_inner(&s[j..end]),
                     span: Some(Span(base + j, base + end)),
@@ -1094,8 +1419,8 @@ fn label_part(s: &str, at: usize, base: usize, reparse_plain: bool) -> Option<Md
             j += 1;
             continue;
         }
-        if c == b'\\' && j + 1 < n {
-            let end = j + 1 + char_len(b[j + 1]);
+        if c == b'\\' && j + 1 < b.len() {
+            let end = (j + 1 + char_len(b[j + 1])).min(delimiter);
             push_label_plain(&mut raw_nodes, &s[j..end], base + j);
             j = end;
             continue;
@@ -1106,14 +1431,14 @@ fn label_part(s: &str, at: usize, base: usize, reparse_plain: bool) -> Option<Md
             continue;
         }
         if c == b'[' {
-            if let Some((end, _name, full)) = parse_page_ref(s, j) {
-                push_label_plain(&mut raw_nodes, &full, base + j);
+            if let Some(end) = scan.page_ref_end(s, j).filter(|&end| end <= delimiter) {
+                push_label_plain(&mut raw_nodes, &s[j..end], base + j);
                 j = end;
                 continue;
             }
-            let (text, end) = string_contains_balanced_brackets_single(s, j, b'[', b']', b"[]", b"", b"");
-            if end > j {
-                push_label_plain(&mut raw_nodes, &text, base + j);
+            let end = scan.label_bracket_end(s, j);
+            if end > j && end <= delimiter {
+                push_label_plain(&mut raw_nodes, &s[j..end], base + j);
                 j = end;
                 continue;
             }
@@ -1121,10 +1446,11 @@ fn label_part(s: &str, at: usize, base: usize, reparse_plain: bool) -> Option<Md
         if c == b']' || c == b'\n' || c == b'\r' {
             return None;
         }
-        push_label_plain(&mut raw_nodes, &s[j..j + char_len(c)], base + j);
-        j += char_len(c);
+        let end = (j + char_len(c)).min(delimiter);
+        push_label_plain(&mut raw_nodes, &s[j..end], base + j);
+        j = end;
     }
-    None
+    (j == delimiter).then_some(raw_nodes)
 }
 
 fn finish_markdown_label(nodes: Vec<Inline>, reparse_plain: bool) -> Vec<Inline> {
@@ -1173,6 +1499,7 @@ fn push_label_plain(nodes: &mut Vec<Inline>, raw: &str, abs_start: usize) {
     if raw.is_empty() {
         return;
     }
+    crate::metrics::scan_work(raw.len());
     match nodes.last_mut() {
         Some(Inline::Plain { text, span, span_map }) => {
             text.push_str(raw);
@@ -1305,6 +1632,7 @@ where
     let n = b.len();
     let mut j = at;
     let mut last_backslash = false;
+    let mut examined_stop = false;
     while j < n {
         let c = b[j];
         let take = if last_backslash && chars_can_escape.contains(&c) {
@@ -1320,104 +1648,13 @@ where
             pred(c)
         };
         if !take {
+            examined_stop = true;
             break;
         }
         j += char_len(c);
     }
+    crate::metrics::scan_work(j.saturating_sub(at) + usize::from(examined_stop));
     (j > at).then_some(j)
-}
-
-/// Iterative single-pair port of `Parsers.string_contains_balanced_brackets`
-/// (`parsers.ml:293-332`) for the C2 call sites. It keeps the source helper's
-/// empty success, escape handling, excluded-ending rule, and unmatched-left
-/// fallback while avoiding a deep Rust call stack.
-fn string_contains_balanced_brackets_single(
-    s: &str,
-    at: usize,
-    left: u8,
-    right: u8,
-    escape_chars: &[u8],
-    other_delims: &[u8],
-    excluded_ending_chars: &[u8],
-) -> (String, usize) {
-    let b = s.as_bytes();
-    let n = b.len();
-    let mut j = at;
-    let mut depth = 0usize;
-    let mut out = String::new();
-    while j < n {
-        let c = b[j];
-        if other_delims.contains(&c) {
-            break;
-        }
-        if excluded_ending_chars.contains(&c) {
-            let remain = n - j;
-            if remain < 2 || b.get(j + 1).is_some_and(|c2| other_delims.contains(c2)) {
-                break;
-            }
-            out.push(c as char);
-            j += 1;
-            continue;
-        }
-        if c == left {
-            out.push(c as char);
-            depth += 1;
-            j += 1;
-            continue;
-        }
-        if c == right {
-            if depth == 0 {
-                break;
-            }
-            out.push(c as char);
-            depth -= 1;
-            j += 1;
-            continue;
-        }
-        if c == b'\\' {
-            out.push('\\');
-            j += 1;
-            if j < n {
-                let next = b[j];
-                let next_plain = !other_delims.contains(&next)
-                    && !excluded_ending_chars.contains(&next)
-                    && next != left
-                    && next != right;
-                if escape_chars.contains(&next) || next_plain {
-                    let w = char_len(next);
-                    out.push_str(&s[j..j + w]);
-                    j += w;
-                }
-            }
-            continue;
-        }
-        let w = char_len(c);
-        out.push_str(&s[j..j + w]);
-        j += w;
-    }
-    (out, j)
-}
-
-fn code_span_end_str(s: &str, pos: usize) -> Option<usize> {
-    let b = s.as_bytes();
-    let n = b.len();
-    let second = b.get(pos + 1).copied();
-    if second != Some(b'`') {
-        let start = pos + 1;
-        let mut j = start;
-        while j < n && b[j] != b'`' && b[j] != b'\n' && b[j] != b'\r' {
-            j += 1;
-        }
-        if j > start && j < n && b[j] == b'`' {
-            return Some(j + 1);
-        }
-        return None;
-    }
-    let start = pos + 2;
-    if let Some(end) = find_sub(b, start, b"``") {
-        return Some(end + 2);
-    }
-    None
 }
 
 fn code_inner(span: &str) -> String {
@@ -1429,15 +1666,17 @@ fn code_inner(span: &str) -> String {
 }
 
 /// mldoc `link_url_part` (`syntax/inline.ml:723-733`).
-fn link_url_part(s: &str, at: usize) -> Option<(String, usize)> {
-    let (mut text, end) =
-        string_contains_balanced_brackets_single(s, at, b'(', b')', b"()", b"\r\n", b"");
+fn link_url_part_range(
+    s: &str,
+    at: usize,
+    scan: &mut MdLinkScan,
+) -> Option<(Range<usize>, usize)> {
+    let end = scan.url_paren_end(s, at);
     if s.as_bytes().get(end) == Some(&b')') {
-        return Some((text, end + 1));
+        return Some((at..end, end + 1));
     }
-    if text.ends_with(')') {
-        text.pop();
-        return Some((text, end));
+    if end > at && s.as_bytes().get(end - 1) == Some(&b')') {
+        return Some((at..end - 1, end));
     }
     None
 }

@@ -1,0 +1,6 @@
+[
+  { "id": "mdlink-counter-nested-bracket", "format": "markdown", "input": "[[](u)" },
+  { "id": "mdlink-counter-escaped-bracket", "format": "markdown", "input": "[[\\[](u)" },
+  { "id": "mdlink-counter-page-ref", "format": "markdown", "input": "[[[p]]](u)" },
+  { "id": "mdlink-counter-code-interleave", "format": "markdown", "input": "[`[`[`x`](u)" }
+]

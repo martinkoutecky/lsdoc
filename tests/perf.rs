@@ -297,6 +297,15 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         // (it sat just under budget at low load until n grew). md was already floored.
         ("md_latex_open", false, 25_000, |n| "\\(".repeat(n)),
         ("org_latex_open", true, 25_000, |n| "\\(".repeat(n)),
+        // md-link label O(n²) regression lock: many `[` openers can share one `](` candidate.
+        // The label scanner's balanced-bracket/code/page-ref queries are now owned by a
+        // per-inline-buffer precompute instead of re-scanning a shrinking suffix per opener.
+        ("md_link_many_openers_one_close", false, 8_000, |n| {
+            format!("{}](u)", "[".repeat(n))
+        }),
+        ("md_link_code_interleave", false, 8_000, |n| {
+            format!("{}x`](u)", "[`".repeat(n))
+        }),
         // Phase B leaf-linearity: construct-interleaved inline LEAF misses. Homogeneous
         // opener runs were already covered; these force a fresh dispatch before each opener.
         ("md_email_domain_interleave", false, 25_000, |n| "*a*<x@".repeat(n)),

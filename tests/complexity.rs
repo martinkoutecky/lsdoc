@@ -3,7 +3,7 @@
 //! `src/metrics.rs` counts "scan work": parser-owned byte scans plus index builds, cache lookups,
 //! cursor advances, search probes, and tree visits. A single-pass parser keeps that total
 //! O(input length). This gate parses adversarial families at n / 2n / 4n and asserts the count
-//! grows ~linearly (ratio < 3×). Because the count is **deterministic** (not timed), small inputs
+//! grows ~linearly (ratio < 1.6×). Because the count is **deterministic** (not timed), small inputs
 //! give a clean signal and there is no machine-noise flakiness — the weakness that let O(n²)
 //! families hide behind byte-exact parity.
 //!
@@ -409,6 +409,27 @@ fn latex_dollar_failure_interleave(n: usize) -> String {
 fn org_latex_dollar_failure_interleave(n: usize) -> String {
     "/a/$$x$z ".repeat(n / 9)
 }
+fn md_link_many_openers_one_close(n: usize) -> String {
+    format!("{}](u)", "[".repeat(n))
+}
+fn md_link_code_interleave(n: usize) -> String {
+    format!("{}x`](u)", "[`".repeat(n))
+}
+fn md_link_counter_nested_bracket(n: usize) -> String {
+    format!("{}](u)", "[[".repeat(n))
+}
+fn md_link_counter_escaped_bracket(n: usize) -> String {
+    format!("{}](u)", "[[\\[".repeat(n))
+}
+fn md_link_counter_page_ref(n: usize) -> String {
+    format!("{}](u)", "[[[p]]".repeat(n))
+}
+fn md_link_counter_code_interleave(n: usize) -> String {
+    format!("{}[`x`](u)", "[`".repeat(n))
+}
+fn org_many_openers_one_close(n: usize) -> String {
+    format!("{}](u)", "[".repeat(n))
+}
 
 fn big_stack(f: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()
@@ -502,6 +523,13 @@ fn complexity_gate() {
         assert_linear("bare_url_interleave", bare_url_interleave, 6000, "md");
         assert_linear("latex_dollar_failure_interleave", latex_dollar_failure_interleave, 6000, "md");
         assert_linear("org_latex_dollar_failure_interleave", org_latex_dollar_failure_interleave, 6000, "org");
+        assert_linear("md_link_many_openers_one_close", md_link_many_openers_one_close, 1000, "md");
+        assert_linear("md_link_code_interleave", md_link_code_interleave, 1000, "md");
+        assert_linear("md_link_counter_nested_bracket", md_link_counter_nested_bracket, 1000, "md");
+        assert_linear("md_link_counter_escaped_bracket", md_link_counter_escaped_bracket, 1000, "md");
+        assert_linear("md_link_counter_page_ref", md_link_counter_page_ref, 1000, "md");
+        assert_linear("md_link_counter_code_interleave", md_link_counter_code_interleave, 1000, "md");
+        assert_linear("org_many_openers_one_close", org_many_openers_one_close, 1000, "org");
         // A (container-prefix consume): both formats now dispatch a `>`-line's content ONCE at the
         // final depth (no per-re-dispatch `property` re-scan — 1a) and close many frames at one
         // interior breaker in O(closed) (no per-frame `gt_cont_view` re-peel — 1b).

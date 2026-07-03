@@ -1322,6 +1322,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut lbp_cur = 0usize;
     let mut crlf = first_crlf(bb, 0);
     let mut rparen = first_byte(bb, 0, b')');
+    let mut md_link_scan = crate::inline::MdLinkScan::new();
     // Caller-owned raw-HTML miss cache: a `<tag>`×n run with no closer stays linear.
     let mut raw_html_scan = crate::block_common::RawHtmlScan::new();
     let mut autolink_scan = crate::inline::AutolinkScan::new();
@@ -1873,6 +1874,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         &mut lbp_cur,
                         &mut crlf,
                         &mut rparen,
+                        &mut md_link_scan,
                         base,
                     ) {
                         flush(
@@ -2048,6 +2050,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         &mut lbp_cur,
                         &mut crlf,
                         &mut rparen,
+                        &mut md_link_scan,
                         base,
                     ) {
                         flush(
@@ -2613,6 +2616,7 @@ fn try_md_link(
     lbp_cur: &mut usize,
     crlf: &mut usize,
     rparen: &mut usize,
+    md_link_scan: &mut crate::inline::MdLinkScan,
     base: usize,
 ) -> Option<(Inline, usize)> {
     while lbp.get(*lbp_cur).is_some_and(|&p| p < at) {
@@ -2631,7 +2635,7 @@ fn try_md_link(
     if *rparen >= bb.len() {
         return None; // no closing `)` ahead
     }
-    crate::inline::md_link(s, at, image, base)
+    crate::inline::md_link_with_scan(s, at, image, base, md_link_scan)
 }
 
 #[cfg(test)]
