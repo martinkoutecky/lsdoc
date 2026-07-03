@@ -141,6 +141,62 @@ fn md_rebulleted_def_list(n: usize) -> String {
     s
 }
 
+fn d35_open_chain(increments: &[usize], body: impl FnOnce(&mut String, usize)) -> String {
+    let mut s = String::new();
+    if increments.is_empty() {
+        body(&mut s, 0);
+        return s;
+    }
+    s.push_str("#+BEGIN_D35_0\n");
+    let mut cum = 0usize;
+    for i in 1..increments.len() {
+        cum += increments[i - 1];
+        writeln!(&mut s, "{}#+BEGIN_D35_{i}", " ".repeat(cum)).unwrap();
+    }
+    cum += increments[increments.len() - 1];
+    writeln!(&mut s, "{}seed", " ".repeat(cum)).unwrap();
+    body(&mut s, cum);
+    for i in (0..increments.len()).rev() {
+        writeln!(&mut s, "#+END_D35_{i}").unwrap();
+    }
+    s
+}
+
+/// D35 adversary (i): parent strips 2..d+1, then many strip-1 sibling frames. Pop must reset
+/// leaves, and later sibling pushes must not see stale entries.
+fn d35_rollback_siblings(d: usize) -> String {
+    let increments: Vec<usize> = (2..=d + 1).collect();
+    d35_open_chain(&increments, |s, parent_cum| {
+        for q in 0..d * d {
+            writeln!(&mut *s, "{}#+BEGIN_D35_S{q}", " ".repeat(parent_cum)).unwrap();
+            writeln!(&mut *s, "{}x", " ".repeat(parent_cum + 1)).unwrap();
+            s.push_str("  \n");
+            writeln!(&mut *s, "{}#+END_D35_S{q}", " ".repeat(parent_cum)).unwrap();
+        }
+    })
+}
+
+/// D35 adversary (ii): strips d..1 and many length-2 all-ws lines. A naive walk crosses d-1
+/// no-op stages per line before the final strip-1 subtraction.
+fn d35_query_noop_chain(d: usize) -> String {
+    let increments: Vec<usize> = (1..=d).rev().collect();
+    d35_open_chain(&increments, |s, _| {
+        for _ in 0..d * d {
+            s.push_str("  \n");
+        }
+    })
+}
+
+/// D35 adversary (iii): many all-ws lines under deep positive nesting.
+fn d35_many_ws_deep(d: usize) -> String {
+    let increments = vec![1usize; d];
+    d35_open_chain(&increments, |s, _| {
+        for _ in 0..d * d {
+            s.push_str("  \n");
+        }
+    })
+}
+
 // ---- linear controls (must stay linear) -----------------------------------
 
 fn plain(n: usize) -> String {
@@ -488,6 +544,12 @@ fn complexity_gate() {
             "org",
         );
         assert_linear("md_rebulleted_def_list", md_rebulleted_def_list, 1000, "md");
+        assert_linear("d35_rollback_siblings", d35_rollback_siblings, 14, "md");
+        assert_linear("d35_rollback_siblings", d35_rollback_siblings, 14, "org");
+        assert_linear("d35_query_noop_chain", d35_query_noop_chain, 45, "md");
+        assert_linear("d35_query_noop_chain", d35_query_noop_chain, 45, "org");
+        assert_linear("d35_many_ws_deep", d35_many_ws_deep, 45, "md");
+        assert_linear("d35_many_ws_deep", d35_many_ws_deep, 45, "org");
     });
     // (2b) no-SIGABRT on a SMALL (4 MiB) stack, where the old per-unit suffix-recurse overflowed at
     // ~24 KB on the default stack: both the escape (C) and code-leaf (D) straddle families now parse

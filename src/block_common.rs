@@ -43,17 +43,286 @@ pub(crate) struct Line<'a> {
     pub(crate) no_strip: bool,
 }
 
+#[inline]
+pub(crate) fn mldoc_ltrim_byte(b: u8) -> bool {
+    matches!(b, b' ' | b'\x0c' | b'\n' | b'\r' | b'\t')
+}
+
+#[inline]
+pub(crate) fn mldoc_ltrim_prefix_at_most(text: &str, limit: usize) -> usize {
+    let mut n = 0;
+    for &b in text.as_bytes() {
+        if n == limit || !mldoc_ltrim_byte(b) {
+            break;
+        }
+        n += 1;
+    }
+    crate::metrics::scan_work(n);
+    n
+}
+
+#[inline]
+fn strip_view_from_prefix(text: &str, strip: usize, prefix: usize) -> &str {
+    if prefix >= strip {
+        if text.len() > strip {
+            &text[strip..]
+        } else {
+            text
+        }
+    } else if prefix == text.len() {
+        text
+    } else {
+        &text[prefix..]
+    }
+}
+
+/// Per-line de-indent view: equivalent to mldoc's clear-indents map on ONE line, with a
+/// bounded prefix scan and no alloc. `strip` = the cumulative first-line indent cleared by
+/// ancestor frames. Branch tests use mldoc's ltrim byte set (`' '`, `'\f'`, `'\n'`, `'\r'`,
+/// `'\t'`), while the branch-1 removal blindly strips `strip` bytes. Matches mldoc's
+/// `safe_sub` quirk: a line whose length is exactly `strip` is returned unchanged rather than
+/// sliced to `""`.
+pub(crate) fn strip_view(text: &str, strip: usize) -> &str {
+    if strip == 0 {
+        return text;
+    }
+    let prefix = mldoc_ltrim_prefix_at_most(text, strip);
+    strip_view_from_prefix(text, strip, prefix)
+}
+
+const STRIP_INF: usize = usize::MAX;
+
+/// Exact sequential all-whitespace clear-indent emulator for active positive `#+BEGIN_X`
+/// frame increments. The stack is bottom-to-top (outermost first); zero increments are excluded
+/// by `push`, which keeps query charging tied to successful positive subtractions.
+pub(crate) struct StripSeqTree {
+    values: Vec<usize>,
+    tree: Vec<usize>,
+    base: usize,
+}
+
+impl StripSeqTree {
+    pub(crate) fn new() -> Self {
+        Self {
+            values: Vec::new(),
+            tree: Vec::new(),
+            base: 0,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn active_positive_len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub(crate) fn push(&mut self, increment: usize) -> bool {
+        if increment == 0 {
+            return false;
+        }
+        self.ensure_capacity_for_push();
+        let idx = self.values.len();
+        self.values.push(increment);
+        self.set_leaf(idx, increment);
+        true
+    }
+
+    pub(crate) fn pop_positive(&mut self) {
+        let idx = self.values.len().checked_sub(1).expect("strip tree pop underflow");
+        self.values.pop();
+        self.set_leaf(idx, STRIP_INF);
+    }
+
+    fn ensure_capacity_for_push(&mut self) {
+        if self.values.len() < self.base {
+            return;
+        }
+        let new_base = if self.base == 0 { 1 } else { self.base * 2 };
+        let mut tree = vec![STRIP_INF; new_base * 2];
+        crate::metrics::scan_work(tree.len());
+        for (idx, &v) in self.values.iter().enumerate() {
+            tree[new_base + idx] = v;
+            crate::metrics::scan_work(1);
+        }
+        for node in (1..new_base).rev() {
+            tree[node] = tree[node * 2].min(tree[node * 2 + 1]);
+            crate::metrics::scan_work(1);
+        }
+        self.base = new_base;
+        self.tree = tree;
+    }
+
+    fn set_leaf(&mut self, idx: usize, value: usize) {
+        debug_assert!(idx < self.base);
+        let mut node = self.base + idx;
+        self.tree[node] = value;
+        crate::metrics::scan_work(1);
+        while node > 1 {
+            node /= 2;
+            self.tree[node] = self.tree[node * 2].min(self.tree[node * 2 + 1]);
+            crate::metrics::scan_work(1);
+        }
+    }
+
+    pub(crate) fn seq_ws_len(&self, len: usize) -> usize {
+        if len == 0 {
+            return 0;
+        }
+        let mut v = len;
+        let mut p = 0usize;
+        while let Some(q) = self.first_lt_from(p, v) {
+            let s = self.values[q];
+            debug_assert!(s > 0 && s < v);
+            v -= s;
+            p = q + 1;
+        }
+        v
+    }
+
+    fn first_lt_from(&self, start: usize, threshold: usize) -> Option<usize> {
+        if start >= self.values.len() || self.base == 0 {
+            return None;
+        }
+        self.first_lt_node(1, 0, self.base, start, threshold)
+    }
+
+    fn first_lt_node(
+        &self,
+        node: usize,
+        lo: usize,
+        hi: usize,
+        start: usize,
+        threshold: usize,
+    ) -> Option<usize> {
+        crate::metrics::scan_work(1);
+        if hi <= start || lo >= self.values.len() || self.tree[node] >= threshold {
+            return None;
+        }
+        if hi - lo == 1 {
+            return Some(lo);
+        }
+        let mid = lo + (hi - lo) / 2;
+        self.first_lt_node(node * 2, lo, mid, start, threshold)
+            .or_else(|| self.first_lt_node(node * 2 + 1, mid, hi, start, threshold))
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct StripCtx<'a> {
+    total: usize,
+    seq: Option<&'a StripSeqTree>,
+}
+
+impl<'a> StripCtx<'a> {
+    pub(crate) fn new(total: usize, seq: &'a StripSeqTree) -> Self {
+        Self {
+            total,
+            seq: (total > 0 && seq.active_positive_len() >= 2).then_some(seq),
+        }
+    }
+
+    pub(crate) fn view_text<'t>(self, text: &'t str) -> &'t str {
+        let Some(seq) = self.seq else {
+            return strip_view(text, self.total);
+        };
+        let prefix = mldoc_ltrim_prefix_at_most(text, self.total);
+        // The capped prefix scan can prove "whole line is mldoc whitespace" only when it reaches
+        // the physical line end. That is sufficient: sequential and cumulative clearing can differ
+        // only for all-whitespace lines with `len <= total`. If `len > total`, every positive
+        // stage subtracts and the old cumulative `strip_view` result is exact.
+        if prefix == text.len() {
+            let keep = seq.seq_ws_len(text.len());
+            return &text[text.len() - keep..];
+        }
+        strip_view_from_prefix(text, self.total, prefix)
+    }
+}
+
 impl<'a> Line<'a> {
-    pub(crate) fn viewed_text(&self, strip: usize) -> &'a str {
+    pub(crate) fn viewed_text(&self, ctx: StripCtx<'_>) -> &'a str {
         if self.no_strip {
             self.text
         } else {
-            crate::org::strip_view(self.text, strip)
+            ctx.view_text(self.text)
         }
     }
 
     fn has_eol(&self) -> bool {
         self.end > self.start + self.text.len()
+    }
+}
+
+#[cfg(test)]
+mod strip_seq_tests {
+    use super::StripSeqTree;
+
+    fn brute_seq_len(stack: &[usize], len: usize) -> usize {
+        let mut v = len;
+        for &s in stack {
+            if s > 0 && v > s {
+                v -= s;
+            }
+        }
+        v
+    }
+
+    fn next_rand(state: &mut u64) -> u64 {
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *state
+    }
+
+    #[test]
+    fn strip_seq_matches_bruteforce_random_stacks() {
+        for seed in [1u64, 7, 99, 20260703] {
+            let mut rng = seed;
+            for _ in 0..200 {
+                let depth = (next_rand(&mut rng) % 32) as usize;
+                let mut tree = StripSeqTree::new();
+                let mut stack = Vec::new();
+                for _ in 0..depth {
+                    let s = (next_rand(&mut rng) % 12) as usize;
+                    if tree.push(s) {
+                        stack.push(s);
+                    }
+                }
+                for len in 0..80 {
+                    assert_eq!(tree.seq_ws_len(len), brute_seq_len(&stack, len));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn strip_seq_pop_then_sibling_reuses_leaf_exactly() {
+        let mut tree = StripSeqTree::new();
+        let mut stack = Vec::new();
+        for s in [2, 3, 4] {
+            assert!(tree.push(s));
+            stack.push(s);
+        }
+        assert!(tree.push(1));
+        stack.push(1);
+        for len in 0..20 {
+            assert_eq!(tree.seq_ws_len(len), brute_seq_len(&stack, len));
+        }
+        tree.pop_positive();
+        stack.pop();
+        assert!(tree.push(6));
+        stack.push(6);
+        for len in 0..30 {
+            assert_eq!(tree.seq_ws_len(len), brute_seq_len(&stack, len));
+        }
+    }
+
+    #[test]
+    fn strip_seq_excludes_zero_increments() {
+        let mut tree = StripSeqTree::new();
+        assert!(!tree.push(0));
+        assert_eq!(tree.active_positive_len(), 0);
+        assert!(tree.push(2));
+        assert!(!tree.push(0));
+        assert!(tree.push(1));
+        assert_eq!(tree.active_positive_len(), 2);
+        assert_eq!(tree.seq_ws_len(2), 1);
     }
 }
 
@@ -1056,7 +1325,7 @@ fn view_tail_has_peek(
     lines: &[Line<'_>],
     cur: usize,
     hi: usize,
-    strip: usize,
+    ctx: StripCtx<'_>,
     first_view: &str,
     opener_off: usize,
 ) -> bool {
@@ -1066,7 +1335,7 @@ fn view_tail_has_peek(
     }
     let mut k = cur + 1;
     while seen < 10 && k < hi {
-        seen = (seen + lines[k].viewed_text(strip).len()).min(10);
+        seen = (seen + lines[k].viewed_text(ctx).len()).min(10);
         if seen < 10 && lines[k].has_eol() {
             seen += 1;
         }
@@ -1119,7 +1388,7 @@ pub(crate) fn raw_html_view_capture<'a>(
     lines: &[Line<'a>],
     cur: usize,
     hi: usize,
-    strip: usize,
+    ctx: StripCtx<'_>,
     first_view: &str,
     body_end: usize,
     input: &'a str,
@@ -1129,7 +1398,7 @@ pub(crate) fn raw_html_view_capture<'a>(
         return None;
     }
     let (opener_off, _) = raw_html_head_prefix(first_view)?;
-    if !view_tail_has_peek(lines, cur, hi, strip, first_view, opener_off) {
+    if !view_tail_has_peek(lines, cur, hi, ctx, first_view, opener_off) {
         return None;
     }
     let opener = line_view_abs_start(&lines[cur], first_view) + opener_off;
@@ -1146,7 +1415,7 @@ pub(crate) fn raw_html_view_capture<'a>(
     let close_view = if close_line == cur {
         first_view
     } else {
-        lines[close_line].viewed_text(strip)
+        lines[close_line].viewed_text(ctx)
     };
     let close_view_start = line_view_abs_start(&lines[close_line], close_view);
     if close_end < close_view_start || close_end > close_view_start + close_view.len() {
@@ -1163,7 +1432,7 @@ pub(crate) fn raw_html_view_capture<'a>(
         push_capture_str(&mut text, &first_view[opener_off..]);
         for line_idx in cur + 1..close_line {
             push_capture_joiner(&mut text);
-            push_capture_str(&mut text, lines[line_idx].viewed_text(strip));
+            push_capture_str(&mut text, lines[line_idx].viewed_text(ctx));
         }
         push_capture_joiner(&mut text);
         push_capture_str(&mut text, &close_view[..close_end_in_line]);

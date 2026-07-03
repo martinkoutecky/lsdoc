@@ -44,7 +44,7 @@ use crate::block_common::{
     displayed_math_opener, drawer_property, find_displayed_math_close, find_drawer_end,
     find_matching_fence, leading_ws, para_ws_only, raw_html_block_start,
     raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
-    Line, RawHtmlScan, GT_FALLBACK_NEST_CAP, MARKERS,
+    Line, RawHtmlScan, StripCtx, StripSeqTree, GT_FALLBACK_NEST_CAP, MARKERS,
 };
 use crate::projection::{Block, Inline, ListItem, Property, Span};
 use crate::source_map::{OriginCursor, OriginMap};
@@ -67,12 +67,12 @@ pub fn parse(input: &str) -> Vec<Block> {
     parse_md_streaming(input, false, false, None, input)
 }
 
-/// Per-line de-indent view reused from org.rs. Synthetic mid-line remainders bypass the strip:
-/// in mldoc they continue inside the same already-cleared body string, so the tail's leading
-/// bytes are paragraph content, not a fresh line indent.
+/// Per-line de-indent view. Synthetic mid-line remainders bypass the strip: in mldoc they
+/// continue inside the same already-cleared body string, so the tail's leading bytes are
+/// paragraph content, not a fresh line indent.
 #[inline]
-fn line_text<'a>(lines: &[crate::block_common::Line<'a>], k: usize, strip: usize) -> &'a str {
-    lines[k].viewed_text(strip)
+fn line_text<'a>(lines: &[crate::block_common::Line<'a>], k: usize, ctx: StripCtx<'_>) -> &'a str {
+    lines[k].viewed_text(ctx)
 }
 
 /// Peel `n` blockquote `>`-levels off `s` (CONTINUATION semantics: `trim_start` then strip one
@@ -104,9 +104,9 @@ fn line_has_eol(line: &Line) -> bool {
 /// (`gt_peel` the first `gt_level-1`, the FINAL peel via `md_quote_cont_line_slice` so the breaker /
 /// `>`-blank / blank boundary is honored). `None` ⇒ the line ends the run (bare blank, EOF bare
 /// `>`, or a de-`>`'d breaker) ⇒ the `>`-frame closes. `gt_level >= 1` (only `>`-frames call this).
-fn gt_cont_line_view<'a>(line: &Line<'a>, strip: usize, gt_level: usize) -> Option<&'a str> {
+fn gt_cont_line_view<'a>(line: &Line<'a>, ctx: StripCtx<'_>, gt_level: usize) -> Option<&'a str> {
     md_quote_cont_line_slice(
-        gt_peel(line.viewed_text(strip), gt_level - 1),
+        gt_peel(line.viewed_text(ctx), gt_level - 1),
         line_has_eol(line),
     )
 }
@@ -156,8 +156,9 @@ fn close_top(
     origin: Option<&OriginMap>,
     source_body: &str,
     origin_cursor: &mut OriginCursor,
-) {
+) -> bool {
     let mut f = stack.pop().unwrap();
+    let strip_seq_pushed = f.strip_seq_pushed;
     flush_para(
         &mut f.out,
         &mut f.para,
@@ -180,6 +181,7 @@ fn close_top(
     };
     let block = f.builder.unwrap().finish(f.out, Some(Span(f.open_span_start, span_end)));
     stack.last_mut().unwrap().out.push(block);
+    strip_seq_pushed
 }
 
 /// The outcome of classifying ONE line (`dispatch_md_line`): either advance to line
@@ -232,6 +234,7 @@ struct Frame {
     builder: Option<Builder>,        // the opener → emitted on pop (None for the root).
     open_span_start: usize,          // byte offset of the opener line start (for the span).
     strip: usize,       // cumulative de-indent applied to every body-line view (0 = root/clean).
+    strip_seq_pushed: bool, // this hard frame pushed a positive increment into the strip tree.
     remap_spans: bool,   // body was transformed (strip>0 / quote peel) → remap inline spans on pop.
     // A-md `>`-blockquote container frame (`gt_level == 0` for the root / `#+BEGIN_X` callout
     // frames). `gt_level` = the cumulative `>`-peel applied to CONTINUATION lines (composed on top
@@ -319,6 +322,7 @@ fn parse_md_streaming<'a>(
         builder: None,
         open_span_start: 0,
         strip: 0,
+        strip_seq_pushed: false,
         remap_spans: false,
         gt_level: 0,
         open_line: 0,
@@ -326,6 +330,7 @@ fn parse_md_streaming<'a>(
     let mut fence_cursor: usize = 0; // monotone & shared across the whole pass (`i` is monotone).
     let mut drawer_cursor: usize = 0; // ditto, for `:END:` lookups (find_drawer_end).
     let mut raw_html_scan = RawHtmlScan::new(); // same discipline for failed known-tag raw HTML.
+    let mut strip_seq = StripSeqTree::new();
     let mut origin_cursor = OriginCursor::new(); // one cursor for this parse pass's parent OriginMap.
     // The list-collapse memo (mldoc's recursive list-parser failure bubble): when a list item's
     // deeper continuation is an unparseable list-item shape, the list collapses; `collapse_floor`
@@ -350,16 +355,18 @@ fn parse_md_streaming<'a>(
         // so phase 1 never needs `offs`, and after it every open frame has `hi > i`.)
         while stack.len() > 1 && stack.last().unwrap().hi <= i {
             let consume = stack.last().unwrap().gt_level == 0;
-                close_top(
-                    &mut stack,
-                    &lines,
-                    input,
-                    i,
-                    consume,
-                    origin,
-                    source_body,
-                    &mut origin_cursor,
-                );
+            if close_top(
+                &mut stack,
+                &lines,
+                input,
+                i,
+                consume,
+                origin,
+                source_body,
+                &mut origin_cursor,
+            ) {
+                strip_seq.pop_positive();
+            }
             if consume {
                 i += 1; // CONSUME the closer line.
                 // mldoc ends a `#+BEGIN_X` callout with `<* optional eols` (F6): swallow following
@@ -379,7 +386,8 @@ fn parse_md_streaming<'a>(
         // there are open `>`-frames OR the line might open one; a plain non-`>` line at a hard frame
         // skips to a normal dispatch (`view = None`).
         let strip = stack.last().unwrap().strip;
-        let line2 = line_text(&lines, i, strip);
+        let strip_ctx = StripCtx::new(strip, &strip_seq);
+        let line2 = line_text(&lines, i, strip_ctx);
         let scanned = stack.last().unwrap().gt_level > 0 || line2.trim_start().starts_with('>');
 
         let (dispatch_view, gt_level_disp): (Option<&str>, usize) = if scanned {
@@ -396,7 +404,7 @@ fn parse_md_streaming<'a>(
                 {
                     break;
                 }
-                close_top(
+                let pushed_strip = close_top(
                     &mut stack,
                     &lines,
                     input,
@@ -406,6 +414,7 @@ fn parse_md_streaming<'a>(
                     source_body,
                     &mut origin_cursor,
                 );
+                debug_assert!(!pushed_strip);
                 gt_closed = true;
             }
 
@@ -421,10 +430,11 @@ fn parse_md_streaming<'a>(
                     let t = stack.last().unwrap();
                     (t.hi, t.gt_level, t.strip)
                 };
+                let top_strip_ctx = StripCtx::new(top_strip, &strip_seq);
                 let before = i;
                 while i < top_hi
                     && (lines[i].text.is_empty()
-                        || (top_gt > 0 && gt_cont_line_view(&lines[i], top_strip, top_gt) == Some("")))
+                        || (top_gt > 0 && gt_cont_line_view(&lines[i], top_strip_ctx, top_gt) == Some("")))
                 {
                     i += 1;
                 }
@@ -495,6 +505,7 @@ fn parse_md_streaming<'a>(
                         builder: Some(Builder::Quote),
                         open_span_start: lines[i].start,
                         strip: p_strip,   // inherit the ancestor indent strip
+                        strip_seq_pushed: false,
                         remap_spans: true, // a `>`-body is transformed ⇒ remap inline spans on pop
                         gt_level: p_gt + 1,
                         open_line: i,
@@ -543,7 +554,7 @@ fn parse_md_streaming<'a>(
                 input,
                 origin,
                 source_body,
-                strip,
+                strip_ctx,
                 remap_spans,
                 gt_level_disp,
                 dispatch_view,
@@ -572,6 +583,7 @@ fn parse_md_streaming<'a>(
                     );
                 }
                 let child_strip = top_strip + indent_strip;
+                let strip_seq_pushed = strip_seq.push(indent_strip);
                 let remap_spans = child_strip > 0;
                 stack.push(Frame {
                     hi: close,
@@ -584,6 +596,7 @@ fn parse_md_streaming<'a>(
                     builder: Some(builder),
                     open_span_start: span_start,
                     strip: child_strip,
+                    strip_seq_pushed,
                     remap_spans,
                     gt_level: 0,
                     open_line: 0,
@@ -624,7 +637,7 @@ fn parse_md_streaming<'a>(
                 );
                 let mut end = i + 1;
                 while end < p_hi {
-                    match gt_cont_line_view(&lines[end], strip, p_gt) {
+                    match gt_cont_line_view(&lines[end], strip_ctx, p_gt) {
                         Some(v) => {
                             append_view_with_origin(
                                 &mut de_gt,
@@ -702,7 +715,7 @@ fn dispatch_md_line<'a>(
     input: &'a str,
     origin: Option<&OriginMap>,
     source_body: &str,
-    strip: usize,
+    strip_ctx: StripCtx<'_>,
     remap_spans: bool,
     // A-md: `gt_level` is the FINAL `>`-depth the driver's prefix consume settled this line at
     // (0 for a hard-frame / plain line — behavior identical to before; `> 0` for a `>`-frame). `view`
@@ -720,7 +733,7 @@ fn dispatch_md_line<'a>(
     // routes latex to the §3 fallback before `parse_latex_env` is reached).
     let t = match view {
         Some(v) => v,
-        None => line_text(lines, i, strip),
+        None => line_text(lines, i, strip_ctx),
     };
     let line_start = lines[i].start;
     let line_end = lines[i].end;
@@ -762,7 +775,7 @@ fn dispatch_md_line<'a>(
             || md_marker(t).is_some()
             || (!t.trim_start().is_empty()
                 && i + 1 < hi
-                && gt_cont_line_view(&lines[i + 1], strip, gt_level).is_some_and(is_def_opener)))
+                && gt_cont_line_view(&lines[i + 1], strip_ctx, gt_level).is_some_and(is_def_opener)))
     {
         return Step::GtFallback;
     }
@@ -817,11 +830,13 @@ fn dispatch_md_line<'a>(
                 // need new projection kinds and diverge in both formats) → stay Custom.
                 if name.eq_ignore_ascii_case("SRC") || name.eq_ignore_ascii_case("EXAMPLE") {
                     flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
-                    let (block, ni) = raw_callout_block(&name, t, lines, i, close, hi, line_start);
+                    let (block, ni) = raw_callout_block(&name, t, lines, i, close, hi, line_start, strip_ctx);
                     out.push(block);
                     return Step::Next(ni);
                 }
-                return Step::Open { close, builder: callout_builder(&name), indent_strip: 0, span_start: line_start };
+                let indent_strip =
+                    if close > i + 1 { leading_ws(line_text(lines, i + 1, strip_ctx)) } else { 0 };
+                return Step::Open { close, builder: callout_builder(&name), indent_strip, span_start: line_start };
             }
             // closer is outside this body → fall through.
         }
@@ -883,13 +898,13 @@ fn dispatch_md_line<'a>(
         let content = if remap_spans {
             let mut s = String::new();
             for k in i..ni {
-                let view = line_text(lines, k, strip);
+                let view = line_text(lines, k, strip_ctx);
                 crate::metrics::scan_work(view.len());
                 s.push_str(view);
                 crate::metrics::scan_work(1);
                 s.push('\n');
             }
-            let first_len = line_text(lines, i, strip).len();
+            let first_len = line_text(lines, i, strip_ctx).len();
             crate::inline::parse_latex_env(&s, 0, first_len)
                 .map(|(_, c, _)| c)
                 .unwrap_or(content)
@@ -1034,7 +1049,7 @@ fn dispatch_md_line<'a>(
                 flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                 empty_bullet!();
                 if bname.eq_ignore_ascii_case("SRC") || bname.eq_ignore_ascii_case("EXAMPLE") {
-                    let (block, ni) = raw_callout_block(&bname, content, lines, i, close, hi, content_off);
+                    let (block, ni) = raw_callout_block(&bname, content, lines, i, close, hi, content_off, strip_ctx);
                     out.push(block);
                     return Step::Next(ni);
                 }
@@ -1045,7 +1060,7 @@ fn dispatch_md_line<'a>(
                 // bullet is already in `out` before we return Open, so ordering is preserved.
                 // SRC/EXAMPLE stay raw (raw_callout_block above); only QUOTE/Custom become frames.
                 let indent_strip =
-                    if close > i + 1 { leading_ws(line_text(lines, i + 1, strip)) } else { 0 };
+                    if close > i + 1 { leading_ws(line_text(lines, i + 1, strip_ctx)) } else { 0 };
                 return Step::Open { close, builder: callout_builder(&bname), indent_strip, span_start: content_off };
             }
         }
@@ -1329,14 +1344,14 @@ fn dispatch_md_line<'a>(
             } else if rewritten_line == Some(cur) {
                 lines[cur].text
             } else {
-                line_text(lines, cur, strip)
+                line_text(lines, cur, strip_ctx)
             };
             if !raw_html_block_start(cur_view) {
                 break;
             }
             let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
             let cap = if remap_spans || (cur == i && !captured && view.is_some()) {
-                raw_html_view_capture(lines, cur, hi, strip, cur_view, body_end, input, raw_html_scan)
+                raw_html_view_capture(lines, cur, hi, strip_ctx, cur_view, body_end, input, raw_html_scan)
             } else {
                 raw_html_raw_capture(lines, cur, hi, body_end, input, cur_view, raw_html_scan)
             };
@@ -1386,13 +1401,13 @@ fn dispatch_md_line<'a>(
             } else if rewritten_line == Some(cur) {
                 lines[cur].text
             } else {
-                line_text(lines, cur, strip)
+                line_text(lines, cur, strip_ctx)
             };
             let Some(opener_off) = displayed_math_opener(cur_view) else {
                 break;
             };
             let cap = if remap_spans || (cur == i && !captured && view.is_some()) {
-                displayed_math_view_capture(lines, cur, hi, strip, cur_view, opener_off)
+                displayed_math_view_capture(lines, cur, hi, strip_ctx, cur_view, opener_off)
             } else {
                 let body_end = if hi < lines.len() { lines[hi].start } else { input.len() };
                 displayed_math_raw_capture(lines, cur, hi, body_end, input, opener_off)
@@ -1618,7 +1633,7 @@ fn dispatch_md_line<'a>(
     // (mid-body flush before a following block, in_quote=true) trims it — exactly matching
     // what the old reparse_block_content path produced via block_code_texts("x\n").
     if remap_spans {
-        let viewed = t; // already line_text(lines, i, strip)
+        let viewed = t; // already line_text(lines, i, strip_ctx)
         let buf = para_buf.get_or_insert_with(String::new);
         append_view_with_origin(buf, para_map, origin_cursor, input, origin, viewed);
         append_line_joiner(buf, para_map, origin_cursor, lines, i, origin);
@@ -1721,7 +1736,7 @@ fn displayed_math_view_capture<'a>(
     lines: &[Line<'a>],
     cur: usize,
     hi: usize,
-    strip: usize,
+    ctx: StripCtx<'_>,
     first_view: &str,
     opener_off: usize,
 ) -> Option<MathCapture> {
@@ -1769,7 +1784,7 @@ fn displayed_math_view_capture<'a>(
         }
         crate::metrics::scan_work(1);
         text.push('\n');
-        view = line_text(lines, k, strip);
+        view = line_text(lines, k, ctx);
         start = 0;
     }
 }
@@ -2700,8 +2715,9 @@ fn raw_callout_block(
     close: usize,
     hi: usize,
     span_start: usize,
+    strip_ctx: StripCtx<'_>,
 ) -> (Block, usize) {
-    let texts: Vec<&str> = lines[i + 1..close].iter().map(|l| l.text).collect();
+    let texts: Vec<&str> = (i + 1..close).map(|k| line_text(lines, k, strip_ctx)).collect();
     let code = crate::org::block_code_texts(&texts);
     let mut ni = close + 1;
     let mut end = lines[close].end;

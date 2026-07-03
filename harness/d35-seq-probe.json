@@ -1,0 +1,87 @@
+[
+  {
+    "id": "y01_org_depth3_para",
+    "format": "org",
+    "input": "#+BEGIN_A\n #+BEGIN_B\n  #+BEGIN_QUOTE\n    a\n   \n    x\n  #+END_QUOTE\n #+END_B\n#+END_A"
+  },
+  {
+    "id": "y02_org_strips_4_2_len5",
+    "format": "org",
+    "input": "#+BEGIN_A\n    #+BEGIN_QUOTE\n      a\n     \n      x\n    #+END_QUOTE\n#+END_A"
+  },
+  {
+    "id": "y03_org_strips_2_1_len2",
+    "format": "org",
+    "input": "#+BEGIN_A\n  #+BEGIN_QUOTE\n   a\n  \n   x\n  #+END_QUOTE\n#+END_A"
+  },
+  {
+    "id": "depth4_org_thresholds",
+    "format": "org",
+    "input": "#+BEGIN_A\n  #+BEGIN_B\n     #+BEGIN_C\n      #+BEGIN_QUOTE\n          a\n\n \n  \n   \n    \n     \n      \n         \n          \n           \n          x\n      #+END_QUOTE\n     #+END_C\n  #+END_B\n#+END_A"
+  },
+  {
+    "id": "sibling_pop_push_org",
+    "format": "org",
+    "input": "#+BEGIN_A\n  #+BEGIN_B\n     a\n   \n     x\n  #+END_B\n   #+BEGIN_C\n    a\n  \n    x\n   #+END_C\n#+END_A"
+  },
+  {
+    "id": "zero_increment_interleaved_org",
+    "format": "org",
+    "input": "#+BEGIN_A\n  #+BEGIN_ZERO\n  #+BEGIN_QUOTE\n   a\n  \n   x\n  #+END_QUOTE\n  #+END_ZERO\n#+END_A"
+  },
+  {
+    "id": "formfeed_suffix_org",
+    "format": "org",
+    "input": "#+BEGIN_A\n  #+BEGIN_QUOTE\n   a\n  \f\n   x\n  #+END_QUOTE\n#+END_A"
+  },
+  {
+    "id": "tab_mixed_suffix_org",
+    "format": "org",
+    "input": "#+BEGIN_A\n  #+BEGIN_QUOTE\n   a\n\t \t\n   x\n  #+END_QUOTE\n#+END_A"
+  },
+  {
+    "id": "org_nested_src_ws",
+    "format": "org",
+    "input": "#+BEGIN_A\n  #+BEGIN_QUOTE\n   #+BEGIN_SRC clj\n     x\n  \n     y\n   #+END_SRC\n  #+END_QUOTE\n#+END_A"
+  },
+  {
+    "id": "org_nested_example_ws",
+    "format": "org",
+    "input": "#+BEGIN_A\n  #+BEGIN_QUOTE\n   #+BEGIN_EXAMPLE\n     x\n  \n     y\n   #+END_EXAMPLE\n  #+END_QUOTE\n#+END_A"
+  },
+  {
+    "id": "md_rebullet_twins",
+    "format": "md",
+    "input": "- #+BEGIN_NOTE\n  #+BEGIN_QUOTE\n   a\n  \n   x\n  #+END_QUOTE\n  #+BEGIN_TIP\n    a\n   \n    x\n  #+END_TIP\n  #+END_NOTE"
+  },
+  {
+    "id": "md_rebullet_crlf",
+    "format": "md",
+    "input": "- #+BEGIN_NOTE\r\n  #+BEGIN_QUOTE\r\n   a\r\n  \r\n   x\r\n  #+END_QUOTE\r\n  #+END_NOTE"
+  },
+  {
+    "id": "md_nested_src_ws",
+    "format": "md",
+    "input": "- #+BEGIN_NOTE\n  #+BEGIN_QUOTE\n   #+BEGIN_SRC clj\n     x\n   \n     y\n   #+END_SRC\n  #+END_QUOTE\n  #+END_NOTE"
+  },
+  {
+    "id": "md_nested_example_ws",
+    "format": "md",
+    "input": "- #+BEGIN_NOTE\n  #+BEGIN_QUOTE\n   #+BEGIN_EXAMPLE\n     x\n   \n     y\n   #+END_EXAMPLE\n  #+END_QUOTE\n  #+END_NOTE"
+  },
+  {
+    "id": "raw_html_peek_boundary_org",
+    "format": "org",
+    "input": "#+BEGIN_A\n  #+BEGIN_QUOTE\n   <kbd>123\n   \n   456</kbd>\n  #+END_QUOTE\n#+END_A"
+  },
+  {
+    "id": "displayed_math_org",
+    "format": "org",
+    "input": "#+BEGIN_A\n  #+BEGIN_QUOTE\n   $$\n   \n   x\n   $$\n  #+END_QUOTE\n#+END_A"
+  },
+  {
+    "id": "displayed_math_md",
+    "format": "md",
+    "input": "- #+BEGIN_NOTE\n  #+BEGIN_QUOTE\n   $$\n   \n   x\n   $$\n  #+END_QUOTE\n  #+END_NOTE"
+  }
+]

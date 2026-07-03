@@ -371,6 +371,12 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
             org_indented_quote_table_rows,
         ),
         ("md_rebulleted_def_list", false, 4_000, md_rebulleted_def_list),
+        ("md_d35_rollback_siblings", false, 12, d35_rollback_siblings),
+        ("org_d35_rollback_siblings", true, 12, d35_rollback_siblings),
+        ("md_d35_query_noop_chain", false, 35, d35_query_noop_chain),
+        ("org_d35_query_noop_chain", true, 35, d35_query_noop_chain),
+        ("md_d35_many_ws_deep", false, 80, d35_many_ws_deep),
+        ("org_d35_many_ws_deep", true, 80, d35_many_ws_deep),
         (
             "org_indented_quote_raw_html_adjacent",
             true,
@@ -451,6 +457,57 @@ fn md_rebulleted_def_list(n: usize) -> String {
     }
     s.push_str("  #+END_NOTE\n");
     s
+}
+
+fn d35_open_chain(increments: &[usize], body: impl FnOnce(&mut String, usize)) -> String {
+    let mut s = String::new();
+    if increments.is_empty() {
+        body(&mut s, 0);
+        return s;
+    }
+    s.push_str("#+BEGIN_D35_0\n");
+    let mut cum = 0usize;
+    for i in 1..increments.len() {
+        cum += increments[i - 1];
+        writeln!(&mut s, "{}#+BEGIN_D35_{i}", " ".repeat(cum)).unwrap();
+    }
+    cum += increments[increments.len() - 1];
+    writeln!(&mut s, "{}seed", " ".repeat(cum)).unwrap();
+    body(&mut s, cum);
+    for i in (0..increments.len()).rev() {
+        writeln!(&mut s, "#+END_D35_{i}").unwrap();
+    }
+    s
+}
+
+fn d35_rollback_siblings(d: usize) -> String {
+    let increments: Vec<usize> = (2..=d + 1).collect();
+    d35_open_chain(&increments, |s, parent_cum| {
+        for q in 0..d * d {
+            writeln!(&mut *s, "{}#+BEGIN_D35_S{q}", " ".repeat(parent_cum)).unwrap();
+            writeln!(&mut *s, "{}x", " ".repeat(parent_cum + 1)).unwrap();
+            s.push_str("  \n");
+            writeln!(&mut *s, "{}#+END_D35_S{q}", " ".repeat(parent_cum)).unwrap();
+        }
+    })
+}
+
+fn d35_query_noop_chain(d: usize) -> String {
+    let increments: Vec<usize> = (1..=d).rev().collect();
+    d35_open_chain(&increments, |s, _| {
+        for _ in 0..d * d {
+            s.push_str("  \n");
+        }
+    })
+}
+
+fn d35_many_ws_deep(d: usize) -> String {
+    let increments = vec![1usize; d];
+    d35_open_chain(&increments, |s, _| {
+        for _ in 0..d * d {
+            s.push_str("  \n");
+        }
+    })
 }
 
 fn org_indented_quote_raw_html_adjacent(n: usize) -> String {

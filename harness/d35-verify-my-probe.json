@@ -1,0 +1,77 @@
+[
+ {
+  "id": "s01",
+  "format": "org",
+  "input": "#+BEGIN_A\n  #+BEGIN_B\n   #+BEGIN_QUOTE\n    a\n \n  \n   \n    \n    x\n   #+END_QUOTE\n  #+END_B\n#+END_A"
+ },
+ {
+  "id": "s02",
+  "format": "org",
+  "input": "#+BEGIN_QUOTE\n  \n  a\n#+END_QUOTE"
+ },
+ {
+  "id": "s03",
+  "format": "org",
+  "input": "#+BEGIN_A\n  #+BEGIN_QUOTE\n \n   a\n  #+END_QUOTE\n#+END_A"
+ },
+ {
+  "id": "s04",
+  "format": "org",
+  "input": "#+BEGIN_A\n  #+BEGIN_B\n   a\n   \n  #+END_B\n  \n  #+BEGIN_C\n   b\n   \n  #+END_C\n#+END_A"
+ },
+ {
+  "id": "s05",
+  "format": "org",
+  "input": "#+BEGIN_A\n  a\n  \n  #+BEGIN_B\n   b\n   \n   #+BEGIN_C\n    c\n    \n   #+END_C\n  #+END_B\n#+END_A"
+ },
+ {
+  "id": "s06",
+  "format": "org",
+  "input": "#+BEGIN_A\n #+BEGIN_QUOTE\n   <b>ab</b>\n   \n   x\n #+END_QUOTE\n#+END_A"
+ },
+ {
+  "id": "s07",
+  "format": "markdown",
+  "input": "- #+BEGIN_NOTE\n  #+BEGIN_QUOTE\n   a\n   \n   x\n  #+END_QUOTE\n  #+END_NOTE"
+ },
+ {
+  "id": "s08",
+  "format": "org",
+  "input": "#+BEGIN_A\n  #+BEGIN_QUOTE\n   $$one\n   \n   two$$\n  #+END_QUOTE\n#+END_A"
+ },
+ {
+  "id": "s09",
+  "format": "org",
+  "input": "#+BEGIN_QUOTE\n  #+BEGIN_EXAMPLE\n   code\n  \n   \n    \n   more\n  #+END_EXAMPLE\n#+END_QUOTE"
+ },
+ {
+  "id": "s10",
+  "format": "org",
+  "input": "#+BEGIN_A\n\t#+BEGIN_QUOTE\n\t a\n\t\n \n\t x\n\t#+END_QUOTE\n#+END_A"
+ },
+ {
+  "id": "s11",
+  "format": "org",
+  "input": "#+BEGIN_A\n  #+BEGIN_B\n  #+BEGIN_QUOTE\n    a\n   \n    x\n  #+END_QUOTE\n  #+END_B\n#+END_A"
+ },
+ {
+  "id": "s12",
+  "format": "org",
+  "input": "#+BEGIN_A\n   #+BEGIN_QUOTE\n     a\n   \n     \n      \n     x\n   #+END_QUOTE\n#+END_A"
+ },
+ {
+  "id": "s13",
+  "format": "org",
+  "input": "#+BEGIN_A\r\n  #+BEGIN_QUOTE\r\n   a\r\n  \r\n   x\r\n  #+END_QUOTE\r\n#+END_A"
+ },
+ {
+  "id": "s14",
+  "format": "org",
+  "input": "#+BEGIN_A\n  #+BEGIN_QUOTE\n   a\n\f  \n   x\n  #+END_QUOTE\n#+END_A"
+ },
+ {
+  "id": "s15",
+  "format": "markdown",
+  "input": "- #+BEGIN_NOTE\n  #+BEGIN_SRC txt\n  keep\n  \n  more\n  #+END_SRC\n  #+END_NOTE"
+ }
+]

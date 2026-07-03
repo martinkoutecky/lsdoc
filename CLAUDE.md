@@ -68,14 +68,15 @@ factor is invisible. The reason to follow it is a measurably faster, collision-p
 The block phase classifies each line once (monotone `i`, no re-scan); closer/fence/drawer lookups
 use **monotone cursors** (advance-only), not binary search. Container bodies are **frames on an
 explicit heap stack**, never copied or re-lexed: `#+BEGIN_X` bodies are zero-copy strip-view frames
-(the de-indent is a lazy per-line `strip_view`; nested strips fold cumulatively), and `>`-quotes are
-`>`-container frames (the staircase unrolls iteratively, each line viewed once at its own `gt_level`).
-So deep nesting is O(depth) HEAP + O(n) time with NO depth cap on any realistic shape. Verify O(n) by
-a *structural* audit (no `.sort` / `partition_point` / `binary_search` / `HashMap` left on the hot
-path, no per-level body copy, no unbounded native re-dispatch), not by a perf ratio — the gate's
-~2×/doubling can't distinguish O(n) from O(n log n).
+(the de-indent is a lazy per-line view; non-all-ws lines use the cumulative fast path, while nested
+all-ws lines use the exact D35 segment-tree exception below), and `>`-quotes are `>`-container frames
+(the staircase unrolls iteratively, each line viewed once at its own `gt_level`). So deep nesting is
+O(depth) HEAP + O(n) time except for the documented D35 log-factor all-ws path, with NO depth cap on
+any realistic shape. Verify O(n) by a *structural* audit (no `.sort` / `partition_point` /
+`binary_search` / `HashMap` left on the hot path, no per-level body copy, no unbounded native
+re-dispatch), not by a perf ratio — the gate's ~2×/doubling can't distinguish O(n) from O(n log n).
 
-Two deliberate exceptions, both documented and neither a regression:
+Three deliberate exceptions, all documented and none a regression:
 - **`refs.rs` sort+dedup** — O(R log R), R = ref occurrences ≤ n; also the canonical output order the
   order-sensitive gate requires.
 - **`GT_FALLBACK_NEST_CAP` (= 64)** — an anti-SIGABRT recursion floor on the SOLE remaining native
@@ -83,3 +84,7 @@ Two deliberate exceptions, both documented and neither a regression:
   hiccup (recognizers that can't see through literal `>`s). It bounds ONLY construct-in-`>`-quote
   nesting (needs ~quadratic input for linear depth, fuzz-unreachable, where mldoc itself SIGABRTs);
   lsdoc degrades it to a flat Paragraph rather than crashing. It does NOT bound any realistic parse.
+- **D35 sequential all-whitespace clear-indent tree** — O((frames + all-ws bytes) log depth), exact
+  mldoc semantics for nested positive `#+BEGIN_X` indent frames where all-whitespace `safe_sub`
+  no-ops do not compose cumulatively. The min segment tree is Vec-backed, excludes zero increments,
+  and charges push/pop/query descent nodes via `scan_work`.

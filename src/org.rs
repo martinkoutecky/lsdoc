@@ -27,7 +27,7 @@ use crate::block_common::{
     displayed_math_opener, find_displayed_math_close, find_drawer_end, find_matching_fence,
     leading_ws, para_ws_only, raw_html_block_start, raw_html_end_at, raw_html_raw_capture,
     raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie, Line, RawHtmlScan,
-    GT_FALLBACK_NEST_CAP, MARKERS,
+    StripCtx, StripSeqTree, GT_FALLBACK_NEST_CAP, MARKERS,
 };
 use crate::projection::{Block, Inline, ListItem, Property, Span, SpanMapSegment, Url};
 use crate::source_map::{OriginCursor, OriginMap};
@@ -155,6 +155,7 @@ fn mldoc_ltrim_prefix_at_most(text: &str, limit: usize) -> usize {
 /// `'\t'`), while the branch-1 removal blindly strips `strip` bytes. Matches mldoc's
 /// `safe_sub` quirk: a line whose length is exactly `strip` is returned unchanged rather than
 /// sliced to `""`.
+#[cfg(test)]
 pub(crate) fn strip_view(text: &str, strip: usize) -> &str {
     if strip == 0 {
         return text;
@@ -173,10 +174,11 @@ pub(crate) fn strip_view(text: &str, strip: usize) -> &str {
     }
 }
 
-/// View line `k` through the cumulative de-indent `strip` (no-op fast path when strip == 0).
+/// View line `k` through the current de-indent context (cumulative fast path, exact nested
+/// all-whitespace fallback when needed).
 #[inline]
-fn line_text<'a>(lines: &[Line<'a>], k: usize, strip: usize) -> &'a str {
-    lines[k].viewed_text(strip)
+fn line_text<'a>(lines: &[Line<'a>], k: usize, ctx: StripCtx<'_>) -> &'a str {
+    lines[k].viewed_text(ctx)
 }
 
 /// Peel `n` blockquote `>`-levels off `s` (CONTINUATION semantics: each level is `trim_start`
@@ -209,9 +211,9 @@ fn line_has_eol(line: &Line) -> bool {
 /// (`gt_peel` the first `gt_level-1`, then the FINAL peel via `quote_line_content_line_slice` so the
 /// breaker/`>`-blank/blank boundary is honored). `None` ⇒ the line ends the run (bare blank, EOF
 /// bare `>`, or a de-`>`'d breaker) ⇒ the `>`-frame closes. `gt_level >= 1`.
-fn gt_cont_line_view<'a>(line: &Line<'a>, strip: usize, gt_level: usize) -> Option<&'a str> {
+fn gt_cont_line_view<'a>(line: &Line<'a>, ctx: StripCtx<'_>, gt_level: usize) -> Option<&'a str> {
     quote_line_content_line_slice(
-        gt_peel(line.viewed_text(strip), gt_level - 1),
+        gt_peel(line.viewed_text(ctx), gt_level - 1),
         line_has_eol(line),
     )
 }
@@ -260,8 +262,9 @@ fn close_top(
     origin: Option<&OriginMap>,
     source_body: &str,
     origin_cursor: &mut OriginCursor,
-) {
+) -> bool {
     let mut f = stack.pop().unwrap();
+    let strip_seq_pushed = f.strip_seq_pushed;
     flush_para(
         &mut f.out,
         &mut f.para,
@@ -290,6 +293,7 @@ fn close_top(
     let parent = stack.last_mut().unwrap();
     parent.out.push(block);
     parent.absorb = absorbs; // mldoc: a Quote/Custom swallows a following blank.
+    strip_seq_pushed
 }
 
 /// One open callout container on the streaming driver's explicit stack. Every re-dispatched
@@ -312,6 +316,7 @@ struct Frame {
     builder: Option<Builder>, // the opener → emitted on pop (None for the root).
     open_span_start: usize,   // byte offset of the opener line start (for the span).
     strip: usize, // cumulative de-indent applied to every body-line view (0 = root/clean).
+    strip_seq_pushed: bool, // this hard frame pushed a positive increment into the strip tree.
     remap_spans: bool, // body was transformed (strip>0 or nonstd eol) → remap inline spans on pop.
     // A-org `>`-blockquote container frame (`gt_level == 0` for the root / `#+BEGIN_X` callout
     // frames). `gt_level` = the cumulative `>`-peel applied to CONTINUATION lines (composes on top
@@ -462,6 +467,7 @@ fn parse_org_streaming<'a>(
         builder: None,
         open_span_start: 0,
         strip: 0,
+        strip_seq_pushed: false,
         remap_spans: false,
         gt_level: 0,
         open_line: 0,
@@ -471,6 +477,7 @@ fn parse_org_streaming<'a>(
     let mut drawer_cursor: usize = 0; // monotone `:END:` cursor (find_drawer_end), shared across the pass.
     let mut property_end_cursor: usize = 0; // monotone parse1 `:END:` prefix cursor.
     let mut raw_html_scan = RawHtmlScan::new(); // monotone failed known-tag raw-HTML scanner.
+    let mut strip_seq = StripSeqTree::new();
     let mut nonstd_cursor: usize = 0; // monotone nonstd-eol cursor (body_is_clean_window), ditto.
     let mut origin_cursor = OriginCursor::new(); // one cursor for this parse pass's parent OriginMap.
     let mut offs: Vec<usize> = Vec::new(); // reused `>`-prefix offset scratch (scan_gt_prefix)
@@ -487,7 +494,7 @@ fn parse_org_streaming<'a>(
         // `offs`, and after it every open frame has `hi > i`.)
         while stack.len() > 1 && stack.last().unwrap().hi <= i {
             let consume = stack.last().unwrap().gt_level == 0;
-            close_top(
+            if close_top(
                 &mut stack,
                 &lines,
                 input,
@@ -496,7 +503,9 @@ fn parse_org_streaming<'a>(
                 origin,
                 source_body,
                 &mut origin_cursor,
-            );
+            ) {
+                strip_seq.pop_positive();
+            }
             if consume {
                 i += 1;
             }
@@ -510,7 +519,8 @@ fn parse_org_streaming<'a>(
         // line. Run the walk iff there are open `>`-frames OR the line might open one; a plain non-`>`
         // line at a hard frame skips to a normal dispatch (`view = None`).
         let strip = stack.last().unwrap().strip;
-        let line2 = line_text(&lines, i, strip);
+        let strip_ctx = StripCtx::new(strip, &strip_seq);
+        let line2 = line_text(&lines, i, strip_ctx);
         let scanned = stack.last().unwrap().gt_level > 0 || line2.trim_start().starts_with('>');
 
         let (dispatch_view, gt_level_disp): (Option<&str>, usize) = if scanned {
@@ -530,7 +540,7 @@ fn parse_org_streaming<'a>(
                 {
                     break;
                 }
-                close_top(
+                let pushed_strip = close_top(
                     &mut stack,
                     &lines,
                     input,
@@ -540,6 +550,7 @@ fn parse_org_streaming<'a>(
                     source_body,
                     &mut origin_cursor,
                 );
+                debug_assert!(!pushed_strip);
             }
 
             // Phase 2b: open new `>`-frames. `cur` starts at the surviving top's level-`H` view
@@ -597,6 +608,7 @@ fn parse_org_streaming<'a>(
                     builder: Some(Builder::Quote),
                     open_span_start: lines[i].start,
                     strip: p_strip,   // inherit the ancestor indent strip
+                    strip_seq_pushed: false,
                     remap_spans: true, // a `>`-body is transformed ⇒ remap inline spans on pop
                     gt_level: p_gt + 1,
                     open_line: i,
@@ -643,7 +655,7 @@ fn parse_org_streaming<'a>(
                 input,
                 origin,
                 source_body,
-                strip,
+                strip_ctx,
                 remap_spans,
                 gt_level_disp,
                 dispatch_view,
@@ -678,6 +690,7 @@ fn parse_org_streaming<'a>(
                 // (spans remapped on pop). Callouts only open at `gt_level==0` (inside a `>`-frame they
                 // are a §3 fallback tell), so a callout frame's `gt_level` is always 0.
                 let child_strip = top_strip + indent_strip;
+                let strip_seq_pushed = strip_seq.push(indent_strip);
                 let remap_spans = child_strip > 0
                     || !body_is_clean_window(&nonstd_eol_lines, &mut nonstd_cursor, i + 1, close);
                 stack.push(Frame {
@@ -691,6 +704,7 @@ fn parse_org_streaming<'a>(
                     builder: Some(builder),
                     open_span_start: lines[i].start,
                     strip: child_strip,
+                    strip_seq_pushed,
                     remap_spans,
                     gt_level: 0,
                     open_line: 0,
@@ -732,7 +746,7 @@ fn parse_org_streaming<'a>(
                 );
                 let mut end = i + 1;
                 while end < p_hi {
-                    match gt_cont_line_view(&lines[end], strip, p_gt) {
+                    match gt_cont_line_view(&lines[end], strip_ctx, p_gt) {
                         Some(v) => {
                             append_view_with_origin(
                                 &mut de_gt,
@@ -843,7 +857,7 @@ fn dispatch_org_line<'a>(
     input: &'a str,
     origin: Option<&OriginMap>,
     source_body: &str,
-    strip: usize,
+    strip_ctx: StripCtx<'_>,
     remap_spans: bool,
     // A-org: `gt_level` is the FINAL `>`-depth the driver's prefix consume settled this line at
     // (0 for a hard-frame / plain line — behavior identical to before; `> 0` for a `>`-frame). `view`
@@ -861,7 +875,7 @@ fn dispatch_org_line<'a>(
     // routes latex to the §3 fallback before `parse_latex_env` is reached).
     let t = match view {
         Some(v) => v,
-        None => line_text(lines, i, strip),
+        None => line_text(lines, i, strip_ctx),
     };
     let line_start = lines[i].start;
     let line_end = lines[i].end;
@@ -950,7 +964,7 @@ fn dispatch_org_line<'a>(
             lines,
             i,
             hi,
-            strip,
+            strip_ctx,
             input,
             property_end_idxs,
             property_end_cursor,
@@ -1106,7 +1120,7 @@ fn dispatch_org_line<'a>(
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let start = i;
         let mut ni = i;
-        while ni < hi && is_table_row(line_text(lines, ni, strip)) {
+        while ni < hi && is_table_row(line_text(lines, ni, strip_ctx)) {
             ni += 1;
         }
         out.push(build_table(
@@ -1144,13 +1158,13 @@ fn dispatch_org_line<'a>(
         let content = if remap_spans {
             let mut s = String::new();
             for k in i..ni {
-                let view = line_text(lines, k, strip);
+                let view = line_text(lines, k, strip_ctx);
                 crate::metrics::scan_work(view.len());
                 s.push_str(view);
                 crate::metrics::scan_work(1);
                 s.push('\n');
             }
-            let first_len = line_text(lines, i, strip).len();
+            let first_len = line_text(lines, i, strip_ctx).len();
             crate::inline::parse_latex_env(&s, 0, first_len)
                 .map(|(_, c, _)| c)
                 .unwrap_or(content)
@@ -1205,7 +1219,7 @@ fn dispatch_org_line<'a>(
                 let code = if close > i + 1 {
                     let mut s = String::new();
                     for k in i + 1..close {
-                        let view = line_text(lines, k, strip);
+                        let view = line_text(lines, k, strip_ctx);
                         crate::metrics::scan_work(view.len());
                         s.push_str(view);
                         crate::metrics::scan_work(1);
@@ -1246,7 +1260,7 @@ fn dispatch_org_line<'a>(
                         // Body via line_text: applies the cumulative strip (matching block_code
                         // semantics for nested indented bodies; no-op for strip==0).
                         let texts: Vec<&str> =
-                            (i + 1..close).map(|k| line_text(lines, k, strip)).collect();
+                            (i + 1..close).map(|k| line_text(lines, k, strip_ctx)).collect();
                         let inner = block_code_texts(&texts);
                         out.push(Block::Src {
                             lang,
@@ -1259,7 +1273,7 @@ fn dispatch_org_line<'a>(
                     "example" => {
                         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                         let texts: Vec<&str> =
-                            (i + 1..close).map(|k| line_text(lines, k, strip)).collect();
+                            (i + 1..close).map(|k| line_text(lines, k, strip_ctx)).collect();
                         let inner = block_code_texts(&texts);
                         out.push(Block::Example {
                             code: inner,
@@ -1273,7 +1287,7 @@ fn dispatch_org_line<'a>(
                         // already applied via line_text; child_strip = strip + indent_strip in
                         // the Step::Open handler).
                         let indent_strip = if close > i + 1 {
-                            leading_ws(line_text(lines, i + 1, strip))
+                            leading_ws(line_text(lines, i + 1, strip_ctx))
                         } else {
                             0
                         };
@@ -1289,7 +1303,7 @@ fn dispatch_org_line<'a>(
                     }
                     _ => {
                         let indent_strip = if close > i + 1 {
-                            leading_ws(line_text(lines, i + 1, strip))
+                            leading_ws(line_text(lines, i + 1, strip_ctx))
                         } else {
                             0
                         };
@@ -1323,8 +1337,8 @@ fn dispatch_org_line<'a>(
         let start = i;
         let mut code = String::new();
         let mut ni = i;
-        while ni < hi && is_verbatim_line(line_text(lines, ni, strip)) {
-            let content = verbatim_content(line_text(lines, ni, strip));
+        while ni < hi && is_verbatim_line(line_text(lines, ni, strip_ctx)) {
+            let content = verbatim_content(line_text(lines, ni, strip_ctx));
             crate::metrics::scan_work(content.len());
             code.push_str(content);
             crate::metrics::scan_work(1);
@@ -1359,13 +1373,13 @@ fn dispatch_org_line<'a>(
             } else if rewritten_line == Some(cur) {
                 lines[cur].text
             } else {
-                line_text(lines, cur, strip)
+                line_text(lines, cur, strip_ctx)
             };
             let Some(opener_off) = displayed_math_opener(cur_view) else {
                 break;
             };
             let cap = if remap_spans || (cur == i && !captured && view.is_some()) {
-                displayed_math_view_capture(lines, cur, hi, strip, cur_view, opener_off)
+                displayed_math_view_capture(lines, cur, hi, strip_ctx, cur_view, opener_off)
             } else {
                 let body_end = if hi < lines.len() {
                     lines[hi].start
@@ -1421,7 +1435,7 @@ fn dispatch_org_line<'a>(
             } else if rewritten_line == Some(cur) {
                 lines[cur].text
             } else {
-                line_text(lines, cur, strip)
+                line_text(lines, cur, strip_ctx)
             };
             if !raw_html_block_start(cur_view) {
                 break;
@@ -1432,7 +1446,7 @@ fn dispatch_org_line<'a>(
                 input.len()
             };
             let cap = if remap_spans || (cur == i && !captured && view.is_some()) {
-                raw_html_view_capture(lines, cur, hi, strip, cur_view, body_end, input, raw_html_scan)
+                raw_html_view_capture(lines, cur, hi, strip_ctx, cur_view, body_end, input, raw_html_scan)
             } else {
                 raw_html_raw_capture(lines, cur, hi, body_end, input, cur_view, raw_html_scan)
             };
@@ -1489,7 +1503,7 @@ fn dispatch_org_line<'a>(
         let mut last_content_line = i;
         let mut j = i + 1;
         while j < hi {
-            match footnote_cont(line_text(lines, j, strip), line_has_nl(input, &lines[j])) {
+            match footnote_cont(line_text(lines, j, strip_ctx), line_has_nl(input, &lines[j])) {
                 Some(c) => {
                     append_line_joiner(
                         &mut body,
@@ -1543,7 +1557,7 @@ fn dispatch_org_line<'a>(
                 in_item: true,
                 in_quote: ctx.in_quote,
             },
-            strip,
+            strip_ctx,
             input,
             origin,
             source_body,
@@ -1759,7 +1773,7 @@ fn displayed_math_view_capture<'a>(
     lines: &[Line<'a>],
     cur: usize,
     hi: usize,
-    strip: usize,
+    ctx: StripCtx<'_>,
     first_view: &str,
     opener_off: usize,
 ) -> Option<MathCapture> {
@@ -1807,7 +1821,7 @@ fn displayed_math_view_capture<'a>(
         }
         crate::metrics::scan_work(1);
         text.push('\n');
-        view = line_text(lines, k, strip);
+        view = line_text(lines, k, ctx);
         start = 0;
     }
 }
@@ -2039,12 +2053,12 @@ fn org_parse1_properties<'a>(
     lines: &mut [Line<'a>],
     opener: usize,
     hi: usize,
-    strip: usize,
+    strip_ctx: StripCtx<'_>,
     input: &'a str,
     property_end_idxs: &[usize],
     property_end_cursor: &mut usize,
 ) -> Option<OrgParse1> {
-    if !org_properties_begin(line_text(lines, opener, strip)) {
+    if !org_properties_begin(line_text(lines, opener, strip_ctx)) {
         return None;
     }
     let close = find_drawer_end(property_end_idxs, property_end_cursor, opener)?;
@@ -2054,10 +2068,10 @@ fn org_parse1_properties<'a>(
 
     let mut props = Vec::new();
     for k in opener + 1..close {
-        props.push(org_drawer_property(line_text(lines, k, strip))?);
+        props.push(org_drawer_property(line_text(lines, k, strip_ctx))?);
     }
 
-    let close_view = line_text(lines, close, strip);
+    let close_view = line_text(lines, close, strip_ctx);
     let spill_rel = org_property_end_spill(close_view)?;
     let close_view_start = view_abs_start(&lines[close], close_view);
     let spill_abs = close_view_start + spill_rel;
@@ -2089,7 +2103,7 @@ fn org_property_group<'a>(
     lines: &mut [Line<'a>],
     start: usize,
     hi: usize,
-    strip: usize,
+    strip_ctx: StripCtx<'_>,
     input: &'a str,
     property_end_idxs: &[usize],
     property_end_cursor: &mut usize,
@@ -2105,7 +2119,7 @@ fn org_property_group<'a>(
         // a run of pure EOLs between elements is consumed, but a line containing
         // spaces is not an EOL token and must fall through as the next paragraph.
         if matched {
-            while cur < hi && line_text(lines, cur, strip).is_empty() {
+            while cur < hi && line_text(lines, cur, strip_ctx).is_empty() {
                 span_end = lines[cur].end;
                 cur += 1;
             }
@@ -2114,7 +2128,7 @@ fn org_property_group<'a>(
             lines,
             cur,
             hi,
-            strip,
+            strip_ctx,
             input,
             property_end_idxs,
             property_end_cursor,
@@ -2126,7 +2140,7 @@ fn org_property_group<'a>(
             matched = true;
             continue;
         }
-        if let Some(kv) = org_parse2_property(line_text(lines, cur, strip)) {
+        if let Some(kv) = org_parse2_property(line_text(lines, cur, strip_ctx)) {
             props.push(kv);
             span_end = lines[cur].end;
             cur += 1;
@@ -2781,7 +2795,7 @@ fn collect_list(
     start: usize,
     hi: usize,
     item_ctx: Ctx,
-    strip: usize,
+    strip_ctx: StripCtx<'_>,
     input: &str,
     origin: Option<&OriginMap>,
     source_body: &str,
@@ -2794,7 +2808,7 @@ fn collect_list(
     let start_cursor = *origin_cursor;
     let mut i = start;
     while i < hi {
-        let t = line_text(lines, i, strip);
+        let t = line_text(lines, i, strip_ctx);
         // terminators at a would-be marker position: blank line, a col-0 headline, or
         // any non-marker line (mldoc heading-lookahead / `format_checkbox` failure).
         if t.is_empty() || headline_level(t).is_some() {
@@ -2825,7 +2839,7 @@ fn collect_list(
             if j >= hi {
                 break; // EOF / body boundary ends this item's content
             }
-            let cl = line_text(lines, j, strip);
+            let cl = line_text(lines, j, strip_ctx);
             if cl.is_empty() {
                 j += 1; // mldoc `two_eols`: a blank ends the content AND is consumed
                 break;
@@ -3219,6 +3233,25 @@ mod tests {
             .collect()
     }
 
+    fn first_nested_paragraph_inline(input: &str) -> Vec<Inline> {
+        fn walk(blocks: &[Block]) -> Vec<Inline> {
+            for b in blocks {
+                match b {
+                    Block::Paragraph { inline, .. } => return ns(inline),
+                    Block::Quote { children, .. } | Block::Custom { children, .. } => {
+                        let found = walk(children);
+                        if !found.is_empty() {
+                            return found;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Vec::new()
+        }
+        walk(&parse(input))
+    }
+
     #[test]
     fn clear_indents_match_mldoc_whitespace_set() {
         assert_eq!(strip_view("\x0c  ", 2), " "); // M1: branch 1 strips two bytes blindly.
@@ -3232,6 +3265,30 @@ mod tests {
         assert_eq!(
             block_code_texts(&["  seed", "  ", "  tail"]),
             "seed\n  \ntail\n"
+        );
+    }
+
+    #[test]
+    fn d35_sequential_all_ws_end_to_end_shapes() {
+        let expected = vec![
+            Inline::Plain { text: "a".into(), span: None, span_map: None },
+            Inline::Break { span: None },
+            Inline::Plain { text: " ".into(), span: None, span_map: None },
+            Inline::Break { span: None },
+            Inline::Plain { text: "x".into(), span: None, span_map: None },
+            Inline::Break { span: None },
+        ];
+        assert_eq!(
+            first_nested_paragraph_inline("#+BEGIN_A\n  #+BEGIN_QUOTE\n   a\n   \n   x\n  #+END_QUOTE\n#+END_A"),
+            expected
+        );
+        assert_eq!(
+            first_nested_paragraph_inline("#+BEGIN_A\n  #+BEGIN_QUOTE\n   a\n  \n   x\n  #+END_QUOTE\n#+END_A"),
+            expected
+        );
+        assert_eq!(
+            first_nested_paragraph_inline("#+BEGIN_A\n #+BEGIN_B\n  #+BEGIN_QUOTE\n    a\n   \n    x\n  #+END_QUOTE\n #+END_B\n#+END_A"),
+            expected
         );
     }
 
