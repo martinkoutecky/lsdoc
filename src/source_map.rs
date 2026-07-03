@@ -178,6 +178,22 @@ impl OriginMap {
 
     fn advance_to(&self, cursor: &mut OriginCursor, text_off: usize) {
         cursor.bind(self);
+        // Monotonicity tripwire (A2): the cursor never rewinds `idx`, so a query for a
+        // `text_off` that lands before the end of an already-skipped segment can no longer see
+        // that segment — it would return a wrong/short envelope SILENTLY (the fresh-cursor-per-
+        // fragment class of bug fixed three times in the raw-html/spans work). We skip segment
+        // `j` only once a prior request passed its end, so correct monotone usage always has
+        // `text_off >= segments[idx-1].text_end()`; a violation is a threading bug, not slow.
+        #[cfg(debug_assertions)]
+        if cursor.idx > 0 {
+            debug_assert!(
+                text_off >= self.segments[cursor.idx - 1].text_end(),
+                "OriginCursor queried backwards: text_off {} < last-skipped segment end {} \
+                 (a shared cursor was advanced past this offset — silent wrong span)",
+                text_off,
+                self.segments[cursor.idx - 1].text_end()
+            );
+        }
         while cursor.idx < self.segments.len() {
             crate::metrics::scan_work(1);
             if self.segments[cursor.idx].text_end() > text_off {
