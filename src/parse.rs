@@ -48,7 +48,7 @@ use crate::block_common::{
     raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
     Line, RawHtmlScan, StripCtx, StripSeqTree, GT_FALLBACK_NEST_CAP, MARKERS,
 };
-use crate::projection::{Block, Inline, ListItem, Property, Span};
+use crate::projection::{Block, Inline, ListItem, Property, Span, SpanMapSegment};
 use crate::source_map::{OriginCursor, OriginMap};
 
 // Depth guard for the ONE md re-dispatch that still native-recurses: the §3 `>`-quote fallback
@@ -66,7 +66,206 @@ pub fn parse(input: &str) -> Vec<Block> {
     // Single-pass streaming block driver: O(n) time, O(depth) HEAP (the explicit container
     // stack), NO native recursion and NO depth cap. Byte-exact to mldoc (gated by `harness/`).
     // (The deep-nesting recurse-on-body — mldoc's O(n²) + stack-overflow — is gone.)
-    parse_md_streaming(input, false, false, None, input)
+    if let Some((mut blocks, rest_start)) = markdown_front_matter(input) {
+        let rest = &input[rest_start..];
+        let mut tail = parse_md_streaming(rest, false, false, None, rest);
+        offset_blocks(&mut tail, rest_start);
+        blocks.extend(tail);
+        blocks
+    } else {
+        parse_md_streaming(input, false, false, None, input)
+    }
+}
+
+fn markdown_front_matter(input: &str) -> Option<(Vec<Block>, usize)> {
+    let bytes = input.as_bytes();
+    if !input.starts_with("---") {
+        return None;
+    }
+    let body_start = match bytes.get(3) {
+        Some(b'\n') => 4,
+        Some(b'\r') if bytes.get(4) == Some(&b'\n') => 5,
+        _ => return None,
+    };
+    let search = &input[body_start..];
+    let close = match search.find("---") {
+        Some(close) => {
+            crate::metrics::scan_work(close + 3);
+            close
+        }
+        None => {
+            crate::metrics::scan_work(search.len());
+            return None;
+        }
+    };
+    let body = &search[..close];
+    let directives = markdown_front_matter_body(body);
+    Some((directives, body_start + close + 3))
+}
+
+fn markdown_front_matter_body(body: &str) -> Vec<Block> {
+    if body.is_empty() {
+        return Vec::new();
+    }
+    crate::metrics::scan_work(body.len());
+    let bytes = body.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let key_start = i;
+        while i < bytes.len() && bytes[i] != b':' && bytes[i] != b'\n' && bytes[i] != b'\r' {
+            i += 1;
+        }
+        if i == key_start || i == bytes.len() || bytes[i] != b':' {
+            return Vec::new();
+        }
+        let key = &body[key_start..i];
+        i += 1;
+        i += mldoc_spaces_len(&body[i..]);
+        let value_start = i;
+        while i < bytes.len() && bytes[i] != b'\n' && bytes[i] != b'\r' {
+            i += 1;
+        }
+        let value = &body[value_start..i];
+        out.push(Block::Directive {
+            name: key.to_string(),
+            value: value.to_string(),
+            span: None,
+        });
+        if i < bytes.len() {
+            if bytes[i] == b'\n' {
+                i += 1;
+            } else if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+                i += 2;
+            } else {
+                return Vec::new();
+            }
+        }
+    }
+    out
+}
+
+fn offset_span(span: &mut Option<Span>, delta: usize) {
+    if let Some(Span(start, end)) = span {
+        *start += delta;
+        *end += delta;
+    }
+}
+
+fn offset_blocks(blocks: &mut [Block], delta: usize) {
+    if delta == 0 {
+        return;
+    }
+    for block in blocks {
+        offset_block(block, delta);
+    }
+}
+
+fn offset_block(block: &mut Block, delta: usize) {
+    match block {
+        Block::Paragraph { inline, span } => {
+            offset_inlines(inline, delta);
+            offset_span(span, delta);
+        }
+        Block::Heading { inline, span, .. } | Block::Bullet { inline, span, .. } => {
+            offset_inlines(inline, delta);
+            offset_span(span, delta);
+        }
+        Block::List { items, span } => {
+            for item in items {
+                offset_list_item(item, delta);
+            }
+            offset_span(span, delta);
+        }
+        Block::Src { span, .. }
+        | Block::RawHtml { span, .. }
+        | Block::DisplayedMath { span, .. }
+        | Block::Drawer { span, .. }
+        | Block::Directive { span, .. }
+        | Block::Comment { span, .. }
+        | Block::Example { span, .. }
+        | Block::LatexEnv { span, .. }
+        | Block::Properties { span, .. }
+        | Block::Hr { span }
+        | Block::Hiccup { span, .. } => offset_span(span, delta),
+        Block::Quote { children, span } | Block::Custom { children, span, .. } => {
+            offset_blocks(children, delta);
+            offset_span(span, delta);
+        }
+        Block::Table { header, rows, span, .. } => {
+            if let Some(header) = header {
+                for row in header {
+                    for node in row {
+                        offset_inline(node, delta);
+                    }
+                }
+            }
+            for row in rows {
+                for cell in row {
+                    offset_inlines(cell, delta);
+                }
+            }
+            offset_span(span, delta);
+        }
+        Block::FootnoteDef { inline, span, .. } => {
+            offset_inlines(inline, delta);
+            offset_span(span, delta);
+        }
+    }
+}
+
+fn offset_list_item(item: &mut ListItem, delta: usize) {
+    offset_blocks(&mut item.content, delta);
+    for child in &mut item.items {
+        offset_list_item(child, delta);
+    }
+    offset_inlines(&mut item.name, delta);
+}
+
+fn offset_inlines(inline: &mut [Inline], delta: usize) {
+    for node in inline {
+        offset_inline(node, delta);
+    }
+}
+
+fn offset_inline(node: &mut Inline, delta: usize) {
+    match node {
+        Inline::Plain { span, span_map, .. } => {
+            offset_span(span, delta);
+            if let Some(map) = span_map {
+                for SpanMapSegment(_, src, _) in map {
+                    *src += delta;
+                }
+            }
+        }
+        Inline::Emphasis { children, span, .. }
+        | Inline::Subscript { children, span }
+        | Inline::Superscript { children, span }
+        | Inline::Tag { children, span } => {
+            offset_inlines(children, delta);
+            offset_span(span, delta);
+        }
+        Inline::Link { label, span, .. } => {
+            offset_inlines(label, delta);
+            offset_span(span, delta);
+        }
+        Inline::Code { span, .. }
+        | Inline::Verbatim { span, .. }
+        | Inline::Break { span }
+        | Inline::HardBreak { span }
+        | Inline::NestedLink { span, .. }
+        | Inline::Target { span, .. }
+        | Inline::Macro { span, .. }
+        | Inline::ExportSnippet { span, .. }
+        | Inline::Latex { span, .. }
+        | Inline::Timestamp { span, .. }
+        | Inline::Cookie { span, .. }
+        | Inline::Fnref { span, .. }
+        | Inline::InlineHtml { span, .. }
+        | Inline::Email { span, .. }
+        | Inline::Entity { span, .. }
+        | Inline::Hiccup { span, .. } => offset_span(span, delta),
+    }
 }
 
 /// Per-line de-indent view. Synthetic mid-line remainders bypass the strip: in mldoc they
@@ -100,6 +299,11 @@ fn gt_peel(s: &str, n: usize) -> &str {
 #[inline]
 fn line_has_eol(line: &Line) -> bool {
     line.end > line.start + line.text.len()
+}
+
+#[inline]
+fn line_has_nl(input: &str, line: &Line) -> bool {
+    line.end > line.start && input.as_bytes()[line.end - 1] == b'\n'
 }
 
 /// The view of a `>`-frame CONTINUATION line: peel `gt_level` `>`s off the strip-viewed raw line
@@ -1188,15 +1392,32 @@ fn dispatch_md_line<'a>(
         // (i) footnote-definition opener — only WITHOUT a `#` prefix (with a `#`,
         // `[^id]` is an inline footnote ref in the heading title, per mldoc heading0).
         if size.is_none() {
-            if let Some((fname, fbody)) = footnote_def(content) {
+            if let Some(fold) = fold_md_footnote_def(
+                content,
+                i,
+                lines,
+                hi,
+                input,
+                origin,
+                strip_ctx,
+            ) {
                 flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                 empty_bullet!();
+                let mut body_map_cursor = OriginCursor::new();
+                let inline = stub_inline_mapped(
+                    &fold.body,
+                    0,
+                    &fold.body,
+                    Some(&fold.body_map),
+                    source_body,
+                    &mut body_map_cursor,
+                );
                 out.push(Block::FootnoteDef {
-                    name: fname,
-                    inline: stub_inline(fbody, crate::inline::ptr_base(fbody, input)),
-                    span: Some(Span(content_off, line_end)),
+                    name: fold.name,
+                    inline,
+                    span: Some(Span(content_off, lines[fold.next - 1].end)),
                 });
-                return Step::Next(i + 1);
+                return Step::Next(fold.next);
             }
         }
         // normal bullet — or, when the title is empty and the line has trailing
@@ -1236,14 +1457,25 @@ fn dispatch_md_line<'a>(
 
     // 6. footnote definition — suppressed inside a `>`-blockquote body (mldoc
     // `block_content_parsers` omits Footnote, so `[^id]: …` stays paragraph text). F1.
-    if let Some((fname, content)) = footnote_def(t).filter(|_| !in_block_content) {
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
-        out.push(Block::FootnoteDef {
-            name: fname,
-            inline: stub_inline(content, crate::inline::ptr_base(content, input)),
-            span: Some(Span(line_start, line_end)),
-        });
-        return Step::Next(i + 1);
+    if !in_block_content {
+        if let Some(fold) = fold_md_footnote_def(t, i, lines, hi, input, origin, strip_ctx) {
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+            let mut body_map_cursor = OriginCursor::new();
+            let inline = stub_inline_mapped(
+                &fold.body,
+                0,
+                &fold.body,
+                Some(&fold.body_map),
+                source_body,
+                &mut body_map_cursor,
+            );
+            out.push(Block::FootnoteDef {
+                name: fold.name,
+                inline,
+                span: Some(Span(line_start, lines[fold.next - 1].end)),
+            });
+            return Step::Next(fold.next);
+        }
     }
 
     // 7. table (group of consecutive table-row lines, bounded by `hi`)
@@ -2538,12 +2770,113 @@ fn md_property_trim(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0c)
 }
 
-fn footnote_def(s: &str) -> Option<(String, &str)> {
-    let rest = s.trim_start().strip_prefix("[^")?;
-    let end = rest.find(']')?;
-    let name = &rest[..end];
+struct MdFootnoteFold {
+    name: String,
+    body: String,
+    body_map: OriginMap,
+    next: usize,
+}
+
+fn fold_md_footnote_def<'a>(
+    first: &'a str,
+    first_line: usize,
+    lines: &[Line<'a>],
+    hi: usize,
+    input: &str,
+    origin: Option<&OriginMap>,
+    strip_ctx: StripCtx<'_>,
+) -> Option<MdFootnoteFold> {
+    let (name, first_body) = md_footnote_def_start(first)?;
+    let first_body = md_footnote_body_line(first_body, line_has_nl(input, &lines[first_line]))?;
+    let mut body = String::new();
+    let mut body_map = OriginMap::new();
+    let mut body_cursor = OriginCursor::new();
+    append_view_with_origin(
+        &mut body,
+        &mut body_map,
+        &mut body_cursor,
+        input,
+        origin,
+        first_body,
+    );
+    let mut last_content_line = first_line;
+    let mut j = first_line + 1;
+    while j < hi {
+        match md_footnote_body_line(line_text(lines, j, strip_ctx), line_has_nl(input, &lines[j])) {
+            Some(content) => {
+                append_line_joiner(
+                    &mut body,
+                    &mut body_map,
+                    &mut body_cursor,
+                    lines,
+                    last_content_line,
+                    origin,
+                );
+                append_view_with_origin(
+                    &mut body,
+                    &mut body_map,
+                    &mut body_cursor,
+                    input,
+                    origin,
+                    content,
+                );
+                last_content_line = j;
+                j += 1;
+            }
+            None => break,
+        }
+    }
+    while j < hi && lines[j].text.is_empty() {
+        j += 1;
+    }
+    Some(MdFootnoteFold {
+        name,
+        body,
+        body_map,
+        next: j,
+    })
+}
+
+fn md_footnote_def_start(s: &str) -> Option<(String, &str)> {
+    let rest = mldoc_trim_spaces_start(s).strip_prefix("[^")?;
+    let bytes = rest.as_bytes();
+    let mut end = 0usize;
+    while end < bytes.len() {
+        let b = bytes[end];
+        if b == b']' {
+            break;
+        }
+        if b == b'\n' || b == b'\r' || mldoc_is_space(b) {
+            return None;
+        }
+        end += 1;
+    }
+    if end == 0 || bytes.get(end) != Some(&b']') {
+        return None;
+    }
     let after = rest[end + 1..].strip_prefix(':')?;
-    Some((name.to_string(), after.trim_start()))
+    Some((rest[..end].to_string(), mldoc_trim_spaces_start(after)))
+}
+
+fn md_footnote_body_line(text: &str, followed_by_nl: bool) -> Option<&str> {
+    let start = mldoc_spaces_len(text);
+    let rest = &text[start..];
+    let bytes = rest.as_bytes();
+    let first = *bytes.first()?;
+    if matches!(first, b'-' | b'*' | b'#' | b'[' | b'\r' | b'\n') {
+        return None;
+    }
+    let eol = bytes.iter().position(|&b| b == b'\r' || b == b'\n');
+    let core_len = eol.unwrap_or(bytes.len());
+    if core_len < 2 {
+        return None;
+    }
+    if let Some(pos) = eol {
+        if bytes[pos] != b'\r' || pos != bytes.len() - 1 || !followed_by_nl {
+            return None;
+        }
+    }
+    Some(&rest[..core_len])
 }
 
 /// `#+name: value` org directive line, folded into an adjacent markdown property

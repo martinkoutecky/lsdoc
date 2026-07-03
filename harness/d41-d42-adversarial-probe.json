@@ -1,0 +1,62 @@
+[
+  {
+    "id": "adv-fm-crlf-two-keys-tail",
+    "format": "markdown",
+    "input": "---\r\na: 1\r\nb:2\r\n---tail"
+  },
+  {
+    "id": "adv-fm-empty-value-close-eof",
+    "format": "markdown",
+    "input": "---\na: \n---"
+  },
+  {
+    "id": "adv-fm-spaces-only-key",
+    "format": "markdown",
+    "input": "---\n   : value\n---\n"
+  },
+  {
+    "id": "adv-fm-value-sub-kept",
+    "format": "markdown",
+    "input": "---\na: v\u001a\n---\n"
+  },
+  {
+    "id": "adv-fm-bad-second-line-consumed",
+    "format": "markdown",
+    "input": "---\na: 1\nbad\n---x"
+  },
+  {
+    "id": "adv-fm-opener-needs-eol",
+    "format": "markdown",
+    "input": "---title: x\n---\n"
+  },
+  {
+    "id": "adv-fd-tab-first-body",
+    "format": "markdown",
+    "input": "[^1]: \tab"
+  },
+  {
+    "id": "adv-fd-empty-name",
+    "format": "markdown",
+    "input": "[^]: ab"
+  },
+  {
+    "id": "adv-fd-plus-two-bytes",
+    "format": "markdown",
+    "input": "[^1]: +x"
+  },
+  {
+    "id": "adv-fd-sub-ff-continuations",
+    "format": "markdown",
+    "input": "[^1]: ab\n\u001acd\n\fef"
+  },
+  {
+    "id": "adv-fd-hash-continuation-stops",
+    "format": "markdown",
+    "input": "[^1]: ab\n  #x\nzz"
+  },
+  {
+    "id": "adv-fd-org-form-in-md",
+    "format": "markdown",
+    "input": "[fn:1] ab"
+  }
+]
