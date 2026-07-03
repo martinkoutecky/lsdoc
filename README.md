@@ -80,8 +80,8 @@ your machine — nothing is uploaded.** The only output is a local report file, 
 any divergence snippets in it are **anonymized and re-verified** before they land
 in the report, so you can read it and decide what (if anything) to share.
 
-You need [Node.js](https://nodejs.org) and the [Rust toolchain](https://rustup.rs)
-(`rustup`) installed. Then:
+All you need is [Node.js](https://nodejs.org) (v18+). No Rust, no compiler — the
+tool downloads a prebuilt lsdoc binary for your platform on first run.
 
 ```sh
 git clone https://github.com/martinkoutecky/lsdoc
@@ -90,11 +90,16 @@ node tools/graph-check.mjs /path/to/your/logseq/graph --mode both
 ```
 
 Point it at your **graph root** — the folder that contains `pages/` and
-`journals/`. On the first run it auto-installs the reference parser and builds
-lsdoc once (a couple of minutes), then writes `graph-check-report.md` in the
-current directory. Modes: `--mode diff` (only look for parser disagreements),
-`--mode bench` (only compare speed), `--mode both` (default). Add `--help` for
-more flags.
+`journals/`. On the first run it auto-installs the reference parser (mldoc, via
+`npm`) and downloads the prebuilt lsdoc binary from the latest
+[release](https://github.com/martinkoutecky/lsdoc/releases), then writes
+`graph-check-report.md` in the current directory. Modes: `--mode diff` (only look
+for parser disagreements), `--mode bench` (only compare speed), `--mode both`
+(default). Add `--help` for more flags.
+
+(If no prebuilt exists for your platform, it falls back to building from source,
+which then needs the [Rust toolchain](https://rustup.rs) **and** a C compiler —
+`build-essential` on Linux, `xcode-select --install` on macOS.)
 
 If you hit a snag, open an issue — a paste of the terminal output is enough to
 start.

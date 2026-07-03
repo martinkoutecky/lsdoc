@@ -194,39 +194,127 @@ async function ensureHarnessDeps() {
   console.error("Reference parser installed.\n");
 }
 
-async function ensureReleaseBinary() {
-  const src = join(REPO, "src", "bin", "lsdoc-parse.rs");
-  let needsBuild = false;
-  try {
-    accessSync(RELEASE_BIN);
-    needsBuild = statSync(src).mtimeMs > statSync(RELEASE_BIN).mtimeMs;
-  } catch {
-    needsBuild = true;
+// Map this machine to the release asset name uploaded by .github/workflows/release.yml.
+function prebuiltAssetName() {
+  const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : null;
+  if (!arch) return null;
+  if (process.platform === "linux") return `lsdoc-parse-linux-${arch}`;
+  if (process.platform === "darwin") return `lsdoc-parse-macos-${arch}`;
+  if (process.platform === "win32" && arch === "x64") return "lsdoc-parse-windows-x64.exe";
+  return null;
+}
+
+async function repoSlug() {
+  const res = await runProcess("git", ["remote", "get-url", "origin"], { cwd: REPO, timeoutMs: 3_000 });
+  const m = res.ok && res.stdout.trim().match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\s*$/);
+  return m ? m[1] : "martinkoutecky/lsdoc";
+}
+
+// Download a prebuilt lsdoc-parse from the latest GitHub release. No compiler needed.
+// Returns true on success, false if unavailable (caller falls back to a source build).
+async function tryDownloadPrebuilt() {
+  const asset = prebuiltAssetName();
+  if (!asset) {
+    console.error(`No prebuilt lsdoc is published for your platform (${process.platform}/${process.arch}) yet.`);
+    return false;
   }
-  if (!needsBuild) return;
+  if (typeof fetch !== "function") return false; // Node < 18
+  const slug = await repoSlug();
+  const headers = { "User-Agent": "lsdoc-graph-check", "Accept": "application/vnd.github+json" };
+  try {
+    const relRes = await fetch(`https://api.github.com/repos/${slug}/releases/latest`, { headers });
+    if (!relRes.ok) {
+      const why = relRes.status === 404
+        ? `no published release for ${slug} yet`
+        : `GitHub API returned HTTP ${relRes.status}`;
+      console.error(`No prebuilt to download (${why}); will try to build from source instead.`);
+      return false;
+    }
+    const rel = await relRes.json();
+    const found = (rel.assets || []).find((a) => a.name === asset);
+    if (!found) {
+      console.error(`Release ${rel.tag_name || "latest"} has no prebuilt named "${asset}"; will try to build from source instead.`);
+      return false;
+    }
+    console.error(`Downloading the prebuilt lsdoc parser (${asset}, release ${rel.tag_name}) — no compiler needed...`);
+    const binRes = await fetch(found.browser_download_url, { headers: { "User-Agent": "lsdoc-graph-check" } });
+    if (!binRes.ok) {
+      console.error(`Download failed (HTTP ${binRes.status}); will try to build from source instead.`);
+      return false;
+    }
+    const bytes = Buffer.from(await binRes.arrayBuffer());
+    if (bytes.length === 0) {
+      console.error("Downloaded file was empty; will try to build from source instead.");
+      return false;
+    }
+    mkdirSync(dirname(RELEASE_BIN), { recursive: true });
+    writeFileSync(RELEASE_BIN, bytes);
+    if (process.platform !== "win32") chmodSync(RELEASE_BIN, 0o755);
+    // Sanity-check that it actually runs on this machine (catches arch/loader mismatches).
+    const probe = await runProcess(RELEASE_BIN, ["--help"], { timeoutMs: 10_000 });
+    if (!probe.ok && probe.error) {
+      console.error("The downloaded binary would not run on this machine; will try to build from source instead.");
+      rmSync(RELEASE_BIN, { force: true });
+      return false;
+    }
+    console.error("Prebuilt lsdoc parser ready.\n");
+    return true;
+  } catch (e) {
+    console.error(`Could not download a prebuilt lsdoc (${e.message}); will try to build from source instead.`);
+    return false;
+  }
+}
+
+async function buildFromSource({ soft } = {}) {
   if (!(await commandExists("cargo"))) {
+    if (soft) return false;
     throw new Error(
-      "The lsdoc parser needs to be compiled once, but Rust's `cargo` was not found on your PATH.\n" +
-      "Install the Rust toolchain (~2 min, official one-liner from https://rustup.rs):\n" +
-      "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh\n" +
-      "then open a NEW terminal (so PATH updates) and re-run this command."
+      "Couldn't get a prebuilt lsdoc for your platform, and Rust's `cargo` isn't installed to build one.\n" +
+      `If your platform (${process.platform}/${process.arch}) should have a prebuilt, please open an issue.\n` +
+      "Otherwise, to build from source you need BOTH the Rust toolchain AND a C compiler/linker:\n" +
+      "  - Rust:  https://rustup.rs\n" +
+      "  - Linux: install `build-essential` (Debian/Ubuntu) or `gcc`/`clang` (Fedora/Arch)\n" +
+      "  - macOS: run `xcode-select --install`\n" +
+      "then re-run this command."
     );
   }
-  if (!existsSync(RELEASE_BIN)) {
-    console.error("Building the lsdoc parser (one-time `cargo build --release`, may take a couple of minutes)...");
-  } else {
-    console.error("lsdoc source changed; rebuilding the parser (`cargo build --release`)...");
-  }
+  console.error("Building the lsdoc parser from source (`cargo build --release`, a couple of minutes)...");
   const result = await runProcess("bash", ["-lc", "source scripts/env.sh && cargo build --release --bin lsdoc-parse"], {
     cwd: REPO,
     timeoutMs: 10 * 60_000,
     inherit: true,
   });
   if (!result.ok) {
+    if (soft) return false;
     throw new Error(
-      "Building the lsdoc parser failed. If the error above mentions a missing compiler or linker,\n" +
-      "install the Rust toolchain from https://rustup.rs and try again."
+      "Building lsdoc from source failed. If the error above mentions a missing linker/compiler,\n" +
+      "install a C toolchain: Linux `build-essential`, macOS `xcode-select --install`."
     );
+  }
+  return true;
+}
+
+async function ensureReleaseBinary() {
+  const src = join(REPO, "src", "bin", "lsdoc-parse.rs");
+
+  if (!existsSync(RELEASE_BIN)) {
+    // No binary yet. Prefer a prebuilt download (works with zero toolchain);
+    // only fall back to compiling if no prebuilt is available.
+    if (await tryDownloadPrebuilt()) return;
+    await buildFromSource({ soft: false });
+    return;
+  }
+
+  // A binary already exists. On a dev machine (cargo + C toolchain present) keep it
+  // fresh if the source changed; anywhere else, use the prebuilt/downloaded binary as-is.
+  let stale = false;
+  try {
+    stale = statSync(src).mtimeMs > statSync(RELEASE_BIN).mtimeMs;
+  } catch {}
+  if (stale && (await commandExists("cargo"))) {
+    console.error("lsdoc source changed; rebuilding...");
+    const built = await buildFromSource({ soft: true });
+    if (!built) console.error("(could not rebuild; using the existing lsdoc binary as-is)\n");
   }
 }
 
