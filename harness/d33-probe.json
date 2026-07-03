@@ -1,0 +1,62 @@
+[
+  {
+    "id": "p03-class",
+    "input": "<DIV>a</div><div>b</DIV>",
+    "format": "markdown"
+  },
+  {
+    "id": "p13-class",
+    "input": "#+BEGIN_C\n<b>x</B></b>\n#+END_C",
+    "format": "markdown"
+  },
+  {
+    "id": "i03",
+    "input": "a <b>x</B> y and more text",
+    "format": "markdown"
+  },
+  {
+    "id": "i07",
+    "input": "a <div>x</DIV> y and more text",
+    "format": "markdown"
+  },
+  {
+    "id": "i08",
+    "input": "<div>a</DIV><div>b</DIV>\nmore text here",
+    "format": "markdown"
+  },
+  {
+    "id": "i09",
+    "input": "<b>a<b>c</B>d</B> tail here",
+    "format": "markdown"
+  },
+  {
+    "id": "i03-org",
+    "input": "a <b>x</B> y and more text",
+    "format": "org"
+  },
+  {
+    "id": "i09-org",
+    "input": "<b>a<b>c</B>d</B> tail here",
+    "format": "org"
+  },
+  {
+    "id": "upper-opener",
+    "input": "<DIV>a</div>",
+    "format": "markdown"
+  },
+  {
+    "id": "a01",
+    "input": "<div>a<div class=x>b</DIV>c</DIV> tail here",
+    "format": "markdown"
+  },
+  {
+    "id": "a02",
+    "input": "- <div>x</DIV>",
+    "format": "markdown"
+  },
+  {
+    "id": "a03",
+    "input": "<b>a</X>b/>more text here",
+    "format": "markdown"
+  }
+]

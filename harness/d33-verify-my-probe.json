@@ -1,0 +1,18 @@
+[
+  {"id":"v01","format":"markdown","input":"<SpAn>x</sPaN> tail text here"},
+  {"id":"v02","format":"markdown","input":"<div>a</div >b</DIV> tail text"},
+  {"id":"v03","format":"markdown","input":"<a><a></A></a></A> trailing text"},
+  {"id":"v04","format":"org","input":"a <B>x</b> and enough tail"},
+  {"id":"v05","format":"markdown","input":"- <B>x</b> tail here"},
+  {"id":"v06","format":"markdown","input":"<!-- x </DIV> --> tail text"},
+  {"id":"v07","format":"markdown","input":"<div>a</DIV><div>b</div> tail"},
+  {"id":"v08","format":"markdown","input":"<UL><li>a</LI><li>b</li></ul> x"},
+  {"id":"v09","format":"org","input":"#+BEGIN_C\n<KBD>k</kbd></kbd>\n#+END_C"},
+  {"id":"v10","format":"markdown","input":"<div Class=Y>a<div>b</DIV>c</Div> t"},
+  {"id":"v11","format":"markdown","input":"<b>a\nmid\nc</B>\ntail text"},
+  {"id":"v12","format":"markdown","input":"x <kbd>a</KBD> y <kbd>b</kbd> z"},
+  {"id":"v13","format":"org","input":"x <kbd>a</KBD> y <kbd>b</kbd> z"},
+  {"id":"v14","format":"markdown","input":"<p>a<P>b</p>c</P> tail text ok"},
+  {"id":"v15","format":"markdown","input":"<br />x</BR> tail text goes on"},
+  {"id":"v16","format":"markdown","input":"<i>a<em>b</EM>c</I> tail text"}
+]

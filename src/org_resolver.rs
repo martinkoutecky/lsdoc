@@ -1895,7 +1895,7 @@ fn try_target_angle_at(
     {
         return Some((
             Inline::InlineHtml {
-                text: s[i..extent.end].to_string(),
+                text: crate::block_common::raw_html_capture_text(s, i, extent.end),
                 span: None,
             },
             extent.end,

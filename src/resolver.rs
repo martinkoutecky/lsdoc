@@ -2358,7 +2358,7 @@ fn try_angle(
         {
             return Some((
                 Inline::InlineHtml {
-                    text: s[at..extent.end].to_string(),
+                    text: crate::block_common::raw_html_capture_text(s, at, extent.end),
                     span: None,
                 },
                 extent.end,

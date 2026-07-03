@@ -925,6 +925,86 @@ fn copy_capture_text(s: &str) -> String {
     s.to_string()
 }
 
+fn raw_html_canonical_close(input: &str, opener: usize, close_end: usize) -> Option<(usize, String)> {
+    if opener >= close_end || close_end > input.len() {
+        return None;
+    }
+    let RawHtmlHead::Tag { tag, .. } = raw_html_head_at(input, opener, close_end, false)? else {
+        return None;
+    };
+    let close_tag = format!("</{}>", tag);
+    let close = close_tag.as_bytes();
+    if close_end < close.len()
+        || !starts_with_ci_at(input.as_bytes(), close_end - close.len(), close, close_end)
+    {
+        return None;
+    }
+    Some((1 + tag.len(), close_tag))
+}
+
+fn rebuild_capture_from_mismatch(s: &str, first_mismatch: usize, close_tag: &str) -> String {
+    crate::metrics::scan_work(s.len());
+    let close = close_tag.as_bytes();
+    let bytes = s.as_bytes();
+    let end = s.len();
+    let mut out = String::with_capacity(s.len());
+    out.push_str(&s[..first_mismatch]);
+    out.push_str(close_tag);
+
+    let mut p = first_mismatch + close.len();
+    let mut chunk_start = p;
+    while p + close.len() <= end {
+        if starts_with_ci_at(bytes, p, close, end) {
+            out.push_str(&s[chunk_start..p]);
+            out.push_str(close_tag);
+            p += close.len();
+            chunk_start = p;
+        } else {
+            p += 1;
+        }
+    }
+    out.push_str(&s[chunk_start..]);
+    out
+}
+
+fn normalize_ci_matched_closes(s: &str, scan_start: usize, close_tag: &str) -> Option<String> {
+    // mldoc's `end_string_2 close_tag ~ci:true` consumes exactly the sequential leftmost
+    // non-overlapping case-insensitive `</tag>` occurrences after the opener tag token. The
+    // scanner already proved this extent ends on the same stream, so this single pass rewrites
+    // the same consumed closes without changing spans or extents.
+    crate::metrics::scan_work(s.len());
+    let close = close_tag.as_bytes();
+    let bytes = s.as_bytes();
+    let end = s.len();
+    let mut p = scan_start.min(end);
+    while p + close.len() <= end {
+        if starts_with_ci_at(bytes, p, close, end) {
+            if &bytes[p..p + close.len()] != close {
+                return Some(rebuild_capture_from_mismatch(s, p, close_tag));
+            }
+            p += close.len();
+        } else {
+            p += 1;
+        }
+    }
+    None
+}
+
+pub(crate) fn raw_html_capture_text(input: &str, opener: usize, close_end: usize) -> String {
+    let s = &input[opener..close_end];
+    let Some((scan_start, close_tag)) = raw_html_canonical_close(input, opener, close_end) else {
+        return copy_capture_text(s);
+    };
+    normalize_ci_matched_closes(s, scan_start, &close_tag).unwrap_or_else(|| copy_capture_text(s))
+}
+
+fn normalize_raw_html_view_text(text: String, input: &str, opener: usize, close_end: usize) -> String {
+    let Some((scan_start, close_tag)) = raw_html_canonical_close(input, opener, close_end) else {
+        return text;
+    };
+    normalize_ci_matched_closes(&text, scan_start, &close_tag).unwrap_or(text)
+}
+
 fn push_capture_str(out: &mut String, s: &str) {
     crate::metrics::scan_work(s.len());
     out.push_str(s);
@@ -976,7 +1056,7 @@ pub(crate) fn raw_html_raw_capture<'a>(
         return None;
     }
     let content_end = lines[close_line].start + lines[close_line].text.len();
-    let text = copy_capture_text(&input[opener..close_end]);
+    let text = raw_html_capture_text(input, opener, close_end);
     if close_end < content_end {
         Some(RawHtmlCapture {
             text,
@@ -1049,6 +1129,7 @@ pub(crate) fn raw_html_view_capture<'a>(
         push_capture_joiner(&mut text);
         push_capture_str(&mut text, &close_view[..close_end_in_line]);
     }
+    let text = normalize_raw_html_view_text(text, input, opener, close_end);
     if close_end_in_line < close_view.len() {
         Some(RawHtmlCapture {
             text,
@@ -1065,6 +1146,67 @@ pub(crate) fn raw_html_view_capture<'a>(
             next += 1;
         }
         Some(RawHtmlCapture { text, span_start, span_end, next, rewrite: None })
+    }
+}
+
+#[cfg(test)]
+mod raw_html_capture_tests {
+    use super::*;
+    use crate::projection::Inline;
+
+    fn raw_html_text(blocks: &[Block], idx: usize) -> &str {
+        match &blocks[idx] {
+            Block::RawHtml { text, .. } => text,
+            other => panic!("expected raw_html at {idx}, got {other:?}"),
+        }
+    }
+
+    fn inline_html_text(inlines: &[Inline]) -> &str {
+        inlines
+            .iter()
+            .find_map(|node| match node {
+                Inline::InlineHtml { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("expected inline_html")
+    }
+
+    #[test]
+    fn raw_html_raw_capture_normalizes_final_close() {
+        let blocks = crate::parse::parse("<div>x</DIV>");
+        assert_eq!(raw_html_text(&blocks, 0), "<div>x</div>");
+    }
+
+    #[test]
+    fn raw_html_raw_capture_normalizes_intermediate_closes() {
+        let blocks = crate::parse::parse("<b>a<b>c</B>d</B> tail here");
+        assert_eq!(raw_html_text(&blocks, 0), "<b>a<b>c</b>d</b>");
+    }
+
+    #[test]
+    fn raw_html_raw_capture_preserves_opener_case() {
+        let blocks = crate::parse::parse("<DIV>a</div>");
+        assert_eq!(raw_html_text(&blocks, 0), "<DIV>a</DIV>");
+    }
+
+    #[test]
+    fn raw_html_view_capture_normalizes_close_in_stripped_view() {
+        let blocks = crate::org::parse("#+BEGIN_QUOTE\n  <DIV>x\n  </div>\n#+END_QUOTE");
+        match &blocks[..] {
+            [Block::Quote { children, .. }] => {
+                assert_eq!(raw_html_text(children, 0), "<DIV>x\n</DIV>");
+            }
+            other => panic!("expected quote with raw_html child, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn raw_html_inline_capture_normalizes_close() {
+        let md = crate::resolver::parse_inline("a <b>x</B> y", 0);
+        assert_eq!(inline_html_text(&md), "<b>x</b>");
+
+        let org = crate::org_resolver::parse_inline_org("a <b>x</B> y", 0);
+        assert_eq!(inline_html_text(&org), "<b>x</b>");
     }
 }
 
