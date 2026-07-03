@@ -1,0 +1,192 @@
+[
+{
+"id": "d39p-md-sub-atx",
+"format": "markdown",
+"input": "\u001a# h"
+},
+{
+"id": "d39p-md-ff-fence",
+"format": "markdown",
+"input": "\f```\nx\n```"
+},
+{
+"id": "d39p-md-cr-cr-heading",
+"format": "markdown",
+"input": "a\r\r# b"
+},
+{
+"id": "d39p-md-sub-fence-close",
+"format": "markdown",
+"input": "```\nx\n\u001a```"
+},
+{
+"id": "d39p-org-ff-verbatim",
+"format": "org",
+"input": "\f:abc\n"
+},
+{
+"id": "d39p-org-ff-verbatim-end",
+"format": "org",
+"input": "\f:END:#+BEGIN_QUOTE\n"
+},
+{
+"id": "d39p-md-frontmatter",
+"format": "markdown",
+"input": "---\ntitle: x\n---\n"
+},
+{
+"id": "d39p-md-sub-directive",
+"format": "markdown",
+"input": "\u001a#+TITLE: x"
+},
+{
+"id": "d39p-md-sub-prop-directive",
+"format": "markdown",
+"input": "a:: 1\n\u001a#+b: 2"
+},
+{
+"id": "d39p-md-propdrawer-tabkey",
+"format": "markdown",
+"input": ":PROPERTIES:\n:a\tb: v\n:END:"
+},
+{
+"id": "d39p-org-sub-drawer",
+"format": "org",
+"input": "\u001a:LOGBOOK:\nx\n:END:"
+},
+{
+"id": "d39p-org-star-ff-title",
+"format": "org",
+"input": "*\f[[target]]"
+},
+{
+"id": "d39p-org-star-ff-trail",
+"format": "org",
+"input": "* \f  \nx"
+},
+{
+"id": "d39p-md-atx-ff-after",
+"format": "markdown",
+"input": "#\fx"
+},
+{
+"id": "d39p-md-dash-ff",
+"format": "markdown",
+"input": "-\f"
+},
+{
+"id": "d39p-md-sub-dash",
+"format": "markdown",
+"input": "\u001a- x"
+},
+{
+"id": "d39p-org-ff-list",
+"format": "org",
+"input": "\f* #+NAME: "
+},
+{
+"id": "d39p-org-list-ff-cont",
+"format": "org",
+"input": "- a\n\f#+BEGIN_QUOTE"
+},
+{
+"id": "d39p-md-sub-star-list",
+"format": "markdown",
+"input": "\u001a* item"
+},
+{
+"id": "d39p-md-ordered-ff-sep",
+"format": "markdown",
+"input": "1.\fx"
+},
+{
+"id": "d39p-md-deflist-sub",
+"format": "markdown",
+"input": "term\n:\u001ab"
+},
+{
+"id": "d39p-md-sub-property-CONTROL",
+"format": "markdown",
+"input": "\u001akey:: value"
+},
+{
+"id": "d39p-md-sub-table",
+"format": "markdown",
+"input": "\u001a| a |"
+},
+{
+"id": "d39p-org-sub-table",
+"format": "org",
+"input": "\u001a| a |"
+},
+{
+"id": "d39p-org-sub-hr",
+"format": "org",
+"input": "\u001a-----"
+},
+{
+"id": "d39p-md-sub-hr",
+"format": "markdown",
+"input": "\u001a---"
+},
+{
+"id": "d39p-md-ff-latexenv",
+"format": "markdown",
+"input": "\f\\begin{x}a\\end{x}"
+},
+{
+"id": "d39p-md-sub-callout",
+"format": "markdown",
+"input": "\u001a#+BEGIN_QUOTE\nx\n#+end_QUOTE"
+},
+{
+"id": "d39p-md-results",
+"format": "markdown",
+"input": "#+RESULTS:"
+},
+{
+"id": "d39p-org-results",
+"format": "org",
+"input": "#+RESULTS:"
+},
+{
+"id": "d39p-md-sub-quote",
+"format": "markdown",
+"input": "\u001a> q"
+},
+{
+"id": "d39p-md-sub-dmath",
+"format": "markdown",
+"input": "\u001a$$x$$"
+},
+{
+"id": "d39p-md-ff-rawhtml",
+"format": "markdown",
+"input": "\f<div>x</div>"
+},
+{
+"id": "d39p-md-sub-hiccup",
+"format": "markdown",
+"input": "\u001a[:div]"
+},
+{
+"id": "d39p-org-sub-fndef",
+"format": "org",
+"input": "\u001a[fn:1] ab"
+},
+{
+"id": "d39p-md-fndef-short",
+"format": "markdown",
+"input": "[^1]: a"
+},
+{
+"id": "d39p-org-comment-ff",
+"format": "org",
+"input": "#\fx"
+},
+{
+"id": "d39p-md-htmlcomment",
+"format": "markdown",
+"input": "<!--\nx\n-->"
+}
+]

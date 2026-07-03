@@ -2,11 +2,12 @@
 //! parse each into the observable projection, and write `[{id, input, projection}]`
 //! so `harness/compare.mjs` can diff it against the mldoc oracle's output.
 //!
-//! Usage: lsdoc-parse [CORPUS_JSON] [OUTPUT_JSON]
+//! Usage: lsdoc-parse [--timings-no-input] [CORPUS_JSON] [OUTPUT_JSON]
 //!   defaults: harness/corpus.json  →  harness/lsdoc-out.json
 
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::time::Instant;
 
 #[derive(Deserialize)]
 struct CorpusItem {
@@ -19,19 +20,34 @@ struct CorpusItem {
 #[derive(Serialize)]
 struct OutItem {
     id: String,
-    input: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input: Option<String>,
     projection: lsdoc::ast::Projection,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parse_micros: Option<u128>,
 }
 
 #[derive(Serialize)]
 struct InlineOutItem {
     id: String,
-    input: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input: Option<String>,
     inline: Vec<lsdoc::ast::Inline>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parse_micros: Option<u128>,
 }
 
 fn main() {
-    let mut args = std::env::args().skip(1);
+    let mut positional = Vec::new();
+    let mut timings_no_input = false;
+    for arg in std::env::args().skip(1) {
+        if arg == "--timings-no-input" {
+            timings_no_input = true;
+        } else {
+            positional.push(arg);
+        }
+    }
+    let mut args = positional.into_iter();
     let corpus_path = args.next().unwrap_or_else(|| "harness/corpus.json".to_string());
     let out_path = args.next().unwrap_or_else(|| "harness/lsdoc-out.json".to_string());
 
@@ -45,10 +61,16 @@ fn main() {
     if std::env::var("LSDOC_INLINE").is_ok() {
         let out: Vec<InlineOutItem> = corpus
             .into_iter()
-            .map(|c| InlineOutItem {
-                inline: lsdoc::inline(&c.input, c.format.as_deref().unwrap_or("md")),
-                id: c.id,
-                input: c.input,
+            .map(|c| {
+                let start = Instant::now();
+                let inline = lsdoc::inline(&c.input, c.format.as_deref().unwrap_or("md"));
+                let parse_micros = start.elapsed().as_micros();
+                InlineOutItem {
+                    inline,
+                    id: c.id,
+                    input: if timings_no_input { None } else { Some(c.input) },
+                    parse_micros: if timings_no_input { Some(parse_micros) } else { None },
+                }
             })
             .collect();
         // Compact, NOT to_string_pretty: the pretty-printer indents each JSON line by the
@@ -63,10 +85,16 @@ fn main() {
 
     let out: Vec<OutItem> = corpus
         .into_iter()
-        .map(|c| OutItem {
-            projection: lsdoc::parse_format(&c.input, c.format.as_deref().unwrap_or("md")),
-            id: c.id,
-            input: c.input,
+        .map(|c| {
+            let start = Instant::now();
+            let projection = lsdoc::parse_format(&c.input, c.format.as_deref().unwrap_or("md"));
+            let parse_micros = start.elapsed().as_micros();
+            OutItem {
+                projection,
+                id: c.id,
+                input: if timings_no_input { None } else { Some(c.input) },
+                parse_micros: if timings_no_input { Some(parse_micros) } else { None },
+            }
         })
         .collect();
 
