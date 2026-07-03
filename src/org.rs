@@ -25,9 +25,9 @@
 // in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
 use crate::block_common::{
     displayed_math_opener, find_displayed_math_close, find_drawer_end, find_matching_fence,
-    leading_ws, para_ws_only, raw_html_block_start, raw_html_end_at, raw_html_raw_capture,
-    raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie, Line, RawHtmlScan,
-    StripCtx, StripSeqTree, GT_FALLBACK_NEST_CAP, MARKERS,
+    first_body_indent, leading_ws, para_ws_only, raw_html_block_start, raw_html_end_at,
+    raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
+    Line, RawHtmlScan, StripCtx, StripSeqTree, GT_FALLBACK_NEST_CAP, MARKERS,
 };
 use crate::projection::{Block, Inline, ListItem, Property, Span, SpanMapSegment, Url};
 use crate::source_map::{OriginCursor, OriginMap};
@@ -1283,11 +1283,11 @@ fn dispatch_org_line<'a>(
                         return Step::Next(close + 1);
                     }
                     "quote" => {
-                        // indent_strip: leading ws of the VIEWED first body line (parent strip
-                        // already applied via line_text; child_strip = strip + indent_strip in
-                        // the Step::Open handler).
+                        // indent_strip: mldoc get_indent of the VIEWED first body line (parent
+                        // strip already applied via line_text; child_strip = strip + indent_strip
+                        // in the Step::Open handler).
                         let indent_strip = if close > i + 1 {
-                            leading_ws(line_text(lines, i + 1, strip_ctx))
+                            first_body_indent(line_text(lines, i + 1, strip_ctx))
                         } else {
                             0
                         };
@@ -1303,7 +1303,7 @@ fn dispatch_org_line<'a>(
                     }
                     _ => {
                         let indent_strip = if close > i + 1 {
-                            leading_ws(line_text(lines, i + 1, strip_ctx))
+                            first_body_indent(line_text(lines, i + 1, strip_ctx))
                         } else {
                             0
                         };
@@ -2475,7 +2475,7 @@ pub(crate) fn block_code_texts(texts: &[&str]) -> String {
     if texts.is_empty() {
         return String::new();
     }
-    let indent = leading_ws(texts[0]);
+    let indent = first_body_indent(texts[0]);
     let mut out = String::new();
     for &t in texts {
         let prefix = mldoc_ltrim_prefix_at_most(t, indent);
@@ -3266,6 +3266,53 @@ mod tests {
             block_code_texts(&["  seed", "  ", "  tail"]),
             "seed\n  \ntail\n"
         );
+    }
+
+    #[test]
+    fn d37_frame_first_body_indent_rule() {
+        assert_eq!(
+            first_nested_paragraph_inline("#+BEGIN_QUOTE\n  \n  a\n#+END_QUOTE"),
+            vec![
+                Inline::Plain { text: "  ".into(), span: None, span_map: None },
+                Inline::Break { span: None },
+                Inline::Plain { text: "  a".into(), span: None, span_map: None },
+                Inline::Break { span: None },
+            ]
+        );
+        assert_eq!(
+            first_nested_paragraph_inline("#+BEGIN_QUOTE\n\n  a\n#+END_QUOTE"),
+            vec![
+                Inline::Break { span: None },
+                Inline::Plain { text: "  a".into(), span: None, span_map: None },
+                Inline::Break { span: None },
+            ]
+        );
+        assert_eq!(
+            first_nested_paragraph_inline("#+BEGIN_QUOTE\n\x0c  \n  a\n#+END_QUOTE"),
+            vec![
+                Inline::Plain { text: "\x0c  ".into(), span: None, span_map: None },
+                Inline::Break { span: None },
+                Inline::Plain { text: "  a".into(), span: None, span_map: None },
+                Inline::Break { span: None },
+            ]
+        );
+        assert_eq!(
+            first_nested_paragraph_inline("#+BEGIN_QUOTE\n  a\n  b\n#+END_QUOTE"),
+            vec![
+                Inline::Plain { text: "a".into(), span: None, span_map: None },
+                Inline::Break { span: None },
+                Inline::Plain { text: "b".into(), span: None, span_map: None },
+                Inline::Break { span: None },
+            ]
+        );
+    }
+
+    #[test]
+    fn d37_block_code_texts_first_body_indent_rule() {
+        assert_eq!(block_code_texts(&["  ", "  keep"]), "  \n  keep\n");
+        assert_eq!(block_code_texts(&["", "  keep"]), "\n  keep\n");
+        assert_eq!(block_code_texts(&["\x0c  ", "  keep"]), "\x0c  \n  keep\n");
+        assert_eq!(block_code_texts(&["  seed", "  keep"]), "seed\nkeep\n");
     }
 
     #[test]

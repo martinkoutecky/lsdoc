@@ -1,0 +1,72 @@
+[
+  {
+    "id": "d37-s02-org-quote-allspace",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE\n  \n  a\n#+END_QUOTE"
+  },
+  {
+    "id": "d37-s03-org-nested-viewed-one-space",
+    "format": "org",
+    "input": "#+BEGIN_A\n  #+BEGIN_QUOTE\n \n   a\n  #+END_QUOTE\n#+END_A"
+  },
+  {
+    "id": "d37-e01-org-src-allspace",
+    "format": "org",
+    "input": "#+BEGIN_SRC txt\n  \n  keep\n#+END_SRC"
+  },
+  {
+    "id": "d37-e02-org-example-allspace",
+    "format": "org",
+    "input": "#+BEGIN_EXAMPLE\n  \n  keep\n#+END_EXAMPLE"
+  },
+  {
+    "id": "d37-e03-org-quote-space-tab",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE\n \t\n \tkeep\n#+END_QUOTE"
+  },
+  {
+    "id": "d37-e04-md-rebullet-note-allspace",
+    "format": "markdown",
+    "input": "- #+BEGIN_NOTE\n  \n  keep\n  #+END_NOTE"
+  },
+  {
+    "id": "d37-e05-org-quote-empty-first",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE\n\n  a\n#+END_QUOTE"
+  },
+  {
+    "id": "d37-e06-md-src-allspace",
+    "format": "markdown",
+    "input": "#+BEGIN_SRC txt\n  \n  keep\n#+END_SRC"
+  },
+  {
+    "id": "d37-e07-org-nested-viewed-three-spaces",
+    "format": "org",
+    "input": "#+BEGIN_A\n  #+BEGIN_QUOTE\n     \n     a\n  #+END_QUOTE\n#+END_A"
+  },
+  {
+    "id": "d37-org-note-allspace",
+    "format": "org",
+    "input": "#+BEGIN_NOTE\n  \n  a\n#+END_NOTE"
+  },
+  {
+    "id": "d37-md-bare-note-allspace",
+    "format": "markdown",
+    "input": "#+BEGIN_NOTE\n  \n  a\n#+END_NOTE"
+  },
+  {
+    "id": "d37-org-src-in-quote-viewed-allspace",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE\n  #+BEGIN_SRC txt\n    \n    keep\n  #+END_SRC\n#+END_QUOTE"
+  },
+  {
+    "id": "d37-org-quote-formfeed-first-control",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE\n\f  \n  a\n#+END_QUOTE"
+  },
+  {
+    "id": "d37-org-quote-tabs-only",
+    "format": "org",
+    "input": "#+BEGIN_QUOTE\n\t\t\n\t\tkeep\n#+END_QUOTE"
+  }
+]

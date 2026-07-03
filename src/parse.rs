@@ -42,7 +42,7 @@
 // in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
 use crate::block_common::{
     displayed_math_opener, drawer_property, find_displayed_math_close, find_drawer_end,
-    find_matching_fence, leading_ws, para_ws_only, raw_html_block_start,
+    find_matching_fence, first_body_indent, leading_ws, para_ws_only, raw_html_block_start,
     raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
     Line, RawHtmlScan, StripCtx, StripSeqTree, GT_FALLBACK_NEST_CAP, MARKERS,
 };
@@ -834,8 +834,11 @@ fn dispatch_md_line<'a>(
                     out.push(block);
                     return Step::Next(ni);
                 }
-                let indent_strip =
-                    if close > i + 1 { leading_ws(line_text(lines, i + 1, strip_ctx)) } else { 0 };
+                let indent_strip = if close > i + 1 {
+                    first_body_indent(line_text(lines, i + 1, strip_ctx))
+                } else {
+                    0
+                };
                 return Step::Open { close, builder: callout_builder(&name), indent_strip, span_start: line_start };
             }
             // closer is outside this body → fall through.
@@ -1054,13 +1057,16 @@ fn dispatch_md_line<'a>(
                     return Step::Next(ni);
                 }
                 // QUOTE→Quote / anything-else→Custom: zero-copy strip-view frame (P2). The body
-                // carries the bullet continuation indent; `indent_strip` = leading ws of the
-                // VIEWED first body line (parent strip already applied via line_text;
+                // carries the bullet continuation indent; `indent_strip` = mldoc get_indent of
+                // the VIEWED first body line (parent strip already applied via line_text;
                 // child_strip = strip + indent_strip in the Step::Open handler). The empty
                 // bullet is already in `out` before we return Open, so ordering is preserved.
                 // SRC/EXAMPLE stay raw (raw_callout_block above); only QUOTE/Custom become frames.
-                let indent_strip =
-                    if close > i + 1 { leading_ws(line_text(lines, i + 1, strip_ctx)) } else { 0 };
+                let indent_strip = if close > i + 1 {
+                    first_body_indent(line_text(lines, i + 1, strip_ctx))
+                } else {
+                    0
+                };
                 return Step::Open { close, builder: callout_builder(&bname), indent_strip, span_start: content_off };
             }
         }

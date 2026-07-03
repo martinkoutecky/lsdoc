@@ -377,6 +377,30 @@ pub(crate) fn leading_ws(s: &str) -> usize {
     s.bytes().take_while(|&b| b == b' ' || b == b'\t').count()
 }
 
+/// mldoc `get_indent` for the first body line of a `#+BEGIN_X` frame.
+pub(crate) fn first_body_indent(s: &str) -> usize {
+    let indent = leading_ws(s);
+    if indent == s.len() {
+        0
+    } else {
+        indent
+    }
+}
+
+#[cfg(test)]
+mod first_body_indent_tests {
+    use super::first_body_indent;
+
+    #[test]
+    fn matches_mldoc_get_indent_first_line_rule() {
+        assert_eq!(first_body_indent(""), 0);
+        assert_eq!(first_body_indent(" \t"), 0);
+        assert_eq!(first_body_indent("\x0c  "), 0);
+        assert_eq!(first_body_indent(" \tx"), 2);
+        assert_eq!(first_body_indent("\t  x"), 3);
+    }
+}
+
 /// Is the open paragraph byte-window all whitespace (so it emits no Paragraph)?
 pub(crate) fn para_ws_only(para: &Option<(usize, usize)>, input: &str) -> bool {
     match para {
