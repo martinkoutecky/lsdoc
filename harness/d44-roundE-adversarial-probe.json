@@ -1,0 +1,42 @@
+[
+  {
+    "id": "adv-e-three-item-group",
+    "format": "markdown",
+    "input": "term1\n: d1\n\nterm2\n: d2\n\nterm3\n: d3"
+  },
+  {
+    "id": "adv-e-hr-term-chain-blanks",
+    "format": "markdown",
+    "input": "---\n: def x\n\n***\n: def y"
+  },
+  {
+    "id": "adv-e-tab-ws-separator",
+    "format": "markdown",
+    "input": "term1\n: d1\n\t\nterm2\n: d2"
+  },
+  {
+    "id": "adv-e-crlf-multi",
+    "format": "markdown",
+    "input": "term1\r\n: d1\r\n\r\nterm2\r\n: d2"
+  },
+  {
+    "id": "adv-e-eof-no-eol",
+    "format": "markdown",
+    "input": "term\n: def eof"
+  },
+  {
+    "id": "adv-e-quote-multi-item",
+    "format": "markdown",
+    "input": "> term1\n> : d1\n>\n> term2\n> : d2"
+  },
+  {
+    "id": "adv-e-hr-later-bad-tail",
+    "format": "markdown",
+    "input": "***\n: def x\n: :bad"
+  },
+  {
+    "id": "adv-e-org-hr-guard",
+    "format": "org",
+    "input": "***\n: def x"
+  }
+]

@@ -1212,8 +1212,10 @@ fn dispatch_md_line<'a>(
         return Step::Next(i + 1);
     }
 
-    // 4. horizontal rule (before dash bullet / list)
-    if is_hr(t) {
+    // 4. horizontal rule (before dash bullet / list). Markdown definition lists are tried before
+    // HR in mldoc's Lists parser, so an HR-looking line defers only when the immediate next line is
+    // a valid first definition body; later bad tails do not backtrack the already-built def list.
+    if is_hr(t) && !(i + 1 < hi && is_def_opener(line_text(lines, i + 1, strip_ctx))) {
         drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
@@ -1925,18 +1927,19 @@ fn dispatch_md_line<'a>(
     // immediately followed by a `: <def>` line. mldoc pulls the term out of a
     // running paragraph (`intro\nterm\n: def` → Paragraph[intro] + def-list), so
     // we check it here at the paragraph point, after every other block construct.
-    // The term peek + `build_def_list`'s item/continuation/blank scans are bounded by `hi`.
+    // The term peek + `build_def_list`'s item/continuation/true-empty scans are bounded by `hi`.
     // Suppressed in list-item content (`in_item`): mldoc's `list_content_parsers` omits the WHOLE
     // `Lists.parse` (= regular list <|> `md_definition`), so a def-list never nests inside an item.
     if !in_item
         && !mldoc_trim_spaces_start(t).is_empty()
         && i + 1 < hi
-        && is_def_opener(lines[i + 1].text)
+        && is_def_opener(line_text(lines, i + 1, strip_ctx))
     {
         flush_para(out, para, para_buf, para_map, input, false, origin, source_body, origin_cursor);
-        let (item, ni) = build_def_list(lines, i, hi, input, origin, source_body, origin_cursor);
+        let (items, ni) =
+            build_def_list(lines, i, hi, input, origin, source_body, origin_cursor, strip_ctx);
         out.push(Block::List {
-            items: vec![item],
+            items,
             span: Some(Span(line_start, lines[ni - 1].end)),
         });
         return Step::Next(ni);
@@ -3184,9 +3187,9 @@ fn directive_property(s: &str) -> Option<(String, String)> {
 /// Does line `s` OPEN a markdown definition (a `: <def>` line)? mldoc
 /// `markdown_definition.ml`: `spaces *> ':' *> ws(≥1) *> term_definition` where the
 /// first `l` is `spaces *> satisfy(∉ ':' '#' eol) *> line(take_till1 eol)` — so after
-/// the `:` and its required whitespace there must be ≥2 non-eol chars whose first is
-/// not `:`/`#` (the quirky take_till1-after-satisfy gives the ≥2 rule, e.g. `: a` is
-/// NOT a def but `: ab` is).
+/// the `:` and its required whitespace there must be ≥2 non-eol BYTES whose first is
+/// not `:`/`#` (the quirky take_till1-after-satisfy gives the ≥2-byte rule, e.g. `: a`
+/// is NOT a def but `: ab` and `: é` are).
 fn is_def_opener(s: &str) -> bool {
     let rest = match mldoc_trim_spaces_start(s).strip_prefix(':') {
         Some(r) => r,
@@ -3200,26 +3203,26 @@ fn is_def_opener(s: &str) -> bool {
 }
 
 /// A definition continuation line (mldoc term_definition `l`): after leading spaces,
-/// the same ≥2-chars / first-∉`:`#` rule (`: ab\nx` stops at `ab`; `: ab\ncc` joins).
+/// the same ≥2-byte / first-∉`:`#` rule (`: ab\nx` stops at `ab`; `: ab\ncc` joins).
 fn is_def_continuation(s: &str) -> bool {
     def_line_content_ok(mldoc_trim_spaces_start(s))
 }
 
 /// The shared `satisfy(∉ ':' '#' eol) *> take_till1 eol` test on the content (already
-/// leading-space-stripped): first char ∉ {`:`,`#`,CR}, and ≥1 more non-CR char.
+/// leading-space-stripped): first byte ∉ {`:`,`#`,CR,LF}, and ≥1 more non-eol byte.
 fn def_line_content_ok(content: &str) -> bool {
-    let mut it = content.chars();
-    match it.next() {
-        Some(c0) if c0 != ':' && c0 != '#' && c0 != '\r' => {
-            matches!(it.next(), Some(c) if c != '\r')
-        }
-        _ => false,
+    let bytes = content.as_bytes();
+    if bytes.len() < 2 {
+        return false;
     }
+    !matches!(bytes[0], b':' | b'#' | b'\r' | b'\n') && !matches!(bytes[1], b'\r' | b'\n')
 }
 
-/// Build the markdown definition list whose term is `lines[i]` and whose `:` items
-/// follow. Returns the single `ListItem` and the next line index (after the items and
-/// any trailing blank lines mldoc's `<* optional eols` absorbs).
+/// Build the markdown definition list whose first term is `lines[i]`.
+///
+/// mldoc parses `many1 (definition_parse <* optional eols)`: each definition has one term
+/// and one-or-more `:` bodies, and true-empty lines after a definition are absorbed before
+/// trying the next term. Whitespace-only lines are never eols here.
 fn build_def_list(
     lines: &[Line],
     i: usize,
@@ -3228,90 +3231,106 @@ fn build_def_list(
     origin: Option<&OriginMap>,
     source_body: &str,
     origin_cursor: &mut OriginCursor,
-) -> (ListItem, usize) {
+    strip_ctx: StripCtx<'_>,
+) -> (Vec<ListItem>, usize) {
     // All scans are bounded by `hi`: at the top level `hi == lines.len()` (identical to
     // before); inside a callout body the closer line (`#+END_X`) is never a def
     // opener/continuation/blank, so the bound matches the legacy body-local scan exactly.
-    // The term is a raw sub-slice of `lines[i].text` → its inline spans are absolute (S2).
-    let term = mldoc_trim_spaces_start(lines[i].text); // mldoc name = `spaces *> line`
-    let name = stub_inline_mapped(
-        term,
-        crate::inline::ptr_base(term, input),
-        input,
-        origin,
-        source_body,
-        origin_cursor,
-    );
-    let mut content: Vec<Block> = Vec::new();
-    let mut j = i + 1;
-    while j < hi && is_def_opener(lines[j].text) {
-        // item first line: drop `<spaces>:` then the required ws (and any more spaces).
-        let first =
-            mldoc_trim_spaces_start(mldoc_trim_spaces_start(lines[j].text).strip_prefix(':').unwrap_or(""));
-        let mut item_text = String::new();
-        let mut item_map = OriginMap::new();
-        append_view_with_origin(
-            &mut item_text,
-            &mut item_map,
-            origin_cursor,
+    // Term/body views are strip-aware sub-slices, so inline spans stay source-mapped in callout
+    // bodies and de-`>` reparses.
+    let mut items = Vec::new();
+    let mut term_i = i;
+    loop {
+        let term = mldoc_trim_spaces_start(line_text(lines, term_i, strip_ctx)); // name = `spaces *> line`
+        let name = stub_inline_mapped(
+            term,
+            crate::inline::ptr_base(term, input),
             input,
             origin,
-            first,
+            source_body,
+            origin_cursor,
         );
-        let mut last_content_line = j;
-        j += 1;
-        // continuation lines (non-`:`-leading, same ≥2 rule), joined with '\n'.
-        while j < hi && is_def_continuation(lines[j].text) {
-            append_line_joiner(
-                &mut item_text,
-                &mut item_map,
-                origin_cursor,
-                lines,
-                last_content_line,
-                origin,
-            );
+        let mut content: Vec<Block> = Vec::new();
+        let mut j = term_i + 1;
+        while j < hi && is_def_opener(line_text(lines, j, strip_ctx)) {
+            // item first line: drop `<spaces>:` then the required ws (and any more spaces).
+            let line = line_text(lines, j, strip_ctx);
+            let first =
+                mldoc_trim_spaces_start(mldoc_trim_spaces_start(line).strip_prefix(':').unwrap_or(""));
+            let mut item_text = String::new();
+            let mut item_map = OriginMap::new();
             append_view_with_origin(
                 &mut item_text,
                 &mut item_map,
                 origin_cursor,
                 input,
                 origin,
-                mldoc_trim_spaces_start(lines[j].text),
+                first,
             );
-            last_content_line = j;
+            let mut last_content_line = j;
+            j += 1;
+            // continuation lines (non-`:`-leading, same ≥2-byte rule), joined with '\n'.
+            while j < hi && is_def_continuation(line_text(lines, j, strip_ctx)) {
+                append_line_joiner(
+                    &mut item_text,
+                    &mut item_map,
+                    origin_cursor,
+                    lines,
+                    last_content_line,
+                    origin,
+                );
+                append_view_with_origin(
+                    &mut item_text,
+                    &mut item_map,
+                    origin_cursor,
+                    input,
+                    origin,
+                    mldoc_trim_spaces_start(line_text(lines, j, strip_ctx)),
+                );
+                last_content_line = j;
+                j += 1;
+            }
+            // mldoc inline-parses `String.trim`-ed of the joined item.
+            let trimmed = ocaml_trim(&item_text);
+            let trim_base = crate::inline::ptr_base(trimmed, &item_text);
+            let mut item_map_cursor = OriginCursor::new();
+            let inl = stub_inline_mapped(
+                trimmed,
+                trim_base,
+                &item_text,
+                Some(&item_map),
+                source_body,
+                &mut item_map_cursor,
+            );
+            content.push(Block::Paragraph {
+                inline: inl,
+                span: None,
+            });
+        }
+        items.push(ListItem {
+            ordered: false,
+            number: None,
+            indent: 0,
+            content,
+            items: vec![],
+            name,
+            checkbox: None,
+        });
+
+        // absorb true-empty lines only (mldoc `definition_parse <* optional eols`).
+        while j < hi && line_text(lines, j, strip_ctx).is_empty() {
             j += 1;
         }
-        // mldoc inline-parses `String.trim`-ed of the joined item.
-        let trimmed = ocaml_trim(&item_text);
-        let trim_base = crate::inline::ptr_base(trimmed, &item_text);
-        let mut item_map_cursor = OriginCursor::new();
-        let inl = stub_inline_mapped(
-            trimmed,
-            trim_base,
-            &item_text,
-            Some(&item_map),
-            source_body,
-            &mut item_map_cursor,
-        );
-        content.push(Block::Paragraph {
-            inline: inl,
-            span: None,
-        });
+        if j < hi
+            && !mldoc_trim_spaces_start(line_text(lines, j, strip_ctx)).is_empty()
+            && j + 1 < hi
+            && is_def_opener(line_text(lines, j + 1, strip_ctx))
+        {
+            term_i = j;
+        } else {
+            return (items, j);
+        }
     }
-    // absorb trailing blank lines (mldoc `definition_parse <* optional eols`).
-    while j < hi && lines[j].text.trim().is_empty() {
-        j += 1;
-    }
-    let item = ListItem {
-        ordered: false,
-        number: None,
-        indent: 0,
-        content,
-        items: vec![],
-        name,
-        checkbox: None,
-    };
-    (item, j)
 }
 
 fn callout_begin(s: &str) -> Option<String> {
@@ -3915,6 +3934,11 @@ mod tests {
             Block::List { items, .. } => assert_eq!(items[0].content.len(), 2),
             _ => panic!(),
         }
+        // true-empty separator continues mldoc's outer many1 in one List block.
+        match &parse("term1\n: d1\n\nterm2\n: d2")[0] {
+            Block::List { items, .. } => assert_eq!(items.len(), 2),
+            _ => panic!(),
+        }
         // two terms (continuation): item1 content joins `d1`+`t2` across a Break.
         match &parse("t1\n: d1\nt2\n: d2")[0] {
             Block::List { items, .. } => {
@@ -3933,6 +3957,10 @@ mod tests {
         assert_eq!(kinds("term\n:nospace"), ["paragraph"]);
         assert_eq!(kinds("term\n: a"), ["paragraph"]);      // <2 chars after `: `
         assert_eq!(kinds("term\n: #x"), ["paragraph"]);
+        assert_eq!(kinds("term\n: é"), ["list"]);           // ≥2 bytes, one scalar
+        assert_eq!(kinds("---\n: def x"), ["list"]);        // HR-looking term defers
+        assert_eq!(kinds("---\n: x"), ["hr", "paragraph"]); // invalid first item: no defer
+        assert_eq!(kinds("term\n: def x\n "), ["list", "paragraph"]); // ws-only is not eols
         // a running paragraph keeps all but the last line; that becomes the term.
         assert_eq!(kinds("intro\nterm\n: definition"), ["paragraph", "list"]);
     }
