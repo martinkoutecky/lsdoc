@@ -165,6 +165,35 @@ function runProcess(cmd, args, { cwd = REPO, env = {}, input = null, timeoutMs =
   });
 }
 
+async function commandExists(cmd) {
+  const res = await runProcess("bash", ["-lc", `command -v ${cmd}`], { timeoutMs: 5_000 });
+  return res.ok;
+}
+
+async function ensureHarnessDeps() {
+  const mldocDir = join(HARNESS, "node_modules", "mldoc");
+  if (existsSync(mldocDir)) return;
+  console.error("");
+  console.error("First run: the reference parser (mldoc, the one Logseq itself uses) is not");
+  console.error("installed yet. Installing it now with `npm install` in harness/ — this is a");
+  console.error("one-time download from the public npm registry. Nothing about your graph is sent.");
+  console.error("");
+  if (!(await commandExists("npm"))) {
+    throw new Error(
+      "Node.js / npm was not found, and it's needed to install the reference parser.\n" +
+      "Install Node.js (LTS) from https://nodejs.org , then re-run this command."
+    );
+  }
+  const res = await runProcess("npm", ["install"], { cwd: HARNESS, timeoutMs: 10 * 60_000, inherit: true });
+  if (!res.ok || !existsSync(mldocDir)) {
+    throw new Error(
+      "Automatic `npm install` of mldoc failed.\n" +
+      `Please run it yourself:\n  cd ${HARNESS}\n  npm install\nthen re-run this command.`
+    );
+  }
+  console.error("Reference parser installed.\n");
+}
+
 async function ensureReleaseBinary() {
   const src = join(REPO, "src", "bin", "lsdoc-parse.rs");
   let needsBuild = false;
@@ -175,17 +204,30 @@ async function ensureReleaseBinary() {
     needsBuild = true;
   }
   if (!needsBuild) return;
+  if (!(await commandExists("cargo"))) {
+    throw new Error(
+      "The lsdoc parser needs to be compiled once, but Rust's `cargo` was not found on your PATH.\n" +
+      "Install the Rust toolchain (~2 min, official one-liner from https://rustup.rs):\n" +
+      "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh\n" +
+      "then open a NEW terminal (so PATH updates) and re-run this command."
+    );
+  }
   if (!existsSync(RELEASE_BIN)) {
-    console.error("lsdoc release binary missing; building with `source scripts/env.sh && cargo build --release --bin lsdoc-parse`");
+    console.error("Building the lsdoc parser (one-time `cargo build --release`, may take a couple of minutes)...");
   } else {
-    console.error("lsdoc release binary is older than src/bin/lsdoc-parse.rs; rebuilding");
+    console.error("lsdoc source changed; rebuilding the parser (`cargo build --release`)...");
   }
   const result = await runProcess("bash", ["-lc", "source scripts/env.sh && cargo build --release --bin lsdoc-parse"], {
     cwd: REPO,
     timeoutMs: 10 * 60_000,
     inherit: true,
   });
-  if (!result.ok) throw new Error("cargo build --release --bin lsdoc-parse failed");
+  if (!result.ok) {
+    throw new Error(
+      "Building the lsdoc parser failed. If the error above mentions a missing compiler or linker,\n" +
+      "install the Rust toolchain from https://rustup.rs and try again."
+    );
+  }
 }
 
 async function scanGraph(graphDir, opts) {
@@ -1117,10 +1159,27 @@ async function main() {
     return;
   }
 
+  console.error("lsdoc graph-check — compares lsdoc against Logseq's own parser (mldoc) on YOUR");
+  console.error("graph, entirely on your machine. Nothing is uploaded. The only output is a local");
+  console.error("report file you can read before deciding whether to share anything.\n");
+
   const graphDir = opts.graphDir;
-  const st = statSync(graphDir);
-  if (!st.isDirectory()) throw new Error(`${graphDir} is not a directory`);
+  let st;
+  try {
+    st = statSync(graphDir);
+  } catch {
+    throw new Error(
+      `Could not find that folder:\n  ${graphDir}\n` +
+      "Pass the path to your Logseq graph directory (the folder that contains `pages/` and `journals/`)."
+    );
+  }
+  if (!st.isDirectory()) throw new Error(`${graphDir} is not a folder. Point this at your Logseq graph directory.`);
+  if (!existsSync(join(graphDir, "pages")) && !existsSync(join(graphDir, "journals"))) {
+    console.error(`Note: ${graphDir} has no pages/ or journals/ subfolder — is it really your Logseq graph root?`);
+    console.error("Continuing anyway; if 0 files match, that's why.\n");
+  }
   ensureTempDir();
+  await ensureHarnessDeps();
   await ensureReleaseBinary();
 
   const { files, skipped } = await scanGraph(graphDir, opts);
@@ -1129,7 +1188,8 @@ async function main() {
   if (files.length === 0) {
     const report = renderReport({ graphDir, opts, stats, versions: vers, zeroFiles: true });
     writeFileSync(opts.out, report);
-    console.error(`0 files matched; wrote ${opts.out}`);
+    console.error(`No .md/.org files were found under ${graphDir} (pages/ + journals/).`);
+    console.error(`An (empty) report was still written to ${opts.out}.`);
     return;
   }
 
@@ -1144,7 +1204,18 @@ async function main() {
 
   const report = renderReport({ graphDir, opts, stats, versions: vers, bench, findings, zeroFiles: false });
   writeFileSync(opts.out, report);
-  console.error(`wrote ${opts.out}`);
+  const divergences = (findings || []).filter((f) => f.type === "divergence").length;
+  console.error("");
+  console.error(`Done. Report written to:\n  ${opts.out}`);
+  console.error("Nothing was uploaded. Open that file and read it before sharing anything.");
+  if (findings) {
+    if (divergences > 0) {
+      console.error(`\nFound ${divergences} anonymized, re-verified divergence(s) between lsdoc and mldoc.`);
+      console.error("If you're comfortable, the snippets in the report are safe to post as bug reports.");
+    } else {
+      console.error("\nNo divergences found — lsdoc matched Logseq's parser on every file. 🎉");
+    }
+  }
 }
 
 main().catch((e) => {

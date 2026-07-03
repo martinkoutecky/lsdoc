@@ -72,6 +72,33 @@ suite and a **fuzz** loop guard against `O(n²)`/`O(2^n)`/stack-overflow behavio
 that passes every correctness diff. No parser phase is worse than `O(n log n)`
 without a written justification in `DECISIONS.md`.
 
+## Check lsdoc against your own Logseq graph
+
+Want to help? Run lsdoc and Logseq's own parser (`mldoc`) side-by-side on **your**
+graph and see where they disagree or how the speed compares. It all happens **on
+your machine — nothing is uploaded.** The only output is a local report file, and
+any divergence snippets in it are **anonymized and re-verified** before they land
+in the report, so you can read it and decide what (if anything) to share.
+
+You need [Node.js](https://nodejs.org) and the [Rust toolchain](https://rustup.rs)
+(`rustup`) installed. Then:
+
+```sh
+git clone https://github.com/martinkoutecky/lsdoc
+cd lsdoc
+node tools/graph-check.mjs /path/to/your/logseq/graph --mode both
+```
+
+Point it at your **graph root** — the folder that contains `pages/` and
+`journals/`. On the first run it auto-installs the reference parser and builds
+lsdoc once (a couple of minutes), then writes `graph-check-report.md` in the
+current directory. Modes: `--mode diff` (only look for parser disagreements),
+`--mode bench` (only compare speed), `--mode both` (default). Add `--help` for
+more flags.
+
+If you hit a snag, open an issue — a paste of the terminal output is enough to
+start.
+
 ## Running
 
 ```sh
