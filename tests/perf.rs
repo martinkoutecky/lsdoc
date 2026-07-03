@@ -319,6 +319,10 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         }),
         ("md_nested_callout_raw_html", false, 200, nested_callout_raw_html),
         ("org_nested_callout_raw_html", true, 200, nested_callout_raw_html),
+        ("md_nested_reuse_after_child_raw_html", false, 200, nested_reuse_after_child_raw_html),
+        ("org_nested_reuse_after_child_raw_html", true, 200, nested_reuse_after_child_raw_html),
+        ("md_raw_html_sibling_alternation", false, 200, raw_html_sibling_alternation),
+        ("org_raw_html_sibling_alternation", true, 200, raw_html_sibling_alternation),
         ("md_raw_html_sibling_pairs", false, 10_000, raw_html_sibling_pairs),
         ("org_raw_html_sibling_pairs", true, 10_000, raw_html_sibling_pairs),
         ("md_raw_html_closes_then_opens", false, 10_000, raw_html_closes_then_opens),
@@ -446,6 +450,36 @@ fn nested_callout_raw_html(k: usize) -> String {
         let name = format!("{:0>width$}", base36(d), width = width);
         writeln!(&mut s, "#+END_A{name}").unwrap();
     }
+    s
+}
+
+fn nested_reuse_after_child_raw_html(k: usize) -> String {
+    let width = base36(k + 1).len();
+    let mut s = String::new();
+    for d in 0..k {
+        let name = format!("{:0>width$}", base36(d), width = width);
+        writeln!(&mut s, "#+BEGIN_A{name}").unwrap();
+        s.push_str("<div>before</div>\n");
+    }
+    for d in (0..k).rev() {
+        s.push_str("<div>after</div>\n");
+        let name = format!("{:0>width$}", base36(d), width = width);
+        writeln!(&mut s, "#+END_A{name}").unwrap();
+    }
+    s
+}
+
+fn raw_html_sibling_alternation(k: usize) -> String {
+    let width = base36(k + 1).len();
+    let mut s = String::new();
+    for d in 0..k {
+        s.push_str("<div>p</div>\n");
+        let name = format!("{:0>width$}", base36(d), width = width);
+        writeln!(&mut s, "#+BEGIN_A{name}").unwrap();
+        s.push_str("<div>c</div>\n");
+        writeln!(&mut s, "#+END_A{name}").unwrap();
+    }
+    s.push_str("<div>p</div>\n");
     s
 }
 

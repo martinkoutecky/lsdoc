@@ -218,40 +218,24 @@ struct RawHtmlTagCache {
 #[derive(Clone, Copy)]
 struct RawHtmlQueryRanks {
     event_rank: usize,
-    event_prefix: isize,
     close_rank: usize,
     self_rank: usize,
 }
 
-#[derive(Clone, Copy)]
-struct RawHtmlWindowRanks {
-    tail_start: usize,
-    event_tail_start: usize,
-    close_tail_start: usize,
-    close_fit_end: usize,
-    self_fit_end: usize,
-}
-
-// Per-tag body windows are stack-like plus the full-input resolver window. Keep only the most
-// recent windows so lookup work is deterministic; eviction only recomputes pure rank metadata.
-const RAW_HTML_BODY_RANK_CACHE_CAP: usize = 16;
+const RAW_HTML_NO_NSE: usize = usize::MAX;
 
 struct RawHtmlTagIndex {
     input_len: usize,
     close_len: usize,
-    max_event_len: usize,
     event_pos: Vec<usize>,
-    event_end: Vec<usize>,
-    event_delta: Vec<isize>,
+    #[cfg(test)]
     event_prefix_after: Vec<isize>,
+    next_strict_below_close: Vec<usize>,
+    virtual_next_strict_below_close: usize,
     close_pos: Vec<usize>,
-    close_min_tree: Vec<isize>,
-    close_tree_base: usize,
     self_close_pos: Vec<usize>,
-    body_ranks: Vec<(usize, RawHtmlWindowRanks)>,
     last_after_tag: usize,
     event_cursor: usize,
-    event_cursor_prefix: isize,
     close_cursor: usize,
     self_close_cursor: usize,
 }
@@ -265,9 +249,8 @@ impl RawHtmlTagIndex {
         let open_plain = open_tag.as_bytes();
         let open_with_attrs = open_attr.as_bytes();
         let input_len = bytes.len();
-        let max_event_len = close.len().max(open_plain.len()).max(open_with_attrs.len()).max(2);
 
-        let mut events: Vec<(usize, usize, isize)> = Vec::new();
+        let mut events: Vec<(usize, isize)> = Vec::new();
         let mut close_pos = Vec::new();
         let mut self_close_pos = Vec::new();
         let mut open_cursor = 0usize;
@@ -279,10 +262,10 @@ impl RawHtmlTagIndex {
             scanned += 1;
             if pos == open_cursor {
                 if starts_with_at(bytes, pos, open_plain, input_len) {
-                    events.push((pos, pos + open_plain.len(), 1));
+                    events.push((pos, 1));
                     open_cursor += open_plain.len();
                 } else if starts_with_at(bytes, pos, open_with_attrs, input_len) {
-                    events.push((pos, pos + open_with_attrs.len(), 1));
+                    events.push((pos, 1));
                     open_cursor += open_with_attrs.len();
                 } else {
                     open_cursor += 1;
@@ -292,7 +275,7 @@ impl RawHtmlTagIndex {
                 if close_cursor + close.len() <= input_len {
                     if starts_with_ci_at(bytes, pos, close, input_len) {
                         close_pos.push(pos);
-                        events.push((pos, pos + close.len(), -1));
+                        events.push((pos, -1));
                         close_cursor += close.len();
                     } else {
                         close_cursor += 1;
@@ -317,97 +300,113 @@ impl RawHtmlTagIndex {
         crate::metrics::scan_work(scanned);
 
         let mut event_pos = Vec::with_capacity(events.len());
-        let mut event_end = Vec::with_capacity(events.len());
         let mut event_delta = Vec::with_capacity(events.len());
         let mut event_prefix_after = Vec::with_capacity(events.len());
-        let mut close_prefix_after = Vec::with_capacity(close_pos.len());
         let mut prefix = 0isize;
-        for (pos, end, delta) in events {
+        for (pos, delta) in events {
             prefix += delta;
             event_pos.push(pos);
-            event_end.push(end);
             event_delta.push(delta);
             event_prefix_after.push(prefix);
-            if delta < 0 {
-                close_prefix_after.push(prefix);
-            }
         }
-        debug_assert_eq!(close_prefix_after.len(), close_pos.len());
-
-        let mut close_tree_base = 1usize;
-        while close_tree_base < close_prefix_after.len().max(1) {
-            close_tree_base *= 2;
-        }
-        let mut close_min_tree = vec![isize::MAX; close_tree_base * 2];
-        for (i, &v) in close_prefix_after.iter().enumerate() {
-            close_min_tree[close_tree_base + i] = v;
-        }
-        for i in (1..close_tree_base).rev() {
-            close_min_tree[i] = close_min_tree[i * 2].min(close_min_tree[i * 2 + 1]);
-        }
+        let (next_strict_below_close, virtual_next_strict_below_close) =
+            Self::build_next_strict_below_close(&event_delta, &event_prefix_after);
 
         Self {
             input_len,
             close_len: close.len(),
-            max_event_len,
             event_pos,
-            event_end,
-            event_delta,
+            #[cfg(test)]
             event_prefix_after,
+            next_strict_below_close,
+            virtual_next_strict_below_close,
             close_pos,
-            close_min_tree,
-            close_tree_base,
             self_close_pos,
-            body_ranks: Vec::with_capacity(RAW_HTML_BODY_RANK_CACHE_CAP),
             last_after_tag: 0,
             event_cursor: 0,
-            event_cursor_prefix: 0,
             close_cursor: 0,
             self_close_cursor: 0,
         }
     }
 
-    fn lower_bound_charged(slice: &[usize], target: usize) -> usize {
-        let mut lo = 0usize;
-        let mut hi = slice.len();
-        while lo < hi {
+    fn build_next_strict_below_close(
+        event_delta: &[isize],
+        event_prefix_after: &[isize],
+    ) -> (Vec<usize>, usize) {
+        let _ = event_delta;
+        let mut next = vec![RAW_HTML_NO_NSE; event_prefix_after.len()];
+        let mut stack: Vec<usize> = Vec::new();
+        for i in (0..event_prefix_after.len()).rev() {
             crate::metrics::scan_work(1);
-            let mid = lo + (hi - lo) / 2;
-            if slice[mid] < target {
-                lo = mid + 1;
-            } else {
-                hi = mid;
+            while let Some(&candidate) = stack.last() {
+                crate::metrics::scan_work(1);
+                if event_prefix_after[candidate] < event_prefix_after[i] {
+                    break;
+                }
+                stack.pop();
             }
+            next[i] = stack.last().copied().unwrap_or(RAW_HTML_NO_NSE);
+            debug_assert!(
+                next[i] == RAW_HTML_NO_NSE || event_delta[next[i]] < 0,
+                "first strict-below event must be a close"
+            );
+            stack.push(i);
         }
-        lo
+        while let Some(&candidate) = stack.last() {
+            crate::metrics::scan_work(1);
+            if event_prefix_after[candidate] < 0 {
+                break;
+            }
+            stack.pop();
+        }
+        let virtual_next = stack.last().copied().unwrap_or(RAW_HTML_NO_NSE);
+        debug_assert!(
+            virtual_next == RAW_HTML_NO_NSE || event_delta[virtual_next] < 0,
+            "first strict-below virtual event must be a close"
+        );
+        (next, virtual_next)
+    }
+
+    fn rank_from_start_charged(slice: &[usize], target: usize) -> usize {
+        let mut idx = 0usize;
+        while idx < slice.len() {
+            crate::metrics::scan_work(1);
+            if slice[idx] >= target {
+                break;
+            }
+            idx += 1;
+        }
+        idx
+    }
+
+    fn matching_close_event(&self, event_rank: usize) -> usize {
+        if event_rank == 0 {
+            self.virtual_next_strict_below_close
+        } else {
+            self.next_strict_below_close[event_rank - 1]
+        }
+    }
+
+    fn close_fits(&self, close_pos: usize, body_end: usize) -> bool {
+        close_pos + self.close_len <= body_end
+    }
+
+    fn self_close_fits(self_close_pos: usize, body_end: usize) -> bool {
+        self_close_pos + 2 <= body_end
     }
 
     fn query_ranks(&mut self, after_tag: usize) -> RawHtmlQueryRanks {
-        let monotone = after_tag >= self.last_after_tag;
-        debug_assert!(
-            monotone,
-            "RawHtmlTagIndex queried backwards: previous after_tag={}, current after_tag={}",
-            self.last_after_tag,
-            after_tag
-        );
-        if !monotone {
-            let event_rank = Self::lower_bound_charged(&self.event_pos, after_tag);
-            let event_prefix = if event_rank == 0 {
-                0
-            } else {
-                self.event_prefix_after[event_rank - 1]
-            };
+        if after_tag < self.last_after_tag {
+            let event_rank = Self::rank_from_start_charged(&self.event_pos, after_tag);
             return RawHtmlQueryRanks {
                 event_rank,
-                event_prefix,
-                close_rank: Self::lower_bound_charged(&self.close_pos, after_tag),
-                self_rank: Self::lower_bound_charged(&self.self_close_pos, after_tag),
+                close_rank: Self::rank_from_start_charged(&self.close_pos, after_tag),
+                self_rank: Self::rank_from_start_charged(&self.self_close_pos, after_tag),
             };
         }
 
         while self.event_cursor < self.event_pos.len() && self.event_pos[self.event_cursor] < after_tag {
             crate::metrics::scan_work(1);
-            self.event_cursor_prefix += self.event_delta[self.event_cursor];
             self.event_cursor += 1;
         }
         while self.close_cursor < self.close_pos.len() && self.close_pos[self.close_cursor] < after_tag {
@@ -423,137 +422,9 @@ impl RawHtmlTagIndex {
         self.last_after_tag = after_tag;
         RawHtmlQueryRanks {
             event_rank: self.event_cursor,
-            event_prefix: self.event_cursor_prefix,
             close_rank: self.close_cursor,
             self_rank: self.self_close_cursor,
         }
-    }
-
-    fn window_ranks(&mut self, body_end: usize) -> RawHtmlWindowRanks {
-        debug_assert!(body_end <= self.input_len);
-        let mut hit = None;
-        for pos in 0..self.body_ranks.len() {
-            crate::metrics::scan_work(1);
-            if self.body_ranks[pos].0 == body_end {
-                hit = Some(pos);
-                break;
-            }
-        }
-        if let Some(pos) = hit {
-            let ranks = self.body_ranks[pos].1;
-            if pos != 0 {
-                crate::metrics::scan_work(pos);
-                let entry = self.body_ranks.remove(pos);
-                self.body_ranks.insert(0, entry);
-            }
-            return ranks;
-        }
-        let tail_start = body_end.saturating_sub(self.max_event_len);
-        let close_fit_end = if body_end >= self.close_len {
-            Self::lower_bound_charged(&self.close_pos, body_end - self.close_len + 1)
-        } else {
-            0
-        };
-        let self_fit_end = if body_end >= 2 {
-            Self::lower_bound_charged(&self.self_close_pos, body_end - 1)
-        } else {
-            0
-        };
-        let ranks = RawHtmlWindowRanks {
-            tail_start,
-            event_tail_start: Self::lower_bound_charged(&self.event_pos, tail_start),
-            close_tail_start: Self::lower_bound_charged(&self.close_pos, tail_start),
-            close_fit_end,
-            self_fit_end,
-        };
-        if self.body_ranks.len() == RAW_HTML_BODY_RANK_CACHE_CAP {
-            self.body_ranks.pop();
-        }
-        crate::metrics::scan_work(self.body_ranks.len());
-        self.body_ranks.insert(0, (body_end, ranks));
-        ranks
-    }
-
-    fn prefix_before_window(
-        &self,
-        pos: usize,
-        body_end: usize,
-        query: RawHtmlQueryRanks,
-        window: RawHtmlWindowRanks,
-    ) -> isize {
-        if pos <= window.tail_start {
-            return query.event_prefix;
-        }
-        let mut prefix = query.event_prefix;
-        let mut idx = window.event_tail_start;
-        while idx < query.event_rank {
-            crate::metrics::scan_work(1);
-            if self.event_end[idx] > body_end {
-                prefix -= self.event_delta[idx];
-            }
-            idx += 1;
-        }
-        prefix
-    }
-
-    fn first_tail_close_below(
-        &self,
-        body_end: usize,
-        after_tag: usize,
-        threshold: isize,
-        window: RawHtmlWindowRanks,
-    ) -> Option<usize> {
-        let mut prefix = if window.event_tail_start == 0 {
-            0
-        } else {
-            self.event_prefix_after[window.event_tail_start - 1]
-        };
-        let mut idx = window.event_tail_start;
-        while idx < self.event_pos.len() {
-            let pos = self.event_pos[idx];
-            if pos >= body_end {
-                break;
-            }
-            crate::metrics::scan_work(1);
-            if self.event_end[idx] <= body_end {
-                prefix += self.event_delta[idx];
-                if self.event_delta[idx] < 0 && pos >= after_tag && prefix < threshold {
-                    return Some(pos);
-                }
-            }
-            idx += 1;
-        }
-        None
-    }
-
-    fn first_close_below_range(&self, start_idx: usize, end_idx: usize, threshold: isize) -> Option<usize> {
-        if start_idx >= end_idx || self.close_pos.is_empty() {
-            return None;
-        }
-        self.first_close_below_node(1, 0, self.close_tree_base, start_idx, end_idx, threshold)
-    }
-
-    fn first_close_below_node(
-        &self,
-        node: usize,
-        lo: usize,
-        hi: usize,
-        start_idx: usize,
-        end_idx: usize,
-        threshold: isize,
-    ) -> Option<usize> {
-        crate::metrics::scan_work(1);
-        if hi <= start_idx || lo >= end_idx || self.close_min_tree[node] >= threshold {
-            return None;
-        }
-        if hi - lo == 1 {
-            return (lo < self.close_pos.len()).then_some(lo);
-        }
-        let mid = (lo + hi) / 2;
-        self.first_close_below_node(node * 2, lo, mid, start_idx, end_idx, threshold)
-            .or_else(|| {
-                self.first_close_below_node(node * 2 + 1, mid, hi, start_idx, end_idx, threshold)
-            })
     }
 
     fn match_from(
@@ -563,32 +434,33 @@ impl RawHtmlTagIndex {
         body_end: usize,
         tag_index: usize,
     ) -> RawHtmlAttempt {
+        if body_end > self.input_len {
+            debug_assert!(false, "raw HTML body_end exceeds indexed input length");
+            return RawHtmlAttempt::Miss(RawHtmlMiss::NoGrammar);
+        }
         let query = self.query_ranks(after_tag);
-        let window = self.window_ranks(body_end);
-        let threshold = self.prefix_before_window(after_tag, body_end, query, window);
-        if after_tag < window.tail_start {
-            let non_tail_end = window.close_tail_start.min(window.close_fit_end);
-            if let Some(close_idx) = self.first_close_below_range(query.close_rank, non_tail_end, threshold) {
+        let close_event = self.matching_close_event(query.event_rank);
+        if close_event != RAW_HTML_NO_NSE {
+            let close_pos = self.event_pos[close_event];
+            if self.close_fits(close_pos, body_end) {
                 return RawHtmlAttempt::Match(RawHtmlExtent {
                     start: opener,
-                    end: self.close_pos[close_idx] + self.close_len,
+                    end: close_pos + self.close_len,
                 });
             }
         }
-        if let Some(close_pos) = self.first_tail_close_below(body_end, after_tag, threshold, window) {
-            return RawHtmlAttempt::Match(RawHtmlExtent {
-                start: opener,
-                end: close_pos + self.close_len,
-            });
-        }
-        if query.self_rank < window.self_fit_end {
+        if query.self_rank < self.self_close_pos.len() {
             let self_close = self.self_close_pos[query.self_rank];
-            return RawHtmlAttempt::Match(RawHtmlExtent {
-                start: opener,
-                end: self_close + 2,
-            });
+            if Self::self_close_fits(self_close, body_end) {
+                return RawHtmlAttempt::Match(RawHtmlExtent {
+                    start: opener,
+                    end: self_close + 2,
+                });
+            }
         }
-        if query.close_rank < window.close_fit_end {
+        if query.close_rank < self.close_pos.len()
+            && self.close_fits(self.close_pos[query.close_rank], body_end)
+        {
             RawHtmlAttempt::Miss(RawHtmlMiss::UnbalancedTag)
         } else {
             RawHtmlAttempt::Miss(RawHtmlMiss::MissingTagCloser { index: tag_index })
@@ -670,6 +542,20 @@ mod raw_html_index_tests {
         parse_raw_html_impl(input, opener, body_end, None)
     }
 
+    fn assert_cached_matches_legacy(input: &str, openers: &[usize], body_ends: &[usize]) {
+        let mut state = RawHtmlScan::new();
+        for &opener in openers {
+            for &body_end in body_ends {
+                if opener >= body_end || body_end > input.len() {
+                    continue;
+                }
+                let cached = parse_raw_html_impl(input, opener, body_end, Some(&mut state));
+                let legacy = legacy_attempt(input, opener, body_end);
+                assert_eq!(cached, legacy, "input={input:?} opener={opener} body_end={body_end}");
+            }
+        }
+    }
+
     #[test]
     fn raw_html_combined_build_matches_legacy_event_sets() {
         let cases = [
@@ -689,21 +575,54 @@ mod raw_html_index_tests {
     }
 
     #[test]
+    fn raw_html_nse_is_strict_below_and_includes_adjacent_close() {
+        let equal_prefix = "<div><div></div><div></div>";
+        let mut idx = RawHtmlTagIndex::build(equal_prefix.as_bytes(), "div");
+        let outer = idx.query_ranks(4);
+        assert_eq!(idx.matching_close_event(outer.event_rank), RAW_HTML_NO_NSE);
+        let mut state = RawHtmlScan::new();
+        assert_eq!(
+            parse_raw_html_impl(equal_prefix, 0, equal_prefix.len(), Some(&mut state)),
+            RawHtmlAttempt::Miss(RawHtmlMiss::UnbalancedTag)
+        );
+
+        let adjacent = "<div><div></div></div>";
+        let mut idx = RawHtmlTagIndex::build(adjacent.as_bytes(), "div");
+        let inner_opener = adjacent[1..].find("<div").unwrap() + 1;
+        let inner = idx.query_ranks(inner_opener + 4);
+        let close_event = idx.matching_close_event(inner.event_rank);
+        assert_ne!(close_event, RAW_HTML_NO_NSE);
+        assert_eq!(idx.event_pos[close_event], inner_opener + "<div>".len());
+    }
+
+    #[test]
     fn raw_html_global_index_matches_legacy_window_queries() {
         let input = "<div><div>x</div>\n<div />\n<div><span></span></div>\n</div>tail</div>";
-        let mut state = RawHtmlScan::new();
         let openers: Vec<usize> = input.match_indices("<div").map(|(pos, _)| pos).collect();
         let body_ends = [18usize, 27, 52, input.len() - 3, input.len()];
-        for opener in openers {
-            for body_end in body_ends {
-                if opener >= body_end || body_end > input.len() {
-                    continue;
-                }
-                let cached = parse_raw_html_impl(input, opener, body_end, Some(&mut state));
-                let legacy = legacy_attempt(input, opener, body_end);
-                assert_eq!(cached, legacy, "opener={opener} body_end={body_end}");
-            }
+        assert_cached_matches_legacy(input, &openers, &body_ends);
+
+        let mut reverse_openers = openers.clone();
+        reverse_openers.reverse();
+        assert_cached_matches_legacy(input, &reverse_openers, &[input.len()]);
+
+        let boundary_cases = [
+            "<div>abc</DIV>tail",
+            "<div>abc<div>tail</div>",
+            "<div>abc<div tail</DIV>",
+            "<div>abc/>tail</div>",
+            "<div>abc<div /></DIV>",
+        ];
+        for input in boundary_cases {
+            let openers: Vec<usize> = input.match_indices("<div").map(|(pos, _)| pos).collect();
+            let body_ends: Vec<usize> = (1..=input.len()).collect();
+            assert_cached_matches_legacy(input, &openers, &body_ends);
         }
+
+        let blockquote = "<blockquote>x</BLOCKQUOTE>tail";
+        let openers = [0usize];
+        let body_ends: Vec<usize> = (1..=blockquote.len()).collect();
+        assert_cached_matches_legacy(blockquote, &openers, &body_ends);
     }
 }
 

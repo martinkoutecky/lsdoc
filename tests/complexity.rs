@@ -197,6 +197,34 @@ fn nested_callout_raw_html(k: usize) -> String {
     }
     s
 }
+fn nested_reuse_after_child_raw_html(k: usize) -> String {
+    let width = base36(k + 1).len();
+    let mut s = String::new();
+    for d in 0..k {
+        let name = format!("{:0>width$}", base36(d), width = width);
+        writeln!(&mut s, "#+BEGIN_A{name}").unwrap();
+        s.push_str("<div>before</div>\n");
+    }
+    for d in (0..k).rev() {
+        s.push_str("<div>after</div>\n");
+        let name = format!("{:0>width$}", base36(d), width = width);
+        writeln!(&mut s, "#+END_A{name}").unwrap();
+    }
+    s
+}
+fn raw_html_sibling_alternation(k: usize) -> String {
+    let width = base36(k + 1).len();
+    let mut s = String::new();
+    for d in 0..k {
+        s.push_str("<div>p</div>\n");
+        let name = format!("{:0>width$}", base36(d), width = width);
+        writeln!(&mut s, "#+BEGIN_A{name}").unwrap();
+        s.push_str("<div>c</div>\n");
+        writeln!(&mut s, "#+END_A{name}").unwrap();
+    }
+    s.push_str("<div>p</div>\n");
+    s
+}
 fn raw_html_sibling_pairs(n: usize) -> String {
     let mut s = String::from("<div>");
     for _ in 0..n {
@@ -331,6 +359,10 @@ fn complexity_gate() {
         );
         assert_linear("nested_callout_raw_html", nested_callout_raw_html, 50, "md");
         assert_linear("nested_callout_raw_html", nested_callout_raw_html, 50, "org");
+        assert_linear("nested_reuse_after_child_raw_html", nested_reuse_after_child_raw_html, 50, "md");
+        assert_linear("nested_reuse_after_child_raw_html", nested_reuse_after_child_raw_html, 50, "org");
+        assert_linear("raw_html_sibling_alternation", raw_html_sibling_alternation, 50, "md");
+        assert_linear("raw_html_sibling_alternation", raw_html_sibling_alternation, 50, "org");
         assert_linear("raw_html_sibling_pairs", raw_html_sibling_pairs, 500, "md");
         assert_linear("raw_html_sibling_pairs", raw_html_sibling_pairs, 500, "org");
         assert_linear("raw_html_closes_then_opens", raw_html_closes_then_opens, 500, "md");
