@@ -2199,10 +2199,10 @@ fn org_comment(s: &str) -> Option<&str> {
 
 // ---- drawers --------------------------------------------------------------
 
-/// `:NAME:` alone on a line (NAME != END) → opens a drawer. Lowercased name.
+/// `:NAME:` alone on a line opens a drawer. Lowercased name.
 fn drawer_begin(s: &str) -> Option<String> {
     let inner = mldoc_trim_spaces_start(s).strip_prefix(':')?.strip_suffix(':')?;
-    if inner.is_empty() || inner.eq_ignore_ascii_case("END") {
+    if inner.is_empty() {
         return None;
     }
     if inner.bytes().any(|b| b == b':' || b == b' ' || b == b'\n' || b == b'\r') {

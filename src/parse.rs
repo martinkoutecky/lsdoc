@@ -1293,22 +1293,18 @@ fn dispatch_md_line<'a>(
         if let Some(kv) = property(content) {
             flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             empty_bullet!();
-            let mut props = vec![Property::parse1(kv)];
-            let mut end = line_end;
-            let mut ni = i + 1;
-            while ni < hi {
-                if let Some(kv) = property(lines[ni].text) {
-                    props.push(Property::parse1(kv));
-                } else if let Some(kv) = directive_property(lines[ni].text) {
-                    props.push(Property::parse2(kv));
-                } else {
-                    break;
-                }
-                end = lines[ni].end;
-                ni += 1;
-            }
-            out.push(Block::Properties { props, span: Some(Span(content_off, end)) });
-            return Step::Next(ni);
+            let fold = fold_md_property_group(
+                kv,
+                line_end,
+                lines,
+                i + 1,
+                hi,
+                strip_ctx,
+                drawer_end_idxs,
+                drawer_cursor,
+            );
+            out.push(Block::Properties { props: fold.props, span: Some(Span(content_off, fold.span_end)) });
+            return Step::Next(fold.next);
         }
         // (d) horizontal rule opener (`---`/`***`/`___`).
         if is_hr(content) {
@@ -1550,27 +1546,23 @@ fn dispatch_md_line<'a>(
     // trailing `#+name: value` org directives into the same drawer (drawer.ml
     // `many1 (parse1 <|> parse2)`), so `a:: 1\n#+b: 2` → props a, b. Suppressed inside a
     // `>`-blockquote body (mldoc omits the markdown property from `block_content_parsers`). F1.
-    if property(t).is_some() && !in_block_content {
+    if let Some(kv) = property(t).filter(|_| !in_block_content) {
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
-        let start = i;
-        let mut props = Vec::new();
-        let mut ni = i;
-        while ni < hi {
-            if let Some(kv) = property(lines[ni].text) {
-                props.push(Property::parse1(kv));
-                ni += 1;
-            } else if let Some(kv) = directive_property(lines[ni].text) {
-                props.push(Property::parse2(kv));
-                ni += 1;
-            } else {
-                break;
-            }
-        }
+        let fold = fold_md_property_group(
+            kv,
+            line_end,
+            lines,
+            i + 1,
+            hi,
+            strip_ctx,
+            drawer_end_idxs,
+            drawer_cursor,
+        );
         out.push(Block::Properties {
-            props,
-            span: Some(Span(lines[start].start, lines[ni - 1].end)),
+            props: fold.props,
+            span: Some(Span(line_start, fold.span_end)),
         });
-        return Step::Next(ni);
+        return Step::Next(fold.next);
     }
 
     // 9. list (`*`/`+`/`N.` items, bounded by `hi`) — a faithful port of mldoc's shared
@@ -2880,6 +2872,92 @@ fn md_property_trim(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0c)
 }
 
+struct MdPropertyFold {
+    props: Vec<Property>,
+    next: usize,
+    span_end: usize,
+}
+
+fn fold_md_property_group<'a>(
+    first: (String, String),
+    first_end: usize,
+    lines: &[Line<'a>],
+    mut cur: usize,
+    hi: usize,
+    strip_ctx: StripCtx<'_>,
+    drawer_end_idxs: &[usize],
+    drawer_cursor: &mut usize,
+) -> MdPropertyFold {
+    let mut props = vec![Property::parse1(first)];
+    let mut span_end = first_end;
+
+    while cur < hi {
+        let text = line_text(lines, cur, strip_ctx);
+        if let Some(kv) = property(text) {
+            props.push(Property::parse1(kv));
+            span_end = lines[cur].end;
+            cur += 1;
+            continue;
+        }
+        if let Some(kv) = directive_property(text) {
+            props.push(Property::parse2(kv));
+            span_end = lines[cur].end;
+            cur += 1;
+            continue;
+        }
+        if let Some((drawer_props, next, end)) =
+            fold_adjacent_md_properties_drawer(lines, cur, hi, strip_ctx, drawer_end_idxs, drawer_cursor)
+        {
+            props.extend(drawer_props);
+            span_end = end;
+            cur = next;
+            continue;
+        }
+        if text.is_empty() {
+            let mut k = cur + 1;
+            while k < hi && line_text(lines, k, strip_ctx).is_empty() {
+                k += 1;
+            }
+            if k < hi {
+                if let Some(kv) = directive_property(line_text(lines, k, strip_ctx)) {
+                    props.push(Property::parse2(kv));
+                    span_end = lines[k].end;
+                    cur = k + 1;
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+
+    MdPropertyFold { props, next: cur, span_end }
+}
+
+fn fold_adjacent_md_properties_drawer<'a>(
+    lines: &[Line<'a>],
+    opener: usize,
+    hi: usize,
+    strip_ctx: StripCtx<'_>,
+    drawer_end_idxs: &[usize],
+    drawer_cursor: &mut usize,
+) -> Option<(Vec<Property>, usize, usize)> {
+    if !line_text(lines, opener, strip_ctx)
+        .trim_start_matches(|c| matches!(c, ' ' | '\t' | '\x0c' | '\x1a'))
+        .eq_ignore_ascii_case(":PROPERTIES:")
+    {
+        return None;
+    }
+    let close = find_drawer_end(drawer_end_idxs, drawer_cursor, opener)?;
+    if close >= hi {
+        return None;
+    }
+    let mut props = Vec::new();
+    for k in opener + 1..close {
+        props.push(drawer_property(line_text(lines, k, strip_ctx)).map(Property::parse1)?);
+    }
+    Some((props, close + 1, lines[close].end))
+}
+
 struct MdFootnoteFold {
     name: String,
     body: String,
@@ -3198,7 +3276,7 @@ fn raw_callout_block(
     (block, ni)
 }
 
-/// `:NAME:` (alone on a line, NAME != END) ⇒ opens a drawer.
+/// `:NAME:` alone on a line opens a drawer.
 fn drawer_begin(s: &str) -> Option<String> {
     let bytes = s.as_bytes();
     let mut start = 0;
@@ -3206,7 +3284,7 @@ fn drawer_begin(s: &str) -> Option<String> {
         start += 1;
     }
     let inner = s[start..].strip_prefix(':')?.strip_suffix(':')?;
-    if inner.is_empty() || inner.eq_ignore_ascii_case("END") {
+    if inner.is_empty() {
         return None;
     }
     if inner.bytes().all(|b| b != b':' && b != b' ' && b != b'\n' && b != b'\r') {
