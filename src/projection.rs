@@ -109,6 +109,7 @@ pub enum Align {
 /// A cell with no `-` (`:`, `::`) is NOT an alignment → `None` (mldoc/GitHub
 /// require a `-` in a separator cell — fix D). Markdown-only now: org's
 /// `build_table` no longer calls this (fix C).
+#[allow(dead_code)]
 pub(crate) fn parse_separator_aligns(sep: &str) -> Vec<Option<Align>> {
     let t = sep.trim();
     let t = t.strip_prefix('|').unwrap_or(t);

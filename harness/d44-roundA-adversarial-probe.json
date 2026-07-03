@@ -1,0 +1,52 @@
+[
+  {
+    "id": "adv-md-plus-eof-row",
+    "format": "markdown",
+    "input": "| a |\n|---+---|"
+  },
+  {
+    "id": "adv-md-consecutive-seps",
+    "format": "markdown",
+    "input": "|-|\n|---+---|\n| a |"
+  },
+  {
+    "id": "adv-md-colon-plus-align",
+    "format": "markdown",
+    "input": "| h |\n|:--+--:|\n| b |"
+  },
+  {
+    "id": "adv-md-crlf-eof-sep",
+    "format": "markdown",
+    "input": "| a |\r\n|-|"
+  },
+  {
+    "id": "adv-md-trailing-eol-sep",
+    "format": "markdown",
+    "input": "| a |\n|-|\n"
+  },
+  {
+    "id": "adv-md-quote-multigroup",
+    "format": "markdown",
+    "input": "> intro\n| h |\n|-|\n| b |\n|-|\n| c |"
+  },
+  {
+    "id": "adv-md-align-tblfm",
+    "format": "markdown",
+    "input": "| a |\n|:--|\n#+TBLFM: $1=1"
+  },
+  {
+    "id": "adv-md-sepfirst-tblfm",
+    "format": "markdown",
+    "input": "  |-|\n#+TBLFM: $1=1"
+  },
+  {
+    "id": "adv-org-eof-sep-row",
+    "format": "org",
+    "input": "| a |\n|-|"
+  },
+  {
+    "id": "adv-org-consecutive-seps",
+    "format": "org",
+    "input": "|-|\n|---+---|\n| a |"
+  }
+]

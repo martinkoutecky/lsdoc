@@ -1372,21 +1372,41 @@ fn dispatch_md_line<'a>(
         if md_table_row(content) {
             flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             empty_bullet!();
-            let mut texts: Vec<&str> = vec![content];
+            let mut table_rows: Vec<MdTableRow<'_>> =
+                vec![MdTableRow { text: content, has_eol: line_has_eol(&lines[i]) }];
             let mut ni = i + 1;
             while ni < hi && md_table_row(lines[ni].text) {
-                texts.push(lines[ni].text);
+                table_rows.push(MdTableRow { text: lines[ni].text, has_eol: line_has_eol(&lines[ni]) });
                 ni += 1;
             }
-            out.push(build_table_from_texts(
-                &texts,
+            let tblfm_line = if ni < hi && md_tblfm_line(lines[ni].text) {
+                let tblfm = ni;
+                ni += 1;
+                Some(tblfm)
+            } else {
+                None
+            };
+            let table_end = tblfm_line.map_or(lines[ni - 1].end, |tblfm| lines[tblfm].end);
+            out.push(build_table_from_rows(
+                &table_rows,
                 content_off,
-                lines[ni - 1].end,
+                table_end,
                 input,
                 origin,
                 source_body,
                 origin_cursor,
             ));
+            if let Some(tblfm) = tblfm_line {
+                retain_tblfm_line_eol_as_para(
+                    &lines[tblfm],
+                    para,
+                    para_buf,
+                    para_map,
+                    origin,
+                    origin_cursor,
+                    remap_spans,
+                );
+            }
             return Step::Next(ni);
         }
         // (i) footnote-definition opener — only WITHOUT a `#` prefix (with a `#`,
@@ -1487,15 +1507,35 @@ fn dispatch_md_line<'a>(
         while ni < hi && md_table_row(lines[ni].text) {
             ni += 1;
         }
+        let rows_end = ni;
+        let tblfm_line = if ni < hi && md_tblfm_line(lines[ni].text) {
+            let tblfm = ni;
+            ni += 1;
+            Some(tblfm)
+        } else {
+            None
+        };
+        let table_end = tblfm_line.map_or(lines[ni - 1].end, |tblfm| lines[tblfm].end);
         out.push(build_table(
-            &lines[start..ni],
+            &lines[start..rows_end],
             lines[start].start,
-            lines[ni - 1].end,
+            table_end,
             input,
             origin,
             source_body,
             origin_cursor,
         ));
+        if let Some(tblfm) = tblfm_line {
+            retain_tblfm_line_eol_as_para(
+                &lines[tblfm],
+                para,
+                para_buf,
+                para_map,
+                origin,
+                origin_cursor,
+                remap_spans,
+            );
+        }
         return Step::Next(ni);
     }
 
@@ -2110,6 +2150,34 @@ fn drop_marker_ws(para: &mut Option<(usize, usize)>, was_ws_drop: Option<usize>,
                 *para = if boundary < e { Some((boundary, e)) } else { None };
             }
         }
+    }
+}
+
+fn retain_tblfm_line_eol_as_para(
+    line: &Line<'_>,
+    para: &mut Option<(usize, usize)>,
+    para_buf: &mut Option<String>,
+    para_map: &mut OriginMap,
+    origin: Option<&OriginMap>,
+    origin_cursor: &mut OriginCursor,
+    remap_spans: bool,
+) {
+    let eol_start = line.start + line.text.len();
+    if eol_start >= line.end {
+        return;
+    }
+    *para = Some((eol_start, line.end));
+    if remap_spans {
+        let buf = para_buf.get_or_insert_with(String::new);
+        let text_off = buf.len();
+        para_map.push_composed_eol(
+            text_off,
+            origin,
+            eol_start,
+            line.end - eol_start,
+            Some(origin_cursor),
+        );
+        buf.push('\n');
     }
 }
 
@@ -3791,6 +3859,67 @@ fn md_table_row(s: &str) -> bool {
     t.len() >= 2 && t.starts_with('|') && t.ends_with('|')
 }
 
+fn md_tblfm_line(s: &str) -> bool {
+    mldoc_trim_spaces_start(s).starts_with("#+TBLFM:")
+}
+
+#[derive(Clone, Copy)]
+struct MdTableRow<'a> {
+    text: &'a str,
+    has_eol: bool,
+}
+
+fn align_from_sep_cell(has_dash: bool, first: Option<u8>, last: Option<u8>) -> Option<crate::ast::Align> {
+    if !has_dash {
+        return None;
+    }
+    match (first == Some(b':'), last == Some(b':')) {
+        (true, true) => Some(crate::ast::Align::Center),
+        (false, true) => Some(crate::ast::Align::Right),
+        (true, false) => Some(crate::ast::Align::Left),
+        (false, false) => None,
+    }
+}
+
+fn md_separator_aligns(row: MdTableRow<'_>) -> Option<Vec<Option<crate::ast::Align>>> {
+    if !row.has_eol {
+        return None;
+    }
+    let t = ocaml_trim_end(mldoc_trim_spaces_start(row.text));
+    crate::metrics::scan_work(t.len());
+    if t.len() < 2 || !t.starts_with('|') || !t.ends_with('|') {
+        return None;
+    }
+
+    let inner = &t.as_bytes()[1..t.len() - 1];
+    let mut aligns = Vec::new();
+    let mut has_dash = false;
+    let mut first = None;
+    let mut last = None;
+    for &b in inner {
+        match b {
+            b'|' => {
+                aligns.push(align_from_sep_cell(has_dash, first, last));
+                has_dash = false;
+                first = None;
+                last = None;
+            }
+            b'-' | b'+' | b':' | b' ' => {
+                if b != b' ' {
+                    if first.is_none() {
+                        first = Some(b);
+                    }
+                    last = Some(b);
+                    has_dash |= b == b'-';
+                }
+            }
+            _ => return None,
+        }
+    }
+    aligns.push(align_from_sep_cell(has_dash, first, last));
+    Some(aligns)
+}
+
 fn build_table(
     rows: &[Line],
     start: usize,
@@ -3800,16 +3929,17 @@ fn build_table(
     source_body: &str,
     origin_cursor: &mut OriginCursor,
 ) -> Block {
-    let texts: Vec<&str> = rows.iter().map(|l| l.text).collect();
-    build_table_from_texts(&texts, start, end, input, origin, source_body, origin_cursor)
+    let table_rows: Vec<MdTableRow<'_>> =
+        rows.iter().map(|l| MdTableRow { text: l.text, has_eol: line_has_eol(l) }).collect();
+    build_table_from_rows(&table_rows, start, end, input, origin, source_body, origin_cursor)
 }
 
 /// Build a `Table` from raw row strings (used by both the top-level table block and the
 /// `- | … |` bullet-opener split, whose first row is a mid-line bullet body, not a `Line`).
 /// Each `rows[k]` is a sub-slice of `input` (a real row line, or a bullet content line), so
 /// each cell's byte offset into the block body is recovered by pointer arithmetic (S2).
-fn build_table_from_texts(
-    rows: &[&str],
+fn build_table_from_rows(
+    rows: &[MdTableRow<'_>],
     start: usize,
     end: usize,
     input: &str,
@@ -3829,35 +3959,40 @@ fn build_table_from_texts(
             })
             .collect()
     };
-    let is_sep = |s: &str| -> bool {
-        let t = ocaml_trim_end(mldoc_trim_spaces_start(s));
-        let t = t.strip_prefix('|').unwrap_or(t);
-        let t = t.strip_suffix('|').unwrap_or(t);
-        !t.is_empty()
-            && t.split('|').all(|c| {
-                let c = ocaml_trim(c);
-                !c.is_empty() && c.bytes().all(|b| b == b'-' || b == b':')
-            })
-    };
 
-    let header = rows.first().map(|l| split_cells(l));
-    let mut data_start = 1;
-    // The `|---|` separator row is dropped ONLY when a body row follows it; a table that
-    // is just header+separator (no body) keeps the separator as a body row (mldoc quirk).
-    if rows.len() > 2 && is_sep(rows[1]) {
-        data_start = 2;
+    let mut header_text: Option<&str> = None;
+    let mut body_texts: Vec<&str> = Vec::new();
+    let mut aligns: Vec<Option<crate::ast::Align>> = Vec::new();
+    let mut first_group = true;
+    let mut current_group_rows = 0usize;
+    for &row in rows {
+        if let Some(row_aligns) = md_separator_aligns(row) {
+            if aligns.is_empty() {
+                aligns = row_aligns;
+            }
+            if first_group {
+                first_group = false;
+            }
+            current_group_rows = 0;
+            continue;
+        }
+
+        if first_group {
+            if current_group_rows == 0 {
+                header_text = Some(row.text);
+            } else {
+                body_texts.push(row.text);
+            }
+            current_group_rows += 1;
+        } else {
+            body_texts.push(row.text);
+        }
     }
-    let body: Vec<Vec<Vec<Inline>>> =
-        rows[data_start.min(rows.len())..].iter().map(|l| split_cells(l)).collect();
 
-    // lsdoc-only render enrichment (gate-dropped): when the separator row is dropped,
-    // retain one alignment entry per separator cell. Plain separators intentionally
-    // become `[None, ...]`; no dropped separator becomes `[]`.
-    let aligns = if data_start == 2 {
-        crate::projection::parse_separator_aligns(rows[1])
-    } else {
-        Vec::new()
-    };
+    // mldoc preserves table body groups, but lsdoc's public AST is flat; the differential
+    // normalizer flattens mldoc groups too, so rows after separator boundaries are appended here.
+    let header = header_text.map(|l| split_cells(l));
+    let body: Vec<Vec<Vec<Inline>>> = body_texts.iter().map(|l| split_cells(l)).collect();
 
     Block::Table {
         header,

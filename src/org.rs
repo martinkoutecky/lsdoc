@@ -3029,23 +3029,50 @@ fn build_table(
             })
             .collect()
     };
-    // Org separator line: between the outer pipes only `-`, `+`, `|`, `:`, space.
-    let is_sep = |s: &str| -> bool {
+    // Org separator line: between the outer pipes only `-`, `+`, `|`, `:`, space. As in mldoc
+    // table.ml, a separator must consume a real line terminator; a separator-looking EOF row is data.
+    let is_sep = |line: &Line| -> bool {
+        if !line_has_eol(line) {
+            return false;
+        }
+        let s = line.text;
         let t = ocaml_trim_end(mldoc_trim_spaces_start(s));
-        let inner = t.strip_prefix('|').unwrap_or(t);
-        !inner.is_empty()
-            && inner
-                .bytes()
-                .all(|b| matches!(b, b'-' | b'+' | b'|' | b':' | b' '))
+        crate::metrics::scan_work(t.len());
+        t.len() >= 2
+            && t.starts_with('|')
+            && t.ends_with('|')
+            && t.as_bytes()[1..]
+                .iter()
+                .all(|&b| matches!(b, b'-' | b'+' | b'|' | b':' | b' '))
     };
 
-    let header = rows.first().map(|l| split_cells(l.text));
-    // data rows = all non-separator rows after the first.
-    let body: Vec<Vec<Vec<Inline>>> = rows[1.min(rows.len())..]
-        .iter()
-        .filter(|l| !is_sep(l.text))
-        .map(|l| split_cells(l.text))
-        .collect();
+    let mut header_text: Option<&str> = None;
+    let mut body_texts: Vec<&str> = Vec::new();
+    let mut first_group = true;
+    let mut current_group_rows = 0usize;
+    for line in rows {
+        if is_sep(line) {
+            if first_group {
+                first_group = false;
+            }
+            current_group_rows = 0;
+            continue;
+        }
+
+        if first_group {
+            if current_group_rows == 0 {
+                header_text = Some(line.text);
+            } else {
+                body_texts.push(line.text);
+            }
+            current_group_rows += 1;
+        } else {
+            body_texts.push(line.text);
+        }
+    }
+
+    let header = header_text.map(|l| split_cells(l));
+    let body: Vec<Vec<Vec<Inline>>> = body_texts.iter().map(|l| split_cells(l)).collect();
 
     // Fix C: org tables emit empty `aligns`. Org's real column alignment is a `<l>/<c>/<r>`
     // cookie row (using `+` junctions), NOT a markdown `:--` separator, so reusing the
