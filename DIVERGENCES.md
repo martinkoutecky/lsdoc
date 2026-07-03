@@ -38,6 +38,8 @@ the fuzz floor** (more mldoc parity) — how each fix was verified.
 | D30 | md `<quick_link>` kept `\X` in label/url (1.5.7 ARTIFACT unescapes label + url.link, keeps full_text + protocol raw; published quick_link_aux can't produce label≠full — oracle wins; org quick links stay raw) | **FIXED** | `a53d35f` |
 | D31 | org `[[url][label]]` with `:`-target → Search (mldoc Scanf `%[^:]:%[^\n]`: EMPTY protocol ok, link truncated at LF, `//` stripped, file-first, Search only when no colon; `inline.ml:647-664`) | **FIXED** | `a53d35f` |
 | D32 | org hash-tag captured `[[…]]` across a newline (mldoc tag capture is EOL-bounded via `page_ref`'s `non_eol`; top-level link targets/labels MAY span newlines; script bodies never parse links) | **FIXED** | `a53d35f` |
+| D33 | ci-matched raw-html closes case-normalized to the opener's token (match_tag rebuilds with canonical `</tag>` — intermediate closes too, attr-value quirk, `/>` fallback verbatim; block raw/view + inline_html). Was mis-filed as a second "D9" during the Jul 2026 raw-html index audit | **FIXED** | `cf3d2be` |
+| D34 | `#+BEGIN_X` frame-body re-parse parity: peek-10 misses the virtual final `\n` (both gates), post-close remainder wrongly indent-stripped, `strip_view` lacks mldoc's `safe_sub` exact-indent no-op (all-ws line == indent survives verbatim), spurious empty para on blank first body line. The 9 viewcap probes + 5 new shapes | **OPEN** | — |
 
 **FLOOR = 0 (Jul 2 2026):** after D19–D32, `node fuzz.mjs 40000 <seed>` (+` org`) is **0/0 (blocks AND
 refs) on every tested seed** (99, 7, 42, 12345, 31337, 271828, 2718, 555555 × both formats). The fuzz
@@ -243,7 +245,7 @@ lsdoc:  plain "a^{b", break, plain "c}"                      ← not recognized
 braced body. **Reachability:** rare (org, multi-line script body). **Fix direction:** allow a
 newline inside the braced-script scan — O(n), no cap. Status: **OPEN.**
 
-## D9 — a case-mismatched raw-HTML close keeps its source case instead of the opener's
+## D33 (originally mis-filed as a second "D9") — a case-mismatched raw-HTML close keeps its source case instead of the opener's
 
 **Trigger:** raw HTML where the matching `</tag>` differs in ASCII case from the opener. **MD + ORG.**
 
@@ -259,8 +261,14 @@ lsdoc matches case-insensitively too (extent identical — block boundaries matc
 source bytes verbatim. Found by an adversarial probe during the Jul 2026 raw-html index
 verification (`harness/rawhtml-fix-my-probe.json` p03/p04/p13); pre-existing, NOT introduced by
 the index rewrite (unmodified-HEAD output identical). **Reachability:** rare (mixed-case HTML tag
-pairs). **Fix direction:** when the ci-matched close's bytes differ from `</tag>`, emit the
-reconstructed opener-case close in the captured text — O(1) at capture time. Status: **OPEN.**
+pairs). **Status: FIXED — commit `cf3d2be`.** The real scope was BROADER than first filed: the
+normalization also applies to INTERMEDIATE closes at nesting level > 0 (`<b>a<b>c</B>d</B>` →
+`<b>a<b>c</b>d</b>`) and to `inline_html` (same `Raw_html.parse`), and a `</tag>` inside the
+opener's own attribute region counts as the first consumed close (mldoc's `end_string_2` scans
+from right after the tag token). The `/>` self-close fallback and the special forms stay
+byte-exact. Fix = one charged ci scan per captured extent at text-build time (spans untouched);
+spec + full diagnosis in `subagent-tasks/d33-case-normalized-close-spec.md` and
+`subagent-tasks/notes/d33-d34-diagnosis.md`.
 
 ---
 
