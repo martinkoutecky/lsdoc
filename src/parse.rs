@@ -155,6 +155,7 @@ fn close_top(
     consume: bool,
     origin: Option<&OriginMap>,
     source_body: &str,
+    origin_cursor: &mut OriginCursor,
 ) {
     let mut f = stack.pop().unwrap();
     flush_para(
@@ -166,6 +167,7 @@ fn close_top(
         false,
         origin,
         source_body,
+        origin_cursor,
     );
     let span_end = if consume {
         lines[i].end
@@ -227,7 +229,6 @@ struct Frame {
     // frames keep `para`'s `(start,end)` fast path).
     para_buf: Option<String>,
     para_map: OriginMap,
-    para_cursor: OriginCursor,
     builder: Option<Builder>,        // the opener → emitted on pop (None for the root).
     open_span_start: usize,          // byte offset of the opener line start (for the span).
     strip: usize,       // cumulative de-indent applied to every body-line view (0 = root/clean).
@@ -315,7 +316,6 @@ fn parse_md_streaming<'a>(
         para: None,
         para_buf: None,
         para_map: OriginMap::new(),
-        para_cursor: OriginCursor::new(),
         builder: None,
         open_span_start: 0,
         strip: 0,
@@ -326,6 +326,7 @@ fn parse_md_streaming<'a>(
     let mut fence_cursor: usize = 0; // monotone & shared across the whole pass (`i` is monotone).
     let mut drawer_cursor: usize = 0; // ditto, for `:END:` lookups (find_drawer_end).
     let mut raw_html_scan = RawHtmlScan::new(); // same discipline for failed known-tag raw HTML.
+    let mut origin_cursor = OriginCursor::new(); // one cursor for this parse pass's parent OriginMap.
     // The list-collapse memo (mldoc's recursive list-parser failure bubble): when a list item's
     // deeper continuation is an unparseable list-item shape, the list collapses; `collapse_floor`
     // marks the trigger line so the collapsed region is NOT re-scanned as a list (linearity). One
@@ -349,7 +350,16 @@ fn parse_md_streaming<'a>(
         // so phase 1 never needs `offs`, and after it every open frame has `hi > i`.)
         while stack.len() > 1 && stack.last().unwrap().hi <= i {
             let consume = stack.last().unwrap().gt_level == 0;
-            close_top(&mut stack, &lines, input, i, consume, origin, source_body);
+                close_top(
+                    &mut stack,
+                    &lines,
+                    input,
+                    i,
+                    consume,
+                    origin,
+                    source_body,
+                    &mut origin_cursor,
+                );
             if consume {
                 i += 1; // CONSUME the closer line.
                 // mldoc ends a `#+BEGIN_X` callout with `<* optional eols` (F6): swallow following
@@ -386,7 +396,16 @@ fn parse_md_streaming<'a>(
                 {
                     break;
                 }
-                close_top(&mut stack, &lines, input, i, false, origin, source_body);
+                close_top(
+                    &mut stack,
+                    &lines,
+                    input,
+                    i,
+                    false,
+                    origin,
+                    source_body,
+                    &mut origin_cursor,
+                );
                 gt_closed = true;
             }
 
@@ -450,7 +469,17 @@ fn parse_md_streaming<'a>(
                             // intervening blank breaks), then flush the parent's para (`between_eols`).
                             drop_marker_ws(&mut top.para, ws_drop.take(), input);
                             let trim = top.in_quote || top.in_item;
-                            flush_para(&mut top.out, &mut top.para, &mut top.para_buf, &mut top.para_map, input, trim, origin, source_body);
+                            flush_para(
+                                &mut top.out,
+                                &mut top.para,
+                                &mut top.para_buf,
+                                &mut top.para_map,
+                                input,
+                                trim,
+                                origin,
+                                source_body,
+                                &mut origin_cursor,
+                            );
                             opened_any = true;
                         }
                         (top.hi, top.strip, top.gt_level)
@@ -463,7 +492,6 @@ fn parse_md_streaming<'a>(
                         para: None,
                         para_buf: None,
                         para_map: OriginMap::new(),
-                        para_cursor: OriginCursor::new(),
                         builder: Some(Builder::Quote),
                         open_span_start: lines[i].start,
                         strip: p_strip,   // inherit the ancestor indent strip
@@ -498,7 +526,7 @@ fn parse_md_streaming<'a>(
                 &mut top.para,
                 &mut top.para_buf,
                 &mut top.para_map,
-                &mut top.para_cursor,
+                &mut origin_cursor,
                 in_quote,
                 in_item,
                 &mut ws_drop,
@@ -531,7 +559,17 @@ fn parse_md_streaming<'a>(
                 {
                     let top = stack.last_mut().unwrap();
                     let pq = top.in_quote;
-                    flush_para(&mut top.out, &mut top.para, &mut top.para_buf, &mut top.para_map, input, pq, origin, source_body);
+                    flush_para(
+                        &mut top.out,
+                        &mut top.para,
+                        &mut top.para_buf,
+                        &mut top.para_map,
+                        input,
+                        pq,
+                        origin,
+                        source_body,
+                        &mut origin_cursor,
+                    );
                 }
                 let child_strip = top_strip + indent_strip;
                 let remap_spans = child_strip > 0;
@@ -543,7 +581,6 @@ fn parse_md_streaming<'a>(
                     para: None,
                     para_buf: None,
                     para_map: OriginMap::new(),
-                    para_cursor: OriginCursor::new(),
                     builder: Some(builder),
                     open_span_start: span_start,
                     strip: child_strip,
@@ -561,24 +598,30 @@ fn parse_md_streaming<'a>(
                     let t = stack.last().unwrap();
                     (t.hi, t.gt_level)
                 };
-                let (mut de_gt, mut de_gt_map, mut de_gt_cursor) = {
+                let (mut de_gt, mut de_gt_map) = {
                     let top = stack.last_mut().unwrap();
                     top.para = None;
                     (
                         top.para_buf.take().unwrap_or_default(),
                         std::mem::take(&mut top.para_map),
-                        std::mem::take(&mut top.para_cursor),
                     )
                 };
                 append_view_with_origin(
                     &mut de_gt,
                     &mut de_gt_map,
-                    &mut de_gt_cursor,
+                    &mut origin_cursor,
                     input,
                     origin,
                     dispatch_view.unwrap_or(""),
                 );
-                append_line_joiner(&mut de_gt, &mut de_gt_map, &mut de_gt_cursor, &lines, i, origin);
+                append_line_joiner(
+                    &mut de_gt,
+                    &mut de_gt_map,
+                    &mut origin_cursor,
+                    &lines,
+                    i,
+                    origin,
+                );
                 let mut end = i + 1;
                 while end < p_hi {
                     match gt_cont_line_view(&lines[end], strip, p_gt) {
@@ -586,7 +629,7 @@ fn parse_md_streaming<'a>(
                             append_view_with_origin(
                                 &mut de_gt,
                                 &mut de_gt_map,
-                                &mut de_gt_cursor,
+                                &mut origin_cursor,
                                 input,
                                 origin,
                                 v,
@@ -594,7 +637,7 @@ fn parse_md_streaming<'a>(
                             append_line_joiner(
                                 &mut de_gt,
                                 &mut de_gt_map,
-                                &mut de_gt_cursor,
+                                &mut origin_cursor,
                                 &lines,
                                 end,
                                 origin,
@@ -613,7 +656,17 @@ fn parse_md_streaming<'a>(
 
     // Only the root remains (all callout bodies closed before EOF); flush its paragraph.
     let mut root = stack.pop().unwrap();
-    flush_para(&mut root.out, &mut root.para, &mut root.para_buf, &mut root.para_map, input, false, origin, source_body);
+    flush_para(
+        &mut root.out,
+        &mut root.para,
+        &mut root.para_buf,
+        &mut root.para_map,
+        input,
+        false,
+        origin,
+        source_body,
+        &mut origin_cursor,
+    );
     root.out
 }
 
@@ -632,7 +685,7 @@ fn dispatch_md_line<'a>(
     para: &mut Option<(usize, usize)>,
     para_buf: &mut Option<String>,
     para_map: &mut OriginMap,
-    para_cursor: &mut OriginCursor,
+    origin_cursor: &mut OriginCursor,
     in_quote: bool,
     in_item: bool,
     ws_drop: &mut Option<usize>,
@@ -722,10 +775,12 @@ fn dispatch_md_line<'a>(
         if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
             if close < hi {
                 drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blanks.
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                 let lang = fence_lang(&t[mend..]);
                 let code = if close > i + 1 {
-                    input[lines[i + 1].start..lines[close - 1].end].to_string()
+                    let body = &input[lines[i + 1].start..lines[close - 1].end];
+                    crate::metrics::scan_work(body.len());
+                    body.to_string()
                 } else {
                     String::new()
                 };
@@ -761,7 +816,7 @@ fn dispatch_md_line<'a>(
                 // following paragraph gets no leading Break. EXPORT/COMMENT are DEFERRED (they
                 // need new projection kinds and diverge in both formats) → stay Custom.
                 if name.eq_ignore_ascii_case("SRC") || name.eq_ignore_ascii_case("EXAMPLE") {
-                    flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                    flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                     let (block, ni) = raw_callout_block(&name, t, lines, i, close, hi, line_start);
                     out.push(block);
                     return Step::Next(ni);
@@ -793,7 +848,7 @@ fn dispatch_md_line<'a>(
     // callout the WITH-Directive `list_content_parsers` (block0.ml) keeps it (verified vs oracle).
     if let Some((name, value)) = crate::org::directive(t).filter(|_| in_quote || !in_item) {
         drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop the marker `" \n"`, keep blanks.
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let mut ni = i + 1;
         let mut end = line_end;
         while ni < hi && lines[ni].text.is_empty() {
@@ -816,7 +871,7 @@ fn dispatch_md_line<'a>(
         // eol (no `optional eols`/`between_eols`), so inside a `>`-quote body a paragraph KEEPS
         // its trailing Break before it, and the eol AFTER it becomes a `Paragraph_Sep` →
         // a Break-paragraph (mldoc's `Paragraph.sep`-last ordering). Never trim. F1.
-        flush_para(out, para, para_buf, para_map, input, false, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, false, origin, source_body, origin_cursor);
         let mut ni = i + 1;
         while ni < lines.len() && lines[ni].start < consumed_end {
             ni += 1;
@@ -828,7 +883,10 @@ fn dispatch_md_line<'a>(
         let content = if remap_spans {
             let mut s = String::new();
             for k in i..ni {
-                s.push_str(line_text(lines, k, strip));
+                let view = line_text(lines, k, strip);
+                crate::metrics::scan_work(view.len());
+                s.push_str(view);
+                crate::metrics::scan_work(1);
                 s.push('\n');
             }
             let first_len = line_text(lines, i, strip).len();
@@ -856,7 +914,7 @@ fn dispatch_md_line<'a>(
                         origin,
                         consumed_end,
                         trail_end - consumed_end,
-                        Some(para_cursor),
+                        Some(origin_cursor),
                     );
                     buf.push('\n');
                 }
@@ -871,7 +929,7 @@ fn dispatch_md_line<'a>(
     // (suppressed inside a `>`-blockquote body — mldoc `block_content_parsers` omits Heading,
     // so `# h` / a `-` bullet there stay paragraph text. F1.)
     if let Some((level, size, hend)) = heading_at(t).filter(|_| !in_block_content) {
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let (marker, priority, title) = split_markers(t[hend..].trim_start());
         let trail = trim_end_ws_len(t);
         if title.is_empty() && trail < t.len() {
@@ -903,7 +961,7 @@ fn dispatch_md_line<'a>(
     // 4. horizontal rule (before dash bullet / list)
     if is_hr(t) {
         drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
         return Step::Next(i + 1);
     }
@@ -941,11 +999,13 @@ fn dispatch_md_line<'a>(
             // its very start (a true fence opener).
             if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
                 if close < hi {
-                    flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                    flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                     empty_bullet!();
                     let lang = fence_lang(&content[frun..]);
                     let code = if close > i + 1 {
-                        input[lines[i + 1].start..lines[close - 1].end].to_string()
+                        let body = &input[lines[i + 1].start..lines[close - 1].end];
+                        crate::metrics::scan_work(body.len());
+                        body.to_string()
                     } else {
                         String::new()
                     };
@@ -971,7 +1031,7 @@ fn dispatch_md_line<'a>(
         // stays a normal bullet titled `#+BEGIN_<TYPE> …` (mldoc).
         if let Some(bname) = callout_begin(content) {
             if let Some(close) = end_trie.find(&bname, i).filter(|&c| c < hi) {
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                 empty_bullet!();
                 if bname.eq_ignore_ascii_case("SRC") || bname.eq_ignore_ascii_case("EXAMPLE") {
                     let (block, ni) = raw_callout_block(&bname, content, lines, i, close, hi, content_off);
@@ -998,7 +1058,7 @@ fn dispatch_md_line<'a>(
         // (bullets suppressed in every in-block-content body), so `strip == 0` / `content_off` maps
         // straight into `input`. C2.
         if md_quote_first_slice(content).is_some() {
-            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             empty_bullet!();
             lines[i] = Line { start: content_off, end: line_end, text: content };
             return Step::Next(i);
@@ -1010,7 +1070,7 @@ fn dispatch_md_line<'a>(
         // (exactly like step 8). `content` is post-`#{1,n}`-strip, matching the size
         // run; the property `key` rejects bullet prefixes via its space check.
         if let Some(kv) = property(content) {
-            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             empty_bullet!();
             let mut props = vec![Property::parse1(kv)];
             let mut end = line_end;
@@ -1031,7 +1091,7 @@ fn dispatch_md_line<'a>(
         }
         // (d) horizontal rule opener (`---`/`***`/`___`).
         if is_hr(content) {
-            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             empty_bullet!();
             out.push(Block::Hr { span: Some(Span(content_off, line_end)) });
             return Step::Next(i + 1);
@@ -1041,7 +1101,7 @@ fn dispatch_md_line<'a>(
             .and_then(|off| find_displayed_math_close(input, content_off + off, body_end))
             .is_some()
         {
-            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             empty_bullet!();
             lines[i] = Line { start: content_off, end: line_end, text: content };
             return Step::Next(i);
@@ -1050,7 +1110,7 @@ fn dispatch_md_line<'a>(
         if raw_html_block_start(content) {
             let cap = raw_html_raw_capture(lines, i, hi, body_end, input, content, raw_html_scan);
             if let Some(cap) = cap {
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                 empty_bullet!();
                 out.push(Block::RawHtml {
                     text: cap.text,
@@ -1066,7 +1126,7 @@ fn dispatch_md_line<'a>(
         if let Some((name, lc, consumed_end)) =
             crate::inline::parse_latex_env(&input[..body_end], content_off, line_start + t.len())
         {
-            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             empty_bullet!();
             out.push(Block::LatexEnv { name, content: lc, span: Some(Span(content_off, consumed_end)) });
             let mut ni = i + 1;
@@ -1077,7 +1137,7 @@ fn dispatch_md_line<'a>(
         }
         // (h) table opener `| … |` (consumes following table-row lines, bounded by `hi`).
         if md_table_row(content) {
-            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             empty_bullet!();
             let mut texts: Vec<&str> = vec![content];
             let mut ni = i + 1;
@@ -1092,6 +1152,7 @@ fn dispatch_md_line<'a>(
                 input,
                 origin,
                 source_body,
+                origin_cursor,
             ));
             return Step::Next(ni);
         }
@@ -1099,7 +1160,7 @@ fn dispatch_md_line<'a>(
         // `[^id]` is an inline footnote ref in the heading title, per mldoc heading0).
         if size.is_none() {
             if let Some((fname, fbody)) = footnote_def(content) {
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                 empty_bullet!();
                 out.push(Block::FootnoteDef {
                     name: fname,
@@ -1115,7 +1176,7 @@ fn dispatch_md_line<'a>(
         // the bullet for the prefix, then the leftover ws starts a paragraph:
         // `- ` / `-   ` / `- ## ` / `- TODO ` → [bullet, paragraph]; a bare `-`
         // / `- ##` / `- TODO` with no trailing ws stays a single empty bullet).
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let (marker, priority, title) = split_markers(content);
         let trail = trim_end_ws_len(t);
         if title.is_empty() && trail < t.len() {
@@ -1147,7 +1208,7 @@ fn dispatch_md_line<'a>(
     // 6. footnote definition — suppressed inside a `>`-blockquote body (mldoc
     // `block_content_parsers` omits Footnote, so `[^id]: …` stays paragraph text). F1.
     if let Some((fname, content)) = footnote_def(t).filter(|_| !in_block_content) {
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         out.push(Block::FootnoteDef {
             name: fname,
             inline: stub_inline(content, crate::inline::ptr_base(content, input)),
@@ -1159,7 +1220,7 @@ fn dispatch_md_line<'a>(
     // 7. table (group of consecutive table-row lines, bounded by `hi`)
     if md_table_row(t) {
         drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let start = i;
         let mut ni = i;
         while ni < hi && md_table_row(lines[ni].text) {
@@ -1172,6 +1233,7 @@ fn dispatch_md_line<'a>(
             input,
             origin,
             source_body,
+            origin_cursor,
         ));
         return Step::Next(ni);
     }
@@ -1181,7 +1243,7 @@ fn dispatch_md_line<'a>(
     // `many1 (parse1 <|> parse2)`), so `a:: 1\n#+b: 2` → props a, b. Suppressed inside a
     // `>`-blockquote body (mldoc omits the markdown property from `block_content_parsers`). F1.
     if property(t).is_some() && !in_block_content {
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let start = i;
         let mut props = Vec::new();
         let mut ni = i;
@@ -1212,16 +1274,28 @@ fn dispatch_md_line<'a>(
     // `collapse_floor`). Disabled inside list-item content (`!in_item`: `list_content_parsers`
     // omits `Lists.parse`); `collapse_floor` skips list-starts inside an already-collapsed region.
     if !in_item && i >= *collapse_floor && md_marker(t).is_some() {
-        match collect_list_md(lines, i, hi, in_quote, input, origin, source_body) {
+        let mut list_origin_cursor = *origin_cursor;
+        match collect_list_md(
+            lines,
+            i,
+            hi,
+            in_quote,
+            input,
+            origin,
+            source_body,
+            &mut list_origin_cursor,
+        ) {
             Ok((block, next)) => {
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+                *origin_cursor = list_origin_cursor;
                 out.push(block);
                 return Step::Next(next);
             }
             Err(Collapse { kept, resume, trigger }) => {
                 *collapse_floor = trigger;
                 if let Some(block) = kept {
-                    flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                    flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+                    *origin_cursor = list_origin_cursor;
                     out.push(block);
                     return Step::Next(resume);
                 }
@@ -1266,7 +1340,7 @@ fn dispatch_md_line<'a>(
             };
             if !captured {
                 drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blanks.
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             }
             out.push(Block::RawHtml {
                 text: cap.text,
@@ -1318,7 +1392,7 @@ fn dispatch_md_line<'a>(
             };
             if !captured {
                 drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blanks.
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             }
             out.push(Block::DisplayedMath {
                 text: cap.text,
@@ -1347,7 +1421,7 @@ fn dispatch_md_line<'a>(
     if let Some(name) = drawer_begin(t).filter(|_| !in_block_content) {
         if let Some(close) = find_drawer_end(drawer_end_idxs, drawer_cursor, i) {
             if close < hi {
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                 let span = Some(Span(line_start, lines[close].end));
                 // mldoc (`drawer.ml`) emits a `Property_Drawer` ONLY when the WHOLE body
                 // parses as `many1 property` — every body line a valid `:key: value` (an
@@ -1451,7 +1525,8 @@ fn dispatch_md_line<'a>(
             if cap_end == usize::MAX || cap_end > body_end || !crate::inline::hiccup_head_ok(input, rec) {
                 break;
             }
-            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body); // no-op after the first (para already flushed)
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor); // no-op after the first (para already flushed)
+            crate::metrics::scan_work(cap_end - rec);
             out.push(Block::Hiccup {
                 v: input[rec..cap_end].to_string(),
                 span: Some(Span(cur_start, cap_end)),
@@ -1511,8 +1586,8 @@ fn dispatch_md_line<'a>(
         && i + 1 < hi
         && is_def_opener(lines[i + 1].text)
     {
-        flush_para(out, para, para_buf, para_map, input, false, origin, source_body);
-        let (item, ni) = build_def_list(lines, i, hi, input, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, false, origin, source_body, origin_cursor);
+        let (item, ni) = build_def_list(lines, i, hi, input, origin, source_body, origin_cursor);
         out.push(Block::List {
             items: vec![item],
             span: Some(Span(line_start, lines[ni - 1].end)),
@@ -1529,8 +1604,8 @@ fn dispatch_md_line<'a>(
     if remap_spans {
         let viewed = t; // already line_text(lines, i, strip)
         let buf = para_buf.get_or_insert_with(String::new);
-        append_view_with_origin(buf, para_map, para_cursor, input, origin, viewed);
-        append_line_joiner(buf, para_map, para_cursor, lines, i, origin);
+        append_view_with_origin(buf, para_map, origin_cursor, input, origin, viewed);
+        append_line_joiner(buf, para_map, origin_cursor, lines, i, origin);
         // Keep para in lockstep so flush_para and ws_drop still work.
         *para = Some(match *para {
             Some((s, _)) => (s, line_end),
@@ -1579,7 +1654,9 @@ fn displayed_math_raw_capture<'a>(
         return None;
     }
     let content_end = lines[close_line].start + lines[close_line].text.len();
-    let text = input[opener + 2..close].to_string();
+    let math_text = &input[opener + 2..close];
+    crate::metrics::scan_work(math_text.len());
+    let text = math_text.to_string();
     if close_end < content_end {
         Some(MathCapture {
             text,
@@ -1639,6 +1716,7 @@ fn displayed_math_view_capture<'a>(
     loop {
         let tail = &view[start..];
         if let Some(close) = find_displayed_math_close_in_view(tail) {
+            crate::metrics::scan_work(close);
             text.push_str(&tail[..close]);
             let close_end_view = start + close + 2;
             let vstart = view_abs_start(&lines[k], view);
@@ -1667,11 +1745,13 @@ fn displayed_math_view_capture<'a>(
                 rewrite: None,
             });
         }
+        crate::metrics::scan_work(tail.len());
         text.push_str(tail);
         k += 1;
         if k >= hi {
             return None;
         }
+        crate::metrics::scan_work(1);
         text.push('\n');
         view = line_text(lines, k, strip);
         start = 0;
@@ -1696,6 +1776,7 @@ fn flush_para(
     trim_eol: bool,
     origin: Option<&OriginMap>,
     source_body: &str,
+    origin_cursor: &mut OriginCursor,
 ) {
     if let Some(mut buf) = para_buf.take() {
         *para = None;
@@ -1705,7 +1786,15 @@ fn flush_para(
             }
             para_map.truncate_text_len(buf.len());
         }
-        let inline = stub_inline_mapped(&buf, 0, &buf, Some(para_map), source_body);
+        let mut para_map_cursor = OriginCursor::new();
+        let inline = stub_inline_mapped(
+            &buf,
+            0,
+            &buf,
+            Some(para_map),
+            source_body,
+            &mut para_map_cursor,
+        );
         para_map.clear();
         out.push(Block::Paragraph { inline, span: None });
         return;
@@ -1717,7 +1806,14 @@ fn flush_para(
             }
         }
         out.push(Block::Paragraph {
-            inline: stub_inline_mapped(&input[s..e], s, input, origin, source_body),
+            inline: stub_inline_mapped(
+                &input[s..e],
+                s,
+                input,
+                origin,
+                source_body,
+                origin_cursor,
+            ),
             span: Some(Span(s, e)),
         });
     }
@@ -1750,6 +1846,7 @@ fn append_view_with_origin(
     if !view.is_empty() {
         let src_off = crate::inline::ptr_base(view, input);
         map.push_composed(text_off, origin, src_off, view.len(), Some(cursor));
+        crate::metrics::scan_work(view.len());
         buf.push_str(view);
     }
 }
@@ -1768,6 +1865,7 @@ fn append_line_joiner(
     if eol_len > 0 {
         map.push_composed_eol(text_off, origin, eol_start, eol_len, Some(cursor));
     }
+    crate::metrics::scan_work(1);
     buf.push('\n');
 }
 
@@ -1782,10 +1880,11 @@ fn stub_inline_mapped(
     current_input: &str,
     origin: Option<&OriginMap>,
     source_body: &str,
+    cursor: &mut OriginCursor,
 ) -> Vec<Inline> {
     let mut inline = stub_inline(s, base);
     if let Some(origin) = origin {
-        crate::source_map::remap_inlines(&mut inline, current_input, source_body, origin);
+        crate::source_map::remap_inlines(&mut inline, current_input, source_body, origin, cursor);
     }
     inline
 }
@@ -2032,7 +2131,8 @@ fn md_definition_split(
     if name.is_empty() {
         return None; // `take_while1` needs ≥1 char before " ::"
     }
-    let inl = stub_inline_mapped(name, 0, content, Some(origin), source_body);
+    let mut name_cursor = OriginCursor::new();
+    let inl = stub_inline_mapped(name, 0, content, Some(origin), source_body, &mut name_cursor);
     Some((inl, String::new(), OriginMap::new()))
 }
 
@@ -2071,10 +2171,13 @@ fn collect_list_md(
     input: &str,
     origin: Option<&OriginMap>,
     source_body: &str,
+    origin_cursor: &mut OriginCursor,
 ) -> Result<(Block, usize), Collapse> {
     let mut flat: Vec<ListItem> = Vec::new();
     let mut flat_lines: Vec<usize> = Vec::new();
     let mut flat_indents: Vec<u32> = Vec::new();
+    let mut flat_cursors: Vec<OriginCursor> = Vec::new();
+    let start_cursor = *origin_cursor;
     let mut i = start;
     while i < hi {
         let t = lines[i].text;
@@ -2091,12 +2194,12 @@ fn collect_list_md(
         // content = first line (marker body) + folded indented continuation lines, each trimmed.
         let mut joined = String::new();
         let mut joined_map = OriginMap::new();
-        let mut joined_cursor = OriginCursor::new();
+        let mut item_origin_cursor = *origin_cursor;
         let first_raw = &lines[i].text[marker.body_start..];
         append_view_with_origin(
             &mut joined,
             &mut joined_map,
-            &mut joined_cursor,
+            &mut item_origin_cursor,
             input,
             origin,
             first_raw.trim(),
@@ -2129,7 +2232,7 @@ fn collect_list_md(
             append_line_joiner(
                 &mut joined,
                 &mut joined_map,
-                &mut joined_cursor,
+                &mut item_origin_cursor,
                 lines,
                 last_content_line,
                 origin,
@@ -2137,7 +2240,7 @@ fn collect_list_md(
             append_view_with_origin(
                 &mut joined,
                 &mut joined_map,
-                &mut joined_cursor,
+                &mut item_origin_cursor,
                 input,
                 origin,
                 cl.trim(),
@@ -2149,6 +2252,7 @@ fn collect_list_md(
             // The failing item P is the one at line `i` (indent `cur_indent`), NOT pushed.
             let r = collapse_resume(&flat_indents, cur_indent);
             let resume = if r < flat_lines.len() { flat_lines[r] } else { i };
+            *origin_cursor = if r == 0 { start_cursor } else { flat_cursors[r - 1] };
             flat.truncate(r);
             let kept = if flat.is_empty() {
                 None
@@ -2180,6 +2284,8 @@ fn collect_list_md(
             name,
             checkbox: marker.checkbox,
         });
+        *origin_cursor = item_origin_cursor;
+        flat_cursors.push(item_origin_cursor);
         flat_lines.push(i);
         flat_indents.push(cur_indent);
         i = j;
@@ -2274,8 +2380,16 @@ fn reparse_block_content(residual: &str, origin: &OriginMap, source_body: &str) 
         if residual.is_empty() {
             Vec::new()
         } else {
+            let mut cursor = OriginCursor::new();
             vec![Block::Paragraph {
-                inline: stub_inline_mapped(residual, 0, residual, Some(origin), source_body),
+                inline: stub_inline_mapped(
+                    residual,
+                    0,
+                    residual,
+                    Some(origin),
+                    source_body,
+                    &mut cursor,
+                ),
                 span: Some(Span(0, residual.len())),
             }]
         }
@@ -2436,6 +2550,7 @@ fn build_def_list(
     input: &str,
     origin: Option<&OriginMap>,
     source_body: &str,
+    origin_cursor: &mut OriginCursor,
 ) -> (ListItem, usize) {
     // All scans are bounded by `hi`: at the top level `hi == lines.len()` (identical to
     // before); inside a callout body the closer line (`#+END_X`) is never a def
@@ -2448,6 +2563,7 @@ fn build_def_list(
         input,
         origin,
         source_body,
+        origin_cursor,
     );
     let mut content: Vec<Block> = Vec::new();
     let mut j = i + 1;
@@ -2456,11 +2572,10 @@ fn build_def_list(
         let first = lines[j].text.trim_start().strip_prefix(':').unwrap_or("").trim_start();
         let mut item_text = String::new();
         let mut item_map = OriginMap::new();
-        let mut item_cursor = OriginCursor::new();
         append_view_with_origin(
             &mut item_text,
             &mut item_map,
-            &mut item_cursor,
+            origin_cursor,
             input,
             origin,
             first,
@@ -2472,7 +2587,7 @@ fn build_def_list(
             append_line_joiner(
                 &mut item_text,
                 &mut item_map,
-                &mut item_cursor,
+                origin_cursor,
                 lines,
                 last_content_line,
                 origin,
@@ -2480,7 +2595,7 @@ fn build_def_list(
             append_view_with_origin(
                 &mut item_text,
                 &mut item_map,
-                &mut item_cursor,
+                origin_cursor,
                 input,
                 origin,
                 lines[j].text.trim_start(),
@@ -2491,7 +2606,15 @@ fn build_def_list(
         // mldoc inline-parses `String.trim`-ed of the joined item.
         let trimmed = item_text.trim();
         let trim_base = crate::inline::ptr_base(trimmed, &item_text);
-        let inl = stub_inline_mapped(trimmed, trim_base, &item_text, Some(&item_map), source_body);
+        let mut item_map_cursor = OriginCursor::new();
+        let inl = stub_inline_mapped(
+            trimmed,
+            trim_base,
+            &item_text,
+            Some(&item_map),
+            source_body,
+            &mut item_map_cursor,
+        );
         content.push(Block::Paragraph {
             inline: inl,
             span: None,
@@ -3281,9 +3404,10 @@ fn build_table(
     input: &str,
     origin: Option<&OriginMap>,
     source_body: &str,
+    origin_cursor: &mut OriginCursor,
 ) -> Block {
     let texts: Vec<&str> = rows.iter().map(|l| l.text).collect();
-    build_table_from_texts(&texts, start, end, input, origin, source_body)
+    build_table_from_texts(&texts, start, end, input, origin, source_body, origin_cursor)
 }
 
 /// Build a `Table` from raw row strings (used by both the top-level table block and the
@@ -3297,8 +3421,9 @@ fn build_table_from_texts(
     input: &str,
     origin: Option<&OriginMap>,
     source_body: &str,
+    origin_cursor: &mut OriginCursor,
 ) -> Block {
-    let split_cells = |s: &str| -> Vec<Vec<Inline>> {
+    let mut split_cells = |s: &str| -> Vec<Vec<Inline>> {
         let t = s.trim();
         let t = t.strip_prefix('|').unwrap_or(t);
         let t = t.strip_suffix('|').unwrap_or(t);
@@ -3306,7 +3431,7 @@ fn build_table_from_texts(
             .map(|c| {
                 let c = c.trim();
                 let base = crate::inline::ptr_base(c, input);
-                stub_inline_mapped(c, base, input, origin, source_body)
+                stub_inline_mapped(c, base, input, origin, source_body, origin_cursor)
             })
             .collect()
     };

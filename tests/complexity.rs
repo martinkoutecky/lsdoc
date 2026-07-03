@@ -86,6 +86,31 @@ fn flat_gt_quote_lines(n: usize) -> String {
     }
     s
 }
+/// Flat `>` fallback whose reparse emits many table cell remaps against one parent OriginMap.
+fn gt_flat_table_rows(n: usize) -> String {
+    let mut s = String::new();
+    for _ in 0..n {
+        s.push_str("> | a | b |\n");
+    }
+    s
+}
+/// Markdown definition-list fallback: direct term remaps plus per-item child map construction.
+fn gt_flat_def_list(n: usize) -> String {
+    let mut s = String::new();
+    for i in 0..n {
+        writeln!(&mut s, "> Term{i}").unwrap();
+        s.push_str("> : value\n");
+    }
+    s
+}
+/// Flat `>` fallback containing adjacent LaTeX environments.
+fn gt_flat_latex_envs(n: usize) -> String {
+    let mut s = String::new();
+    for _ in 0..n {
+        s.push_str("> \\begin{equation}\n> x\n> \\end{equation}\n");
+    }
+    s
+}
 /// Org `#+BEGIN_QUOTE` with an indented body: the strip-view paragraph buffer is another
 /// transformed fold site that remaps O(n) inline nodes through O(n) origin segments.
 fn org_begin_quote_indented_body(n: usize) -> String {
@@ -94,6 +119,25 @@ fn org_begin_quote_indented_body(n: usize) -> String {
         writeln!(&mut s, "  line {i}").unwrap();
     }
     s.push_str("#+END_QUOTE\n");
+    s
+}
+/// Precise transformed-frame cell: an indented Org quote body containing table rows.
+fn org_indented_quote_table_rows(n: usize) -> String {
+    let mut s = String::from("#+BEGIN_QUOTE\n");
+    for _ in 0..n {
+        s.push_str("  | a | b |\n");
+    }
+    s.push_str("#+END_QUOTE\n");
+    s
+}
+/// Precise transformed-frame cell: a markdown re-bulleted callout containing a def-list.
+fn md_rebulleted_def_list(n: usize) -> String {
+    let mut s = String::from("- #+BEGIN_NOTE\n");
+    for i in 0..n {
+        writeln!(&mut s, "  Term{i}").unwrap();
+        s.push_str("  : value\n");
+    }
+    s.push_str("  #+END_NOTE\n");
     s
 }
 
@@ -426,12 +470,24 @@ fn complexity_gate() {
         // re-scan per inline node fails this deterministic gate.
         assert_linear("flat_gt_quote_lines", flat_gt_quote_lines, 1000, "md");
         assert_linear("org_flat_gt_quote_lines", flat_gt_quote_lines, 1000, "org");
+        assert_linear("gt_flat_table_rows", gt_flat_table_rows, 1000, "md");
+        assert_linear("org_gt_flat_table_rows", gt_flat_table_rows, 1000, "org");
+        assert_linear("gt_flat_def_list", gt_flat_def_list, 1000, "md");
+        assert_linear("gt_flat_latex_envs", gt_flat_latex_envs, 700, "md");
+        assert_linear("org_gt_flat_latex_envs", gt_flat_latex_envs, 700, "org");
         assert_linear(
             "org_begin_quote_indented_body",
             org_begin_quote_indented_body,
             1000,
             "org",
         );
+        assert_linear(
+            "org_indented_quote_table_rows",
+            org_indented_quote_table_rows,
+            1000,
+            "org",
+        );
+        assert_linear("md_rebulleted_def_list", md_rebulleted_def_list, 1000, "md");
     });
     // (2b) no-SIGABRT on a SMALL (4 MiB) stack, where the old per-unit suffix-recurse overflowed at
     // ~24 KB on the default stack: both the escape (C) and code-leaf (D) straddle families now parse

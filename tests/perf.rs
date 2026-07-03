@@ -353,12 +353,24 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         // O(n) inline nodes. The source-map remap cursor must keep these near 2× per doubling.
         ("md_flat_gt_quote_lines", false, 4_000, flat_gt_quote_lines),
         ("org_flat_gt_quote_lines", true, 4_000, flat_gt_quote_lines),
+        ("md_gt_flat_table_rows", false, 4_000, gt_flat_table_rows),
+        ("org_gt_flat_table_rows", true, 4_000, gt_flat_table_rows),
+        ("md_gt_flat_def_list", false, 4_000, gt_flat_def_list),
+        ("md_gt_flat_latex_envs", false, 3_000, gt_flat_latex_envs),
+        ("org_gt_flat_latex_envs", true, 3_000, gt_flat_latex_envs),
         (
             "org_begin_quote_indented_body",
             true,
             4_000,
             org_begin_quote_indented_body,
         ),
+        (
+            "org_indented_quote_table_rows",
+            true,
+            4_000,
+            org_indented_quote_table_rows,
+        ),
+        ("md_rebulleted_def_list", false, 4_000, md_rebulleted_def_list),
         (
             "org_indented_quote_raw_html_adjacent",
             true,
@@ -388,12 +400,56 @@ fn flat_gt_quote_lines(n: usize) -> String {
     s
 }
 
+fn gt_flat_table_rows(n: usize) -> String {
+    let mut s = String::new();
+    for _ in 0..n {
+        s.push_str("> | a | b |\n");
+    }
+    s
+}
+
+fn gt_flat_def_list(n: usize) -> String {
+    let mut s = String::new();
+    for i in 0..n {
+        writeln!(&mut s, "> Term{i}").unwrap();
+        s.push_str("> : value\n");
+    }
+    s
+}
+
+fn gt_flat_latex_envs(n: usize) -> String {
+    let mut s = String::new();
+    for _ in 0..n {
+        s.push_str("> \\begin{equation}\n> x\n> \\end{equation}\n");
+    }
+    s
+}
+
 fn org_begin_quote_indented_body(n: usize) -> String {
     let mut s = String::from("#+BEGIN_QUOTE\n");
     for i in 0..n {
         writeln!(&mut s, "  line {i}").unwrap();
     }
     s.push_str("#+END_QUOTE\n");
+    s
+}
+
+fn org_indented_quote_table_rows(n: usize) -> String {
+    let mut s = String::from("#+BEGIN_QUOTE\n");
+    for _ in 0..n {
+        s.push_str("  | a | b |\n");
+    }
+    s.push_str("#+END_QUOTE\n");
+    s
+}
+
+fn md_rebulleted_def_list(n: usize) -> String {
+    let mut s = String::from("- #+BEGIN_NOTE\n");
+    for i in 0..n {
+        writeln!(&mut s, "  Term{i}").unwrap();
+        s.push_str("  : value\n");
+    }
+    s.push_str("  #+END_NOTE\n");
     s
 }
 

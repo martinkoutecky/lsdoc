@@ -1113,12 +1113,21 @@ impl EndTrie {
         let mut node = 0usize;
         self.ends[node].push(idx);
         for &b in suffix.as_bytes() {
+            crate::metrics::scan_work(1);
             if b == b' ' || b == b'\t' {
                 break;
             }
             let lb = b.to_ascii_lowercase();
-            node = match self.kids[node].iter().find(|&&(k, _)| k == lb) {
-                Some(&(_, c)) => c as usize,
+            let mut found = None;
+            for &(k, c) in &self.kids[node] {
+                crate::metrics::scan_work(1);
+                if k == lb {
+                    found = Some(c as usize);
+                    break;
+                }
+            }
+            node = match found {
+                Some(c) => c,
                 None => {
                     let c = self.kids.len();
                     self.kids.push(Vec::new());
@@ -1144,13 +1153,23 @@ impl EndTrie {
     pub(crate) fn find(&self, name: &str, from: usize) -> Option<usize> {
         let mut node = 0usize;
         for &b in name.as_bytes() {
+            crate::metrics::scan_work(1);
             let lb = b.to_ascii_lowercase();
-            node = self.kids[node].iter().find(|&&(k, _)| k == lb).map(|&(_, c)| c as usize)?;
+            let mut found = None;
+            for &(k, c) in &self.kids[node] {
+                crate::metrics::scan_work(1);
+                if k == lb {
+                    found = Some(c as usize);
+                    break;
+                }
+            }
+            node = found?;
         }
         let v = &self.ends[node];
         let cur = &self.cursor[node];
         let mut c = cur.get();
         while c < v.len() && v[c] <= from {
+            crate::metrics::scan_work(1);
             c += 1;
         }
         cur.set(c);

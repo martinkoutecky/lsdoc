@@ -38,11 +38,32 @@ pub(crate) struct OriginMap {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct OriginCursor {
     idx: usize,
+    #[cfg(debug_assertions)]
+    map_id: Option<usize>,
 }
 
 impl OriginCursor {
     pub(crate) fn new() -> Self {
-        Self { idx: 0 }
+        Self {
+            idx: 0,
+            #[cfg(debug_assertions)]
+            map_id: None,
+        }
+    }
+
+    #[inline]
+    fn bind(&mut self, _map: &OriginMap) {
+        #[cfg(debug_assertions)]
+        {
+            let id = _map as *const OriginMap as usize;
+            match self.map_id {
+                Some(existing) => debug_assert_eq!(
+                    existing, id,
+                    "OriginCursor reused with a different OriginMap"
+                ),
+                None => self.map_id = Some(id),
+            }
+        }
     }
 }
 
@@ -156,6 +177,7 @@ impl OriginMap {
     }
 
     fn advance_to(&self, cursor: &mut OriginCursor, text_off: usize) {
+        cursor.bind(self);
         while cursor.idx < self.segments.len() {
             crate::metrics::scan_work(1);
             if self.segments[cursor.idx].text_end() > text_off {
@@ -232,6 +254,7 @@ impl OriginMap {
         self.advance_to(cursor, start);
         let mut idx = cursor.idx;
         while let Some(seg) = self.segments.get(idx).copied() {
+            crate::metrics::scan_work(1);
             if seg.text_off >= end {
                 break;
             }
@@ -286,6 +309,7 @@ pub(crate) fn wire_map_from_origins(
     let text_bytes = text.as_bytes();
     let source_bytes = source.as_bytes();
     for seg in origins {
+        crate::metrics::scan_work(1);
         if seg.text_len != seg.src_len || seg.text_len == 0 {
             continue;
         }
@@ -299,6 +323,7 @@ pub(crate) fn wire_map_from_origins(
         }
         let src = &source_bytes[src_rel..src_rel + seg.src_len];
         let txt = &text_bytes[seg.text_off..seg.text_off + seg.text_len];
+        crate::metrics::scan_work(seg.text_len);
         if src == txt {
             push_wire_segment(&mut out, seg.text_off, seg.src_off, seg.text_len);
         }
@@ -308,7 +333,11 @@ pub(crate) fn wire_map_from_origins(
 
 fn source_slice_equals(source: &str, span: Span, text: &str) -> bool {
     let b = source.as_bytes();
-    span.1 <= b.len() && &b[span.0..span.1] == text.as_bytes()
+    if span.1 > b.len() {
+        return false;
+    }
+    crate::metrics::scan_work(text.len());
+    &b[span.0..span.1] == text.as_bytes()
 }
 
 pub(crate) fn make_plain(
@@ -337,16 +366,6 @@ pub(crate) fn make_plain(
 }
 
 pub(crate) fn remap_inlines(
-    inlines: &mut [Inline],
-    current_input: &str,
-    source_body: &str,
-    origin: &OriginMap,
-) {
-    let mut cursor = OriginCursor::new();
-    remap_inlines_with_cursor(inlines, current_input, source_body, origin, &mut cursor);
-}
-
-fn remap_inlines_with_cursor(
     inlines: &mut [Inline],
     current_input: &str,
     source_body: &str,
@@ -422,7 +441,7 @@ fn remap_inline(
                 collapsed(local, origin, &mut collapsed_cursor)
             }));
             let mut child_cursor = node_cursor;
-            remap_inlines_with_cursor(children, current_input, source_body, origin, &mut child_cursor);
+            remap_inlines(children, current_input, source_body, origin, &mut child_cursor);
         }
         Inline::Link { label, span, .. } => {
             let local = span.take();
@@ -431,7 +450,7 @@ fn remap_inline(
                 collapsed(local, origin, &mut collapsed_cursor)
             }));
             let mut child_cursor = node_cursor;
-            remap_inlines_with_cursor(label, current_input, source_body, origin, &mut child_cursor);
+            remap_inlines(label, current_input, source_body, origin, &mut child_cursor);
         }
         Inline::Code { span, .. }
         | Inline::Verbatim { span, .. }

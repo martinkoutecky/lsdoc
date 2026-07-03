@@ -235,6 +235,7 @@ fn close_top(
     consume: bool,
     origin: Option<&OriginMap>,
     source_body: &str,
+    origin_cursor: &mut OriginCursor,
 ) {
     let mut f = stack.pop().unwrap();
     flush_para(
@@ -246,6 +247,7 @@ fn close_top(
         false,
         origin,
         source_body,
+        origin_cursor,
     );
     let span_end = if consume {
         lines[i].end
@@ -282,7 +284,6 @@ struct Frame {
     // open in a remap_spans frame (clean frames keep `para`'s `(start,end)` fast path).
     para_buf: Option<String>,
     para_map: OriginMap,
-    para_cursor: OriginCursor,
     absorb: bool,             // did this body's last child swallow a following blank?
     builder: Option<Builder>, // the opener → emitted on pop (None for the root).
     open_span_start: usize,   // byte offset of the opener line start (for the span).
@@ -316,8 +317,16 @@ fn streaming_reparse(input: &str, ctx: Ctx, origin: &OriginMap, source_body: &st
             if input.is_empty() {
                 Vec::new()
             } else {
+                let mut cursor = OriginCursor::new();
                 vec![Block::Paragraph {
-                    inline: org_inline_mapped(input, 0, input, Some(origin), source_body),
+                    inline: org_inline_mapped(
+                        input,
+                        0,
+                        input,
+                        Some(origin),
+                        source_body,
+                        &mut cursor,
+                    ),
                     span: Some(Span(0, input.len())),
                 }]
             }
@@ -425,7 +434,6 @@ fn parse_org_streaming<'a>(
         para: None,
         para_buf: None,
         para_map: OriginMap::new(),
-        para_cursor: OriginCursor::new(),
         absorb: false,
         builder: None,
         open_span_start: 0,
@@ -440,6 +448,7 @@ fn parse_org_streaming<'a>(
     let mut property_end_cursor: usize = 0; // monotone parse1 `:END:` prefix cursor.
     let mut raw_html_scan = RawHtmlScan::new(); // monotone failed known-tag raw-HTML scanner.
     let mut nonstd_cursor: usize = 0; // monotone nonstd-eol cursor (body_is_clean_window), ditto.
+    let mut origin_cursor = OriginCursor::new(); // one cursor for this parse pass's parent OriginMap.
     let mut offs: Vec<usize> = Vec::new(); // reused `>`-prefix offset scratch (scan_gt_prefix)
                                            // F4: set by an empty headline marker (`* ` trailing-ws para), consumed by the NEXT line's
                                            // dispatch — a drop-trigger block drops the para, anything else clears the flag.
@@ -454,7 +463,16 @@ fn parse_org_streaming<'a>(
         // `offs`, and after it every open frame has `hi > i`.)
         while stack.len() > 1 && stack.last().unwrap().hi <= i {
             let consume = stack.last().unwrap().gt_level == 0;
-            close_top(&mut stack, &lines, input, i, consume, origin, source_body);
+            close_top(
+                &mut stack,
+                &lines,
+                input,
+                i,
+                consume,
+                origin,
+                source_body,
+                &mut origin_cursor,
+            );
             if consume {
                 i += 1;
             }
@@ -488,7 +506,16 @@ fn parse_org_streaming<'a>(
                 {
                     break;
                 }
-                close_top(&mut stack, &lines, input, i, false, origin, source_body);
+                close_top(
+                    &mut stack,
+                    &lines,
+                    input,
+                    i,
+                    false,
+                    origin,
+                    source_body,
+                    &mut origin_cursor,
+                );
             }
 
             // Phase 2b: open new `>`-frames. `cur` starts at the surviving top's level-`H` view
@@ -526,6 +553,7 @@ fn parse_org_streaming<'a>(
                             top.ctx.in_item || top.ctx.in_quote,
                             origin,
                             source_body,
+                            &mut origin_cursor,
                         );
                         opened_any = true;
                     }
@@ -541,7 +569,6 @@ fn parse_org_streaming<'a>(
                     para: None,
                     para_buf: None,
                     para_map: OriginMap::new(),
-                    para_cursor: OriginCursor::new(),
                     absorb: false,
                     builder: Some(Builder::Quote),
                     open_span_start: lines[i].start,
@@ -573,7 +600,7 @@ fn parse_org_streaming<'a>(
                 &mut top.para,
                 &mut top.para_buf,
                 &mut top.para_map,
-                &mut top.para_cursor,
+                &mut origin_cursor,
                 &mut top.absorb,
                 &mut collapse_floor,
                 &mut fence_cursor,
@@ -620,6 +647,7 @@ fn parse_org_streaming<'a>(
                         top.ctx.in_item || top.ctx.in_quote,
                         origin,
                         source_body,
+                        &mut origin_cursor,
                     );
                 }
                 // A `#+BEGIN_X` callout body — clean-window (spans global) or strip-view / nonstd
@@ -635,7 +663,6 @@ fn parse_org_streaming<'a>(
                     para: None,
                     para_buf: None,
                     para_map: OriginMap::new(),
-                    para_cursor: OriginCursor::new(),
                     absorb: false,
                     builder: Some(builder),
                     open_span_start: lines[i].start,
@@ -655,24 +682,30 @@ fn parse_org_streaming<'a>(
                     let t = stack.last().unwrap();
                     (t.hi, t.gt_level)
                 };
-                let (mut de_gt, mut de_gt_map, mut de_gt_cursor) = {
+                let (mut de_gt, mut de_gt_map) = {
                     let top = stack.last_mut().unwrap();
                     top.para = None;
                     (
                         top.para_buf.take().unwrap_or_default(),
                         std::mem::take(&mut top.para_map),
-                        std::mem::take(&mut top.para_cursor),
                     )
                 };
                 append_view_with_origin(
                     &mut de_gt,
                     &mut de_gt_map,
-                    &mut de_gt_cursor,
+                    &mut origin_cursor,
                     input,
                     origin,
                     dispatch_view.unwrap_or(""),
                 );
-                append_line_joiner(&mut de_gt, &mut de_gt_map, &mut de_gt_cursor, &lines, i, origin);
+                append_line_joiner(
+                    &mut de_gt,
+                    &mut de_gt_map,
+                    &mut origin_cursor,
+                    &lines,
+                    i,
+                    origin,
+                );
                 let mut end = i + 1;
                 while end < p_hi {
                     match gt_cont_line_view(&lines[end], strip, p_gt) {
@@ -680,7 +713,7 @@ fn parse_org_streaming<'a>(
                             append_view_with_origin(
                                 &mut de_gt,
                                 &mut de_gt_map,
-                                &mut de_gt_cursor,
+                                &mut origin_cursor,
                                 input,
                                 origin,
                                 v,
@@ -688,7 +721,7 @@ fn parse_org_streaming<'a>(
                             append_line_joiner(
                                 &mut de_gt,
                                 &mut de_gt_map,
-                                &mut de_gt_cursor,
+                                &mut origin_cursor,
                                 &lines,
                                 end,
                                 origin,
@@ -723,6 +756,7 @@ fn parse_org_streaming<'a>(
         false,
         origin,
         source_body,
+        &mut origin_cursor,
     );
     root.out
 }
@@ -766,7 +800,7 @@ fn dispatch_org_line<'a>(
     para: &mut Option<(usize, usize)>,
     para_buf: &mut Option<String>,
     para_map: &mut OriginMap,
-    para_cursor: &mut OriginCursor,
+    origin_cursor: &mut OriginCursor,
     absorb: &mut bool,
     collapse_floor: &mut usize,
     fence_cursor: &mut usize,
@@ -842,8 +876,8 @@ fn dispatch_org_line<'a>(
         // the `\n` Break delimiter; keeps para/para_buf in lockstep).
         if remap_spans && open_para {
             let b = para_buf.get_or_insert_with(String::new);
-            append_view_with_origin(b, para_map, para_cursor, input, origin, t);
-            append_line_joiner(b, para_map, para_cursor, lines, i, origin);
+            append_view_with_origin(b, para_map, origin_cursor, input, origin, t);
+            append_line_joiner(b, para_map, origin_cursor, lines, i, origin);
         }
         return Step::Next(i + 1);
     }
@@ -873,7 +907,7 @@ fn dispatch_org_line<'a>(
 
     // 1. directive `#+KEY: value` (KEY != BEGIN_…) — not a list-item content block.
     if let Some((name, value)) = org_directive(t).filter(|_| !in_item) {
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         out.push(Block::Directive {
             name,
             value,
@@ -900,7 +934,7 @@ fn dispatch_org_line<'a>(
             if was_ws_drop && para_ws_only(para, input) {
                 *para = None;
             }
-            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             out.push(Block::Properties {
                 props,
                 span: Some(Span(line_start, span_end)),
@@ -912,7 +946,7 @@ fn dispatch_org_line<'a>(
 
     // 2b. comment `# text` (mldoc Comment) — IS a valid list-item content block (not gated).
     if let Some(text) = org_comment(t) {
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         out.push(Block::Comment {
             text: text.to_string(),
             span: Some(Span(line_start, line_end)),
@@ -932,7 +966,7 @@ fn dispatch_org_line<'a>(
                 if was_ws_drop && para_ws_only(para, input) {
                     *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
                 }
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                 out.push(Block::Drawer {
                     name,
                     span: Some(Span(line_start, lines[close].end)),
@@ -970,7 +1004,7 @@ fn dispatch_org_line<'a>(
                 raw_html_scan,
             )
         {
-            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             out.push(Block::Bullet {
                 level,
                 size: None,
@@ -984,7 +1018,9 @@ fn dispatch_org_line<'a>(
             if let Some((_fchar, frun)) = fence_marker(content) {
                 if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
                     let code = if close > i + 1 {
-                        input[lines[i + 1].start..lines[close - 1].end].to_string()
+                        let body = &input[lines[i + 1].start..lines[close - 1].end];
+                        crate::metrics::scan_work(body.len());
+                        body.to_string()
                     } else {
                         String::new()
                     };
@@ -1011,7 +1047,7 @@ fn dispatch_org_line<'a>(
             return Step::Next(i);
         }
 
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let mut inline = org_inline(content, crate::inline::ptr_base(content, input));
         let htags = extract_htags(&mut inline);
         let empty_title = inline.is_empty() && htags.is_empty();
@@ -1042,7 +1078,7 @@ fn dispatch_org_line<'a>(
         if was_ws_drop && para_ws_only(para, input) {
             *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
         }
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let start = i;
         let mut ni = i;
         while ni < hi && is_table_row(line_text(lines, ni, strip)) {
@@ -1055,6 +1091,7 @@ fn dispatch_org_line<'a>(
             input,
             origin,
             source_body,
+            origin_cursor,
         ));
         *absorb = false;
         return Step::Next(ni);
@@ -1070,7 +1107,7 @@ fn dispatch_org_line<'a>(
         // latex_env is the ONLY block_content construct that does NOT consume the preceding eol,
         // so inside a `#+BEGIN_X` / `>`-quote body a paragraph KEEPS its trailing Break before it
         // and the eol AFTER it becomes a Break-paragraph (mldoc `Paragraph.sep`-last). Never trim.
-        flush_para(out, para, para_buf, para_map, input, false, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, false, origin, source_body, origin_cursor);
         let mut ni = i + 1;
         while ni < lines.len() && lines[ni].start < consumed_end {
             ni += 1;
@@ -1082,7 +1119,10 @@ fn dispatch_org_line<'a>(
         let content = if remap_spans {
             let mut s = String::new();
             for k in i..ni {
-                s.push_str(line_text(lines, k, strip));
+                let view = line_text(lines, k, strip);
+                crate::metrics::scan_work(view.len());
+                s.push_str(view);
+                crate::metrics::scan_work(1);
                 s.push('\n');
             }
             let first_len = line_text(lines, i, strip).len();
@@ -1116,7 +1156,7 @@ fn dispatch_org_line<'a>(
                         origin,
                         consumed_end,
                         trail_end - consumed_end,
-                        Some(para_cursor),
+                        Some(origin_cursor),
                     );
                     buf.push('\n');
                 }
@@ -1133,14 +1173,17 @@ fn dispatch_org_line<'a>(
                 if was_ws_drop && para_ws_only(para, input) {
                     *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
                 }
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                 // Body lines via line_text: strip-view drops the cumulative indent (= block_code
                 // semantics for strip>0) and is identical to `input[start..end]` for strip==0
                 // (clean-window bodies have only plain-`\n` lines, so text+"\n" == raw slice).
                 let code = if close > i + 1 {
                     let mut s = String::new();
                     for k in i + 1..close {
-                        s.push_str(line_text(lines, k, strip));
+                        let view = line_text(lines, k, strip);
+                        crate::metrics::scan_work(view.len());
+                        s.push_str(view);
+                        crate::metrics::scan_work(1);
                         s.push('\n');
                     }
                     s
@@ -1173,7 +1216,7 @@ fn dispatch_org_line<'a>(
                 let lname = name.to_ascii_lowercase();
                 match lname.as_str() {
                     "src" => {
-                        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                         let lang = begin_lang(t);
                         // Body via line_text: applies the cumulative strip (matching block_code
                         // semantics for nested indented bodies; no-op for strip==0).
@@ -1189,7 +1232,7 @@ fn dispatch_org_line<'a>(
                         return Step::Next(close + 1);
                     }
                     "example" => {
-                        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                         let texts: Vec<&str> =
                             (i + 1..close).map(|k| line_text(lines, k, strip)).collect();
                         let inner = block_code_texts(&texts);
@@ -1251,12 +1294,15 @@ fn dispatch_org_line<'a>(
         if was_ws_drop && para_ws_only(para, input) {
             *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
         }
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let start = i;
         let mut code = String::new();
         let mut ni = i;
         while ni < hi && is_verbatim_line(line_text(lines, ni, strip)) {
-            code.push_str(verbatim_content(line_text(lines, ni, strip)));
+            let content = verbatim_content(line_text(lines, ni, strip));
+            crate::metrics::scan_work(content.len());
+            code.push_str(content);
+            crate::metrics::scan_work(1);
             code.push('\n');
             ni += 1;
         }
@@ -1310,7 +1356,7 @@ fn dispatch_org_line<'a>(
                 if was_ws_drop && para_ws_only(para, input) {
                     *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
                 }
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             }
             out.push(Block::DisplayedMath {
                 text: cap.text,
@@ -1371,7 +1417,7 @@ fn dispatch_org_line<'a>(
                 if was_ws_drop && para_ws_only(para, input) {
                     *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
                 }
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             }
             out.push(Block::RawHtml {
                 text: cap.text,
@@ -1401,7 +1447,7 @@ fn dispatch_org_line<'a>(
     // `Footnote`, so `[fn:n] …` there stays a paragraph with an inline footnote ref). The
     // body absorbs following continuation lines (mldoc `many1 l`); bounded by `hi`. F2.
     if let Some((name, content)) = footnote_def(t).filter(|_| !in_item && !ctx.in_quote) {
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let mut body = String::new();
         let mut body_map = OriginMap::new();
         let mut body_cursor = OriginCursor::new();
@@ -1440,7 +1486,15 @@ fn dispatch_org_line<'a>(
                 None => break,
             }
         }
-        let inl = org_inline_mapped(&body, 0, &body, Some(&body_map), source_body);
+        let mut body_map_cursor = OriginCursor::new();
+        let inl = org_inline_mapped(
+            &body,
+            0,
+            &body,
+            Some(&body_map),
+            source_body,
+            &mut body_map_cursor,
+        );
         out.push(Block::FootnoteDef {
             name,
             inline: inl,
@@ -1453,6 +1507,7 @@ fn dispatch_org_line<'a>(
     // 12. list — bounded by `hi`; item content re-parsed via `streaming_reparse`. Disabled in
     // list-item content; `collapse_floor` skips list-starts inside an already-collapsed region.
     if !in_item && i >= *collapse_floor && list_marker(t).is_some() {
+        let mut list_origin_cursor = *origin_cursor;
         match collect_list(
             lines,
             i,
@@ -1465,9 +1520,11 @@ fn dispatch_org_line<'a>(
             input,
             origin,
             source_body,
+            &mut list_origin_cursor,
         ) {
             Ok((block, next)) => {
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+                *origin_cursor = list_origin_cursor;
                 out.push(block);
                 *absorb = false;
                 return Step::Next(next);
@@ -1479,7 +1536,8 @@ fn dispatch_org_line<'a>(
             }) => {
                 *collapse_floor = trigger;
                 if let Some(block) = kept {
-                    flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+                    flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+                    *origin_cursor = list_origin_cursor;
                     out.push(block);
                     *absorb = false;
                     return Step::Next(resume);
@@ -1494,7 +1552,7 @@ fn dispatch_org_line<'a>(
         if was_ws_drop && para_ws_only(para, input) {
             *para = None; // F4: drop the empty `* ` trailing-ws para before a block.
         }
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         out.push(Block::Hr {
             span: Some(Span(line_start, line_end)),
         });
@@ -1537,7 +1595,8 @@ fn dispatch_org_line<'a>(
             }
             // A preceding paragraph drops its trailing Break before a Hiccup inside a blockquote
             // body / list item, but keeps it at the document level.
-            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body); // no-op after the first
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor); // no-op after the first
+            crate::metrics::scan_work(cap_end - rec);
             out.push(Block::Hiccup {
                 v: input[rec..cap_end].to_string(),
                 span: Some(Span(cur_start, cap_end)),
@@ -1587,8 +1646,8 @@ fn dispatch_org_line<'a>(
     // first line — and a `\r\n` body never yields a stray extra Break.
     if remap_spans {
         let b = para_buf.get_or_insert_with(String::new);
-        append_view_with_origin(b, para_map, para_cursor, input, origin, t);
-        append_line_joiner(b, para_map, para_cursor, lines, i, origin);
+        append_view_with_origin(b, para_map, origin_cursor, input, origin, t);
+        append_line_joiner(b, para_map, origin_cursor, lines, i, origin);
     }
     *absorb = false;
     Step::Next(i + 1)
@@ -1621,7 +1680,9 @@ fn displayed_math_raw_capture<'a>(
         return None;
     }
     let content_end = lines[close_line].start + lines[close_line].text.len();
-    let text = input[opener + 2..close].to_string();
+    let math_text = &input[opener + 2..close];
+    crate::metrics::scan_work(math_text.len());
+    let text = math_text.to_string();
     if close_end < content_end {
         Some(MathCapture {
             text,
@@ -1681,6 +1742,7 @@ fn displayed_math_view_capture<'a>(
     loop {
         let tail = &view[start..];
         if let Some(close) = find_displayed_math_close_in_view(tail) {
+            crate::metrics::scan_work(close);
             text.push_str(&tail[..close]);
             let close_end_view = start + close + 2;
             let vstart = view_abs_start(&lines[k], view);
@@ -1709,11 +1771,13 @@ fn displayed_math_view_capture<'a>(
                 rewrite: None,
             });
         }
+        crate::metrics::scan_work(tail.len());
         text.push_str(tail);
         k += 1;
         if k >= hi {
             return None;
         }
+        crate::metrics::scan_work(1);
         text.push('\n');
         view = line_text(lines, k, strip);
         start = 0;
@@ -1734,6 +1798,7 @@ fn flush_para(
     trim_eol: bool,
     origin: Option<&OriginMap>,
     source_body: &str,
+    origin_cursor: &mut OriginCursor,
 ) {
     if let Some(mut buf) = para_buf.take() {
         *para = None;
@@ -1743,7 +1808,15 @@ fn flush_para(
             }
             para_map.truncate_text_len(buf.len());
         }
-        let inline = org_inline_mapped(&buf, 0, &buf, Some(para_map), source_body);
+        let mut para_map_cursor = OriginCursor::new();
+        let inline = org_inline_mapped(
+            &buf,
+            0,
+            &buf,
+            Some(para_map),
+            source_body,
+            &mut para_map_cursor,
+        );
         para_map.clear();
         out.push(Block::Paragraph {
             inline,
@@ -1758,7 +1831,14 @@ fn flush_para(
             }
         }
         out.push(Block::Paragraph {
-            inline: org_inline_mapped(&input[s..e], s, input, origin, source_body),
+            inline: org_inline_mapped(
+                &input[s..e],
+                s,
+                input,
+                origin,
+                source_body,
+                origin_cursor,
+            ),
             span: Some(Span(s, e)),
         });
     }
@@ -1776,6 +1856,7 @@ fn append_view_with_origin(
     if !view.is_empty() {
         let src_off = crate::inline::ptr_base(view, input);
         map.push_composed(text_off, origin, src_off, view.len(), Some(cursor));
+        crate::metrics::scan_work(view.len());
         buf.push_str(view);
     }
 }
@@ -1794,6 +1875,7 @@ fn append_line_joiner(
     if eol_len > 0 {
         map.push_composed_eol(text_off, origin, eol_start, eol_len, Some(cursor));
     }
+    crate::metrics::scan_work(1);
     buf.push('\n');
 }
 
@@ -2354,7 +2436,9 @@ pub(crate) fn block_code_texts(texts: &[&str]) -> String {
         } else {
             t.trim_start()
         };
+        crate::metrics::scan_work(cleared.len());
         out.push_str(cleared);
+        crate::metrics::scan_work(1);
         out.push('\n');
     }
     out
@@ -2661,10 +2745,13 @@ fn collect_list(
     input: &str,
     origin: Option<&OriginMap>,
     source_body: &str,
+    origin_cursor: &mut OriginCursor,
 ) -> Result<(Block, usize), Collapse> {
     let mut flat: Vec<ListItem> = Vec::new();
     let mut flat_lines: Vec<usize> = Vec::new();
     let mut flat_indents: Vec<u32> = Vec::new();
+    let mut flat_cursors: Vec<OriginCursor> = Vec::new();
+    let start_cursor = *origin_cursor;
     let mut i = start;
     while i < hi {
         let t = line_text(lines, i, strip);
@@ -2681,12 +2768,12 @@ fn collect_list(
         // content = first line (after marker) + folded indented continuation lines.
         let mut content = String::new();
         let mut content_map = OriginMap::new();
-        let mut content_cursor = OriginCursor::new();
+        let mut item_origin_cursor = *origin_cursor;
         let first_raw = &t[marker.body_start..];
         append_view_with_origin(
             &mut content,
             &mut content_map,
-            &mut content_cursor,
+            &mut item_origin_cursor,
             input,
             origin,
             first_raw.trim(),
@@ -2716,7 +2803,7 @@ fn collect_list(
             append_line_joiner(
                 &mut content,
                 &mut content_map,
-                &mut content_cursor,
+                &mut item_origin_cursor,
                 lines,
                 last_content_line,
                 origin,
@@ -2724,7 +2811,7 @@ fn collect_list(
             append_view_with_origin(
                 &mut content,
                 &mut content_map,
-                &mut content_cursor,
+                &mut item_origin_cursor,
                 input,
                 origin,
                 cl.trim(),
@@ -2740,6 +2827,7 @@ fn collect_list(
             } else {
                 i
             };
+            *origin_cursor = if r == 0 { start_cursor } else { flat_cursors[r - 1] };
             flat.truncate(r);
             let kept = if flat.is_empty() {
                 None
@@ -2765,6 +2853,8 @@ fn collect_list(
             name: vec![],
             checkbox: marker.checkbox,
         });
+        *origin_cursor = item_origin_cursor;
+        flat_cursors.push(item_origin_cursor);
         flat_lines.push(i);
         flat_indents.push(cur_indent as u32);
         i = j;
@@ -2834,8 +2924,9 @@ fn build_table(
     input: &str,
     origin: Option<&OriginMap>,
     source_body: &str,
+    origin_cursor: &mut OriginCursor,
 ) -> Block {
-    let split_cells = |s: &str| -> Vec<Vec<Inline>> {
+    let mut split_cells = |s: &str| -> Vec<Vec<Inline>> {
         let t = s.trim();
         let t = t.strip_prefix('|').unwrap_or(t);
         let t = t.strip_suffix('|').unwrap_or(t);
@@ -2843,7 +2934,7 @@ fn build_table(
             .map(|c| {
                 let c = c.trim();
                 let base = crate::inline::ptr_base(c, input);
-                org_inline_mapped(c, base, input, origin, source_body)
+                org_inline_mapped(c, base, input, origin, source_body, origin_cursor)
             })
             .collect()
     };
@@ -2893,10 +2984,11 @@ fn org_inline_mapped(
     current_input: &str,
     origin: Option<&OriginMap>,
     source_body: &str,
+    cursor: &mut OriginCursor,
 ) -> Vec<Inline> {
     let mut inline = org_inline(text, base);
     if let Some(origin) = origin {
-        crate::source_map::remap_inlines(&mut inline, current_input, source_body, origin);
+        crate::source_map::remap_inlines(&mut inline, current_input, source_body, origin, cursor);
     }
     inline
 }
