@@ -1124,26 +1124,19 @@ fn dispatch_md_line<'a>(
         out.push(Block::LatexEnv { name, content, span: Some(Span(line_start, consumed_end)) });
         // resume at the first line starting at/after consumed_end (always > i, and <= hi since
         // consumed_end <= body_end == lines[hi].start).
-        if in_quote {
-            // The trailing eol(s) between the `\end{}` and the next line start a Break-paragraph.
-            let trail_end = if ni < lines.len() { lines[ni].start } else { body_end };
-            if consumed_end < trail_end {
-                *para = Some((consumed_end, trail_end));
-                // Keep para/para_buf in lockstep in a remap_spans frame: the trailing region is a
-                // line terminator (a single Break); the raw `\n` normalizes to `\n`.
-                if remap_spans {
-                    let buf = para_buf.get_or_insert_with(String::new);
-                    let text_off = buf.len();
-                    para_map.push_composed_eol(
-                        text_off,
-                        origin,
-                        consumed_end,
-                        trail_end - consumed_end,
-                        Some(origin_cursor),
-                    );
-                    buf.push('\n');
-                }
-            }
+        if !in_item || in_quote {
+            seed_latex_tail_para(
+                lines,
+                ni,
+                body_end,
+                consumed_end,
+                para,
+                para_buf,
+                para_map,
+                origin,
+                origin_cursor,
+                remap_spans,
+            );
         }
         return Step::Next(ni);
     }
@@ -1365,6 +1358,20 @@ fn dispatch_md_line<'a>(
             let mut ni = i + 1;
             while ni < lines.len() && lines[ni].start < consumed_end {
                 ni += 1;
+            }
+            if !in_item || in_quote {
+                seed_latex_tail_para(
+                    lines,
+                    ni,
+                    body_end,
+                    consumed_end,
+                    para,
+                    para_buf,
+                    para_map,
+                    origin,
+                    origin_cursor,
+                    remap_spans,
+                );
             }
             return Step::Next(ni);
         }
@@ -2175,6 +2182,41 @@ fn retain_tblfm_line_eol_as_para(
             origin,
             eol_start,
             line.end - eol_start,
+            Some(origin_cursor),
+        );
+        buf.push('\n');
+    }
+}
+
+fn seed_latex_tail_para(
+    lines: &[Line<'_>],
+    ni: usize,
+    body_end: usize,
+    consumed_end: usize,
+    para: &mut Option<(usize, usize)>,
+    para_buf: &mut Option<String>,
+    para_map: &mut OriginMap,
+    origin: Option<&OriginMap>,
+    origin_cursor: &mut OriginCursor,
+    remap_spans: bool,
+) {
+    let trail_end = if ni < lines.len() {
+        lines[ni].start
+    } else {
+        body_end
+    };
+    if consumed_end >= trail_end {
+        return;
+    }
+    *para = Some((consumed_end, trail_end));
+    if remap_spans {
+        let buf = para_buf.get_or_insert_with(String::new);
+        let text_off = buf.len();
+        para_map.push_composed_eol(
+            text_off,
+            origin,
+            consumed_end,
+            trail_end - consumed_end,
             Some(origin_cursor),
         );
         buf.push('\n');

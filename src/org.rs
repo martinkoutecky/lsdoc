@@ -1180,29 +1180,19 @@ fn dispatch_org_line<'a>(
             span: Some(Span(line_start, consumed_end)),
         });
         *absorb = false;
-        if ctx.in_quote {
-            let trail_end = if ni < lines.len() {
-                lines[ni].start
-            } else {
-                body_end
-            };
-            if consumed_end < trail_end {
-                *para = Some((consumed_end, trail_end));
-                // Keep para/para_buf in lockstep in a remap_spans frame: the trailing region is a
-                // line terminator (a single Break); normalize `\r\n`→`\n`.
-                if remap_spans {
-                    let buf = para_buf.get_or_insert_with(String::new);
-                    let text_off = buf.len();
-                    para_map.push_composed_eol(
-                        text_off,
-                        origin,
-                        consumed_end,
-                        trail_end - consumed_end,
-                        Some(origin_cursor),
-                    );
-                    buf.push('\n');
-                }
-            }
+        if !ctx.in_item || ctx.in_quote {
+            seed_latex_tail_para(
+                lines,
+                ni,
+                body_end,
+                consumed_end,
+                para,
+                para_buf,
+                para_map,
+                origin,
+                origin_cursor,
+                remap_spans,
+            );
         }
         return Step::Next(ni);
     }
@@ -1910,6 +1900,41 @@ fn append_view_with_origin(
         map.push_composed(text_off, origin, src_off, view.len(), Some(cursor));
         crate::metrics::scan_work(view.len());
         buf.push_str(view);
+    }
+}
+
+fn seed_latex_tail_para(
+    lines: &[Line<'_>],
+    ni: usize,
+    body_end: usize,
+    consumed_end: usize,
+    para: &mut Option<(usize, usize)>,
+    para_buf: &mut Option<String>,
+    para_map: &mut OriginMap,
+    origin: Option<&OriginMap>,
+    origin_cursor: &mut OriginCursor,
+    remap_spans: bool,
+) {
+    let trail_end = if ni < lines.len() {
+        lines[ni].start
+    } else {
+        body_end
+    };
+    if consumed_end >= trail_end {
+        return;
+    }
+    *para = Some((consumed_end, trail_end));
+    if remap_spans {
+        let buf = para_buf.get_or_insert_with(String::new);
+        let text_off = buf.len();
+        para_map.push_composed_eol(
+            text_off,
+            origin,
+            consumed_end,
+            trail_end - consumed_end,
+            Some(origin_cursor),
+        );
+        buf.push('\n');
     }
 }
 
