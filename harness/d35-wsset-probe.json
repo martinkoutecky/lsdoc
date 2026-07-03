@@ -1,0 +1,5 @@
+[
+  {"id":"ff01","format":"org","input":"#+BEGIN_QUOTE\n  a\n\f  \n  x\n#+END_QUOTE"},
+  {"id":"vt01","format":"org","input":"#+BEGIN_QUOTE\n  a\n\u000b  \n  x\n#+END_QUOTE"},
+  {"id":"nbsp01","format":"org","input":"#+BEGIN_QUOTE\n  a\n   \n  x\n#+END_QUOTE"}
+]
