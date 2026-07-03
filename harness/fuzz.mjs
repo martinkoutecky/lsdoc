@@ -43,6 +43,10 @@ const TOKENS_MD = [
   "\\", "\\[", "\\#", "\\`", "$", "$x$", "$$", "!", "![a]", "<", ">", "<https://z.io>",
   "a", "b", " ", "  ", "\n", "café", "中文", "😀", ".", ",", "!", ":", "-", "/",
   "TODO ", "[#A] ", "[ ] ", "\t", "word", "x", "#[[", "tag", "::",
+  // frame-body vocabulary (D33-D37 area: indented/nested #+BEGIN frames, all-ws lines, \f)
+  "#+BEGIN_QUOTE\n", "#+END_QUOTE\n", "#+BEGIN_NOTE\n", "#+END_NOTE\n",
+  "  #+BEGIN_A\n", "  #+END_A\n", "- #+BEGIN_NOTE\n", "  #+END_NOTE\n",
+  "#+BEGIN_SRC t\n", "#+END_SRC\n", "  \n", "   \n", " \t\n", "\f", "\f  \n", "  a\n", "   a\n",
 ];
 const TOKENS_ORG = [
   "* ", "** ", "*** ", "*", "/", "_", "+", "~", "=", "^", "^^",
@@ -51,6 +55,10 @@ const TOKENS_ORG = [
   ":PROPERTIES:", ":key: value", ":END:", "SCHEDULED: ", "DEADLINE: ",
   "TODO ", "DONE ", "[#A] ", ":tag1:tag2:", "- ", "+ ", "1. ", "| a | b |",
   "\\", "a", "b", " ", "  ", "\n", "café", "中文", "😀", ".", "/", "_x", "^y", "word",
+  // frame-body vocabulary (D33-D37 area: indented/nested #+BEGIN frames, all-ws lines, \f)
+  "#+BEGIN_QUOTE\n", "#+END_QUOTE\n", "#+BEGIN_NOTE\n", "#+END_NOTE\n",
+  "  #+BEGIN_A\n", "  #+END_A\n", "#+BEGIN_EXAMPLE\n", "#+END_EXAMPLE\n",
+  "  \n", "   \n", " \t\n", "\f", "\f  \n", "  a\n", "   a\n", "  <b>ab</b>\n", "$$\n",
 ];
 const TOKENS = FORMAT === "org" ? TOKENS_ORG : TOKENS_MD;
 
