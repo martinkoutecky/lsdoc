@@ -95,6 +95,9 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
             if pending.is_empty() {
                 pending_off = $off;
             }
+            // A1: charge the copied plain bytes (metric-contract completeness — each input
+            // byte is copied into `pending` at most once, so this stays O(n)).
+            crate::metrics::scan_work($seg.len());
             pending.push_str($seg);
         }};
     }
@@ -117,6 +120,7 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
                 while i < n && is_ws(b[i]) {
                     i += 1;
                 }
+                crate::metrics::scan_work(i - start); // A1: charge the copied ws bytes
                 toks.push(Token { off: start, kind: Kind::Text(s[start..i].to_string()) });
             }
             b'\\' => lex_backslash(s, &mut i, &mut pending, &mut pending_off, &mut toks),

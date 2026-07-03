@@ -303,6 +303,7 @@ fn normalize_cr_plain_text(text: &str) -> (String, bool) {
 }
 
 fn markdown_plain_text(text: &str) -> (String, bool) {
+    crate::metrics::scan_work(text.len()); // A1: one pass over this (disjoint) plain slice
     let bb = text.as_bytes();
     if !bb.contains(&b'\\') && !bb.contains(&b'\r') {
         return (text.to_string(), true);
@@ -331,6 +332,7 @@ fn markdown_plain_text(text: &str) -> (String, bool) {
 }
 
 fn cr_plain_origins(raw: &str, base: usize) -> Vec<OriginSegment> {
+    crate::metrics::scan_work(raw.len()); // A1: one pass over this (disjoint) plain slice
     let bb = raw.as_bytes();
     let mut origins = Vec::new();
     let mut text_off = 0usize;
@@ -1277,6 +1279,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 txt.len(),
                 txt.len(),
             ));
+            crate::metrics::scan_work(txt.len()); // A1: charge copied pending bytes (O(n))
             pending.push_str(txt);
             last_plain_char_after_append(txt, &mut last_plain_char);
         }};
@@ -1285,6 +1288,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
         ($off:expr, $c:expr) => {{
             let c: u8 = $c;
             track!($off, 1usize);
+            crate::metrics::scan_work(1); // A1: charge copied pending byte
             pending.push(c as char);
             last_plain_char = Some(c);
         }};
@@ -1293,6 +1297,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
         ($off:expr, $txt:expr) => {{
             let txt: &str = $txt;
             track!($off, txt.len());
+            crate::metrics::scan_work(txt.len()); // A1: charge copied pending bytes (O(n))
             pending.push_str(txt);
             last_plain_char_after_append(txt, &mut last_plain_char);
         }};
@@ -2116,6 +2121,7 @@ fn flush(
 }
 
 fn truncate_plain_origins(origins: &mut Vec<OriginSegment>, len: usize) {
+    crate::metrics::scan_work(origins.len()); // A1: bounded by this node's segment count
     let mut keep = 0usize;
     while keep < origins.len() {
         let seg = origins[keep];

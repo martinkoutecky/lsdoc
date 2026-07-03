@@ -142,6 +142,7 @@ pub(crate) fn org_lex(s: &str) -> Vec<Token> {
             if pending.is_empty() {
                 pending_off = $off;
             }
+            crate::metrics::scan_work($seg.len()); // A1: charge copied plain bytes (O(n))
             pending.push_str($seg);
         }};
     }
@@ -163,6 +164,7 @@ pub(crate) fn org_lex(s: &str) -> Vec<Token> {
                 while i < n && is_ws(b[i]) {
                     i += 1;
                 }
+                crate::metrics::scan_work(i - start); // A1: charge copied ws bytes
                 toks.push(Token {
                     off: start,
                     kind: Kind::Text(s[start..i].to_string()),
@@ -381,6 +383,7 @@ fn push_plain_node(out: &mut Vec<Inline>, text: &str, start: usize, end: usize, 
 }
 
 fn cr_plain_origins(raw: &str, base: usize) -> Vec<OriginSegment> {
+    crate::metrics::scan_work(raw.len()); // A1: one pass over this (disjoint) plain slice
     let bb = raw.as_bytes();
     let mut origins = Vec::new();
     let mut text_off = 0usize;
@@ -968,6 +971,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             if let Some(b) = txt.bytes().next_back() {
                 last_plain_char = Some(b);
             }
+            crate::metrics::scan_work(txt.len()); // A1: charge copied pending bytes (O(n))
             pending.push_str(txt);
         }};
     }
@@ -978,6 +982,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             if let Some(b) = seg.bytes().next_back() {
                 last_plain_char = Some(b);
             }
+            crate::metrics::scan_work(seg.len()); // A1: charge copied pending bytes (O(n))
             pending.push_str(seg);
         }};
     }
@@ -985,6 +990,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
         ($off:expr, $c:expr) => {{
             let c: u8 = $c;
             track!($off, 1usize);
+            crate::metrics::scan_work(1); // A1: charge copied pending byte
             pending.push(c as char);
             last_plain_char = Some(c);
         }};
