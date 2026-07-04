@@ -978,7 +978,7 @@ fn dispatch_md_line<'a>(
             || mldoc_trim_spaces_start(t).starts_with("[:")
             || displayed_math_opener(t).is_some()
             || raw_html_block_start(t)
-            || md_table_row(t)
+            || md_table_line(t, line_has_nl(input, &lines[i]))
             || md_marker(t).is_some()
             || (!mldoc_trim_spaces_start(t).is_empty()
                 && i + 1 < hi
@@ -1147,7 +1147,8 @@ fn dispatch_md_line<'a>(
     // (suppressed inside a `>`-blockquote body — mldoc `block_content_parsers` omits Heading,
     // so `# h` / a `-` bullet there stay paragraph text. F1.)
     if let Some((level, size, hend)) = heading_at(t).filter(|_| !in_block_content) {
-        let (marker, priority, title) = split_markers(mldoc_trim_spaces_start(&t[hend..]));
+        let (marker, priority, title) =
+            split_markers(mldoc_trim_spaces_start(&t[hend..]), !line_has_eol(&lines[i]));
         let title_off = line_start + (t.len() - title.len());
         if !title.is_empty()
             && md_heading_split_opener(
@@ -1226,13 +1227,14 @@ fn dispatch_md_line<'a>(
     // (mldoc `block_content_parsers` omits Heading, so `- x` there stays a paragraph). F1.
     if let Some(level) = dash_bullet_level(t).filter(|_| !in_block_content) {
         // mldoc's bullet title is a lookahead (heading0.ml `title_aux_p`): if the
-        // text after the bullet prefix parses as a block construct, the bullet gets
-        // an EMPTY title and the construct is parsed as the next block. We replicate
-        // the two openers that occur in real outlines: a fenced code block and a
-        // markdown blockquote (only on `-` bullets; `*`/`+` are Lists, untouched).
+        // post-marker/priority text parses as a block construct, the bullet gets
+        // an EMPTY title and the construct is parsed as the next block. These
+        // split-specific arms intentionally stay bespoke because they consume
+        // block bodies directly or open streaming frames.
         let dw = mldoc_spaces_len(t);
         let after = mldoc_trim_spaces_start(&t[dw + 1..]); // after '-' + mldoc spaces
-        let (size, content) = atx_size(after); // heading `#{1,n}` size + the rest
+        let (size, content0) = atx_size(after); // heading `#{1,n}` size + the rest
+        let (marker, priority, content) = split_markers(content0, !line_has_eol(&lines[i]));
         let content_off = line_start + (t.len() - content.len());
         // emit the empty (title-less) bullet that precedes a split-off sibling block.
         macro_rules! empty_bullet {
@@ -1241,8 +1243,8 @@ fn dispatch_md_line<'a>(
                     level,
                     size,
                     inline: vec![],
-                    marker: None,
-                    priority: None,
+                    marker: marker.clone(),
+                    priority: priority.clone(),
                     htags: vec![],
                     span: Some(Span(line_start, content_off)),
                 });
@@ -1307,6 +1309,26 @@ fn dispatch_md_line<'a>(
                 };
                 return Step::Open { close, builder: callout_builder(&bname), indent_strip, span_start: content_off };
             }
+        }
+        // (a3) standalone directive `#+KEY: value` (Drawer.parse parse2 in the title
+        // lookahead). Re-dispatch the post-marker suffix so the normal directive arm keeps
+        // its exact blank swallowing/span behavior.
+        if crate::org::directive(content).is_some() {
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+            empty_bullet!();
+            lines[i] = Line { start: content_off, end: line_end, text: content, no_strip: false };
+            return Step::Next(i);
+        }
+        // (a4) org-style drawer on the bullet line, including `:PROPERTIES:` parse1 and
+        // generic-drawer fallback. Reparse the suffix through the normal drawer ladder.
+        if drawer_begin(content)
+            .and_then(|_| find_drawer_end(drawer_end_idxs, drawer_cursor, i))
+            .is_some_and(|close| close < hi)
+        {
+            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+            empty_bullet!();
+            lines[i] = Line { start: content_off, end: line_end, text: content, no_strip: false };
+            return Step::Next(i);
         }
         // (b) markdown blockquote opener on the bullet line (A-md, lazy continuation). Emit the
         // empty bullet FIRST, then REWRITE line `i` to the bullet's `>`-content and RE-PROCESS it
@@ -1410,14 +1432,14 @@ fn dispatch_md_line<'a>(
             return Step::Next(ni);
         }
         // (h) table opener `| … |` (consumes following table-row lines, bounded by `hi`).
-        if md_table_row(content) {
+        if md_table_line(content, line_has_nl(input, &lines[i])) {
             flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
             empty_bullet!();
             let mut table_rows: Vec<MdTableRow<'_>> =
-                vec![MdTableRow { text: content, has_eol: line_has_eol(&lines[i]) }];
+                vec![MdTableRow { text: content, has_nl: line_has_nl(input, &lines[i]) }];
             let mut ni = i + 1;
-            while ni < hi && md_table_row(lines[ni].text) {
-                table_rows.push(MdTableRow { text: lines[ni].text, has_eol: line_has_eol(&lines[ni]) });
+            while ni < hi && md_table_line(lines[ni].text, line_has_nl(input, &lines[ni])) {
+                table_rows.push(MdTableRow { text: lines[ni].text, has_nl: line_has_nl(input, &lines[ni]) });
                 ni += 1;
             }
             let tblfm_line = if ni < hi && md_tblfm_line(lines[ni].text) {
@@ -1488,7 +1510,7 @@ fn dispatch_md_line<'a>(
         // `- ` / `-   ` / `- ## ` / `- TODO ` → [bullet, paragraph]; a bare `-`
         // / `- ##` / `- TODO` with no trailing ws stays a single empty bullet).
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
-        let (marker, priority, title) = split_markers(content);
+        let title = content;
         let trail = mldoc_trim_spaces_end_len(t);
         if title.is_empty() && trail < t.len() {
             out.push(Block::Bullet {
@@ -1540,12 +1562,12 @@ fn dispatch_md_line<'a>(
     }
 
     // 7. table (group of consecutive table-row lines, bounded by `hi`)
-    if md_table_row(t) {
+    if md_table_line(t, line_has_nl(input, &lines[i])) {
         drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let start = i;
         let mut ni = i;
-        while ni < hi && md_table_row(lines[ni].text) {
+        while ni < hi && md_table_line(lines[ni].text, line_has_nl(input, &lines[ni])) {
             ni += 1;
         }
         let rows_end = ni;
@@ -2353,12 +2375,12 @@ fn atx_size(s: &str) -> (Option<u32>, &str) {
 
 /// Extract a leading task marker (`TODO `…) and priority `[#X]`, in mldoc's
 /// `marker *> priority *> title` order. Returns (marker, priority, remaining title).
-fn split_markers(s: &str) -> (Option<String>, Option<String>, &str) {
+fn split_markers(s: &str, marker_eof: bool) -> (Option<String>, Option<String>, &str) {
     let mut marker = None;
     let mut s = s;
     for m in MARKERS {
         if let Some(rest) = s.strip_prefix(m) {
-            if rest.starts_with(' ') {
+            if rest.starts_with(' ') || (rest.is_empty() && marker_eof) {
                 marker = Some((*m).to_string());
                 s = mldoc_trim_spaces_start(rest);
                 break;
@@ -2410,7 +2432,7 @@ fn md_heading_split_opener(
     }
     // Hr, Table, Latex_env.
     if is_hr(content)
-        || md_table_row(content)
+        || md_table_line(content, followed_by_nl)
         || crate::inline::parse_latex_env(&input[..body_end], content_off, content_off + content.len()).is_some()
     {
         return true;
@@ -4241,10 +4263,54 @@ mod tests {
 
 /// A Markdown table row: after trimming, starts AND ends with `|` (≥2 bytes). mldoc
 /// (and org's `is_table_row`) require BOTH ends — a bare leading `|` (`|a`, `| a | b`)
-/// is a Paragraph, not a Table (C3: prevents table over-detection + phantom refs).
+/// is a Paragraph, not a row (C3: prevents table over-detection + phantom refs).
 fn md_table_row(s: &str) -> bool {
     let t = ocaml_trim_end(mldoc_trim_spaces_start(s));
     t.len() >= 2 && t.starts_with('|') && t.ends_with('|')
+}
+
+#[inline]
+fn md_separator_body_byte(b: u8) -> bool {
+    matches!(b, b'-' | b'+' | b'|' | b' ' | b':')
+}
+
+fn md_separator_body_range(s: &str, has_nl: bool) -> Option<(usize, usize)> {
+    if !has_nl {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut scanned = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() && mldoc_is_space(bytes[i]) {
+        i += 1;
+    }
+    scanned += i;
+    if bytes.get(i) != Some(&b'|') {
+        crate::metrics::scan_work(scanned + usize::from(i < bytes.len()));
+        return None;
+    }
+    i += 1;
+    scanned += 1;
+    let body_start = i;
+    if !bytes.get(i).is_some_and(|&b| md_separator_body_byte(b)) {
+        crate::metrics::scan_work(scanned + usize::from(i < bytes.len()));
+        return None;
+    }
+    while i < bytes.len() && md_separator_body_byte(bytes[i]) {
+        i += 1;
+    }
+    scanned += i - body_start;
+    let body_end = i;
+    while i < bytes.len() && mldoc_is_space(bytes[i]) {
+        i += 1;
+    }
+    scanned += i - body_end;
+    crate::metrics::scan_work(scanned + usize::from(i < bytes.len()));
+    (i == bytes.len()).then_some((body_start, body_end))
+}
+
+fn md_table_line(s: &str, has_nl: bool) -> bool {
+    md_table_row(s) || md_separator_body_range(s, has_nl).is_some()
 }
 
 fn md_tblfm_line(s: &str) -> bool {
@@ -4254,7 +4320,7 @@ fn md_tblfm_line(s: &str) -> bool {
 #[derive(Clone, Copy)]
 struct MdTableRow<'a> {
     text: &'a str,
-    has_eol: bool,
+    has_nl: bool,
 }
 
 fn align_from_sep_cell(has_dash: bool, first: Option<u8>, last: Option<u8>) -> Option<crate::ast::Align> {
@@ -4270,16 +4336,13 @@ fn align_from_sep_cell(has_dash: bool, first: Option<u8>, last: Option<u8>) -> O
 }
 
 fn md_separator_aligns(row: MdTableRow<'_>) -> Option<Vec<Option<crate::ast::Align>>> {
-    if !row.has_eol {
-        return None;
-    }
-    let t = ocaml_trim_end(mldoc_trim_spaces_start(row.text));
-    crate::metrics::scan_work(t.len());
-    if t.len() < 2 || !t.starts_with('|') || !t.ends_with('|') {
-        return None;
-    }
-
-    let inner = &t.as_bytes()[1..t.len() - 1];
+    let (body_start, body_end) = md_separator_body_range(row.text, row.has_nl)?;
+    let row_trimmed = ocaml_trim_end(mldoc_trim_spaces_start(row.text));
+    let inner = if md_table_row(row.text) {
+        &row_trimmed.as_bytes()[1..row_trimmed.len() - 1]
+    } else {
+        &row.text.as_bytes()[body_start..body_end]
+    };
     let mut aligns = Vec::new();
     let mut has_dash = false;
     let mut first = None;
@@ -4318,7 +4381,7 @@ fn build_table(
     origin_cursor: &mut OriginCursor,
 ) -> Block {
     let table_rows: Vec<MdTableRow<'_>> =
-        rows.iter().map(|l| MdTableRow { text: l.text, has_eol: line_has_eol(l) }).collect();
+        rows.iter().map(|l| MdTableRow { text: l.text, has_nl: line_has_nl(input, l) }).collect();
     build_table_from_rows(&table_rows, start, end, input, origin, source_body, origin_cursor)
 }
 

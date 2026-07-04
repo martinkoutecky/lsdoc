@@ -1022,7 +1022,7 @@ fn dispatch_org_line<'a>(
     if let Some(level) = headline_level(t).filter(|_| !in_item && !ctx.in_quote) {
         let stars = t.bytes().take_while(|&b| b == b'*').count();
         let after = mldoc_trim_spaces_start(&t[stars..]);
-        let (marker, priority, content) = split_markers(after);
+        let (marker, priority, content) = split_markers(after, !line_has_eol(&lines[i]));
         let content_off = line_start + (t.len() - content.len());
 
         // SPLIT: the post-marker CONTENT begins a block-construct opener ⇒ emit an empty
@@ -2282,14 +2282,14 @@ fn headline_split_opener(
     false
 }
 
-/// Strip a leading task marker (followed by a space) and priority `[#X]`.
-fn split_markers(s: &str) -> (Option<String>, Option<String>, &str) {
+/// Strip a leading task marker (followed by a space or true EOF) and priority `[#X]`.
+fn split_markers(s: &str, marker_eof: bool) -> (Option<String>, Option<String>, &str) {
     let mut marker = None;
     let mut s = s;
     for m in MARKERS {
         if let Some(rest) = s.strip_prefix(m) {
-            // mldoc accepts a marker followed by a space OR end-of-line.
-            if rest.is_empty() || rest.starts_with(' ') {
+            // mldoc accepts a marker followed by a space OR true end-of-input.
+            if rest.starts_with(' ') || (rest.is_empty() && marker_eof) {
                 marker = Some((*m).to_string());
                 s = mldoc_trim_spaces_start(rest);
                 break;
