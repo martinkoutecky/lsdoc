@@ -326,18 +326,68 @@ fn is_left_flanking_delimiter_run(s: &str, at: usize, pattern: &[u8]) -> bool {
             .is_some_and(|&c| !mldoc_whitespace_char(c))
 }
 
+fn ends_with_odd_backslash_run(bb: &[u8]) -> bool {
+    if bb.last() != Some(&b'\\') {
+        return false;
+    }
+    let mut i = bb.len();
+    while i > 0 && bb[i - 1] == b'\\' {
+        i -= 1;
+    }
+    let run = bb.len() - i;
+    crate::metrics::scan_work(run);
+    run % 2 == 1
+}
+
+#[inline]
+fn early_escape_close_at(
+    bb: &[u8],
+    i: usize,
+    pattern_c: u8,
+    terminal_odd_backslash: bool,
+) -> bool {
+    if !terminal_odd_backslash
+        || bb.get(i) != Some(&b'\\')
+        || bb.get(i + 1) != Some(&pattern_c)
+    {
+        return false;
+    }
+    let Some(&following) = bb.get(i + 2) else {
+        return false;
+    };
+    if following == pattern_c {
+        return false;
+    }
+    if pattern_c == b'*' {
+        !mldoc_whitespace_char(following)
+    } else {
+        !mldoc_whitespace_char(following) && underline_emphasis_delim(following)
+    }
+}
+
 /// Port of mldoc `take_while1_include_backslash`
 /// (`lib/parsers.ml:236-248`).
 fn take_while1_include_backslash(
     s: &str,
     mut i: usize,
     chars_can_escape: &[u8],
+    early_pattern: Option<u8>,
+    terminal_odd_backslash: bool,
     mut pred: impl FnMut(u8) -> bool,
 ) -> Option<usize> {
     let bb = s.as_bytes();
     let start = i;
     let mut last_backslash = false;
+    let mut only_backslashes = true;
+    let mut backslashes = 0usize;
     while i < bb.len() {
+        if only_backslashes && backslashes % 2 == 0 {
+            if let Some(pattern_c) = early_pattern {
+                if early_escape_close_at(bb, i, pattern_c, terminal_odd_backslash) {
+                    break;
+                }
+            }
+        }
         let c = bb[i];
         let take = if last_backslash && chars_can_escape.contains(&c) {
             last_backslash = false;
@@ -355,6 +405,13 @@ fn take_while1_include_backslash(
             break;
         }
         i += char_len(c);
+        if only_backslashes {
+            if c == b'\\' {
+                backslashes += 1;
+            } else {
+                only_backslashes = false;
+            }
+        }
     }
     if i > start {
         crate::metrics::scan_work(i - start);
@@ -418,6 +475,7 @@ fn org_md_em_parser_at(
     pattern: &str,
     typ: &str,
     base: usize,
+    terminal_odd_backslash: bool,
 ) -> Result<EmParsed, EmFail> {
     let bb = s.as_bytes();
     let pat = pattern.as_bytes();
@@ -445,6 +503,7 @@ fn org_md_em_parser_at(
         }
     };
 
+    let early_pattern = (pat.len() == 1).then_some(pattern_c);
     let parse_non_ws = |i: usize,
                         body: &mut Vec<Inline>,
                         char_before_pattern: &mut Option<u8>,
@@ -452,7 +511,14 @@ fn org_md_em_parser_at(
      -> Option<usize> {
         let stop_chars = |c: u8| c == pattern_c || mldoc_whitespace_char(c);
         let escape_chars = [pattern_c, b' ', b'\t', b'\n', b'\r', 0x0c];
-        if let Some(end) = take_while1_include_backslash(s, i, &escape_chars, |c| !stop_chars(c)) {
+        if let Some(end) = take_while1_include_backslash(
+            s,
+            i,
+            &escape_chars,
+            early_pattern,
+            terminal_odd_backslash,
+            |c| !stop_chars(c),
+        ) {
             push_plain_node(body, &s[i..end], i, end, base);
             set_char_before_pattern_from_node(body.last().unwrap(), char_before_pattern);
             *backoff = None;
@@ -563,6 +629,7 @@ fn org_emphasis_at(
     state_char: Option<u8>,
     no_closer: &mut [[bool; 2]; 5],
     base: usize,
+    terminal_odd_backslash: bool,
 ) -> Result<EmParsed, EmFail> {
     let Some(&ch) = s.as_bytes().get(at) else {
         return Err(EmFail::NotMatch);
@@ -572,7 +639,7 @@ fn org_emphasis_at(
         if no_closer[cls][k - 1] {
             return Err(EmFail::NotMatch);
         }
-        match org_md_em_parser_at(s, at, pattern, typ, base) {
+        match org_md_em_parser_at(s, at, pattern, typ, base, terminal_odd_backslash) {
             Ok(hit) if !lookahead || underline_emphasis_delims_lookahead(s, hit.end) => Ok(hit),
             Ok(_) => Err(EmFail::NotMatch),
             Err(EmFail::NoCloser) => {
@@ -601,8 +668,10 @@ fn nested_emphasis_at_org(
     state_char: Option<u8>,
     no_closer: &mut [[bool; 2]; 5],
     base: usize,
+    terminal_odd_backslash: bool,
 ) -> Result<EmParsed, EmFail> {
-    let mut hit = org_emphasis_at(s, at, state_char, no_closer, base)?;
+    let mut hit =
+        org_emphasis_at(s, at, state_char, no_closer, base, terminal_odd_backslash)?;
     hit.node = aux_nested_emphasis_org(hit.node);
     Ok(hit)
 }
@@ -682,10 +751,13 @@ fn parse_nested_plain_org(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
     let mut out = Vec::new();
     let mut i = 0usize;
     let mut no_closer = [[false; 2]; 5];
+    let terminal_odd_backslash = ends_with_odd_backslash_run(bb);
     let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
     while i < bb.len() {
         if matches!(bb[i], b'*' | b'_' | b'/' | b'+' | b'^') {
-            if let Ok(hit) = org_emphasis_at(text, i, None, &mut no_closer, base) {
+            if let Ok(hit) =
+                org_emphasis_at(text, i, None, &mut no_closer, base, terminal_odd_backslash)
+            {
                 out.push(hit.node);
                 i = hit.end;
                 continue;
@@ -917,6 +989,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut timestamp_scan = crate::inline::TimestampCloseScan::new();
     let mut email_scan = crate::inline::EmailAutolinkScan::new();
     let mut bare_url_scan = crate::inline::BareUrlScan::new();
+    let terminal_odd_backslash = ends_with_odd_backslash_run(bb);
     let tag_boundary_runs = if ctx.tags && bb.contains(&b'#') {
         crate::inline::build_tag_boundary_runs(s)
     } else {
@@ -1083,7 +1156,14 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 _ => unreachable!(),
             };
             let state_char = if ctx.use_state { last_plain_char } else { None };
-            if let Ok(hit) = nested_emphasis_at_org(s, $off, state_char, &mut no_closer, base) {
+            if let Ok(hit) = nested_emphasis_at_org(
+                s,
+                $off,
+                state_char,
+                &mut no_closer,
+                base,
+                terminal_odd_backslash,
+            ) {
                 flush_pending!();
                 out.push(hit.node);
                 fresh = true;
@@ -1534,9 +1614,12 @@ fn parse_org_script_body(text: &str, base: usize) -> Vec<Inline> {
     let mut out = Vec::new();
     let mut i = 0usize;
     let mut no_closer = [[false; 2]; 5];
+    let terminal_odd_backslash = ends_with_odd_backslash_run(bb);
     while i < bb.len() {
         if matches!(bb[i], b'*' | b'_' | b'/' | b'+' | b'^') {
-            if let Ok(hit) = org_emphasis_at(text, i, None, &mut no_closer, base) {
+            if let Ok(hit) =
+                org_emphasis_at(text, i, None, &mut no_closer, base, terminal_odd_backslash)
+            {
                 out.push(hit.node);
                 i = hit.end;
                 continue;
