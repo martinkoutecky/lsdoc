@@ -306,6 +306,57 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         ("md_link_code_interleave", false, 8_000, |n| {
             format!("{}x`](u)", "[`".repeat(n))
         }),
+        ("md_html_comment_unclosed", false, 8_000, md_html_comment_unclosed),
+        ("md_html_comment_quote", false, 8_000, md_html_comment_quote),
+        (
+            "md_html_comment_indented_begin",
+            false,
+            8_000,
+            md_html_comment_indented_begin,
+        ),
+        ("md_html_comment_list_item", false, 8_000, md_html_comment_list_item),
+        ("org_fn_anon_newline_tail", true, 8_000, org_fn_anon_newline_tail),
+        ("org_fn_named_newline_tail", true, 8_000, org_fn_named_newline_tail),
+        ("org_fn_anon_no_close_line", true, 8_000, org_fn_anon_no_close_line),
+        ("org_fn_named_no_close_line", true, 8_000, org_fn_named_no_close_line),
+        ("org_link1_missing_label_close", true, 4_000, org_link1_missing_label_close),
+        ("org_link1_overlapping_chunks", true, 4_000, org_link1_overlapping_chunks),
+        (
+            "org_link1_balanced_tail_present",
+            true,
+            4_000,
+            org_link1_balanced_tail_present,
+        ),
+        (
+            "md_link_metadata_missing_close",
+            false,
+            8_000,
+            md_link_metadata_missing_close,
+        ),
+        (
+            "md_embed_data_metadata_missing_close",
+            false,
+            8_000,
+            md_embed_data_metadata_missing_close,
+        ),
+        (
+            "org_link_metadata_missing_close",
+            true,
+            8_000,
+            org_link_metadata_missing_close,
+        ),
+        (
+            "md_tag_link_metadata_missing_close",
+            false,
+            8_000,
+            md_tag_link_metadata_missing_close,
+        ),
+        (
+            "org_tag_link_metadata_missing_close",
+            true,
+            8_000,
+            org_tag_link_metadata_missing_close,
+        ),
         // Phase B leaf-linearity: construct-interleaved inline LEAF misses. Homogeneous
         // opener runs were already covered; these force a fresh dispatch before each opener.
         ("md_email_domain_interleave", false, 25_000, |n| "*a*<x@".repeat(n)),
@@ -544,6 +595,79 @@ fn org_indented_quote_raw_html_rejected(n: usize) -> String {
     }
     s.push_str("#+END_QUOTE\n");
     s
+}
+
+fn md_html_comment_unclosed(n: usize) -> String {
+    "<!--\n".repeat(n)
+}
+
+fn md_html_comment_quote(n: usize) -> String {
+    "> <!--\n".repeat(n)
+}
+
+fn md_html_comment_indented_begin(n: usize) -> String {
+    let mut s = String::from("#+BEGIN_QUOTE\n");
+    for _ in 0..n {
+        s.push_str("  <!--\n");
+    }
+    s.push_str("#+END_QUOTE\n");
+    s
+}
+
+fn md_html_comment_list_item(n: usize) -> String {
+    let mut s = String::from("- seed\n");
+    for _ in 0..n {
+        s.push_str("  <!--\n");
+    }
+    s
+}
+
+fn org_fn_anon_newline_tail(n: usize) -> String {
+    "/a/[fn::x\n".repeat(n) + "]"
+}
+
+fn org_fn_named_newline_tail(n: usize) -> String {
+    "/a/[fn:a:x\n".repeat(n) + "]"
+}
+
+fn org_fn_anon_no_close_line(n: usize) -> String {
+    "/a/[fn::x".repeat(n)
+}
+
+fn org_fn_named_no_close_line(n: usize) -> String {
+    "/a/[fn:n:x".repeat(n)
+}
+
+fn org_link1_missing_label_close(n: usize) -> String {
+    "/a/[[a".repeat(n) + "][x"
+}
+
+fn org_link1_overlapping_chunks(n: usize) -> String {
+    "/a/[[u][".repeat(n)
+}
+
+fn org_link1_balanced_tail_present(n: usize) -> String {
+    "/a/[[u][[a".repeat(n) + "]]"
+}
+
+fn md_link_metadata_missing_close(n: usize) -> String {
+    "*a*[a](u){".repeat(n)
+}
+
+fn md_embed_data_metadata_missing_close(n: usize) -> String {
+    "*a*![a](data:x){".repeat(n)
+}
+
+fn org_link_metadata_missing_close(n: usize) -> String {
+    "/a/[[u][l]]{".repeat(n)
+}
+
+fn md_tag_link_metadata_missing_close(n: usize) -> String {
+    format!("#t{}", "[a](u){".repeat(n))
+}
+
+fn org_tag_link_metadata_missing_close(n: usize) -> String {
+    "#t[[u][l]]{ ".repeat(n)
 }
 
 fn base36(mut n: usize) -> String {

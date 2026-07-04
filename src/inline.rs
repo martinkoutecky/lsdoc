@@ -99,22 +99,29 @@ impl ByteBeforeEolScan {
         Self { byte, hit: 0, eol: 0, initialized: false }
     }
 
-    pub(crate) fn has_before_eol(&mut self, bb: &[u8], from: usize) -> bool {
+    pub(crate) fn first_before_eol(&mut self, bb: &[u8], from: usize) -> Option<usize> {
         if !self.initialized || from > self.eol {
-            self.eol = first_crlf_for_scan(bb, from);
-            self.hit = first_byte_for_scan(bb, from, self.byte);
+            let (hit, eol) = first_byte_or_crlf_for_scan(bb, from, self.byte);
+            self.hit = hit;
+            self.eol = eol;
             self.initialized = true;
         } else if self.hit < from {
-            self.hit = first_byte_for_scan(bb, from, self.byte);
+            let (hit, eol) = first_byte_or_crlf_for_scan(bb, from, self.byte);
+            self.hit = hit;
+            self.eol = eol;
         }
-        self.hit < self.eol
+        (self.hit < self.eol).then_some(self.hit)
+    }
+
+    pub(crate) fn has_before_eol(&mut self, bb: &[u8], from: usize) -> bool {
+        self.first_before_eol(bb, from).is_some()
     }
 }
 
-fn first_byte_for_scan(bb: &[u8], from: usize, byte: u8) -> usize {
+fn first_byte_or_crlf_for_scan(bb: &[u8], from: usize, byte: u8) -> (usize, usize) {
     let mut p = from;
     let mut scanned = 0usize;
-    while p < bb.len() && bb[p] != byte {
+    while p < bb.len() && bb[p] != byte && bb[p] != b'\n' && bb[p] != b'\r' {
         scanned += 1;
         p += 1;
     }
@@ -122,13 +129,45 @@ fn first_byte_for_scan(bb: &[u8], from: usize, byte: u8) -> usize {
         scanned += 1;
     }
     crate::metrics::scan_work(scanned);
-    p
+    if p < bb.len() && bb[p] == byte {
+        (p, p + 1)
+    } else {
+        (p, p)
+    }
 }
 
-fn first_crlf_for_scan(bb: &[u8], from: usize) -> usize {
+/// Monotone current-line floor using Markdown metadata's exact line boundary: LF only.
+pub(crate) struct ByteBeforeLfScan {
+    byte: u8,
+    hit: usize,
+    eol: usize,
+    initialized: bool,
+}
+
+impl ByteBeforeLfScan {
+    pub(crate) fn new(byte: u8) -> Self {
+        Self { byte, hit: 0, eol: 0, initialized: false }
+    }
+
+    pub(crate) fn first_before_lf(&mut self, bb: &[u8], from: usize) -> Option<usize> {
+        if !self.initialized || from > self.eol {
+            let (hit, eol) = first_byte_or_lf_for_scan(bb, from, self.byte);
+            self.hit = hit;
+            self.eol = eol;
+            self.initialized = true;
+        } else if self.hit < from {
+            let (hit, eol) = first_byte_or_lf_for_scan(bb, from, self.byte);
+            self.hit = hit;
+            self.eol = eol;
+        }
+        (self.hit < self.eol).then_some(self.hit)
+    }
+}
+
+fn first_byte_or_lf_for_scan(bb: &[u8], from: usize, byte: u8) -> (usize, usize) {
     let mut p = from;
     let mut scanned = 0usize;
-    while p < bb.len() && bb[p] != b'\n' && bb[p] != b'\r' {
+    while p < bb.len() && bb[p] != byte && bb[p] != b'\n' {
         scanned += 1;
         p += 1;
     }
@@ -136,7 +175,11 @@ fn first_crlf_for_scan(bb: &[u8], from: usize) -> usize {
         scanned += 1;
     }
     crate::metrics::scan_work(scanned);
-    p
+    if p < bb.len() && bb[p] == byte {
+        (p, p + 1)
+    } else {
+        (p, p)
+    }
 }
 
 /// First index of `needle` in `b[from..]`, or None. (No newline restriction.)
@@ -155,6 +198,7 @@ pub(crate) fn find_sub(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
 }
 
 /// Like `find_sub` but stops at a newline (returns None if a `\n` precedes needle).
+#[allow(dead_code)]
 pub(crate) fn find_sub_line(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return None;
@@ -680,6 +724,7 @@ fn reparse_tag_name(
     let mut plain_start = 0usize;
     let mut plain_end = 0usize;
     let mut md_link_scan = MdLinkScan::new();
+    let mut org_inline_scan = crate::org_resolver::OrgInlineScan::new();
 
     macro_rules! push_plain_raw {
         ($local_start:expr, $local_end:expr) => {{
@@ -722,7 +767,15 @@ fn reparse_tag_name(
                 TagReparse::Markdown => {
                     try_nested_link_or_link_md_tag(tag, i, tag_base, &mut md_link_scan)
                 }
-                TagReparse::Org => crate::org_resolver::try_nested_link_or_link_org(tag, b, i, tag_base),
+                TagReparse::Org => {
+                    crate::org_resolver::try_nested_link_or_link_org(
+                        tag,
+                        b,
+                        i,
+                        tag_base,
+                        &mut org_inline_scan,
+                    )
+                }
             };
             if let Some((node, next)) = parsed {
                 flush_plain!();
@@ -989,6 +1042,7 @@ pub(crate) struct MdLinkScan {
     url_parens: Option<BalancedEndTable>,
     page_refs: Option<Vec<usize>>,
     code_spans: Option<Vec<usize>>,
+    metadata_rbrace: ByteBeforeLfScan,
 }
 
 impl MdLinkScan {
@@ -999,6 +1053,7 @@ impl MdLinkScan {
             url_parens: None,
             page_refs: None,
             code_spans: None,
+            metadata_rbrace: ByteBeforeLfScan::new(b'}'),
         }
     }
 
@@ -1035,6 +1090,10 @@ impl MdLinkScan {
         let ends = self.code_spans.get_or_insert_with(|| build_code_span_ends(s));
         let end = ends.get(at).copied().unwrap_or(MD_LINK_NONE);
         (end != MD_LINK_NONE).then_some(end)
+    }
+
+    fn metadata_close(&mut self, b: &[u8], from: usize) -> Option<usize> {
+        self.metadata_rbrace.first_before_lf(b, from)
     }
 }
 
@@ -1262,7 +1321,7 @@ fn markdown_embed_image(s: &str, at: usize, base: usize, scan: &mut MdLinkScan) 
     let data = s[data_start..j].to_string();
     crate::metrics::scan_work(data.len());
     let mut end = j + 1;
-    let metadata = read_metadata(s, b, &mut end);
+    let metadata = read_metadata(s, b, &mut end, scan);
     let full = format!("![{}]({}){}", label.label_text, data, metadata);
     Some(MdLink {
         node: Inline::Link {
@@ -1291,7 +1350,7 @@ fn markdown_link(
     let url_text = s[url_range.clone()].to_string();
     crate::metrics::scan_work(url_range.len());
     let mut end = after_url;
-    let metadata = read_metadata(s, s.as_bytes(), &mut end);
+    let metadata = read_metadata(s, s.as_bytes(), &mut end, scan);
     let (link_type, url_value, title) = link_url_part_inner(&url_text)
         .unwrap_or((MdUrlType::Other, url_text.clone(), None));
     let trimmed = url_value.trim();
@@ -1816,9 +1875,9 @@ fn classify_markdown_url(link_type: MdUrlType, url: &str) -> Url {
 }
 
 /// Shared mldoc `metadata` (`syntax/inline.ml:562-566`).
-fn read_metadata(s: &str, b: &[u8], end: &mut usize) -> String {
+fn read_metadata(s: &str, b: &[u8], end: &mut usize, scan: &mut MdLinkScan) -> String {
     if b.get(*end) == Some(&b'{') {
-        if let Some(close) = find_sub_line(b, *end + 1, b"}") {
+        if let Some(close) = scan.metadata_close(b, *end + 1) {
             let meta = s[*end..close + 1].to_string();
             *end = close + 1;
             return meta;

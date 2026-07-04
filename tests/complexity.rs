@@ -430,6 +430,63 @@ fn md_link_counter_code_interleave(n: usize) -> String {
 fn org_many_openers_one_close(n: usize) -> String {
     format!("{}](u)", "[".repeat(n))
 }
+fn md_html_comment_unclosed(n: usize) -> String {
+    "<!--\n".repeat(n)
+}
+fn md_html_comment_quote(n: usize) -> String {
+    "> <!--\n".repeat(n)
+}
+fn md_html_comment_indented_begin(n: usize) -> String {
+    let mut s = String::from("#+BEGIN_QUOTE\n");
+    for _ in 0..n {
+        s.push_str("  <!--\n");
+    }
+    s.push_str("#+END_QUOTE\n");
+    s
+}
+fn md_html_comment_list_item(n: usize) -> String {
+    let mut s = String::from("- seed\n");
+    for _ in 0..n {
+        s.push_str("  <!--\n");
+    }
+    s
+}
+fn org_fn_anon_newline_tail(n: usize) -> String {
+    "/a/[fn::x\n".repeat(n) + "]"
+}
+fn org_fn_named_newline_tail(n: usize) -> String {
+    "/a/[fn:a:x\n".repeat(n) + "]"
+}
+fn org_fn_anon_no_close_line(n: usize) -> String {
+    "/a/[fn::x".repeat(n)
+}
+fn org_fn_named_no_close_line(n: usize) -> String {
+    "/a/[fn:n:x".repeat(n)
+}
+fn org_link1_missing_label_close(n: usize) -> String {
+    "/a/[[a".repeat(n) + "][x"
+}
+fn org_link1_overlapping_chunks(n: usize) -> String {
+    "/a/[[u][".repeat(n)
+}
+fn org_link1_balanced_tail_present(n: usize) -> String {
+    "/a/[[u][[a".repeat(n) + "]]"
+}
+fn md_link_metadata_missing_close(n: usize) -> String {
+    "*a*[a](u){".repeat(n)
+}
+fn md_embed_data_metadata_missing_close(n: usize) -> String {
+    "*a*![a](data:x){".repeat(n)
+}
+fn org_link_metadata_missing_close(n: usize) -> String {
+    "/a/[[u][l]]{".repeat(n)
+}
+fn md_tag_link_metadata_missing_close(n: usize) -> String {
+    format!("#t{}", "[a](u){".repeat(n))
+}
+fn org_tag_link_metadata_missing_close(n: usize) -> String {
+    format!("#t{}", "[[u][l]]{".repeat(n))
+}
 
 fn big_stack(f: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()
@@ -530,6 +587,57 @@ fn complexity_gate() {
         assert_linear("md_link_counter_page_ref", md_link_counter_page_ref, 1000, "md");
         assert_linear("md_link_counter_code_interleave", md_link_counter_code_interleave, 1000, "md");
         assert_linear("org_many_openers_one_close", org_many_openers_one_close, 1000, "org");
+        assert_linear("md_html_comment_unclosed", md_html_comment_unclosed, 1000, "md");
+        assert_linear("md_html_comment_quote", md_html_comment_quote, 1000, "md");
+        assert_linear(
+            "md_html_comment_indented_begin",
+            md_html_comment_indented_begin,
+            1000,
+            "md",
+        );
+        assert_linear("md_html_comment_list_item", md_html_comment_list_item, 1000, "md");
+        assert_linear("org_fn_anon_newline_tail", org_fn_anon_newline_tail, 1000, "org");
+        assert_linear("org_fn_named_newline_tail", org_fn_named_newline_tail, 1000, "org");
+        assert_linear("org_fn_anon_no_close_line", org_fn_anon_no_close_line, 1000, "org");
+        assert_linear("org_fn_named_no_close_line", org_fn_named_no_close_line, 1000, "org");
+        assert_linear("org_link1_missing_label_close", org_link1_missing_label_close, 1000, "org");
+        assert_linear("org_link1_overlapping_chunks", org_link1_overlapping_chunks, 1000, "org");
+        assert_linear(
+            "org_link1_balanced_tail_present",
+            org_link1_balanced_tail_present,
+            1000,
+            "org",
+        );
+        assert_linear(
+            "md_link_metadata_missing_close",
+            md_link_metadata_missing_close,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "md_embed_data_metadata_missing_close",
+            md_embed_data_metadata_missing_close,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "org_link_metadata_missing_close",
+            org_link_metadata_missing_close,
+            1000,
+            "org",
+        );
+        assert_linear(
+            "md_tag_link_metadata_missing_close",
+            md_tag_link_metadata_missing_close,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "org_tag_link_metadata_missing_close",
+            org_tag_link_metadata_missing_close,
+            1000,
+            "org",
+        );
         // A (container-prefix consume): both formats now dispatch a `>`-line's content ONCE at the
         // final depth (no per-re-dispatch `property` re-scan — 1a) and close many frames at one
         // interior breaker in O(closed) (no per-frame `gt_cont_view` re-peel — 1b).

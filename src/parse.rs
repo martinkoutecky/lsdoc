@@ -413,6 +413,26 @@ enum Step {
     GtFallback,
 }
 
+struct MdHtmlCommentScan {
+    no_close_from: usize,
+}
+
+impl MdHtmlCommentScan {
+    fn new() -> Self {
+        Self {
+            no_close_from: usize::MAX,
+        }
+    }
+
+    fn has_no_close_from(&self, from: usize) -> bool {
+        self.no_close_from <= from
+    }
+
+    fn record_no_close_from(&mut self, from: usize) {
+        self.no_close_from = self.no_close_from.min(from);
+    }
+}
+
 /// One open container on the streaming driver's explicit stack. Every re-dispatched
 /// `#+BEGIN_X` callout body (Quote/Custom) — clean-window (indent-0 body) or strip-view
 /// (indented body, `remap_spans = true`) — lives here as a heap `Frame`. `in_quote` marks
@@ -452,6 +472,7 @@ struct Frame {
     gt_level: usize,
     gt_absorb_blank: bool,
     open_line: usize,
+    md_html_comment_scan: MdHtmlCommentScan,
 }
 
 /// The shared precompute over the whole input (O(n), built ONCE): the `#+END_<name>`
@@ -534,6 +555,7 @@ fn parse_md_streaming<'a>(
         gt_level: 0,
         gt_absorb_blank: false,
         open_line: 0,
+        md_html_comment_scan: MdHtmlCommentScan::new(),
     }];
     let mut fence_cursor: usize = 0; // monotone & shared across the whole pass (`i` is monotone).
     let mut drawer_cursor: usize = 0; // ditto, for `:END:` lookups (find_drawer_end).
@@ -737,6 +759,7 @@ fn parse_md_streaming<'a>(
                         gt_level: p_gt + 1,
                         gt_absorb_blank: false,
                         open_line: i,
+                        md_html_comment_scan: MdHtmlCommentScan::new(),
                     });
                     opened_count += 1;
                     cur = inner;
@@ -760,6 +783,7 @@ fn parse_md_streaming<'a>(
             let in_quote = top.in_quote;
             let in_item = top.in_item;
             let remap_spans = top.remap_spans;
+            let md_html_comment_scan = &mut top.md_html_comment_scan;
             dispatch_md_line(
                 i,
                 &mut lines,
@@ -779,6 +803,7 @@ fn parse_md_streaming<'a>(
                 &mut fence_cursor,
                 &mut drawer_cursor,
                 &mut raw_html_scan,
+                md_html_comment_scan,
                 last_rbracket,
                 &hiccup_close,
                 input,
@@ -835,6 +860,7 @@ fn parse_md_streaming<'a>(
                     gt_level: 0,
                     gt_absorb_blank: false,
                     open_line: 0,
+                    md_html_comment_scan: MdHtmlCommentScan::new(),
                 });
                 i += 1;
             }
@@ -945,6 +971,7 @@ fn dispatch_md_line<'a>(
     fence_cursor: &mut usize,
     drawer_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    md_html_comment_scan: &mut MdHtmlCommentScan,
     last_rbracket: Option<usize>,
     hiccup_close: &[usize], // B: precomputed block-hiccup `[:`…`]` balance (position-indexed)
     input: &'a str,
@@ -2027,7 +2054,7 @@ fn dispatch_md_line<'a>(
     // 11e. markdown comments (mldoc `Markdown_comment`), after every earlier block/list
     // construct including definition lists and before Paragraph. Raw HTML has already had first
     // refusal, so the short `<!--\n-->` family falls through here while f1/f12 stay raw_html.
-    if let Some(comment) = md_comment_capture(lines, i, hi, strip_ctx, t) {
+    if let Some(comment) = md_comment_capture(lines, i, hi, strip_ctx, t, md_html_comment_scan) {
         // Markdown Comment is not wrapped in `between_eols`, so neither the preceding paragraph
         // EOL nor the comment line/closer EOL is absorbed.
         flush_para(out, para, para_buf, para_map, input, false, origin, source_body, origin_cursor);
@@ -2536,9 +2563,10 @@ fn md_comment_capture(
     hi: usize,
     strip_ctx: StripCtx<'_>,
     first_view: &str,
+    html_scan: &mut MdHtmlCommentScan,
 ) -> Option<MdCommentCapture> {
     md_line_comment_capture(lines, i, first_view)
-        .or_else(|| md_html_comment_capture(lines, i, hi, strip_ctx, first_view))
+        .or_else(|| md_html_comment_capture(lines, i, hi, strip_ctx, first_view, html_scan))
 }
 
 fn md_line_comment_capture(
@@ -2579,18 +2607,32 @@ fn md_html_comment_capture(
     hi: usize,
     strip_ctx: StripCtx<'_>,
     first_view: &str,
+    scan: &mut MdHtmlCommentScan,
 ) -> Option<MdCommentCapture> {
     let lead = md_html_comment_opener(first_view)?;
     if !line_has_eol(&lines[i]) {
         return None;
     }
     let span_start = md_view_abs_start(&lines[i], first_view) + lead;
-    let mut text = String::new();
+    let scan_start = i + 1;
+    if scan.has_no_close_from(scan_start) {
+        return None;
+    }
     let mut k = i + 1;
     while k < hi {
         let view = line_text(lines, k, strip_ctx);
         if ocaml_trim(view) == "-->" {
             let close_start = md_view_abs_start(&lines[k], view);
+            let mut text = String::new();
+            for p in scan_start..k {
+                let body_view = line_text(lines, p, strip_ctx);
+                crate::metrics::scan_work(body_view.len());
+                text.push_str(body_view);
+                if line_has_eol(&lines[p]) {
+                    crate::metrics::scan_work(1);
+                    text.push('\n');
+                }
+            }
             return Some(MdCommentCapture {
                 text,
                 span_start,
@@ -2600,13 +2642,12 @@ fn md_html_comment_capture(
             });
         }
         crate::metrics::scan_work(view.len());
-        text.push_str(view);
         if line_has_eol(&lines[k]) {
             crate::metrics::scan_work(1);
-            text.push('\n');
         }
         k += 1;
     }
+    scan.record_no_close_from(scan_start);
     None
 }
 

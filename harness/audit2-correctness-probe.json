@@ -1,0 +1,16 @@
+[
+  {"id": "f1-md-comment-crlf", "format": "markdown", "input": "<!--\r\nx\r\n-->"},
+  {"id": "f2-anon-cr", "format": "org", "input": "[fn::x\ry]"},
+  {"id": "f2-anon-crlf", "format": "org", "input": "[fn::x\r\n]"},
+  {"id": "f2-named-cr", "format": "org", "input": "[fn:a:x\ry]"},
+  {"id": "f2-named-crlf", "format": "org", "input": "[fn:a:x\r\n]"},
+  {"id": "f3-counterexample", "format": "org", "input": "[[u][[[v][x]]"},
+  {"id": "f3-escaped-rbracket", "format": "org", "input": "[[u][a\\]b]]"},
+  {"id": "f3-escaped-lbracket", "format": "org", "input": "[[u][\\[x]]"},
+  {"id": "f3-backslash-even", "format": "org", "input": "[[u][\\\\[x]]"},
+  {"id": "f3-backslash-odd", "format": "org", "input": "[[u][\\\\\\[x]]"},
+  {"id": "f3-newline-label", "format": "org", "input": "[[u][a\nb]]"},
+  {"id": "f3-repeated-outer-inner", "format": "org", "input": "[[u][[[v][x]][[u][[[v][x]][[u][[[v][x]]"},
+  {"id": "f4-md-metadata-lf", "format": "markdown", "input": "[a](u){x\ny}"},
+  {"id": "f4-org-metadata-lf", "format": "org", "input": "[[u][l]]{x\ny}"}
+]

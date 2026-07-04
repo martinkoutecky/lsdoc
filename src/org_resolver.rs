@@ -87,6 +87,72 @@ impl Ctx {
     }
 }
 
+const ORG_MEMO_UNSEEN: usize = usize::MAX;
+const ORG_MEMO_NONE: usize = usize::MAX - 1;
+
+pub(crate) struct OrgInlineScan {
+    source_len: Option<usize>,
+    url_rbracket_memo: Vec<usize>,
+    label_end_memo: Vec<usize>,
+    chunk_end_memo: Vec<usize>,
+    footnote_rbracket: crate::inline::ByteBeforeEolScan,
+    metadata_rbrace: crate::inline::ByteBeforeLfScan,
+}
+
+impl OrgInlineScan {
+    pub(crate) fn new() -> Self {
+        Self {
+            source_len: None,
+            url_rbracket_memo: Vec::new(),
+            label_end_memo: Vec::new(),
+            chunk_end_memo: Vec::new(),
+            footnote_rbracket: crate::inline::ByteBeforeEolScan::new(b']'),
+            metadata_rbrace: crate::inline::ByteBeforeLfScan::new(b'}'),
+        }
+    }
+
+    fn check_source(&mut self, len: usize) {
+        match self.source_len {
+            Some(existing) => debug_assert_eq!(existing, len),
+            None => self.source_len = Some(len),
+        }
+    }
+
+    fn label_memo(&mut self, len: usize) -> &mut Vec<usize> {
+        self.check_source(len);
+        if self.label_end_memo.is_empty() {
+            self.label_end_memo = vec![ORG_MEMO_UNSEEN; len + 1];
+        }
+        &mut self.label_end_memo
+    }
+
+    fn url_memo(&mut self, len: usize) -> &mut Vec<usize> {
+        self.check_source(len);
+        if self.url_rbracket_memo.is_empty() {
+            self.url_rbracket_memo = vec![ORG_MEMO_UNSEEN; len + 1];
+        }
+        &mut self.url_rbracket_memo
+    }
+
+    fn chunk_memo(&mut self, len: usize) -> &mut Vec<usize> {
+        self.check_source(len);
+        if self.chunk_end_memo.is_empty() {
+            self.chunk_end_memo = vec![ORG_MEMO_UNSEEN; len + 1];
+        }
+        &mut self.chunk_end_memo
+    }
+
+    fn footnote_close(&mut self, bb: &[u8], from: usize) -> Option<usize> {
+        self.check_source(bb.len());
+        self.footnote_rbracket.first_before_eol(bb, from)
+    }
+
+    fn metadata_close(&mut self, bb: &[u8], from: usize) -> Option<usize> {
+        self.check_source(bb.len());
+        self.metadata_rbrace.first_before_lf(bb, from)
+    }
+}
+
 /// Org emphasis markers grouped into `Delim` runs. `^` (Highlight `^^` / superscript `^x`)
 /// and `_` (Underline / subscript `_x`) are dual-purpose — disambiguated by the resolver.
 #[inline]
@@ -753,6 +819,7 @@ fn parse_nested_plain_org(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
     let mut no_closer = [[false; 2]; 5];
     let terminal_odd_backslash = ends_with_odd_backslash_run(bb);
     let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
+    let mut org_inline_scan = OrgInlineScan::new();
     while i < bb.len() {
         if matches!(bb[i], b'*' | b'_' | b'/' | b'+' | b'^') {
             if let Ok(hit) =
@@ -774,7 +841,9 @@ fn parse_nested_plain_org(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
             }
         }
         if bb[i] == b'[' {
-            if let Some((node, end)) = try_nested_link_or_link_org(text, bb, i, base) {
+            if let Some((node, end)) =
+                try_nested_link_or_link_org(text, bb, i, base, &mut org_inline_scan)
+            {
                 out.push(node);
                 i = end;
                 continue;
@@ -866,9 +935,10 @@ pub(crate) fn try_nested_link_or_link_org(
     bb: &[u8],
     at: usize,
     base: usize,
+    scan: &mut OrgInlineScan,
 ) -> Option<(Inline, usize)> {
     if s[at..].starts_with("[[") {
-        if let Some((end, node)) = org_link_1_at(s, bb, at, base) {
+        if let Some((end, node)) = org_link_1_at(s, bb, at, base, scan) {
             return Some((node, end));
         }
         if let Some((end, content)) = crate::inline::parse_nested_link(s, at) {
@@ -989,6 +1059,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut timestamp_scan = crate::inline::TimestampCloseScan::new();
     let mut email_scan = crate::inline::EmailAutolinkScan::new();
     let mut bare_url_scan = crate::inline::BareUrlScan::new();
+    let mut org_inline_scan = OrgInlineScan::new();
     let terminal_odd_backslash = ends_with_odd_backslash_run(bb);
     let tag_boundary_runs = if ctx.tags && bb.contains(&b'#') {
         crate::inline::build_tag_boundary_runs(s)
@@ -1357,6 +1428,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                             rb_lb,
                             base,
                             &mut timestamp_scan,
+                            &mut org_inline_scan,
                         ) {
                             flush_pending!();
                             crate::projection::set_inline_span(
@@ -2074,10 +2146,11 @@ fn try_bracket_at(
     rb_lb_present: bool,
     base: usize,
     timestamp_scan: &mut crate::inline::TimestampCloseScan,
+    org_inline_scan: &mut OrgInlineScan,
 ) -> Option<(Inline, usize)> {
     if s[off..].starts_with("[[") {
         if rb_lb_present {
-            if let Some((end, node)) = org_link_1_at(s, bb, off, base) {
+            if let Some((end, node)) = org_link_1_at(s, bb, off, base, org_inline_scan) {
                 return Some((node, end));
             }
         }
@@ -2114,7 +2187,7 @@ fn try_bracket_at(
         }
     }
     if ctx.footnotes {
-        if let Some((end, name)) = org_footnote_at(s, off) {
+        if let Some((end, name)) = org_footnote_at(s, off, org_inline_scan) {
             return Some((Inline::Fnref { name, span: None }, end));
         }
     }
@@ -2137,18 +2210,27 @@ fn try_bracket_at(
 
 /// `[[url][label]]` — port of mldoc `org_link_1`
 /// (`syntax/inline.ml:617-696`).
-fn org_link_1_at(s: &str, bb: &[u8], at: usize, base: usize) -> Option<(usize, Inline)> {
+fn org_link_1_at(
+    s: &str,
+    bb: &[u8],
+    at: usize,
+    base: usize,
+    scan: &mut OrgInlineScan,
+) -> Option<(usize, Inline)> {
     let url_start = at + 2;
-    let j = crate::inline::take_while1_include_backslash_len(s, url_start, b"]", |c| c != b']')?;
+    let j = find_org_link_url_rbracket(bb, url_start, scan);
+    if j == url_start || j >= bb.len() {
+        return None;
+    }
     if !s[j..].starts_with("][") {
         return None;
     }
     let url_text = s[url_start..j].to_string();
     let label_start = j + 2;
-    let close = find_org_label_end(bb, label_start)?;
+    let close = find_org_label_end(bb, label_start, scan)?;
     let label_text = s[label_start..close].to_string();
     let mut end = close + 2;
-    let metadata = read_metadata(s, bb, &mut end);
+    let metadata = read_metadata(s, bb, &mut end, scan);
     let url = crate::org::classify_org_link_1(&url_text, &label_text);
     // label_text is a raw slice of `s` starting at `label_start` → children index off that.
     let label = parse_ctx(&label_text, Ctx::label(), base + label_start);
@@ -2170,6 +2252,48 @@ fn org_link_1_at(s: &str, bb: &[u8], at: usize, base: usize) -> Option<(usize, I
             span: None,
         },
     ))
+}
+
+fn find_org_link_url_rbracket(bb: &[u8], start: usize, scan: &mut OrgInlineScan) -> usize {
+    let mut j = start;
+    let mut visited: Vec<usize> = Vec::new();
+    let result = loop {
+        if j >= bb.len() {
+            break bb.len();
+        }
+        let memo = scan.url_memo(bb.len()).get(j).copied().unwrap_or(ORG_MEMO_UNSEEN);
+        if memo != ORG_MEMO_UNSEEN {
+            break memo;
+        }
+        visited.push(j);
+        match bb[j] {
+            b']' => {
+                crate::metrics::scan_work(1);
+                break j;
+            }
+            b'\\' => {
+                crate::metrics::scan_work(1);
+                j += 1;
+                if j < bb.len() {
+                    let w = char_len(bb[j]);
+                    crate::metrics::scan_work(w);
+                    j += w;
+                }
+            }
+            _ => {
+                let w = char_len(bb[j]);
+                crate::metrics::scan_work(w);
+                j += w;
+            }
+        }
+    };
+    if !visited.is_empty() {
+        let memo = scan.url_memo(bb.len());
+        for pos in visited {
+            memo[pos] = result;
+        }
+    }
+    result
 }
 
 /// `[[url]]` — v1 org_link_2 (single `]` allowed, non-empty, no eol).
@@ -2228,11 +2352,21 @@ fn org_link_2_at(s: &str, bb: &[u8], at: usize, base: usize) -> Option<(usize, I
 /// End of the `org_link_1` label. Mirrors `label_part_choices`
 /// (`syntax/inline.ml:621-642`): a single `]` is label text unless it starts the
 /// final `]]`.
-fn find_org_label_end(bb: &[u8], start: usize) -> Option<usize> {
+fn find_org_label_end(bb: &[u8], start: usize, scan: &mut OrgInlineScan) -> Option<usize> {
     let mut j = start;
-    while j < bb.len() {
+    let mut visited: Vec<usize> = Vec::new();
+    let result = loop {
+        if j >= bb.len() {
+            break ORG_MEMO_NONE;
+        }
+        let memo = scan.label_memo(bb.len()).get(j).copied().unwrap_or(ORG_MEMO_NONE);
+        if memo != ORG_MEMO_UNSEEN {
+            break memo;
+        }
+        visited.push(j);
         if bb[j] == b']' && bb.get(j + 1) == Some(&b']') {
-            return Some(j);
+            crate::metrics::scan_work(2);
+            break j;
         }
         if let Some(end) = take_org_label_plain(bb, j) {
             j = end;
@@ -2240,17 +2374,25 @@ fn find_org_label_end(bb: &[u8], start: usize) -> Option<usize> {
         }
         match bb[j] {
             b'[' => {
-                j = org_balanced_label_chunk(bb, j);
+                j = org_balanced_label_chunk(bb, j, scan);
             }
             b']' => {
+                crate::metrics::scan_work(1);
                 j += 1;
             }
             _ => {
+                crate::metrics::scan_work(char_len(bb[j]));
                 j += char_len(bb[j]);
             }
         }
+    };
+    if !visited.is_empty() {
+        let memo = scan.label_memo(bb.len());
+        for pos in visited {
+            memo[pos] = result;
+        }
     }
-    None
+    (result != ORG_MEMO_NONE).then_some(result)
 }
 
 fn take_org_label_plain(bb: &[u8], at: usize) -> Option<usize> {
@@ -2275,45 +2417,82 @@ fn take_org_label_plain(bb: &[u8], at: usize) -> Option<usize> {
         }
         j += char_len(c);
     }
+    if j > at {
+        crate::metrics::scan_work(j - at + usize::from(j < bb.len()));
+    }
     (j > at).then_some(j)
 }
 
-fn org_balanced_label_chunk(bb: &[u8], at: usize) -> usize {
+fn org_balanced_label_chunk(bb: &[u8], at: usize, scan: &mut OrgInlineScan) -> usize {
+    let cached = scan.chunk_memo(bb.len()).get(at).copied().unwrap_or(ORG_MEMO_UNSEEN);
+    if cached != ORG_MEMO_UNSEEN {
+        return cached;
+    }
     let mut j = at;
     let mut depth = 0usize;
+    let mut stack: Vec<usize> = Vec::new();
+    let mut scanned = 0usize;
     while j < bb.len() {
         match bb[j] {
             b'\\' => {
+                scanned += 1;
                 j += 1;
                 if j < bb.len() {
                     let next = bb[j];
                     if matches!(next, b'[' | b']') || !matches!(next, b'[' | b']') {
+                        scanned += char_len(next);
                         j += char_len(next);
                     }
                 }
             }
             b'[' => {
                 depth += 1;
+                stack.push(j);
+                scanned += 1;
                 j += 1;
             }
             b']' if depth == 0 => break,
             b']' => {
                 depth -= 1;
+                scanned += 1;
                 j += 1;
+                if let Some(open) = stack.pop() {
+                    let memo = scan.chunk_memo(bb.len());
+                    if memo[open] == ORG_MEMO_UNSEEN {
+                        memo[open] = j;
+                    }
+                }
                 if depth == 0 {
                     break;
                 }
             }
-            _ => j += char_len(bb[j]),
+            _ => {
+                let w = char_len(bb[j]);
+                scanned += w;
+                j += w;
+            }
         }
+    }
+    if j >= bb.len() {
+        let memo = scan.chunk_memo(bb.len());
+        for open in stack {
+            if memo[open] == ORG_MEMO_UNSEEN {
+                memo[open] = bb.len();
+            }
+        }
+    }
+    crate::metrics::scan_work(scanned);
+    let memo = scan.chunk_memo(bb.len());
+    if memo[at] == ORG_MEMO_UNSEEN {
+        memo[at] = j;
     }
     j
 }
 
 /// Optional `{ … }` metadata after a link; advances `end` and returns it (incl. braces) or "".
-fn read_metadata(s: &str, bb: &[u8], end: &mut usize) -> String {
+fn read_metadata(s: &str, bb: &[u8], end: &mut usize, scan: &mut OrgInlineScan) -> String {
     if bb.get(*end) == Some(&b'{') {
-        if let Some(close) = crate::inline::find_sub_line(bb, *end + 1, b"}") {
+        if let Some(close) = scan.metadata_close(bb, *end + 1) {
             let meta = s[*end..close + 1].to_string();
             *end = close + 1;
             return meta;
@@ -2323,14 +2502,15 @@ fn read_metadata(s: &str, bb: &[u8], end: &mut usize) -> String {
 }
 
 /// `[fn:name]` / `[fn:name:def]` / `[fn::def]` → name — v1 org_footnote_ref.
-fn org_footnote_at(s: &str, i: usize) -> Option<(usize, String)> {
+fn org_footnote_at(s: &str, i: usize, scan: &mut OrgInlineScan) -> Option<(usize, String)> {
     let rest = s[i..].strip_prefix("[fn:")?;
-    if let Some(def) = rest.strip_prefix(':') {
-        let close = def.find(']')?;
-        if close == 0 || def[..close].contains('\n') || def[..close].contains('\r') {
+    if rest.strip_prefix(':').is_some() {
+        let def_start = i + 5;
+        let close = scan.footnote_close(s.as_bytes(), def_start)?;
+        if close == def_start {
             return None;
         }
-        return Some((i + 5 + close + 1, String::new()));
+        return Some((close + 1, String::new()));
     }
     let rb = rest.as_bytes();
     let mut j = 0;
@@ -2343,12 +2523,9 @@ fn org_footnote_at(s: &str, i: usize) -> Option<(usize, String)> {
     let name = rest[..j].to_string();
     let after = &rest[j..];
     if after.starts_with(':') {
-        let def = &after[1..];
-        let close = def.find(']')?;
-        if def[..close].contains('\n') || def[..close].contains('\r') {
-            return None;
-        }
-        Some((i + 4 + j + 1 + close + 1, name))
+        let def_start = i + 4 + j + 1;
+        let close = scan.footnote_close(s.as_bytes(), def_start)?;
+        Some((close + 1, name))
     } else {
         after.strip_prefix(']')?;
         Some((i + 4 + j + 1, name))
