@@ -450,6 +450,7 @@ struct Frame {
     // `remap_spans` is always true for a `>`-frame. Frame no longer borrows input (the deleted
     // `opener_content` field held the only `&'a str`) ⇒ no lifetime parameter.
     gt_level: usize,
+    gt_absorb_blank: bool,
     open_line: usize,
 }
 
@@ -531,6 +532,7 @@ fn parse_md_streaming<'a>(
         strip_seq_pushed: false,
         remap_spans: false,
         gt_level: 0,
+        gt_absorb_blank: false,
         open_line: 0,
     }];
     let mut fence_cursor: usize = 0; // monotone & shared across the whole pass (`i` is monotone).
@@ -587,6 +589,21 @@ fn parse_md_streaming<'a>(
             break;
         }
 
+        // mldoc's `lines_while` parses an explicit empty quote line (`>`/`>>` with eol) as an item
+        // that consumes its own eol, then the item's trailing `<* optional eol` may absorb ONE
+        // following truly-blank line. The absorbed line is control input, not quote body content.
+        if stack
+            .last()
+            .is_some_and(|f| f.gt_level > 0 && f.gt_absorb_blank)
+        {
+            if lines[i].text.is_empty() {
+                stack.last_mut().unwrap().gt_absorb_blank = false;
+                i += 1;
+                continue;
+            }
+            stack.last_mut().unwrap().gt_absorb_blank = false;
+        }
+
         // --- Phase 2: the single `>`-container prefix consume. `strip` is the enclosing hard frame's
         // indent (shared by every `>`-frame above it); `line2` the de-indented line. Run the walk iff
         // there are open `>`-frames OR the line might open one; a plain non-`>` line at a hard frame
@@ -597,7 +614,7 @@ fn parse_md_streaming<'a>(
             let scanned =
                 stack.last().unwrap().gt_level > 0 || mldoc_trim_spaces_start(line2).starts_with('>');
 
-        let (dispatch_view, gt_level_disp): (Option<&str>, usize) = if scanned {
+        let (dispatch_view, gt_level_disp, gt_absorb_eligible): (Option<&str>, usize, bool) = if scanned {
             let g = scan_gt_prefix(line2, &mut offs); // ONE `>`-prefix walk; charges scan_work once
 
             // Phase 2a: close `>`-frames whose continuation view is `None` (all `i < hi` now ⇒ no
@@ -664,7 +681,7 @@ fn parse_md_streaming<'a>(
                 !(top.in_quote || top.in_item) && property(line2).is_some()
             };
             if is_property {
-                (None, 0)
+                (None, 0, false)
             } else {
                 // Phase 2b: open new `>`-frames. `cur` starts at the surviving top's level-`H` view
                 // (`H == 0` ⇒ the hard frame ⇒ the whole de-indented line). `md_quote_first_slice`
@@ -678,7 +695,10 @@ fn parse_md_streaming<'a>(
                         .unwrap_or("")
                 };
                 let mut opened_any = false;
-                while let Some(inner) = md_quote_first_slice(cur, line_has_eol(&lines[i])) {
+                let mut opened_count = 0usize;
+                while let Some(inner) =
+                    md_quote_first_slice(cur, line_has_eol(&lines[i]) || h > 0 || opened_any)
+                {
                     let (p_hi, p_strip, p_gt) = {
                         let top = stack.last_mut().unwrap();
                         if !opened_any {
@@ -715,14 +735,17 @@ fn parse_md_streaming<'a>(
                         strip_seq_pushed: false,
                         remap_spans: true, // a `>`-body is transformed ⇒ remap inline spans on pop
                         gt_level: p_gt + 1,
+                        gt_absorb_blank: false,
                         open_line: i,
                     });
+                    opened_count += 1;
                     cur = inner;
                 }
-                (Some(cur), stack.last().unwrap().gt_level)
+                let absorb_eligible = (opened_count == 0 && h > 0) || (opened_count == 1 && h == 0);
+                (Some(cur), stack.last().unwrap().gt_level, absorb_eligible)
             }
         } else {
-            (None, 0)
+            (None, 0, false)
         };
 
         // Phase 2c: dispatch the (final) view ONCE, at the deepest level — so `property` etc. run
@@ -767,6 +790,10 @@ fn parse_md_streaming<'a>(
                 dispatch_view,
             )
         };
+        if gt_level_disp > 0 {
+            stack.last_mut().unwrap().gt_absorb_blank =
+                gt_absorb_eligible && dispatch_view == Some("") && line_has_eol(&lines[i]);
+        }
         match step {
             Step::Next(ni) => i = ni,
             Step::Open { close, builder, indent_strip, span_start } => {
@@ -806,6 +833,7 @@ fn parse_md_streaming<'a>(
                     strip_seq_pushed,
                     remap_spans,
                     gt_level: 0,
+                    gt_absorb_blank: false,
                     open_line: 0,
                 });
                 i += 1;
@@ -1084,6 +1112,32 @@ fn dispatch_md_line<'a>(
         return Step::Next(ni);
     }
 
+    // 1.5.7 blockquote content: an HR line MID-PARAGRAPH interrupts and emits directly (bypassing
+    // the def-list's HR-as-term deferral), while at a FRESH position the def-list wins over both
+    // HR and LaTeX env, exactly like the top-level ladder (pins q1/t5/t8/t10 mid-para vs t4/z1
+    // fresh). The open-paragraph state (`para`) is the discriminator.
+    if in_quote && !in_item && para.is_some() && is_hr(t) {
+        drop_marker_ws(para, was_ws_drop, input);
+        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+        out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
+        return Step::Next(i + 1);
+    }
+    if in_quote
+        && !in_item
+        && !mldoc_trim_spaces_start(t).is_empty()
+        && i + 1 < hi
+        && is_def_opener(line_text(lines, i + 1, strip_ctx))
+    {
+        flush_para(out, para, para_buf, para_map, input, false, origin, source_body, origin_cursor);
+        let (items, ni) =
+            build_def_list(lines, i, hi, input, origin, source_body, origin_cursor, strip_ctx);
+        out.push(Block::List {
+            items,
+            span: Some(Span(line_start, lines[ni - 1].end)),
+        });
+        return Step::Next(ni);
+    }
+
     // 2b. LaTeX environment `\begin{X} … \end{X}` (mldoc Latex_env, before Block). CLAMP the
     // `\end{}` search to `&input[..body_end]` so an `\end{X}` outside this body is not captured
     // (verified load-bearing: `#+BEGIN_QUOTE\n\begin{eq}\n#+END_QUOTE\n\end{eq}`).
@@ -1216,7 +1270,7 @@ fn dispatch_md_line<'a>(
     // 4. horizontal rule (before dash bullet / list). Markdown definition lists are tried before
     // HR in mldoc's Lists parser, so an HR-looking line defers only when the immediate next line is
     // a valid first definition body; later bad tails do not backtrack the already-built def list.
-    if is_hr(t) && !(i + 1 < hi && is_def_opener(line_text(lines, i + 1, strip_ctx))) {
+    if is_hr(t) && !(!in_item && i + 1 < hi && is_def_opener(line_text(lines, i + 1, strip_ctx))) {
         drop_marker_ws(para, was_ws_drop, input); // F4/M3: drop marker `" \n"`, keep blank breaks.
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         out.push(Block::Hr { span: Some(Span(line_start, line_end)) });
@@ -1957,6 +2011,9 @@ fn dispatch_md_line<'a>(
         && i + 1 < hi
         && is_def_opener(line_text(lines, i + 1, strip_ctx))
     {
+        if is_hr(t) {
+            drop_marker_ws(para, was_ws_drop, input);
+        }
         flush_para(out, para, para_buf, para_map, input, false, origin, source_body, origin_cursor);
         let (items, ni) =
             build_def_list(lines, i, hi, input, origin, source_body, origin_cursor, strip_ctx);
@@ -1971,7 +2028,6 @@ fn dispatch_md_line<'a>(
     // construct including definition lists and before Paragraph. Raw HTML has already had first
     // refusal, so the short `<!--\n-->` family falls through here while f1/f12 stay raw_html.
     if let Some(comment) = md_comment_capture(lines, i, hi, strip_ctx, t) {
-        drop_marker_ws(para, was_ws_drop, input);
         // Markdown Comment is not wrapped in `between_eols`, so neither the preceding paragraph
         // EOL nor the comment line/closer EOL is absorbed.
         flush_para(out, para, para_buf, para_map, input, false, origin, source_body, origin_cursor);
