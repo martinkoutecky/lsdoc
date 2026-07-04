@@ -357,6 +357,79 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
             8_000,
             org_tag_link_metadata_missing_close,
         ),
+        ("f5_tag_pageref_simple_md", false, 2_000, f5_tag_pageref_simple),
+        ("f5_tag_pageref_simple_org", true, 2_000, f5_tag_pageref_simple),
+        (
+            "f5_org_tag_pageref_link1_shape",
+            true,
+            2_000,
+            f5_org_tag_pageref_link1_shape,
+        ),
+        ("f5_tag_pageref_fail_lf_md", false, 2_000, f5_tag_pageref_fail_lf),
+        ("f5_tag_pageref_fail_lf_org", true, 2_000, f5_tag_pageref_fail_lf),
+        (
+            "f5_tag_pageref_cross_call_md",
+            false,
+            2_000,
+            f5_tag_pageref_cross_call,
+        ),
+        (
+            "f5_tag_pageref_cross_call_org",
+            true,
+            2_000,
+            f5_tag_pageref_cross_call,
+        ),
+        (
+            "f5_org_tag_pageref_bs_lf_hop",
+            true,
+            2_000,
+            f5_org_tag_pageref_bs_lf_hop,
+        ),
+        ("f5_control_separate_tags_md", false, 2_000, f5_control_separate_tags),
+        ("f5_control_separate_tags_org", true, 2_000, f5_control_separate_tags),
+        (
+            "f5_control_single_brackets_md",
+            false,
+            2_000,
+            f5_control_single_brackets,
+        ),
+        (
+            "f5_control_single_brackets_org",
+            true,
+            2_000,
+            f5_control_single_brackets,
+        ),
+        ("f5_control_plain_tag_md", false, 2_000, f5_control_plain_tag),
+        ("f5_control_plain_tag_org", true, 2_000, f5_control_plain_tag),
+        ("f5_w1_tag_reparse_md", false, 2_000, f5_w_tag_reparse),
+        ("f5_w2_tag_reparse_org", true, 2_000, f5_w_tag_reparse),
+        (
+            "f5_w3_md_emphasis_reparse",
+            false,
+            2_000,
+            f5_w_md_emphasis_reparse,
+        ),
+        ("f5_w4_md_url_piece", false, 2_000, f5_w_md_url_piece),
+        ("f5_w5_md_macro_args", false, 2_000, f5_w_macro_args),
+        ("f5_w6_org_macro_args", true, 2_000, f5_w_macro_args),
+        (
+            "f5_control_md_deep_imbalance",
+            false,
+            2_000,
+            f5_control_md_deep_imbalance,
+        ),
+        (
+            "f5_control_org_deep_imbalance",
+            true,
+            2_000,
+            f5_control_org_deep_imbalance,
+        ),
+        (
+            "f5_control_md_balanced_nested",
+            false,
+            2_000,
+            f5_control_md_balanced_nested,
+        ),
         // Phase B leaf-linearity: construct-interleaved inline LEAF misses. Homogeneous
         // opener runs were already covered; these force a fresh dispatch before each opener.
         ("md_email_domain_interleave", false, 25_000, |n| "*a*<x@".repeat(n)),
@@ -668,6 +741,51 @@ fn md_tag_link_metadata_missing_close(n: usize) -> String {
 
 fn org_tag_link_metadata_missing_close(n: usize) -> String {
     "#t[[u][l]]{ ".repeat(n)
+}
+fn f5_tag_pageref_simple(n: usize) -> String {
+    format!("#t{}", "[[ul]]".repeat(n))
+}
+fn f5_org_tag_pageref_link1_shape(n: usize) -> String {
+    format!("#t{}", "[[u][l]]".repeat(n))
+}
+fn f5_tag_pageref_fail_lf(n: usize) -> String {
+    format!("#t{}\n]]", "[[a".repeat(n))
+}
+fn f5_tag_pageref_cross_call(n: usize) -> String {
+    "#t[[a ".repeat(n)
+}
+fn f5_org_tag_pageref_bs_lf_hop(n: usize) -> String {
+    format!("#t{}\\\n]]x", "[[a".repeat(n))
+}
+fn f5_control_separate_tags(n: usize) -> String {
+    "#t[[ul]] ".repeat(n)
+}
+fn f5_control_single_brackets(n: usize) -> String {
+    format!("#t{}", "[u]".repeat(n))
+}
+fn f5_control_plain_tag(n: usize) -> String {
+    format!("#t{}", "a".repeat(n))
+}
+fn f5_w_tag_reparse(n: usize) -> String {
+    format!("#t{}", "[[a".repeat(n))
+}
+fn f5_w_md_emphasis_reparse(n: usize) -> String {
+    format!("*{}*", "[[a".repeat(n))
+}
+fn f5_w_md_url_piece(n: usize) -> String {
+    format!("[x]({})", "[[a".repeat(n))
+}
+fn f5_w_macro_args(n: usize) -> String {
+    format!("{{{{m {}z}}}}", "[[a,".repeat(n))
+}
+fn f5_control_md_deep_imbalance(n: usize) -> String {
+    format!("*{}{}*", "[[".repeat(n), "x]]".repeat(n / 2))
+}
+fn f5_control_org_deep_imbalance(n: usize) -> String {
+    format!("#t{}{}", "[[".repeat(n), "x]]".repeat(n / 2))
+}
+fn f5_control_md_balanced_nested(n: usize) -> String {
+    format!("*{}{}*", "[[".repeat(n), "x]]".repeat(n))
 }
 
 fn base36(mut n: usize) -> String {

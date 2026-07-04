@@ -487,6 +487,51 @@ fn md_tag_link_metadata_missing_close(n: usize) -> String {
 fn org_tag_link_metadata_missing_close(n: usize) -> String {
     format!("#t{}", "[[u][l]]{".repeat(n))
 }
+fn f5_tag_pageref_simple(n: usize) -> String {
+    format!("#t{}", "[[ul]]".repeat(n))
+}
+fn f5_org_tag_pageref_link1_shape(n: usize) -> String {
+    format!("#t{}", "[[u][l]]".repeat(n))
+}
+fn f5_tag_pageref_fail_lf(n: usize) -> String {
+    format!("#t{}\n]]", "[[a".repeat(n))
+}
+fn f5_tag_pageref_cross_call(n: usize) -> String {
+    "#t[[a ".repeat(n)
+}
+fn f5_org_tag_pageref_bs_lf_hop(n: usize) -> String {
+    format!("#t{}\\\n]]x", "[[a".repeat(n))
+}
+fn f5_control_separate_tags(n: usize) -> String {
+    "#t[[ul]] ".repeat(n)
+}
+fn f5_control_single_brackets(n: usize) -> String {
+    format!("#t{}", "[u]".repeat(n))
+}
+fn f5_control_plain_tag(n: usize) -> String {
+    format!("#t{}", "a".repeat(n))
+}
+fn f5_w_tag_reparse(n: usize) -> String {
+    format!("#t{}", "[[a".repeat(n))
+}
+fn f5_w_md_emphasis_reparse(n: usize) -> String {
+    format!("*{}*", "[[a".repeat(n))
+}
+fn f5_w_md_url_piece(n: usize) -> String {
+    format!("[x]({})", "[[a".repeat(n))
+}
+fn f5_w_macro_args(n: usize) -> String {
+    format!("{{{{m {}z}}}}", "[[a,".repeat(n))
+}
+fn f5_control_md_deep_imbalance(n: usize) -> String {
+    format!("*{}{}*", "[[".repeat(n), "x]]".repeat(n / 2))
+}
+fn f5_control_org_deep_imbalance(n: usize) -> String {
+    format!("#t{}{}", "[[".repeat(n), "x]]".repeat(n / 2))
+}
+fn f5_control_md_balanced_nested(n: usize) -> String {
+    format!("*{}{}*", "[[".repeat(n), "x]]".repeat(n))
+}
 
 fn big_stack(f: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new()
@@ -637,6 +682,64 @@ fn complexity_gate() {
             org_tag_link_metadata_missing_close,
             1000,
             "org",
+        );
+        assert_linear("f5_tag_pageref_simple", f5_tag_pageref_simple, 1000, "md");
+        assert_linear("f5_tag_pageref_simple", f5_tag_pageref_simple, 1000, "org");
+        assert_linear(
+            "f5_org_tag_pageref_link1_shape",
+            f5_org_tag_pageref_link1_shape,
+            1000,
+            "org",
+        );
+        assert_linear("f5_tag_pageref_fail_lf", f5_tag_pageref_fail_lf, 1000, "md");
+        assert_linear("f5_tag_pageref_fail_lf", f5_tag_pageref_fail_lf, 1000, "org");
+        assert_linear(
+            "f5_tag_pageref_cross_call",
+            f5_tag_pageref_cross_call,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "f5_tag_pageref_cross_call",
+            f5_tag_pageref_cross_call,
+            1000,
+            "org",
+        );
+        assert_linear(
+            "f5_org_tag_pageref_bs_lf_hop",
+            f5_org_tag_pageref_bs_lf_hop,
+            1000,
+            "org",
+        );
+        assert_linear("f5_control_separate_tags", f5_control_separate_tags, 1000, "md");
+        assert_linear("f5_control_separate_tags", f5_control_separate_tags, 1000, "org");
+        assert_linear("f5_control_single_brackets", f5_control_single_brackets, 1000, "md");
+        assert_linear("f5_control_single_brackets", f5_control_single_brackets, 1000, "org");
+        assert_linear("f5_control_plain_tag", f5_control_plain_tag, 1000, "md");
+        assert_linear("f5_control_plain_tag", f5_control_plain_tag, 1000, "org");
+        assert_linear("f5_w_tag_reparse", f5_w_tag_reparse, 1000, "md");
+        assert_linear("f5_w_tag_reparse", f5_w_tag_reparse, 1000, "org");
+        assert_linear("f5_w_md_emphasis_reparse", f5_w_md_emphasis_reparse, 1000, "md");
+        assert_linear("f5_w_md_url_piece", f5_w_md_url_piece, 1000, "md");
+        assert_linear("f5_w_macro_args", f5_w_macro_args, 1000, "md");
+        assert_linear("f5_w_macro_args", f5_w_macro_args, 1000, "org");
+        assert_linear(
+            "f5_control_md_deep_imbalance",
+            f5_control_md_deep_imbalance,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "f5_control_org_deep_imbalance",
+            f5_control_org_deep_imbalance,
+            1000,
+            "org",
+        );
+        assert_linear(
+            "f5_control_md_balanced_nested",
+            f5_control_md_balanced_nested,
+            1000,
+            "md",
         );
         // A (container-prefix consume): both formats now dispatch a `>`-line's content ONCE at the
         // final depth (no per-re-dispatch `property` re-scan — 1a) and close many frames at one

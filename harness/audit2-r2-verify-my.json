@@ -1,0 +1,167 @@
+[
+ {
+  "id": "r2v1",
+  "input": "[x]([[a]]b)",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v2",
+  "input": "[x]([[a]] \"t\")",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v3",
+  "input": "[x]([[a)]]y",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v4",
+  "input": "[x]([[a]])z[[b]]",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v5",
+  "input": "[x]([[a\\]])",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v6",
+  "input": "[x](y[[a]])",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v7",
+  "input": "[x]([[a]]",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v8",
+  "input": "[[a\\]]]",
+  "format": "org"
+ },
+ {
+  "id": "r2v9",
+  "input": "[[a\\]b]]",
+  "format": "org"
+ },
+ {
+  "id": "r2v10",
+  "input": "[[\\\\]]",
+  "format": "org"
+ },
+ {
+  "id": "r2v11",
+  "input": "[[a]b]]c",
+  "format": "org"
+ },
+ {
+  "id": "r2v12",
+  "input": "[[a\r]]",
+  "format": "org"
+ },
+ {
+  "id": "r2v13",
+  "input": "{{m [[a\\]b]],c}}",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v14",
+  "input": "{{m [[a[[b]]c]]}}",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v15",
+  "input": "{{m [[a,b]],[[c]]}}",
+  "format": "org"
+ },
+ {
+  "id": "r2v16",
+  "input": "{{m x,[[y]]}}",
+  "format": "org"
+ },
+ {
+  "id": "r2v17",
+  "input": "#t[[a\\]]b",
+  "format": "org"
+ },
+ {
+  "id": "r2v18",
+  "input": "#t[[a\\]]b",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v19",
+  "input": "#t[[x]][[y]]",
+  "format": "org"
+ },
+ {
+  "id": "r2v20",
+  "input": "#t[[x]]y[[z]]",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v21",
+  "input": "#t[[a\rb]]",
+  "format": "org"
+ },
+ {
+  "id": "r2v22",
+  "input": "#t[[a\\\rb]]x",
+  "format": "org"
+ },
+ {
+  "id": "r2v23",
+  "input": "#t[[a\\\r\nb]]x",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v24",
+  "input": "#t[[",
+  "format": "org"
+ },
+ {
+  "id": "r2v25",
+  "input": "#t[[]]",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v26",
+  "input": "#t[[ ]]",
+  "format": "org"
+ },
+ {
+  "id": "r2v27",
+  "input": "*[[a]]b[[c]]*",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v28",
+  "input": "*[[a*b]]*",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v29",
+  "input": "/[[a]]b/",
+  "format": "org"
+ },
+ {
+  "id": "r2v30",
+  "input": "/x[[a][b]]y/",
+  "format": "org"
+ },
+ {
+  "id": "r2v31",
+  "input": "*[a](u){x\ry}*",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v32",
+  "input": "#t[a](u){m\rn}",
+  "format": "markdown"
+ },
+ {
+  "id": "r2v33",
+  "input": "/[[u][l]]{a\rb}/",
+  "format": "org"
+ }
+]

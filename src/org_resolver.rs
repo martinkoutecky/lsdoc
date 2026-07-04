@@ -95,8 +95,9 @@ pub(crate) struct OrgInlineScan {
     url_rbracket_memo: Vec<usize>,
     label_end_memo: Vec<usize>,
     chunk_end_memo: Vec<usize>,
+    page_ref_scan: crate::inline::PageRefScan,
     footnote_rbracket: crate::inline::ByteBeforeEolScan,
-    metadata_rbrace: crate::inline::ByteBeforeLfScan,
+    metadata_rbrace: crate::inline::ByteBeforeEolScan,
 }
 
 impl OrgInlineScan {
@@ -106,8 +107,9 @@ impl OrgInlineScan {
             url_rbracket_memo: Vec::new(),
             label_end_memo: Vec::new(),
             chunk_end_memo: Vec::new(),
+            page_ref_scan: crate::inline::PageRefScan::new(),
             footnote_rbracket: crate::inline::ByteBeforeEolScan::new(b']'),
-            metadata_rbrace: crate::inline::ByteBeforeLfScan::new(b'}'),
+            metadata_rbrace: crate::inline::ByteBeforeEolScan::new(b'}'),
         }
     }
 
@@ -147,9 +149,13 @@ impl OrgInlineScan {
         self.footnote_rbracket.first_before_eol(bb, from)
     }
 
+    fn page_ref_scan(&mut self) -> &mut crate::inline::PageRefScan {
+        &mut self.page_ref_scan
+    }
+
     fn metadata_close(&mut self, bb: &[u8], from: usize) -> Option<usize> {
         self.check_source(bb.len());
-        self.metadata_rbrace.first_before_lf(bb, from)
+        self.metadata_rbrace.first_before_eol(bb, from)
     }
 }
 
@@ -941,7 +947,9 @@ pub(crate) fn try_nested_link_or_link_org(
         if let Some((end, node)) = org_link_1_at(s, bb, at, base, scan) {
             return Some((node, end));
         }
-        if let Some((end, content)) = crate::inline::parse_nested_link(s, at) {
+        if let Some((end, content)) =
+            crate::inline::parse_nested_link_with_scan(s, at, scan.page_ref_scan())
+        {
             return Some((
                 Inline::NestedLink {
                     content,
@@ -950,7 +958,7 @@ pub(crate) fn try_nested_link_or_link_org(
                 end,
             ));
         }
-        if let Some((end, node)) = org_link_2_at(s, bb, at, base) {
+        if let Some((end, node)) = org_link_2_at(s, bb, at, base, scan) {
             return Some((node, end));
         }
     }
@@ -1294,6 +1302,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         base,
                         crate::inline::TagReparse::Org,
                         tag_boundary_runs.as_deref(),
+                        org_inline_scan.page_ref_scan(),
                     );
                     if e > off + 1 && !children.is_empty() {
                         flush_pending!();
@@ -2173,7 +2182,7 @@ fn try_bracket_at(
                 *crlf = first_crlf(bb, off);
             }
             if d > off + 2 && *crlf > d {
-                if let Some((end, node)) = org_link_2_at(s, bb, off, base) {
+                if let Some((end, node)) = org_link_2_at(s, bb, off, base, org_inline_scan) {
                     return Some((node, end));
                 }
             }
@@ -2225,9 +2234,9 @@ fn org_link_1_at(
     if !s[j..].starts_with("][") {
         return None;
     }
-    let url_text = s[url_start..j].to_string();
     let label_start = j + 2;
     let close = find_org_label_end(bb, label_start, scan)?;
+    let url_text = s[url_start..j].to_string();
     let label_text = s[label_start..close].to_string();
     let mut end = close + 2;
     let metadata = read_metadata(s, bb, &mut end, scan);
@@ -2297,46 +2306,31 @@ fn find_org_link_url_rbracket(bb: &[u8], start: usize, scan: &mut OrgInlineScan)
 }
 
 /// `[[url]]` — v1 org_link_2 (single `]` allowed, non-empty, no eol).
-fn org_link_2_at(s: &str, bb: &[u8], at: usize, base: usize) -> Option<(usize, Inline)> {
-    let n = bb.len();
+fn org_link_2_at(
+    s: &str,
+    bb: &[u8],
+    at: usize,
+    base: usize,
+    scan: &mut OrgInlineScan,
+) -> Option<(usize, Inline)> {
     let name_start = at + 2;
-    let mut j = name_start;
-    while j < n {
-        let c = bb[j];
-        if c == b'\n' || c == b'\r' {
-            return None;
-        }
-        if c == b'\\' && j + 1 < n {
-            j += 1 + char_len(bb[j + 1]);
-            continue;
-        }
-        if c == b']' {
-            if j + 1 < n && bb[j + 1] == b']' {
-                break;
-            }
-            j += 1;
-            continue;
-        }
-        j += char_len(c);
-    }
-    if j + 1 >= n || bb[j] != b']' || bb[j + 1] != b']' || j == name_start {
-        return None;
-    }
-    let name = s[name_start..j].to_string();
+    scan.check_source(bb.len());
+    let close = scan.page_ref_scan().org_link2_close(bb, at)?;
+    let name = s[name_start..close].to_string();
     let url = crate::org::classify_org_link_2(&name);
     let full = format!("[[{}]]", name);
     // the synthetic label (== name) is a raw slice of `s` at `name_start` → span it.
     let label = match &url {
         crate::projection::Url::PageRef { .. } => vec![],
-        _ => vec![Inline::Plain {
-            text: name.clone(),
-            span: Some(Span(base + name_start, base + j)),
-            span_map: None,
-        }],
-    };
+            _ => vec![Inline::Plain {
+                text: name.clone(),
+                span: Some(Span(base + name_start, base + close)),
+                span_map: None,
+            }],
+        };
     // span set by the caller over [at, j + 2).
     Some((
-        j + 2,
+        close + 2,
         Inline::Link {
             url,
             label,

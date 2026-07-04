@@ -1082,6 +1082,7 @@ fn parse_nested_plain_md(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
     let mut no_closer = [[false; 3]; 5];
     let terminal_odd_backslash = ends_with_odd_backslash_run(bb);
     let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
+    let mut md_link_scan = crate::inline::MdLinkScan::new();
     while i < bb.len() {
         if matches!(bb[i], b'*' | b'_' | b'~' | b'^' | b'=') {
             if let Ok(hit) = markdown_emphasis_at(
@@ -1107,7 +1108,9 @@ fn parse_nested_plain_md(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
             }
         }
         if bb[i] == b'[' {
-            if let Some((node, end)) = try_nested_link_or_link_md(text, i, base) {
+            if let Some((node, end)) =
+                try_nested_link_or_link_md(text, i, base, &mut md_link_scan)
+            {
                 out.push(node);
                 i = end;
                 continue;
@@ -1197,9 +1200,16 @@ fn markdown_plain_at(s: &str, i: usize, base: usize) -> Option<(Inline, usize)> 
 
 /// Port of mldoc Markdown `nested_link_or_link`
 /// (`lib/syntax/inline.ml:915-917`) for phase-2 emphasis reparsing.
-fn try_nested_link_or_link_md(s: &str, at: usize, base: usize) -> Option<(Inline, usize)> {
+fn try_nested_link_or_link_md(
+    s: &str,
+    at: usize,
+    base: usize,
+    scan: &mut crate::inline::MdLinkScan,
+) -> Option<(Inline, usize)> {
     if s[at..].starts_with("[[") {
-        if let Some((end, content)) = crate::inline::parse_nested_link(s, at) {
+        if let Some((end, content)) =
+            crate::inline::parse_nested_link_with_scan(s, at, scan.page_ref_scan())
+        {
             return Some((
                 Inline::NestedLink {
                     content,
@@ -1208,7 +1218,9 @@ fn try_nested_link_or_link_md(s: &str, at: usize, base: usize) -> Option<(Inline
                 end,
             ));
         }
-        if let Some((end, name, full)) = crate::inline::parse_page_ref(s, at) {
+        if let Some((end, name, full)) =
+            crate::inline::parse_page_ref_with_scan(s, at, scan.page_ref_scan())
+        {
             return Some((
                 Inline::Link {
                     url: crate::projection::Url::PageRef { v: name },
@@ -1223,7 +1235,7 @@ fn try_nested_link_or_link_md(s: &str, at: usize, base: usize) -> Option<(Inline
             ));
         }
     }
-    let (mut node, end) = crate::inline::md_link(s, at, false, base)?;
+    let (mut node, end) = crate::inline::md_link_with_scan(s, at, false, base, scan)?;
     crate::projection::set_inline_span(&mut node, Some(Span(base + at, base + end)));
     Some((node, end))
 }
@@ -1796,6 +1808,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         base,
                         crate::inline::TagReparse::Markdown,
                         tag_boundary_runs.as_deref(),
+                        md_link_scan.page_ref_scan(),
                     );
                     if e > off + 1 && !children.is_empty() {
                         flush(

@@ -1,0 +1,62 @@
+[
+ {
+  "id": "d47p1",
+  "input": "[a](u){}",
+  "format": "markdown"
+ },
+ {
+  "id": "d47p2",
+  "input": "[[u][l]]{}",
+  "format": "org"
+ },
+ {
+  "id": "d47p3",
+  "input": "[a](u){\r}",
+  "format": "markdown"
+ },
+ {
+  "id": "d47p4",
+  "input": "[[u][l]]{\r}",
+  "format": "org"
+ },
+ {
+  "id": "d47p5",
+  "input": "[a](u){b\rc}d",
+  "format": "markdown"
+ },
+ {
+  "id": "d47p6",
+  "input": "[[u][l]]{b\rc}d",
+  "format": "org"
+ },
+ {
+  "id": "d47p7",
+  "input": "[a](u){b}\r",
+  "format": "markdown"
+ },
+ {
+  "id": "d47p8",
+  "input": "![i](data:png){x\ry}",
+  "format": "markdown"
+ },
+ {
+  "id": "d47p9",
+  "input": "#t[a](u){x\ry}",
+  "format": "markdown"
+ },
+ {
+  "id": "d47p10",
+  "input": "#t[[u][l]]{x\ry}",
+  "format": "org"
+ },
+ {
+  "id": "d47p11",
+  "input": "[a](u){b\r\nc}",
+  "format": "markdown"
+ },
+ {
+  "id": "d47p12",
+  "input": "[[u][l]]{b\r\nc}",
+  "format": "org"
+ }
+]

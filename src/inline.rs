@@ -136,52 +136,6 @@ fn first_byte_or_crlf_for_scan(bb: &[u8], from: usize, byte: u8) -> (usize, usiz
     }
 }
 
-/// Monotone current-line floor using Markdown metadata's exact line boundary: LF only.
-pub(crate) struct ByteBeforeLfScan {
-    byte: u8,
-    hit: usize,
-    eol: usize,
-    initialized: bool,
-}
-
-impl ByteBeforeLfScan {
-    pub(crate) fn new(byte: u8) -> Self {
-        Self { byte, hit: 0, eol: 0, initialized: false }
-    }
-
-    pub(crate) fn first_before_lf(&mut self, bb: &[u8], from: usize) -> Option<usize> {
-        if !self.initialized || from > self.eol {
-            let (hit, eol) = first_byte_or_lf_for_scan(bb, from, self.byte);
-            self.hit = hit;
-            self.eol = eol;
-            self.initialized = true;
-        } else if self.hit < from {
-            let (hit, eol) = first_byte_or_lf_for_scan(bb, from, self.byte);
-            self.hit = hit;
-            self.eol = eol;
-        }
-        (self.hit < self.eol).then_some(self.hit)
-    }
-}
-
-fn first_byte_or_lf_for_scan(bb: &[u8], from: usize, byte: u8) -> (usize, usize) {
-    let mut p = from;
-    let mut scanned = 0usize;
-    while p < bb.len() && bb[p] != byte && bb[p] != b'\n' {
-        scanned += 1;
-        p += 1;
-    }
-    if p < bb.len() {
-        scanned += 1;
-    }
-    crate::metrics::scan_work(scanned);
-    if p < bb.len() && bb[p] == byte {
-        (p, p + 1)
-    } else {
-        (p, p)
-    }
-}
-
 /// First index of `needle` in `b[from..]`, or None. (No newline restriction.)
 pub(crate) fn find_sub(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || from > b.len() {
@@ -464,95 +418,455 @@ pub(crate) fn build_tag_boundary_runs(s: &str) -> Vec<bool> {
 
 // ---- page ref / nested link -----------------------------------------------
 
+const PR_MEMO_UNSEEN: usize = usize::MAX;
+const PR_MEMO_NONE: usize = usize::MAX - 1;
+
+pub(crate) struct PageRefScan {
+    source_len: Option<usize>,
+    page_ref_walk_memo: Vec<usize>,
+    org_link2_walk_memo: Vec<usize>,
+    next_rr_or_nl_memo: Vec<usize>,
+    nested_link_memo: Vec<usize>,
+    next_crlf_initialized: bool,
+    next_crlf_last_query: usize,
+    next_crlf_hit: usize,
+}
+
+impl PageRefScan {
+    pub(crate) fn new() -> Self {
+        Self {
+            source_len: None,
+            page_ref_walk_memo: Vec::new(),
+            org_link2_walk_memo: Vec::new(),
+            next_rr_or_nl_memo: Vec::new(),
+            nested_link_memo: Vec::new(),
+            next_crlf_initialized: false,
+            next_crlf_last_query: 0,
+            next_crlf_hit: 0,
+        }
+    }
+
+    fn check_source(&mut self, len: usize) {
+        match self.source_len {
+            Some(existing) => debug_assert_eq!(existing, len),
+            None => self.source_len = Some(len),
+        }
+    }
+
+    fn page_ref_memo(&mut self, len: usize) -> &mut Vec<usize> {
+        self.check_source(len);
+        if self.page_ref_walk_memo.is_empty() {
+            self.page_ref_walk_memo = vec![PR_MEMO_UNSEEN; len + 1];
+        }
+        &mut self.page_ref_walk_memo
+    }
+
+    fn org_link2_memo(&mut self, len: usize) -> &mut Vec<usize> {
+        self.check_source(len);
+        if self.org_link2_walk_memo.is_empty() {
+            self.org_link2_walk_memo = vec![PR_MEMO_UNSEEN; len + 1];
+        }
+        &mut self.org_link2_walk_memo
+    }
+
+    fn rr_or_nl_memo(&mut self, len: usize) -> &mut Vec<usize> {
+        self.check_source(len);
+        if self.next_rr_or_nl_memo.is_empty() {
+            self.next_rr_or_nl_memo = vec![PR_MEMO_UNSEEN; len + 1];
+        }
+        &mut self.next_rr_or_nl_memo
+    }
+
+    fn nested_link_memo(&mut self, len: usize) -> &mut Vec<usize> {
+        self.check_source(len);
+        if self.nested_link_memo.is_empty() {
+            self.nested_link_memo = vec![PR_MEMO_UNSEEN; len + 1];
+        }
+        &mut self.nested_link_memo
+    }
+
+    fn page_ref_close(&mut self, bb: &[u8], start: usize) -> usize {
+        let mut j = start;
+        let mut visited: Vec<usize> = Vec::new();
+        let result = loop {
+            if j >= bb.len() {
+                break PR_MEMO_NONE;
+            }
+            let memo = self
+                .page_ref_memo(bb.len())
+                .get(j)
+                .copied()
+                .unwrap_or(PR_MEMO_UNSEEN);
+            if memo != PR_MEMO_UNSEEN {
+                break memo;
+            }
+            visited.push(j);
+            match bb[j] {
+                b'\n' | b'\r' => {
+                    crate::metrics::scan_work(1);
+                    break PR_MEMO_NONE;
+                }
+                b']' if j + 1 < bb.len() && bb[j + 1] == b']' => {
+                    crate::metrics::scan_work(2);
+                    break j;
+                }
+                b'\\' if j + 1 < bb.len() => {
+                    crate::metrics::scan_work(2);
+                    j += 2;
+                }
+                c => {
+                    let w = char_len(c);
+                    crate::metrics::scan_work(w);
+                    j += w;
+                }
+            }
+        };
+        if !visited.is_empty() {
+            let memo = self.page_ref_memo(bb.len());
+            for pos in visited {
+                memo[pos] = result;
+            }
+        }
+        result
+    }
+
+    pub(crate) fn org_link2_close(&mut self, bb: &[u8], at: usize) -> Option<usize> {
+        self.check_source(bb.len());
+        if bb.get(at) != Some(&b'[') || bb.get(at + 1) != Some(&b'[') {
+            return None;
+        }
+        let name_start = at + 2;
+        let close = self.org_link2_walk(bb, name_start);
+        if close == PR_MEMO_NONE
+            || close == name_start
+            || close + 1 >= bb.len()
+            || bb[close] != b']'
+            || bb[close + 1] != b']'
+        {
+            return None;
+        }
+        Some(close)
+    }
+
+    fn org_link2_walk(&mut self, bb: &[u8], start: usize) -> usize {
+        let mut j = start;
+        let mut visited: Vec<usize> = Vec::new();
+        let result = loop {
+            if j >= bb.len() {
+                break PR_MEMO_NONE;
+            }
+            let memo = self
+                .org_link2_memo(bb.len())
+                .get(j)
+                .copied()
+                .unwrap_or(PR_MEMO_UNSEEN);
+            if memo != PR_MEMO_UNSEEN {
+                break memo;
+            }
+            visited.push(j);
+            match bb[j] {
+                b'\n' | b'\r' => {
+                    crate::metrics::scan_work(1);
+                    break PR_MEMO_NONE;
+                }
+                b'\\' if j + 1 < bb.len() => {
+                    let w = char_len(bb[j + 1]);
+                    crate::metrics::scan_work(1 + w);
+                    j += 1 + w;
+                }
+                b']' if j + 1 < bb.len() && bb[j + 1] == b']' => {
+                    crate::metrics::scan_work(2);
+                    break j;
+                }
+                b']' => {
+                    crate::metrics::scan_work(1);
+                    j += 1;
+                }
+                c => {
+                    let w = char_len(c);
+                    crate::metrics::scan_work(w);
+                    j += w;
+                }
+            }
+        };
+        if !visited.is_empty() {
+            let memo = self.org_link2_memo(bb.len());
+            for pos in visited {
+                memo[pos] = result;
+            }
+        }
+        result
+    }
+
+    fn next_rr_or_nl(&mut self, bb: &[u8], from: usize) -> Option<usize> {
+        self.check_source(bb.len());
+        let mut j = from;
+        let mut visited: Vec<usize> = Vec::new();
+        let result = loop {
+            if j + 1 >= bb.len() {
+                break PR_MEMO_NONE;
+            }
+            let memo = self
+                .rr_or_nl_memo(bb.len())
+                .get(j)
+                .copied()
+                .unwrap_or(PR_MEMO_UNSEEN);
+            if memo != PR_MEMO_UNSEEN {
+                break memo;
+            }
+            visited.push(j);
+            if bb[j] == b'\n' {
+                crate::metrics::scan_work(1);
+                break PR_MEMO_NONE;
+            }
+            if bb[j] == b']' && bb[j + 1] == b']' {
+                crate::metrics::scan_work(2);
+                break j;
+            }
+            crate::metrics::scan_work(1);
+            j += 1;
+        };
+        if !visited.is_empty() {
+            let memo = self.rr_or_nl_memo(bb.len());
+            for pos in visited {
+                memo[pos] = result;
+            }
+        }
+        (result != PR_MEMO_NONE).then_some(result)
+    }
+
+    pub(crate) fn next_crlf_at_or_after(&mut self, bb: &[u8], from: usize) -> usize {
+        self.check_source(bb.len());
+        if !self.next_crlf_initialized || from > self.next_crlf_hit || from < self.next_crlf_last_query
+        {
+            self.next_crlf_hit = first_crlf_for_page_ref_scan(bb, from);
+            self.next_crlf_initialized = true;
+        }
+        self.next_crlf_last_query = from;
+        self.next_crlf_hit
+    }
+
+    pub(crate) fn parse_nested_link(&mut self, s: &str, at: usize) -> Option<(usize, String)> {
+        self.check_source(s.len());
+        if !s[at..].starts_with("[[") {
+            return None;
+        }
+        let cached = self
+            .nested_link_memo(s.len())
+            .get(at)
+            .copied()
+            .unwrap_or(PR_MEMO_UNSEEN);
+        if cached != PR_MEMO_UNSEEN {
+            return (cached != PR_MEMO_NONE).then(|| (cached, s[at..cached].to_string()));
+        }
+        let end = match_brackets_end_with_scan(s, at, self).and_then(|end| {
+            let inner = &s[at + 2..end - 2];
+            (nested_children_count(inner) > 1).then_some(end)
+        });
+        {
+            let memo = self.nested_link_memo(s.len());
+            memo[at] = end.unwrap_or(PR_MEMO_NONE);
+        }
+        end.map(|end| (end, s[at..end].to_string()))
+    }
+}
+
+fn first_crlf_for_page_ref_scan(bb: &[u8], from: usize) -> usize {
+    let mut p = from;
+    let mut scanned = 0usize;
+    while p < bb.len() && bb[p] != b'\n' && bb[p] != b'\r' {
+        scanned += 1;
+        p += 1;
+    }
+    if p < bb.len() {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
+    p
+}
+
 /// `[[ name ]]` where name is non-empty, contains no newline, and ends at the first
 /// `]]` (single `]` allowed inside). Returns (end_index, name, full_text).
 pub(crate) fn parse_page_ref(s: &str, at: usize) -> Option<(usize, String, String)> {
     let b = s.as_bytes();
-    let n = b.len();
     if !s[at..].starts_with("[[") {
         return None;
     }
     let name_start = at + 2;
+    finish_page_ref(s, at, page_ref_close_raw(b, name_start))
+}
+
+pub(crate) fn parse_page_ref_end_with_scan(
+    s: &str,
+    at: usize,
+    scan: &mut PageRefScan,
+) -> Option<usize> {
+    let b = s.as_bytes();
+    scan.check_source(b.len());
+    if !s[at..].starts_with("[[") {
+        return None;
+    }
+    let name_start = at + 2;
+    finish_page_ref_end(s, at, scan.page_ref_close(b, name_start))
+}
+
+pub(crate) fn parse_page_ref_with_scan(
+    s: &str,
+    at: usize,
+    scan: &mut PageRefScan,
+) -> Option<(usize, String, String)> {
+    let end = parse_page_ref_end_with_scan(s, at, scan)?;
+    Some(build_page_ref(s, at, end))
+}
+
+fn finish_page_ref(s: &str, at: usize, close: usize) -> Option<(usize, String, String)> {
+    let end = finish_page_ref_end(s, at, close)?;
+    Some(build_page_ref(s, at, end))
+}
+
+fn finish_page_ref_end(s: &str, at: usize, close: usize) -> Option<usize> {
+    if close == PR_MEMO_NONE {
+        return None;
+    }
+    let b = s.as_bytes();
+    let name_start = at + 2;
+    if close + 1 >= b.len() || b[close] != b']' || b[close + 1] != b']' {
+        return None;
+    }
+    if close == name_start {
+        return None; // empty name
+    }
+    Some(close + 2)
+}
+
+fn build_page_ref(s: &str, at: usize, end: usize) -> (usize, String, String) {
+    let name_start = at + 2;
+    let close = end - 2;
+    let name = unescape(&s[name_start..close]); // value is unescaped; full stays raw
+    let full = s[at..end].to_string();
+    (end, name, full)
+}
+
+fn page_ref_close_raw(b: &[u8], name_start: usize) -> usize {
+    let n = b.len();
     let mut j = name_start;
     while j < n {
         let c = b[j];
         if c == b'\n' || c == b'\r' {
-            return None;
+            crate::metrics::scan_work(1);
+            return PR_MEMO_NONE;
         }
         if c == b']' {
             if j + 1 < n && b[j + 1] == b']' {
+                crate::metrics::scan_work(2);
                 break; // closing "]]"
             }
             // single ']' allowed in name
+            crate::metrics::scan_work(1);
             j += 1;
             continue;
         }
         if c == b'\\' && j + 1 < n {
+            crate::metrics::scan_work(2);
             j += 2; // backslash escapes next char inside page name
             continue;
         }
-        j += char_len(c);
+        let w = char_len(c);
+        crate::metrics::scan_work(w);
+        j += w;
     }
     if j + 1 >= n || b[j] != b']' || b[j + 1] != b']' {
-        return None;
+        return PR_MEMO_NONE;
     }
-    if j == name_start {
-        return None; // empty name
-    }
-    let name = unescape(&s[name_start..j]); // value is unescaped; full stays raw
-    let full = s[at..j + 2].to_string();
-    Some((j + 2, name, full))
+    j
 }
 
 /// nested link `[[ ... ]]` whose inner text parses into >1 (label | nested) child.
 pub(crate) fn parse_nested_link(s: &str, at: usize) -> Option<(usize, String)> {
-    let (end, content) = match_brackets(s, at)?;
+    let end = match_brackets_end_raw(s, at)?;
+    let content = &s[at..end];
     let inner = &content[2..content.len() - 2];
     if nested_children_count(inner) > 1 {
-        Some((end, content))
+        Some((end, content.to_string()))
     } else {
         None
     }
 }
 
+pub(crate) fn parse_nested_link_with_scan(
+    s: &str,
+    at: usize,
+    scan: &mut PageRefScan,
+) -> Option<(usize, String)> {
+    scan.parse_nested_link(s, at)
+}
+
 /// Bracket matcher: from `[[`, count levels using `]]` chunks (mldoc match_brackets).
 /// Returns (end_index, matched_string). Stops at a newline (returns None).
 fn match_brackets(s: &str, at: usize) -> Option<(usize, String)> {
+    let end = match_brackets_end_raw(s, at)?;
+    Some((end, s[at..end].to_string()))
+}
+
+fn match_brackets_end_raw(s: &str, at: usize) -> Option<usize> {
     let b = s.as_bytes();
-    let n = b.len();
     if !s[at..].starts_with("[[") {
         return None;
     }
     let mut level: i32 = 1;
     let mut pos = at + 2;
     loop {
-        // find next "]]" before a newline
-        let mut k = pos;
-        let mut found = None;
-        while k + 1 < n {
-            if b[k] == b'\n' {
-                return None;
-            }
-            if b[k] == b']' && b[k + 1] == b']' {
-                found = Some(k);
-                break;
-            }
-            k += 1;
-        }
-        let idx = found?;
+        let idx = next_rr_or_nl_raw(b, pos)?;
         let chunk = &s[pos..idx];
         level += count_occurrences(chunk, "[[") as i32 - 1;
         pos = idx + 2;
         if level <= 0 {
-            return Some((pos, s[at..pos].to_string()));
+            return Some(pos);
         }
     }
+}
+
+fn match_brackets_end_with_scan(s: &str, at: usize, scan: &mut PageRefScan) -> Option<usize> {
+    let b = s.as_bytes();
+    scan.check_source(b.len());
+    if !s[at..].starts_with("[[") {
+        return None;
+    }
+    let mut level: i32 = 1;
+    let mut pos = at + 2;
+    loop {
+        let idx = scan.next_rr_or_nl(b, pos)?;
+        let chunk = &s[pos..idx];
+        level += count_occurrences(chunk, "[[") as i32 - 1;
+        pos = idx + 2;
+        if level <= 0 {
+            return Some(pos);
+        }
+    }
+}
+
+fn next_rr_or_nl_raw(b: &[u8], from: usize) -> Option<usize> {
+    let mut k = from;
+    while k + 1 < b.len() {
+        if b[k] == b'\n' {
+            crate::metrics::scan_work(1);
+            return None;
+        }
+        if b[k] == b']' && b[k + 1] == b']' {
+            crate::metrics::scan_work(2);
+            return Some(k);
+        }
+        crate::metrics::scan_work(1);
+        k += 1;
+    }
+    None
 }
 
 fn count_occurrences(hay: &str, needle: &str) -> usize {
     if needle.is_empty() {
         return 0;
     }
+    crate::metrics::scan_work(hay.len());
     let hb = hay.as_bytes();
     let nb = needle.as_bytes();
     let mut count = 0;
@@ -623,8 +937,9 @@ pub(crate) fn parse_tag_name(
     base: usize,
     format: TagReparse,
     boundary_runs: Option<&[bool]>,
+    scan: &mut PageRefScan,
 ) -> (usize, Vec<Inline>) {
-    let end = capture_tag_name_end(s, start, boundary_runs);
+    let end = capture_tag_name_end(s, start, boundary_runs, scan);
     if end == start {
         return (start, Vec::new());
     }
@@ -632,7 +947,12 @@ pub(crate) fn parse_tag_name(
     (end, children)
 }
 
-fn capture_tag_name_end(s: &str, start: usize, boundary_runs: Option<&[bool]>) -> usize {
+fn capture_tag_name_end(
+    s: &str,
+    start: usize,
+    boundary_runs: Option<&[bool]>,
+    scan: &mut PageRefScan,
+) -> usize {
     let b = s.as_bytes();
     let n = b.len();
     let mut i = start;
@@ -664,8 +984,9 @@ fn capture_tag_name_end(s: &str, start: usize, boundary_runs: Option<&[bool]>) -
             // recognition happens only in the second-stage reparse. The source
             // `page_ref` capture is EOL-bounded, even when a backslash precedes
             // the newline.
-            if let Some((end, _, _)) = parse_page_ref(s, i) {
-                if !b[start..end].iter().any(|&c| c == b'\n' || c == b'\r') {
+            debug_assert!(!b[start..i].iter().any(|&c| c == b'\n' || c == b'\r'));
+            if let Some(end) = parse_page_ref_end_with_scan(s, i, scan) {
+                if scan.next_crlf_at_or_after(b, i) >= end {
                     i = end;
                     consumed = true;
                     continue;
@@ -819,10 +1140,10 @@ fn try_nested_link_or_link_md_tag(
     scan: &mut MdLinkScan,
 ) -> Option<(Inline, usize)> {
     if s[at..].starts_with("[[") {
-        if let Some((end, content)) = parse_nested_link(s, at) {
+        if let Some((end, content)) = parse_nested_link_with_scan(s, at, scan.page_ref_scan()) {
             return Some((Inline::NestedLink { content, span: Some(Span(base + at, base + end)) }, end));
         }
-        if let Some((end, name, full)) = parse_page_ref(s, at) {
+        if let Some((end, name, full)) = parse_page_ref_with_scan(s, at, scan.page_ref_scan()) {
             return Some((
                 Inline::Link {
                     url: Url::PageRef { v: name },
@@ -912,13 +1233,14 @@ pub(crate) fn parse_macro(inner: &str) -> Option<(String, Vec<String>)> {
     if args_str.is_empty() {
         return Some((name, vec![]));
     }
-    let args = parse_macro_args(args_str)?;
+    let mut scan = PageRefScan::new();
+    let args = parse_macro_args(args_str, &mut scan)?;
     Some((name, args))
 }
 
 /// mldoc macro_args: `optional spaces *> sep_by ',' (spaces *> macro_arg <* spaces)`
 /// with consume:All. Returns None if any arg can't be cleanly consumed.
-fn parse_macro_args(s: &str) -> Option<Vec<String>> {
+fn parse_macro_args(s: &str, scan: &mut PageRefScan) -> Option<Vec<String>> {
     let b = s.as_bytes();
     let n = b.len();
     let mut i = 0;
@@ -937,7 +1259,7 @@ fn parse_macro_args(s: &str) -> Option<Vec<String>> {
     }
     loop {
         i = skip_sp(b, i);
-        let (arg, ni) = parse_macro_arg(s, i)?;
+        let (arg, ni) = parse_macro_arg(s, i, scan)?;
         i = skip_sp(b, ni);
         args.push(arg);
         if i >= n {
@@ -956,7 +1278,7 @@ fn parse_macro_args(s: &str) -> Option<Vec<String>> {
 /// One macro arg: nested-link content | page-ref | `(( .. ))` | `"..."` | until ','.
 /// The plain fallback is mldoc `take_while1 (c <> ',')` and keeps trailing spaces
 /// (`lib/syntax/inline.ml:979-988`).
-fn parse_macro_arg(s: &str, at: usize) -> Option<(String, usize)> {
+fn parse_macro_arg(s: &str, at: usize, scan: &mut PageRefScan) -> Option<(String, usize)> {
     let b = s.as_bytes();
     let n = b.len();
     if at >= n {
@@ -964,10 +1286,10 @@ fn parse_macro_arg(s: &str, at: usize) -> Option<(String, usize)> {
     }
     // nested link content
     if s[at..].starts_with("[[") {
-        if let Some((end, content)) = parse_nested_link(s, at) {
+        if let Some((end, content)) = parse_nested_link_with_scan(s, at, scan) {
             return Some((content, end));
         }
-        if let Some((end, _name, full)) = parse_page_ref(s, at) {
+        if let Some((end, _name, full)) = parse_page_ref_with_scan(s, at, scan) {
             return Some((full, end));
         }
     }
@@ -1042,7 +1364,8 @@ pub(crate) struct MdLinkScan {
     url_parens: Option<BalancedEndTable>,
     page_refs: Option<Vec<usize>>,
     code_spans: Option<Vec<usize>>,
-    metadata_rbrace: ByteBeforeLfScan,
+    page_ref_scan: PageRefScan,
+    metadata_rbrace: ByteBeforeEolScan,
 }
 
 impl MdLinkScan {
@@ -1053,7 +1376,8 @@ impl MdLinkScan {
             url_parens: None,
             page_refs: None,
             code_spans: None,
-            metadata_rbrace: ByteBeforeLfScan::new(b'}'),
+            page_ref_scan: PageRefScan::new(),
+            metadata_rbrace: ByteBeforeEolScan::new(b'}'),
         }
     }
 
@@ -1092,8 +1416,12 @@ impl MdLinkScan {
         (end != MD_LINK_NONE).then_some(end)
     }
 
+    pub(crate) fn page_ref_scan(&mut self) -> &mut PageRefScan {
+        &mut self.page_ref_scan
+    }
+
     fn metadata_close(&mut self, b: &[u8], from: usize) -> Option<usize> {
-        self.metadata_rbrace.first_before_lf(b, from)
+        self.metadata_rbrace.first_before_eol(b, from)
     }
 }
 
@@ -1264,15 +1592,6 @@ fn build_code_span_ends(s: &str) -> Vec<usize> {
     out
 }
 
-/// Resolver entry for mldoc `markdown_link` / `markdown_image`
-/// (`lib/syntax/inline.ml:723-890,1138-1160`). `at` points at the `[`; when
-/// `image` is true the caller consumed the leading `!` at `at - 1`.
-/// `base` is the absolute byte offset of `s` in the block body (for label-child spans).
-pub(crate) fn md_link(s: &str, at: usize, image: bool, base: usize) -> Option<(Inline, usize)> {
-    let mut scan = MdLinkScan::new();
-    md_link_with_scan(s, at, image, base, &mut scan)
-}
-
 pub(crate) fn md_link_with_scan(
     s: &str,
     at: usize,
@@ -1347,12 +1666,12 @@ fn markdown_link(
 ) -> Option<MdLink> {
     let label = label_part(s, at, base, true, scan)?;
     let (url_range, after_url) = link_url_part_range(s, label.url_start, scan)?;
+    let parsed_url = link_url_part_inner(s, url_range.clone(), scan);
     let url_text = s[url_range.clone()].to_string();
     crate::metrics::scan_work(url_range.len());
     let mut end = after_url;
     let metadata = read_metadata(s, s.as_bytes(), &mut end, scan);
-    let (link_type, url_value, title) = link_url_part_inner(&url_text)
-        .unwrap_or((MdUrlType::Other, url_text.clone(), None));
+    let (link_type, url_value, title) = parsed_url.unwrap_or((MdUrlType::Other, url_text.clone(), None));
     let trimmed = url_value.trim();
     let unescaped;
     let url_value = if link_type == MdUrlType::Other {
@@ -1750,13 +2069,17 @@ enum MdUrlType {
 }
 
 /// mldoc `link_url_part_inner` (`syntax/inline.ml:772-813`).
-fn link_url_part_inner(url_text: &str) -> Option<(MdUrlType, String, Option<String>)> {
-    let b = url_text.as_bytes();
-    let n = b.len();
-    let mut j = 0usize;
+fn link_url_part_inner(
+    s: &str,
+    url_range: Range<usize>,
+    scan: &mut MdLinkScan,
+) -> Option<(MdUrlType, String, Option<String>)> {
+    let b = s.as_bytes();
+    let n = url_range.end;
+    let mut j = url_range.start;
     let mut parts: Vec<(MdUrlType, String)> = Vec::new();
     while j < n {
-        if let Some((kind, value, end)) = url_part_piece(url_text, j) {
+        if let Some((kind, value, end)) = url_part_piece(s, j, n, scan.page_ref_scan()) {
             parts.push((kind, value));
             j = end;
         } else {
@@ -1785,7 +2108,7 @@ fn link_url_part_inner(url_text: &str) -> Option<(MdUrlType, String, Option<Stri
         None
     } else if b[j] == b'"' {
         let start = j + 1;
-        let end = take_while1_include_backslash_len(url_text, start, b"\"", |c| c != b'"')?;
+        let end = take_while1_include_backslash_len(&s[..n], start, b"\"", |c| c != b'"')?;
         if end >= n || b[end] != b'"' {
             return None;
         }
@@ -1793,48 +2116,53 @@ fn link_url_part_inner(url_text: &str) -> Option<(MdUrlType, String, Option<Stri
         if j != n {
             return None;
         }
-        Some(url_text[start..end].to_string())
+        Some(s[start..end].to_string())
     } else {
         return None;
     };
     Some((kind, value, title))
 }
 
-fn url_part_piece(url_text: &str, at: usize) -> Option<(MdUrlType, String, usize)> {
-    let b = url_text.as_bytes();
-    let n = b.len();
-    if at >= n {
+fn url_part_piece(
+    s: &str,
+    at: usize,
+    limit: usize,
+    scan: &mut PageRefScan,
+) -> Option<(MdUrlType, String, usize)> {
+    let b = s.as_bytes();
+    if at >= limit {
         return None;
     }
-    if url_text[at..].starts_with("((") {
+    if s[at..].starts_with("((") {
         let mut j = at + 2;
-        while j < n && b[j] != b')' {
+        while j < limit && b[j] != b')' {
             j += char_len(b[j]);
         }
-        if j > at + 2 && j + 1 < n && b[j] == b')' && b[j + 1] == b')' {
-            return Some((MdUrlType::BlockRef, url_text[at..j + 2].to_string(), j + 2));
+        if j > at + 2 && j + 1 < limit && b[j] == b')' && b[j + 1] == b')' {
+            return Some((MdUrlType::BlockRef, s[at..j + 2].to_string(), j + 2));
         }
     }
     if b[at] == b'<' {
         let start = at + 1;
-        let end = take_while1_include_backslash_len(url_text, start, b"<>", |c| {
+        let end = take_while1_include_backslash_len(&s[..limit], start, b"<>", |c| {
             c != b'<' && c != b'>'
         })?;
-        if end < n && b[end] == b'>' {
-            return Some((MdUrlType::Other1, url_text[start..end].to_string(), end + 1));
+        if end < limit && b[end] == b'>' {
+            return Some((MdUrlType::Other1, s[start..end].to_string(), end + 1));
         }
     }
     if b[at] != b'[' && !is_ws_or_nl(b[at]) {
         let mut j = at;
-        while j < n && !is_ws_or_nl(b[j]) && b[j] != b'[' {
+        while j < limit && !is_ws_or_nl(b[j]) && b[j] != b'[' {
             j += char_len(b[j]);
         }
         if j > at {
-            return Some((MdUrlType::Other2, url_text[at..j].to_string(), j));
+            return Some((MdUrlType::Other2, s[at..j].to_string(), j));
         }
     }
-    if url_text[at..].starts_with("[[") {
-        if let Some((end, _name, full)) = parse_page_ref(url_text, at) {
+    if s[at..].starts_with("[[") {
+        if let Some(end) = parse_page_ref_end_with_scan(s, at, scan).filter(|&end| end <= limit) {
+            let full = s[at..end].to_string();
             return Some((MdUrlType::PageRef, full, end));
         }
     }
@@ -1842,7 +2170,7 @@ fn url_part_piece(url_text: &str, at: usize) -> Option<(MdUrlType, String, usize
         return None;
     }
     let w = char_len(b[at]);
-    Some((MdUrlType::Other2, url_text[at..at + w].to_string(), at + w))
+    Some((MdUrlType::Other2, s[at..at + w].to_string(), at + w))
 }
 
 fn classify_markdown_url(link_type: MdUrlType, url: &str) -> Url {
