@@ -393,7 +393,9 @@ fn build_org_indexes(
     let mut fence_lines: Vec<usize> = Vec::new();
     let mut nonstd_eol_lines: Vec<usize> = Vec::new();
     let bytes = input.as_bytes();
+    // scan-owner: (b) per-buffer table + monotone cursor — Org closer/fence/nonstd-EOL precompute
     for (idx, l) in lines.iter().enumerate() {
+        crate::metrics::scan_work(1);
         let t = ocaml_trim(l.text);
         if t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
             end_trie.insert(&t[6..], idx);
@@ -422,6 +424,8 @@ fn build_org_indexes(
     // dispatch (13b) does an O(1) lookup + `close <= body_end` clamp instead of a per-opener
     // `parse_hiccup` re-scan to `body_end` (the O(n²) on an unbalanced `[:`-run). Empty `Vec`
     // when the input has no `[:` (the `.get` lookup then falls to MAX).
+    // scan-owner: (b) per-buffer table + monotone cursor — block-hiccup precompute gate
+    crate::metrics::scan_work(input.len());
     let hiccup_close = if input.contains("[:") {
         crate::inline::build_hiccup_close(input)
     } else {
@@ -453,6 +457,8 @@ fn parse_org_streaming<'a>(
     source_body: &str,
 ) -> Vec<Block> {
     let mut lines = split_lines(input);
+    // scan-owner: (b) monotone block cursor + frame owner — Org driver document-level reverse bracket probe
+    crate::metrics::scan_work(input.len());
     let last_rbracket = input.rfind(']');
     let (end_trie, drawer_end_idxs, property_end_idxs, fence_lines, nonstd_eol_lines, hiccup_close) =
         build_org_indexes(&lines, input);
@@ -490,12 +496,15 @@ fn parse_org_streaming<'a>(
     let mut i = 0;
 
     loop {
+        crate::metrics::scan_work(1);
         // --- Phase 1: close at the HARD bound. Any frame with `hi <= i` closes: a HARD frame
         // (root / `#+BEGIN_X` callout, `gt_level==0`) CONSUMES its `#+END_` closer (`i += 1`); a
         // `>`-frame that lazily continued up to the enclosing closer closes WITHOUT consuming. (A
         // `>`-frame's DYNAMIC continuation-close, at `i < hi`, is phase 2a — so phase 1 never needs
         // `offs`, and after it every open frame has `hi > i`.)
+        // scan-owner: (b) monotone block cursor + frame owner — Org frame close stack walk
         while stack.len() > 1 && stack.last().unwrap().hi <= i {
+            crate::metrics::scan_work(1);
             let consume = stack.last().unwrap().gt_level == 0;
             if close_top(
                 &mut stack,
@@ -573,7 +582,9 @@ fn parse_org_streaming<'a>(
                 .unwrap_or("")
             };
             let mut opened_any = false;
+            // scan-owner: (b) monotone block cursor + frame owner — Org quote-frame open chain
             while let Some(inner) = quote_first_line_slice(cur, line_has_eol(&lines[i])) {
+                crate::metrics::scan_work(1);
                 let (p_hi, p_strip, p_gt) = {
                     let top = stack.last_mut().unwrap();
                     if !opened_any {
@@ -746,7 +757,9 @@ fn parse_org_streaming<'a>(
                     origin,
                 );
                 let mut end = i + 1;
+                // scan-owner: (b) monotone block cursor + frame owner — Org de-gt fallback body copy
                 while end < p_hi {
+                    crate::metrics::scan_work(1);
                     match gt_cont_line_view(&lines[end], strip_ctx, p_gt) {
                         Some(v) => {
                             append_view_with_origin(
@@ -815,7 +828,9 @@ fn body_is_clean_window(
     lo: usize,
     hi: usize,
 ) -> bool {
+    // scan-owner: (b) per-buffer table + monotone cursor — nonstd-EOL body-window cursor
     while *cursor < nonstd_eol_lines.len() && nonstd_eol_lines[*cursor] < lo {
+        crate::metrics::scan_work(1);
         *cursor += 1;
     }
     !(*cursor < nonstd_eol_lines.len() && nonstd_eol_lines[*cursor] < hi)
@@ -900,6 +915,8 @@ fn dispatch_org_line<'a>(
     };
 
     // blank line: extend an open paragraph, else swallow a pure EOL (if absorbing) or start one.
+    // scan-owner: (b) monotone block cursor + frame owner — Org blank-line trim probe
+    crate::metrics::scan_work(t.len());
     if t.trim().is_empty() {
         let swallow = *absorb && t.is_empty();
         // Is a paragraph open OR being started (not swallowed by a preceding block)?
@@ -988,6 +1005,7 @@ fn dispatch_org_line<'a>(
     // 2b. comment `# text` (mldoc Comment) — IS a valid list-item content block (not gated).
     if let Some(text) = org_comment(t) {
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+        crate::metrics::scan_work(text.len());
         out.push(Block::Comment {
             text: text.to_string(),
             span: Some(Span(line_start, line_end)),
@@ -1120,7 +1138,9 @@ fn dispatch_org_line<'a>(
         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
         let start = i;
         let mut ni = i;
+        // scan-owner: (b) monotone block cursor + frame owner — Org table row run
         while ni < hi && is_table_row(line_text(lines, ni, strip_ctx)) {
+            crate::metrics::scan_work(1);
             ni += 1;
         }
         out.push(build_table(
@@ -1148,7 +1168,9 @@ fn dispatch_org_line<'a>(
         // and the eol AFTER it becomes a Break-paragraph (mldoc `Paragraph.sep`-last). Never trim.
         flush_para(out, para, para_buf, para_map, input, false, origin, source_body, origin_cursor);
         let mut ni = i + 1;
+        // scan-owner: (b) monotone block cursor + frame owner — Org LaTeX consumed-line mapping
         while ni < lines.len() && lines[ni].start < consumed_end {
+            crate::metrics::scan_work(1);
             ni += 1;
         }
         // In a remap_spans frame `content` sliced from raw `input` keeps the per-line indent (and
@@ -1238,14 +1260,17 @@ fn dispatch_org_line<'a>(
             if close < hi {
                 drop_marker_ws(para, was_ws_drop, input);
                 let lname = name.to_ascii_lowercase();
+                crate::metrics::scan_work(name.len());
                 match lname.as_str() {
                     "src" => {
                         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
                         let lang = begin_lang(t);
                         // Body via line_text: applies the cumulative strip (matching block_code
                         // semantics for nested indented bodies; no-op for strip==0).
+                        // scan-owner: (b) monotone block cursor + frame owner — Org SRC body line table
                         let texts: Vec<&str> =
                             (i + 1..close).map(|k| line_text(lines, k, strip_ctx)).collect();
+                        crate::metrics::scan_work(texts.len());
                         let inner = block_code_texts(&texts);
                         out.push(Block::Src {
                             lang,
@@ -1257,8 +1282,10 @@ fn dispatch_org_line<'a>(
                     }
                     "example" => {
                         flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+                        // scan-owner: (b) monotone block cursor + frame owner — Org EXAMPLE body line table
                         let texts: Vec<&str> =
                             (i + 1..close).map(|k| line_text(lines, k, strip_ctx)).collect();
+                        crate::metrics::scan_work(texts.len());
                         let inner = block_code_texts(&texts);
                         out.push(Block::Example {
                             code: inner,
@@ -1625,14 +1652,18 @@ fn dispatch_org_line<'a>(
             // run stops at the closer line (`#+END_…` is non-eol), so it never crosses the body.
             let bytes = input.as_bytes();
             let mut resume = cap_end;
+            // scan-owner: (b) monotone block cursor + frame owner — Org hiccup trailing-EOL resume
             while resume < bytes.len() && matches!(bytes[resume], b'\n' | b'\r') {
+                crate::metrics::scan_work(1);
                 resume += 1;
             }
             if resume >= bytes.len() {
                 return Step::Next(lines.len()); // captured to EOF (+ trailing eols)
             }
             let mut ri = cur;
+            // scan-owner: (b) monotone block cursor + frame owner — Org hiccup resume line lookup
             while ri < lines.len() && lines[ri].end <= resume {
+                crate::metrics::scan_work(1);
                 ri += 1;
             }
             if ri >= lines.len() {
@@ -1692,7 +1723,9 @@ fn displayed_math_raw_capture<'a>(
     let close = find_displayed_math_close(input, opener, body_end)?;
     let close_end = close + 2;
     let mut close_line = cur;
+    // scan-owner: (a) consumed-on-match accepted copy — displayed-math raw capture line mapping
     while close_line < hi && lines[close_line].start + lines[close_line].text.len() < close_end {
+        crate::metrics::scan_work(1);
         close_line += 1;
     }
     if close_line >= hi {
@@ -1713,7 +1746,9 @@ fn displayed_math_raw_capture<'a>(
     } else {
         let mut next = close_line + 1;
         let mut span_end = lines[close_line].end;
+        // scan-owner: (a) consumed-on-match accepted copy — displayed-math trailing blank swallow
         while next < hi && lines[next].text.is_empty() {
+            crate::metrics::scan_work(1);
             span_end = lines[next].end;
             next += 1;
         }
@@ -1742,6 +1777,8 @@ fn find_displayed_math_close_in_view(s: &str) -> Option<usize> {
 }
 
 fn view_abs_start(line: &Line<'_>, view: &str) -> usize {
+    // scan-owner: (a2) caller-owned slice/helper — suffix assertion on current Org line view
+    crate::metrics::scan_work(view.len());
     debug_assert!(line.text.ends_with(view));
     line.start + line.text.len() - view.len()
 }
@@ -1778,7 +1815,9 @@ fn displayed_math_view_capture<'a>(
             }
             let mut next = k + 1;
             let mut span_end = lines[k].end;
+            // scan-owner: (a) consumed-on-match accepted copy — displayed-math view trailing blank swallow
             while next < hi && lines[next].text.is_empty() {
+                crate::metrics::scan_work(1);
                 span_end = lines[next].end;
                 next += 1;
             }
@@ -1822,9 +1861,11 @@ fn flush_para(
     if let Some(mut buf) = para_buf.take() {
         *para = None;
         if trim_eol {
+            let old_len = buf.len();
             while buf.ends_with('\n') || buf.ends_with('\r') {
                 buf.pop();
             }
+            crate::metrics::scan_work(old_len - buf.len() + usize::from(!buf.is_empty()));
             para_map.truncate_text_len(buf.len());
             if buf.is_empty() {
                 para_map.clear();
@@ -1849,9 +1890,11 @@ fn flush_para(
     }
     if let Some((s, mut e)) = para.take() {
         if trim_eol {
+            let old_e = e;
             while e > s && matches!(input.as_bytes()[e - 1], b'\n' | b'\r') {
                 e -= 1;
             }
+            crate::metrics::scan_work(old_e - e + usize::from(e > s));
             if e == s {
                 return;
             }
@@ -1963,8 +2006,18 @@ fn append_line_joiner(
 /// `Parsers.spaces` handling without changing md behavior.
 pub(crate) fn directive(s: &str) -> Option<(String, String)> {
     let rest = mldoc_trim_spaces_start(s).strip_prefix("#+")?;
-    let pos = rest.find(':')?;
+    let pos = match rest.find(':') {
+        Some(pos) => {
+            crate::metrics::scan_work(pos + 1);
+            pos
+        }
+        None => {
+            crate::metrics::scan_work(rest.len());
+            return None;
+        }
+    };
     let key = &rest[..pos];
+    crate::metrics::scan_work(key.len());
     if key.is_empty() || key.bytes().any(|b| b == b'\n' || b == b'\r') {
         return None;
     }
@@ -1977,6 +2030,7 @@ pub(crate) fn directive(s: &str) -> Option<(String, String)> {
         return None;
     }
     let value = mldoc_trim_spaces_start(&rest[pos + 1..]);
+    crate::metrics::scan_work(key.len() + value.len());
     Some((key.to_string(), value.to_string()))
 }
 
@@ -1986,8 +2040,11 @@ fn org_space(b: u8) -> bool {
 }
 
 #[inline]
+// scan-owner: (a2) caller-owned line helper — Org parser-space scan over caller-owned line/view slice
 fn org_spaces_len(s: &str) -> usize {
-    s.as_bytes().iter().take_while(|&&b| org_space(b)).count()
+    let n = s.as_bytes().iter().take_while(|&&b| org_space(b)).count();
+    crate::metrics::scan_work(n + usize::from(n < s.len()));
+    n
 }
 
 #[inline]
@@ -2001,8 +2058,18 @@ fn org_trim_spaces_start(s: &str) -> &str {
 /// oracle behavior, so the check is ASCII-ci here.
 fn org_directive(s: &str) -> Option<(String, String)> {
     let rest = org_trim_spaces_start(s).strip_prefix("#+")?;
-    let pos = rest.find(':')?;
+    let pos = match rest.find(':') {
+        Some(pos) => {
+            crate::metrics::scan_work(pos + 1);
+            pos
+        }
+        None => {
+            crate::metrics::scan_work(rest.len());
+            return None;
+        }
+    };
     let key = &rest[..pos];
+    crate::metrics::scan_work(key.len());
     if key.is_empty() || key.bytes().any(|b| b == b'\n' || b == b'\r') {
         return None;
     }
@@ -2013,6 +2080,7 @@ fn org_directive(s: &str) -> Option<(String, String)> {
         return None;
     }
     let value = org_trim_spaces_start(&rest[pos + 1..]);
+    crate::metrics::scan_work(key.len() + value.len());
     Some((key.to_string(), value.to_string()))
 }
 
@@ -2021,8 +2089,18 @@ fn org_directive(s: &str) -> Option<(String, String)> {
 /// for Directive.parse refusals and the name-agnostic continuation inside an active fold.
 fn org_parse2_property(s: &str) -> Option<Property> {
     let rest = org_trim_spaces_start(s).strip_prefix("#+")?;
-    let pos = rest.find(':')?;
+    let pos = match rest.find(':') {
+        Some(pos) => {
+            crate::metrics::scan_work(pos + 1);
+            pos
+        }
+        None => {
+            crate::metrics::scan_work(rest.len());
+            return None;
+        }
+    };
     let key = &rest[..pos];
+    crate::metrics::scan_work(key.len());
     if key.is_empty()
         || key
             .bytes()
@@ -2031,6 +2109,7 @@ fn org_parse2_property(s: &str) -> Option<Property> {
         return None;
     }
     let value = org_trim_spaces_start(&rest[pos + 1..]);
+    crate::metrics::scan_work(key.len() + value.len());
     Some(Property::parse2((key.to_string(), value.to_string())))
 }
 
@@ -2043,8 +2122,18 @@ fn org_properties_begin(s: &str) -> bool {
 /// Values use `Parsers.spaces *> optional_line`: left spaces-set skip only, trailing raw.
 fn org_drawer_property(s: &str) -> Option<Property> {
     let rest = org_trim_spaces_start(s).strip_prefix(':')?;
-    let pos = rest.find(':')?;
+    let pos = match rest.find(':') {
+        Some(pos) => {
+            crate::metrics::scan_work(pos + 1);
+            pos
+        }
+        None => {
+            crate::metrics::scan_work(rest.len());
+            return None;
+        }
+    };
     let key = &rest[..pos];
+    crate::metrics::scan_work(key.len());
     if key.is_empty()
         || key
             .bytes()
@@ -2054,6 +2143,7 @@ fn org_drawer_property(s: &str) -> Option<Property> {
         return None;
     }
     let value = org_trim_spaces_start(&rest[pos + 1..]);
+    crate::metrics::scan_work(key.len() + value.len());
     Some(Property::parse1((key.to_string(), value.to_string())))
 }
 
@@ -2092,7 +2182,9 @@ fn org_parse1_properties<'a>(
     }
 
     let mut props = Vec::new();
+    // scan-owner: (a2) caller-owned line helper — Org parse1 property body walk
     for k in opener + 1..close {
+        crate::metrics::scan_work(1);
         props.push(org_drawer_property(line_text(lines, k, strip_ctx))?);
     }
 
@@ -2139,12 +2231,16 @@ fn org_property_group<'a>(
     let mut span_end = lines[start].start;
     let mut absorb_after = false;
 
+    // scan-owner: (a2) caller-owned line helper — Org property group fold cursor
     while cur < hi {
+        crate::metrics::scan_work(1);
         // `drawer.ml` wraps each `parse1 <|> parse2` element in `between_eols`:
         // a run of pure EOLs between elements is consumed, but a line containing
         // spaces is not an EOL token and must fall through as the next paragraph.
         if matched {
+            // scan-owner: (a2) caller-owned line helper — Org property inter-element blank run
             while cur < hi && line_text(lines, cur, strip_ctx).is_empty() {
+                crate::metrics::scan_work(1);
                 span_end = lines[cur].end;
                 cur += 1;
             }
@@ -2184,6 +2280,7 @@ fn org_property_group<'a>(
 /// `#c` (no space), `# ` (empty), `##…` (two hashes), `#+…` (directive) are NOT comments.
 fn org_comment(s: &str) -> Option<&str> {
     let rest = mldoc_trim_spaces_start(s).strip_prefix('#')?;
+    crate::metrics::scan_work(rest.len().min(1));
     if !rest.as_bytes().first().is_some_and(|&b| mldoc_is_space(b)) {
         return None; // `##…`, `#+…`, `#c` — second char must be mldoc ws
     }
@@ -2202,9 +2299,11 @@ fn drawer_begin(s: &str) -> Option<String> {
     if inner.is_empty() {
         return None;
     }
+    crate::metrics::scan_work(inner.len());
     if inner.bytes().any(|b| b == b':' || b == b' ' || b == b'\n' || b == b'\r') {
         return None;
     }
+    crate::metrics::scan_work(inner.len());
     Some(inner.to_ascii_lowercase())
 }
 
@@ -2216,6 +2315,7 @@ fn headline_level(s: &str) -> Option<u32> {
         return None;
     }
     let stars = s.bytes().take_while(|&b| b == b'*').count();
+    crate::metrics::scan_work(stars + usize::from(stars < s.len()));
     let rest = &s[stars..];
     if mldoc_heading_boundary(rest) {
         Some(stars as u32)
@@ -2253,6 +2353,7 @@ fn headline_split_opener(
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
 ) -> bool {
+    crate::metrics::scan_work(content.len());
     if org_parse2_property(content).is_some()
         || is_verbatim_line(content)
         || is_table_row(content)
@@ -2290,6 +2391,7 @@ fn split_markers(s: &str, marker_eof: bool) -> (Option<String>, Option<String>, 
         if let Some(rest) = s.strip_prefix(m) {
             // mldoc accepts a marker followed by a space OR true end-of-input.
             if rest.starts_with(' ') || (rest.is_empty() && marker_eof) {
+                crate::metrics::scan_work(m.len());
                 marker = Some((*m).to_string());
                 s = mldoc_trim_spaces_start(rest);
                 break;
@@ -2298,6 +2400,7 @@ fn split_markers(s: &str, marker_eof: bool) -> (Option<String>, Option<String>, 
     }
     let b = s.as_bytes();
     let priority = if b.len() >= 4 && b[0] == b'[' && b[1] == b'#' && b[2] < 0x80 && b[3] == b']' {
+        crate::metrics::scan_work(1);
         let p = (b[2] as char).to_string();
         s = mldoc_trim_spaces_start(&s[4..]);
         Some(p)
@@ -2319,15 +2422,21 @@ fn extract_htags(title: &mut Vec<Inline>) -> Vec<String> {
         return Vec::new();
     };
     let old_text = text.clone();
+    crate::metrics::scan_work(text.len());
     let old_span = *old_span;
     let old_map = old_map.clone();
     let s = text.trim().to_string();
+    crate::metrics::scan_work(text.len() + s.len());
     if s.len() <= 1 || !s.ends_with(':') {
         return Vec::new();
     }
     // splitr at the last space: prefix includes the trailing space, suffix = last run.
+    crate::metrics::scan_work(s.len());
     let (prefix, maybe_tags): (String, &str) = match s.rfind(' ') {
-        Some(p) => (s[..p + 1].to_string(), &s[p + 1..]),
+        Some(p) => {
+            crate::metrics::scan_work(p + 1);
+            (s[..p + 1].to_string(), &s[p + 1..])
+        }
         None => (String::new(), s.as_str()),
     };
     let Some(tags) = parse_org_tags(maybe_tags) else {
@@ -2358,11 +2467,13 @@ fn extract_htags(title: &mut Vec<Inline>) -> Vec<String> {
             unreachable!();
         };
         let trimmed = text.trim_end();
+        crate::metrics::scan_work(text.len());
         let slice_end = if trimmed.len() < text.len() {
             trimmed.len() + 1
         } else {
             trimmed.len()
         };
+        crate::metrics::scan_work(trimmed.len() + 1);
         let replacement = plain_from_existing_slice(
             &text,
             0,
@@ -2389,7 +2500,9 @@ fn plain_from_existing_slice(
         let mut out = Vec::new();
         let mut lo = usize::MAX;
         let mut hi = 0usize;
+        // scan-owner: (a) consumed-on-match accepted copy — Org heading tag span-map slice walk
         for SpanMapSegment(text_off, src_off, len) in map.iter().copied() {
+            crate::metrics::scan_work(1);
             let seg_end = text_off + len;
             let a = slice_start.max(text_off);
             let b = slice_end.min(seg_end);
@@ -2424,6 +2537,7 @@ fn plain_from_existing_slice(
                 .zip(text.as_bytes())
                 .take_while(|(a, b)| a == b)
                 .count();
+            crate::metrics::scan_work(copied_len + usize::from(copied_len < source_slice.len().min(text.len())));
             crate::source_map::push_wire_segment(&mut out, 0, span.0, copied_len);
             Some(out)
         };
@@ -2454,13 +2568,17 @@ fn parse_org_tags(s: &str) -> Option<Vec<String>> {
         return Some(Vec::new());
     }
     let mut out = Vec::new();
+    // scan-owner: (a2) caller-owned line helper — Org headline tag split and validation
     for tok in inner.split(':') {
+        crate::metrics::scan_work(tok.len() + 1);
         if tok.is_empty() {
             return None;
         }
+        crate::metrics::scan_work(tok.len());
         if tok.bytes().any(|b| b == b' ' || b == b'\t') {
             return None;
         }
+        crate::metrics::scan_work(tok.len());
         out.push(tok.to_string());
     }
     Some(out)
@@ -2478,7 +2596,11 @@ fn block_begin(s: &str) -> Option<String> {
             .bytes()
             .take_while(|&b| !mldoc_is_space(b))
             .count();
-        (n > 0).then(|| rest[..n].to_string())
+        crate::metrics::scan_work(n + usize::from(n < rest.len()));
+        (n > 0).then(|| {
+            crate::metrics::scan_work(n);
+            rest[..n].to_string()
+        })
     } else {
         None
     }
@@ -2493,8 +2615,11 @@ pub(crate) fn begin_lang(s: &str) -> String {
         return String::new();
     };
     let name_len = rest.bytes().take_while(|&b| !mldoc_is_space(b)).count();
+    crate::metrics::scan_work(name_len + usize::from(name_len < rest.len()));
     let rest = mldoc_trim_spaces_start(&rest[name_len..]);
     let lang_len = rest.bytes().take_while(|&b| !mldoc_is_space(b)).count();
+    crate::metrics::scan_work(lang_len + usize::from(lang_len < rest.len()));
+    crate::metrics::scan_work(lang_len);
     rest[..lang_len].to_string()
 }
 
@@ -2533,6 +2658,8 @@ pub(crate) fn block_code_texts(texts: &[&str]) -> String {
 fn fence_lang(info: &str) -> String {
     let info = mldoc_trim_spaces_start(info);
     let end = info.bytes().take_while(|&b| !mldoc_is_space(b)).count();
+    crate::metrics::scan_work(end + usize::from(end < info.len()));
+    crate::metrics::scan_work(end);
     info[..end].to_string()
 }
 
@@ -2548,6 +2675,7 @@ fn fence_marker(s: &str) -> Option<(u8, usize)> {
     while k < b.len() && b[k] == c {
         k += 1;
     }
+    crate::metrics::scan_work(k - ws + usize::from(k < b.len()));
     // mldoc's fence marker is EXACTLY 3 chars; extra run chars + the rest of the line are the
     // info/lang (so `~~~~` → lang "~"). Info begins at `ws + 3`, not past the whole run.
     if k - ws >= 3 {
@@ -2565,6 +2693,7 @@ fn fence_closer_marker(s: &str) -> Option<(u8, usize)> {
     while off < b0.len() && crate::block_common::ocaml_trim_byte(b0[off]) {
         off += 1;
     }
+    crate::metrics::scan_work(off + usize::from(off < b0.len()));
     let t = ocaml_trim_end(&s[off..]);
     let b = t.as_bytes();
     let c = *b.first()?;
@@ -2575,6 +2704,7 @@ fn fence_closer_marker(s: &str) -> Option<(u8, usize)> {
     while k < b.len() && b[k] == c {
         k += 1;
     }
+    crate::metrics::scan_work(k + usize::from(k < b.len()));
     (k >= 3).then_some((c, off + 3))
 }
 
@@ -2583,7 +2713,9 @@ fn fence_closer_marker(s: &str) -> Option<(u8, usize)> {
 /// `:NAME: … :END:` drawer (tried first in `parse`) to a verbatim `Example` — incl.
 /// `: text`, `:text`, `:key: value`, `:tag1:tag2:`, a bare `:END:`/`:PROPERTIES:`.
 fn is_verbatim_line(s: &str) -> bool {
-    s[mldoc_spaces_len(s)..].starts_with(':')
+    let off = mldoc_spaces_len(s);
+    crate::metrics::scan_work(usize::from(off < s.len()));
+    s[off..].starts_with(':')
 }
 
 /// Fixed-width line content (mldoc): drop the leading ws, the `:`, then any following
@@ -2591,6 +2723,7 @@ fn is_verbatim_line(s: &str) -> bool {
 fn verbatim_content(s: &str) -> &str {
     let t = &s[mldoc_spaces_len(s)..];
     let rest = t.strip_prefix(':').unwrap_or(t);
+    crate::metrics::scan_work(usize::from(rest.len() < t.len()));
     mldoc_trim_spaces_start(rest)
 }
 
@@ -2602,6 +2735,7 @@ fn quote_opens(s: &str, has_eol: bool) -> bool {
 /// list / heading / `id::`). On the FIRST line such content also makes mldoc reject
 /// the quote outright (→ Paragraph), not just stop the run.
 fn quote_line_breaker(s: &str) -> bool {
+    crate::metrics::scan_work(s.len().min(4));
     s.starts_with("- ") || s.starts_with("# ") || s.starts_with("id:: ") || s == "-" || s == "#"
 }
 
@@ -2616,7 +2750,10 @@ fn quote_first_line_slice(s: &str, has_eol: bool) -> Option<&str> {
     let r1 = mldoc_trim_spaces_start(s).strip_prefix('>')?;
     let r1 = mldoc_trim_spaces_start(r1);
     let (content, had_second_gt) = match r1.strip_prefix('>') {
-        Some(r2) => (mldoc_trim_spaces_start(r2), true),
+        Some(r2) => {
+            crate::metrics::scan_work(1);
+            (mldoc_trim_spaces_start(r2), true)
+        }
         None => (r1, false),
     };
     if content.is_empty() {
@@ -2635,6 +2772,7 @@ fn quote_first_line_slice(s: &str, has_eol: bool) -> Option<&str> {
 fn quote_line_content_line_slice(s: &str, has_eol: bool) -> Option<&str> {
     let t = mldoc_trim_spaces_start(s);
     let had_gt = t.starts_with('>');
+    crate::metrics::scan_work(usize::from(!t.is_empty()));
     let rest = if had_gt { mldoc_trim_spaces_start(&t[1..]) } else { t };
     if rest.is_empty() {
         return if had_gt && has_eol { Some("") } else { None };
@@ -2656,8 +2794,18 @@ fn quote_line_content_line_slice(s: &str, has_eol: bool) -> Option<&str> {
 /// first char) are inline footnote refs inside a Paragraph.
 fn footnote_def(s: &str) -> Option<(String, &str)> {
     let rest = mldoc_trim_spaces_start(s).strip_prefix("[fn:")?;
-    let end = rest.find(']')?;
+    let end = match rest.find(']') {
+        Some(end) => {
+            crate::metrics::scan_work(end + 1);
+            end
+        }
+        None => {
+            crate::metrics::scan_work(rest.len());
+            return None;
+        }
+    };
     let name = &rest[..end];
+    crate::metrics::scan_work(name.len());
     if name.is_empty() || name.contains('\n') || name.contains('\r') {
         return None;
     }
@@ -2671,6 +2819,7 @@ fn footnote_def(s: &str) -> Option<(String, &str)> {
     if content.len() < 2 {
         return None;
     }
+    crate::metrics::scan_work(name.len());
     Some((name.to_string(), content))
 }
 
@@ -2686,6 +2835,7 @@ fn line_has_nl(input: &str, line: &Line) -> bool {
 /// line ended in `\r\n`, i.e. `followed_by_nl`). A lone trailing `\r` with no `\n` can't
 /// reach here from a matched `footnote_def` first line.
 fn strip_cr_eol(s: &str, followed_by_nl: bool) -> &str {
+    crate::metrics::scan_work(usize::from(followed_by_nl && s.ends_with('\r')));
     if followed_by_nl {
         s.strip_suffix('\r').unwrap_or(s)
     } else {
@@ -2711,6 +2861,7 @@ fn footnote_cont(text: &str, followed_by_nl: bool) -> Option<&str> {
     while s < b.len() && matches!(b[s], b' ' | b'\t' | 0x0C | 0x1A) {
         s += 1;
     }
+    crate::metrics::scan_work(s + usize::from(s < b.len()));
     let rest = &b[s..];
     // `satisfy non_eol`: a first byte must exist and not be in the terminator set (which
     // also excludes `\r`/`\n`, so a blank / whitespace-only line is rejected here).
@@ -2720,6 +2871,7 @@ fn footnote_cont(text: &str, followed_by_nl: bool) -> Option<&str> {
     }
     // `line = take_till1 is_eol`: content runs to the first `\r` (no `\n` in line text).
     let cr = rest.iter().position(|&c| c == b'\r');
+    crate::metrics::scan_work(cr.map_or(rest.len(), |p| p + 1));
     let core_len = cr.unwrap_or(rest.len());
     if core_len < 2 {
         return None; // 1-byte body: `take_till1` fails after the satisfy'd char.
@@ -2773,11 +2925,13 @@ fn list_marker(s: &str) -> Option<Marker> {
     };
     let star = if ws > 0 { rest.strip_prefix('*') } else { None };
     if let Some(after) = dash.or(star).or_else(|| rest.strip_prefix('+')) {
+        crate::metrics::scan_work(1);
         if after.as_bytes().first().is_some_and(|&b| mldoc_is_space(b)) {
             return mk(false, None, mldoc_trim_spaces_start(after));
         }
     }
     let digits = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+    crate::metrics::scan_work(digits + usize::from(digits < rest.len()));
     if digits > 0 {
         if let Some(after) = rest[digits..].strip_prefix('.') {
             if after.as_bytes().first().is_some_and(|&b| mldoc_is_space(b)) {
@@ -2823,6 +2977,7 @@ fn scan_leading_int(t: &str) -> bool {
     } else {
         0
     };
+    crate::metrics::scan_work(i + usize::from(i < b.len()));
     b.get(i).is_some_and(u8::is_ascii_digit)
 }
 
@@ -2873,7 +3028,9 @@ fn collect_list(
     let start_cursor = *origin_cursor;
     let mut after_two_eols = false;
     let mut i = start;
+    // scan-owner: (b) bounded re-entry + monotone floor — Org list item collection cursor
     while i < hi {
+        crate::metrics::scan_work(1);
         let t = line_text(lines, i, strip_ctx);
         // terminators at a would-be marker position: blank line, a col-0 headline, or
         // any non-marker line (mldoc heading-lookahead / `format_checkbox` failure).
@@ -2903,7 +3060,9 @@ fn collect_list(
         let mut last_content_line = i;
         let mut j = i + 1;
         let mut trigger: Option<usize> = None;
+        // scan-owner: (b) bounded re-entry + monotone floor — Org list continuation cursor
         loop {
+            crate::metrics::scan_work(1);
             if j >= hi {
                 break; // EOF / body boundary ends this item's content
             }
@@ -3014,6 +3173,7 @@ fn collapse_resume(flat_indents: &[u32], p_indent: u32) -> usize {
     let mut cur_index = flat_indents.len();
     loop {
         // nearest earlier item with indent <= cur_indent.
+        crate::metrics::scan_work(cur_index);
         let q = (0..cur_index)
             .rev()
             .find(|&j| flat_indents[j] <= cur_indent);
@@ -3040,6 +3200,7 @@ fn is_org_hr(s: &str) -> bool {
 /// makes those Paragraphs and breaks the table group at the first non-row line).
 fn is_table_row(s: &str) -> bool {
     let t = ocaml_trim_end(mldoc_trim_spaces_start(s));
+    crate::metrics::scan_work(t.len().min(2));
     t.len() >= 2 && t.starts_with('|') && t.ends_with('|')
 }
 
@@ -3056,6 +3217,7 @@ fn build_table(
         let t = ocaml_trim_end(mldoc_trim_spaces_start(s));
         let t = t.strip_prefix('|').unwrap_or(t);
         let t = t.strip_suffix('|').unwrap_or(t);
+        crate::metrics::scan_work(t.len());
         t.split('|')
             .map(|c| {
                 let c = ocaml_trim(c);
@@ -3107,6 +3269,7 @@ fn build_table(
     }
 
     let header = header_text.map(|l| split_cells(l));
+    crate::metrics::scan_work(body_texts.len());
     let body: Vec<Vec<Vec<Inline>>> = body_texts.iter().map(|l| split_cells(l)).collect();
 
     // Fix C: org tables emit empty `aligns`. Org's real column alignment is a `<l>/<c>/<r>`
@@ -3151,29 +3314,38 @@ fn org_inline_mapped(
 /// only through the first LF and stripped of leading `//` -> Complex; else Search.
 pub(crate) fn classify_org_link_1(url_text: &str, label_text: &str) -> Url {
     if url_text.len() > 5 && url_text.starts_with("file:") {
+        crate::metrics::scan_work(url_text.len());
         return Url::File {
             v: url_text.to_string(),
         };
     }
     if label_text.is_empty() {
+        crate::metrics::scan_work(url_text.len());
         return Url::Search {
             v: url_text.to_string(),
         };
     }
     if let Some(idx) = url_text.find(':') {
+        crate::metrics::scan_work(idx + 1);
         let protocol = &url_text[..idx];
         let mut link = &url_text[idx + 1..];
         if let Some(lf) = link.find('\n') {
+            crate::metrics::scan_work(lf + 1);
             link = &link[..lf];
+        } else {
+            crate::metrics::scan_work(link.len());
         }
         if let Some(stripped) = link.strip_prefix("//") {
+            crate::metrics::scan_work(2);
             link = stripped;
         }
+        crate::metrics::scan_work(protocol.len() + link.len());
         return Url::Complex {
             protocol: Some(protocol.to_string()),
             link: Some(link.to_string()),
         };
     }
+    crate::metrics::scan_work(url_text.len());
     Url::Search {
         v: url_text.to_string(),
     }
@@ -3183,19 +3355,25 @@ pub(crate) fn classify_org_link_1(url_text: &str, label_text: &str) -> Url {
 /// `proto://link` → Complex; else Page_ref.
 pub(crate) fn classify_org_link_2(name: &str) -> Url {
     if name.len() > 5 && name.starts_with("file:") {
+        crate::metrics::scan_work(name.len());
         return Url::File {
             v: name.to_string(),
         };
     }
     if let Some(idx) = name.find("://") {
+        crate::metrics::scan_work(idx + 3);
         let protocol = &name[..idx];
         if !protocol.is_empty() {
+            crate::metrics::scan_work(protocol.len() + name[idx + 3..].len());
             return Url::Complex {
                 protocol: Some(protocol.to_string()),
                 link: Some(name[idx + 3..].to_string()),
             };
         }
+    } else {
+        crate::metrics::scan_work(name.len());
     }
+    crate::metrics::scan_work(name.len());
     Url::PageRef {
         v: name.to_string(),
     }
