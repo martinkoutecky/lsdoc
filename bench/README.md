@@ -80,9 +80,15 @@ crisis, and part of it is legitimate (below).
   math; comrak (default CommonMark) and orgize treat most of these as plain text. Some of
   the 3–4× is legitimate extra work lsdoc *must* do and the peers skip. comrak is run with
   **default options** (fastest, no GFM) — the most conservative (hardest-on-lsdoc) peer.
-- **Allocator / tree representation.** comrak uses a `typed-arena`; orgize a rowan green
-  tree with interning — both cache-friendly, few allocations. lsdoc builds owned
-  `Vec<Block>` / `Vec<Inline>` / `String`. This is the most likely dominant lever if the
-  gap is worth closing (it shows up hardest in the giant-single-document regime).
+- **Where the gap actually lives (probed 2026-07-04).** A structure-light vs structure-heavy
+  probe splits the hypothesis space: on near-plain prose (few AST nodes → few allocations)
+  lsdoc is **15.5×** behind comrak (90 vs 5.8 ns/byte); on markup-dense input (allocation-heavy
+  for both) only **2×**. So final-AST allocation (owned Vec/String vs comrak's arena) is NOT
+  the dominant cost — the **plain-text path** is: ~5 byte-scanning passes (split_lines,
+  build_indexes, block dispatch, lex, resolve) and every plain byte copied 2–3× through
+  intermediate Strings (lexer `Text` token → resolver `pending` → `Plain` node), vs comrak's
+  ~2 passes with a memchr-style skip-to-next-special fast path over borrowed slices. Real
+  graphs are prose-heavy, hence the ~3.8× aggregate. The targeted lever, if ever needed, is a
+  plain-run fast path + copy elimination in the lexer/resolver — not an arena rewrite.
 - Small-file corpora fold per-file fixed costs into MB/s (why absolute numbers look low);
   the *ratio* is the robust part and is stable across regimes.
