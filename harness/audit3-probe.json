@@ -1,0 +1,202 @@
+[
+  {
+    "id": "f6-md-success-tail",
+    "format": "markdown",
+    "input": "[^a]b"
+  },
+  {
+    "id": "f6-md-space",
+    "format": "markdown",
+    "input": "[^a b]"
+  },
+  {
+    "id": "f6-md-empty",
+    "format": "markdown",
+    "input": "[^]x"
+  },
+  {
+    "id": "f6-md-eof-after-id",
+    "format": "markdown",
+    "input": "[^a"
+  },
+  {
+    "id": "f6-md-first-close-wins",
+    "format": "markdown",
+    "input": "[^a[^b]c"
+  },
+  {
+    "id": "f6-md-tab",
+    "format": "markdown",
+    "input": "[^a\u0009b]"
+  },
+  {
+    "id": "f6-md-form-feed",
+    "format": "markdown",
+    "input": "[^a\u000cb]"
+  },
+  {
+    "id": "f6-md-cr",
+    "format": "markdown",
+    "input": "[^a\u000db]"
+  },
+  {
+    "id": "f6-md-lf",
+    "format": "markdown",
+    "input": "[^a\u000ab]"
+  },
+  {
+    "id": "f6-md-eof-empty",
+    "format": "markdown",
+    "input": "[^"
+  },
+  {
+    "id": "f6-md-e-acute",
+    "format": "markdown",
+    "input": "[^\u00e9]"
+  },
+  {
+    "id": "f6-md-emoji",
+    "format": "markdown",
+    "input": "[^\ud83d\ude00]"
+  },
+  {
+    "id": "f7-org-target",
+    "format": "org",
+    "input": "<<t>>x"
+  },
+  {
+    "id": "f7-org-empty",
+    "format": "org",
+    "input": "<<>>"
+  },
+  {
+    "id": "f7-org-radio-shadow-triple",
+    "format": "org",
+    "input": "<<<r>>>y"
+  },
+  {
+    "id": "f7-org-radio-shadow-double",
+    "format": "org",
+    "input": "<<<r>>y"
+  },
+  {
+    "id": "f7-org-lt-inside",
+    "format": "org",
+    "input": "<<a<b>>c"
+  },
+  {
+    "id": "f7-org-lf",
+    "format": "org",
+    "input": "<<a\u000ab>>"
+  },
+  {
+    "id": "f7-org-cr",
+    "format": "org",
+    "input": "<<a\u000db>>"
+  },
+  {
+    "id": "f7-org-single-gt-eof",
+    "format": "org",
+    "input": "<<a>"
+  },
+  {
+    "id": "f7-org-single-gt-tail",
+    "format": "org",
+    "input": "<<a>x"
+  },
+  {
+    "id": "f7-org-extra-gt",
+    "format": "org",
+    "input": "<<a>>>"
+  },
+  {
+    "id": "f7-org-eof-no-close",
+    "format": "org",
+    "input": "<<a"
+  },
+  {
+    "id": "f7-org-crlf",
+    "format": "org",
+    "input": "<<a\u000d\u000ab>>"
+  },
+  {
+    "id": "f8-md-comma-inside-blockref",
+    "format": "markdown",
+    "input": "{{m ((a,b))}}"
+  },
+  {
+    "id": "f8-org-comma-inside-blockref",
+    "format": "org",
+    "input": "{{m ((a,b))}}"
+  },
+  {
+    "id": "f8-md-simple-blockref",
+    "format": "markdown",
+    "input": "{{m ((a))}}"
+  },
+  {
+    "id": "f8-org-simple-blockref",
+    "format": "org",
+    "input": "{{m ((a))}}"
+  },
+  {
+    "id": "f8-md-missing-rparen",
+    "format": "markdown",
+    "input": "{{m ((a}}"
+  },
+  {
+    "id": "f8-org-missing-rparen",
+    "format": "org",
+    "input": "{{m ((a}}"
+  },
+  {
+    "id": "f8-md-blockref-then-plain",
+    "format": "markdown",
+    "input": "{{m ((a)),b}}"
+  },
+  {
+    "id": "f8-org-blockref-then-plain",
+    "format": "org",
+    "input": "{{m ((a)),b}}"
+  },
+  {
+    "id": "f8-md-plain-then-blockref",
+    "format": "markdown",
+    "input": "{{m x,((y))}}"
+  },
+  {
+    "id": "f8-org-plain-then-blockref",
+    "format": "org",
+    "input": "{{m x,((y))}}"
+  },
+  {
+    "id": "f8-md-single-rparen-fallback",
+    "format": "markdown",
+    "input": "{{m ((a)x,b}}"
+  },
+  {
+    "id": "f8-org-single-rparen-fallback",
+    "format": "org",
+    "input": "{{m ((a)x,b}}"
+  },
+  {
+    "id": "f8-md-emoji",
+    "format": "markdown",
+    "input": "{{m ((\ud83d\ude00))}}"
+  },
+  {
+    "id": "f8-org-emoji",
+    "format": "org",
+    "input": "{{m ((\ud83d\ude00))}}"
+  },
+  {
+    "id": "f8-md-newline-outer-stop",
+    "format": "markdown",
+    "input": "{{m ((a\u000ab))}}"
+  },
+  {
+    "id": "f8-org-newline-outer-stop",
+    "format": "org",
+    "input": "{{m ((a\u000ab))}}"
+  }
+]

@@ -86,7 +86,9 @@ pub(crate) fn char_len(first: u8) -> usize {
 
 /// Monotone current-line floor: answers whether `byte` occurs at/after `from`
 /// before the next CR/LF. Used by callers that otherwise would retry a
-/// delimiter-to-EOL scan from every opener on the same line.
+/// delimiter-to-EOL scan from every opener on the same line. Callers must query
+/// nondecreasing `from` positions within one buffer; backward queries can reuse
+/// a stale later hit.
 pub(crate) struct ByteBeforeEolScan {
     byte: u8,
     hit: usize,
@@ -134,6 +136,41 @@ fn first_byte_or_crlf_for_scan(bb: &[u8], from: usize, byte: u8) -> (usize, usiz
     } else {
         (p, p)
     }
+}
+
+/// Monotone owner for Markdown `[^...]` ids: first `]` or mldoc whitespace
+/// (space/tab/form-feed/CR/LF) at or after a nondecreasing query position.
+pub(crate) struct FootnoteRefScan {
+    stop: usize,
+    initialized: bool,
+}
+
+impl FootnoteRefScan {
+    pub(crate) fn new() -> Self {
+        Self { stop: 0, initialized: false }
+    }
+
+    fn first_stop(&mut self, bb: &[u8], from: usize) -> Option<usize> {
+        if !self.initialized || from > self.stop {
+            self.stop = first_footnote_ref_stop_for_scan(bb, from);
+            self.initialized = true;
+        }
+        (self.stop < bb.len()).then_some(self.stop)
+    }
+}
+
+fn first_footnote_ref_stop_for_scan(bb: &[u8], from: usize) -> usize {
+    let mut p = from;
+    let mut scanned = 0usize;
+    while p < bb.len() && bb[p] != b']' && !is_ws_or_nl(bb[p]) {
+        scanned += 1;
+        p += 1;
+    }
+    if p < bb.len() {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
+    p
 }
 
 /// First index of `needle` in `b[from..]`, or None. (No newline restriction.)
@@ -430,6 +467,9 @@ pub(crate) struct PageRefScan {
     next_crlf_initialized: bool,
     next_crlf_last_query: usize,
     next_crlf_hit: usize,
+    macro_rparen_initialized: bool,
+    macro_rparen_last_query: usize,
+    macro_rparen_hit: usize,
 }
 
 impl PageRefScan {
@@ -443,6 +483,9 @@ impl PageRefScan {
             next_crlf_initialized: false,
             next_crlf_last_query: 0,
             next_crlf_hit: 0,
+            macro_rparen_initialized: false,
+            macro_rparen_last_query: 0,
+            macro_rparen_hit: 0,
         }
     }
 
@@ -646,6 +689,19 @@ impl PageRefScan {
         self.next_crlf_hit
     }
 
+    fn first_macro_rparen_at_or_after(&mut self, bb: &[u8], from: usize) -> Option<usize> {
+        self.check_source(bb.len());
+        if !self.macro_rparen_initialized
+            || from > self.macro_rparen_hit
+            || from < self.macro_rparen_last_query
+        {
+            self.macro_rparen_hit = first_byte_for_page_ref_scan(bb, from, b')');
+            self.macro_rparen_initialized = true;
+        }
+        self.macro_rparen_last_query = from;
+        (self.macro_rparen_hit < bb.len()).then_some(self.macro_rparen_hit)
+    }
+
     pub(crate) fn parse_nested_link(&mut self, s: &str, at: usize) -> Option<(usize, String)> {
         self.check_source(s.len());
         if !s[at..].starts_with("[[") {
@@ -675,6 +731,20 @@ fn first_crlf_for_page_ref_scan(bb: &[u8], from: usize) -> usize {
     let mut p = from;
     let mut scanned = 0usize;
     while p < bb.len() && bb[p] != b'\n' && bb[p] != b'\r' {
+        scanned += 1;
+        p += 1;
+    }
+    if p < bb.len() {
+        scanned += 1;
+    }
+    crate::metrics::scan_work(scanned);
+    p
+}
+
+fn first_byte_for_page_ref_scan(bb: &[u8], from: usize, byte: u8) -> usize {
+    let mut p = from;
+    let mut scanned = 0usize;
+    while p < bb.len() && bb[p] != byte {
         scanned += 1;
         p += 1;
     }
@@ -1296,12 +1366,10 @@ fn parse_macro_arg(s: &str, at: usize, scan: &mut PageRefScan) -> Option<(String
     // (( ... ))
     if s[at..].starts_with("((") {
         let inner_start = at + 2;
-        let mut j = inner_start;
-        while j < n && b[j] != b')' {
-            j += 1;
-        }
-        if j > inner_start && j + 1 < n && b[j] == b')' && b[j + 1] == b')' {
-            return Some((s[at..j + 2].to_string(), j + 2));
+        if let Some(j) = scan.first_macro_rparen_at_or_after(b, inner_start) {
+            if j > inner_start && j + 1 < n && b[j + 1] == b')' {
+                return Some((s[at..j + 2].to_string(), j + 2));
+            }
         }
     }
     // quoted "..."
@@ -1331,19 +1399,19 @@ fn parse_macro_arg(s: &str, at: usize, scan: &mut PageRefScan) -> Option<(String
 
 // ---- footnote ref ---------------------------------------------------------
 
-pub(crate) fn parse_footnote_ref(s: &str, at: usize) -> Option<(usize, String)> {
+pub(crate) fn parse_footnote_ref(
+    s: &str,
+    at: usize,
+    scan: &mut FootnoteRefScan,
+) -> Option<(usize, String)> {
     // `[^ id ]` : id non-empty, no ']' / whitespace.
     let b = s.as_bytes();
-    let n = b.len();
     if !s[at..].starts_with("[^") {
         return None;
     }
     let id_start = at + 2;
-    let mut j = id_start;
-    while j < n && b[j] != b']' && !is_ws_or_nl(b[j]) {
-        j += char_len(b[j]);
-    }
-    if j == id_start || j >= n || b[j] != b']' {
+    let j = scan.first_stop(b, id_start)?;
+    if j == id_start || b[j] != b']' {
         return None;
     }
     Some((j + 1, s[id_start..j].to_string()))

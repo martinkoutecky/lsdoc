@@ -511,6 +511,27 @@ fn f5_control_single_brackets(n: usize) -> String {
 fn f5_control_plain_tag(n: usize) -> String {
     format!("#t{}", "a".repeat(n))
 }
+fn audit3_md_footnote_no_close(n: usize) -> String {
+    "[^a".repeat(n)
+}
+fn audit3_md_footnote_success(n: usize) -> String {
+    "[^a] ".repeat(n)
+}
+fn audit3_org_target_no_close(n: usize) -> String {
+    "<<a ".repeat(n)
+}
+fn audit3_org_radio_no_close(n: usize) -> String {
+    "<<<a ".repeat(n)
+}
+fn audit3_org_target_success(n: usize) -> String {
+    "<<a>> ".repeat(n)
+}
+fn audit3_macro_blockref_arg_no_close(n: usize) -> String {
+    format!("{{{{m {}z}}}}", "((a,".repeat(n))
+}
+fn audit3_macro_blockref_arg_success(n: usize) -> String {
+    format!("{{{{m {}z}}}}", "((a)),".repeat(n))
+}
 fn f5_w_tag_reparse(n: usize) -> String {
     format!("#t{}", "[[a".repeat(n))
 }
@@ -717,6 +738,35 @@ fn complexity_gate() {
         assert_linear("f5_control_single_brackets", f5_control_single_brackets, 1000, "org");
         assert_linear("f5_control_plain_tag", f5_control_plain_tag, 1000, "md");
         assert_linear("f5_control_plain_tag", f5_control_plain_tag, 1000, "org");
+        assert_linear("audit3_md_footnote_no_close", audit3_md_footnote_no_close, 1000, "md");
+        assert_linear("audit3_md_footnote_success", audit3_md_footnote_success, 1000, "md");
+        assert_linear("audit3_org_target_no_close", audit3_org_target_no_close, 1000, "org");
+        assert_linear("audit3_org_radio_no_close", audit3_org_radio_no_close, 1000, "org");
+        assert_linear("audit3_org_target_success", audit3_org_target_success, 1000, "org");
+        assert_linear(
+            "audit3_macro_blockref_arg_no_close",
+            audit3_macro_blockref_arg_no_close,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "audit3_macro_blockref_arg_no_close",
+            audit3_macro_blockref_arg_no_close,
+            1000,
+            "org",
+        );
+        assert_linear(
+            "audit3_macro_blockref_arg_success",
+            audit3_macro_blockref_arg_success,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "audit3_macro_blockref_arg_success",
+            audit3_macro_blockref_arg_success,
+            1000,
+            "org",
+        );
         assert_linear("f5_w_tag_reparse", f5_w_tag_reparse, 1000, "md");
         assert_linear("f5_w_tag_reparse", f5_w_tag_reparse, 1000, "org");
         assert_linear("f5_w_md_emphasis_reparse", f5_w_md_emphasis_reparse, 1000, "md");

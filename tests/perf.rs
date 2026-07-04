@@ -401,6 +401,60 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         ),
         ("f5_control_plain_tag_md", false, 2_000, f5_control_plain_tag),
         ("f5_control_plain_tag_org", true, 2_000, f5_control_plain_tag),
+        (
+            "audit3_md_footnote_no_close",
+            false,
+            4_000,
+            audit3_md_footnote_no_close,
+        ),
+        (
+            "audit3_md_footnote_success",
+            false,
+            4_000,
+            audit3_md_footnote_success,
+        ),
+        (
+            "audit3_org_target_no_close",
+            true,
+            4_000,
+            audit3_org_target_no_close,
+        ),
+        (
+            "audit3_org_radio_no_close",
+            true,
+            4_000,
+            audit3_org_radio_no_close,
+        ),
+        (
+            "audit3_org_target_success",
+            true,
+            4_000,
+            audit3_org_target_success,
+        ),
+        (
+            "audit3_macro_blockref_arg_no_close_md",
+            false,
+            4_000,
+            audit3_macro_blockref_arg_no_close,
+        ),
+        (
+            "audit3_macro_blockref_arg_no_close_org",
+            true,
+            4_000,
+            audit3_macro_blockref_arg_no_close,
+        ),
+        (
+            "audit3_macro_blockref_arg_success_md",
+            false,
+            4_000,
+            audit3_macro_blockref_arg_success,
+        ),
+        (
+            "audit3_macro_blockref_arg_success_org",
+            true,
+            4_000,
+            audit3_macro_blockref_arg_success,
+        ),
         ("f5_w1_tag_reparse_md", false, 2_000, f5_w_tag_reparse),
         ("f5_w2_tag_reparse_org", true, 2_000, f5_w_tag_reparse),
         (
@@ -765,6 +819,27 @@ fn f5_control_single_brackets(n: usize) -> String {
 }
 fn f5_control_plain_tag(n: usize) -> String {
     format!("#t{}", "a".repeat(n))
+}
+fn audit3_md_footnote_no_close(n: usize) -> String {
+    "[^a".repeat(n)
+}
+fn audit3_md_footnote_success(n: usize) -> String {
+    "[^a] ".repeat(n)
+}
+fn audit3_org_target_no_close(n: usize) -> String {
+    "<<a ".repeat(n)
+}
+fn audit3_org_radio_no_close(n: usize) -> String {
+    "<<<a ".repeat(n)
+}
+fn audit3_org_target_success(n: usize) -> String {
+    "<<a>> ".repeat(n)
+}
+fn audit3_macro_blockref_arg_no_close(n: usize) -> String {
+    format!("{{{{m {}z}}}}", "((a,".repeat(n))
+}
+fn audit3_macro_blockref_arg_success(n: usize) -> String {
+    format!("{{{{m {}z}}}}", "((a)),".repeat(n))
 }
 fn f5_w_tag_reparse(n: usize) -> String {
     format!("#t{}", "[[a".repeat(n))

@@ -98,6 +98,7 @@ pub(crate) struct OrgInlineScan {
     page_ref_scan: crate::inline::PageRefScan,
     footnote_rbracket: crate::inline::ByteBeforeEolScan,
     metadata_rbrace: crate::inline::ByteBeforeEolScan,
+    target_gt: crate::inline::ByteBeforeEolScan,
 }
 
 impl OrgInlineScan {
@@ -110,6 +111,7 @@ impl OrgInlineScan {
             page_ref_scan: crate::inline::PageRefScan::new(),
             footnote_rbracket: crate::inline::ByteBeforeEolScan::new(b']'),
             metadata_rbrace: crate::inline::ByteBeforeEolScan::new(b'}'),
+            target_gt: crate::inline::ByteBeforeEolScan::new(b'>'),
         }
     }
 
@@ -156,6 +158,11 @@ impl OrgInlineScan {
     fn metadata_close(&mut self, bb: &[u8], from: usize) -> Option<usize> {
         self.check_source(bb.len());
         self.metadata_rbrace.first_before_eol(bb, from)
+    }
+
+    fn target_gt_close(&mut self, bb: &[u8], from: usize) -> Option<usize> {
+        self.check_source(bb.len());
+        self.target_gt.first_before_eol(bb, from)
     }
 }
 
@@ -1465,6 +1472,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         bb,
                         off,
                         ctx,
+                        &mut org_inline_scan,
                         &mut raw_html_scan,
                         &mut autolink_scan,
                         &mut timestamp_scan,
@@ -1996,6 +2004,7 @@ fn try_target_angle_at(
     bb: &[u8],
     i: usize,
     ctx: Ctx,
+    org_inline_scan: &mut OrgInlineScan,
     raw_html_scan: &mut crate::block_common::RawHtmlScan,
     autolink_scan: &mut crate::inline::AutolinkScan,
     timestamp_scan: &mut crate::inline::TimestampCloseScan,
@@ -2009,42 +2018,35 @@ fn try_target_angle_at(
     }
     if s[i..].starts_with("<<") {
         let inner_start = i + 2;
-        let mut j = inner_start;
-        while j < n {
-            let c = bb[j];
-            if c == b'>' || c == b'\n' || c == b'\r' {
-                break;
+        if let Some(j) = org_inline_scan.target_gt_close(bb, inner_start) {
+            if j > inner_start && j + 1 < n && bb[j] == b'>' && bb[j + 1] == b'>' {
+                return Some((
+                    Inline::Target {
+                        text: s[inner_start..j].to_string(),
+                        span: None,
+                    },
+                    j + 2,
+                ));
             }
-            j += char_len(c);
-        }
-        if j > inner_start && j + 1 < n && bb[j] == b'>' && bb[j + 1] == b'>' {
-            return Some((
-                Inline::Target {
-                    text: s[inner_start..j].to_string(),
-                    span: None,
-                },
-                j + 2,
-            ));
         }
     }
     if s[i..].starts_with("<<<") {
         let inner_start = i + 3;
-        let mut j = inner_start;
-        while j < n {
-            let c = bb[j];
-            if c == b'>' || c == b'\n' || c == b'\r' {
-                break;
+        if let Some(j) = org_inline_scan.target_gt_close(bb, inner_start) {
+            if j > inner_start
+                && j + 2 < n
+                && bb[j] == b'>'
+                && bb[j + 1] == b'>'
+                && bb[j + 2] == b'>'
+            {
+                return Some((
+                    Inline::Target {
+                        text: s[inner_start..j].to_string(),
+                        span: None,
+                    },
+                    j + 3,
+                ));
             }
-            j += char_len(c);
-        }
-        if j > inner_start && j + 2 < n && bb[j] == b'>' && bb[j + 1] == b'>' && bb[j + 2] == b'>' {
-            return Some((
-                Inline::Target {
-                    text: s[inner_start..j].to_string(),
-                    span: None,
-                },
-                j + 3,
-            ));
         }
     }
     if ctx.timestamps {

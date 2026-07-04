@@ -1497,6 +1497,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut timestamp_scan = crate::inline::TimestampCloseScan::new();
     let mut email_scan = crate::inline::EmailAutolinkScan::new();
     let mut bare_url_scan = crate::inline::BareUrlScan::new();
+    let mut footnote_ref_scan = crate::inline::FootnoteRefScan::new();
     let terminal_odd_backslash = ends_with_odd_backslash_run(bb);
     let tag_boundary_runs = if ctx.tags && bb.contains(&b'#') {
         crate::inline::build_tag_boundary_runs(s)
@@ -1964,7 +1965,9 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             b'[' => {
                 let mut end = None;
                 if ctx.footnotes && bb.get(off + 1) == Some(&b'^') {
-                    if let Some((e, name)) = crate::inline::parse_footnote_ref(s, off) {
+                    if let Some((e, name)) =
+                        crate::inline::parse_footnote_ref(s, off, &mut footnote_ref_scan)
+                    {
                         flush(
         &mut out,
         &mut pending,
