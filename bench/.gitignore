@@ -1,0 +1,7 @@
+# Fetched benchmark corpora (large, external, reproducible via fetch-corpus.sh)
+/corpus/
+# Build output
+/target/
+# Generated report
+/report.md
+Cargo.lock

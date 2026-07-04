@@ -1,0 +1,23 @@
+# Standalone bench crate — deliberately its OWN workspace (`[workspace]` below) so its
+# third-party parser deps (comrak / pulldown-cmark / orgize) compile ONLY when you build
+# this crate. They never enter lsdoc's own dependency graph (which stays serde-only) and
+# never propagate to Tine. orgize appears here purely as a dev-time *benchmark peer*, not
+# as a runtime dependency of lsdoc or Tine.
+[package]
+name = "lsdoc-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+lsdoc = { path = ".." }
+comrak = "0.53"
+pulldown-cmark = "0.13"
+orgize = "=0.10.0-alpha.10"
+
+# Optimize every parser identically so the comparison is apples-to-apples.
+[profile.release]
+opt-level = 3
+lto = "thin"
