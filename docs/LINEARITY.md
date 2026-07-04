@@ -11,6 +11,29 @@ multi-line construct pair needs an adjacent-siblings gate shape.
 C8 refreshed the driver rows after the dispatch loops were rewritten in `inline_choices`
 order. Older construct-internal rows are kept where the owner did not change.
 
+## Scan-Owner Census
+
+Every committed scan site must have a written owner. The source annotation grammar is:
+
+```text
+// scan-owner: <class> — <short owner/why>
+```
+
+The class vocabulary is:
+
+- `(a)` consumed-on-match work, including accepted copies.
+- `(a2)` caller-owned helper work over the caller's current slice/range.
+- `(b)` monotone cursor, miss-cache, path-compressed memo, or per-buffer precompute owner.
+- `(c)` constant/current-slice bounded work with no unbounded retry path.
+- `(o)` output-size work outside parser complexity accounting.
+- `(d)` unowned repeat probe; this class is never committed.
+
+The verified Phase 1 table is `subagent-tasks/notes/scan-loop-census.md`. The deterministic
+gate depends on charged work: the F6-F8 lesson is that fully uncharged loops are invisible to
+`scan_work` in both directions, so they can neither prove linearity nor expose growth. Parser
+work that scans or copies input-derived bytes must be charged in debug builds; `(o)` and
+constant/N/A rows do not add parser charges.
+
 | scan @ file:line | owner | argument |
 |---|---|---|
 | Shared fresh/swallow tables @ `src/inline_driver.rs:17` | constant tables | Markdown/Org plain-delimiter and swallow-byte tables encode mldoc `plain` fallback; no scan is introduced. |

@@ -77,7 +77,9 @@ pub(crate) fn parse_inline_ctx_md_label(text: &str, base: usize) -> Option<Vec<I
     let mut no_closer = [[false; 3]; 5];
     let terminal_odd_backslash = ends_with_odd_backslash_run(bb);
     let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
+    // scan-owner: (a) consumed-on-match — Markdown label reparse cursor
     while i < bb.len() {
+        crate::metrics::scan_work(1);
         if matches!(bb[i], b'*' | b'_' | b'~' | b'^' | b'=') {
             if let Ok(hit) =
                 nested_emphasis_at_md(text, i, None, &mut no_closer, base, terminal_odd_backslash)
@@ -137,11 +139,16 @@ fn markdown_label_entity_at(s: &str, bb: &[u8], i: usize, base: usize) -> Option
     while end < bb.len() && bb[end].is_ascii_alphabetic() {
         end += 1;
     }
+    crate::metrics::scan_work(end - start + usize::from(end < bb.len()));
     let name = &s[start..end];
     if s[end..].starts_with("{}") {
+        crate::metrics::scan_work(2);
         end += 2;
     }
     let e = crate::entities::find(name)?;
+    crate::metrics::scan_work(
+        e.name.len() + e.latex.len() + e.html.len() + e.ascii.len() + e.unicode.len(),
+    );
     Some((
         Inline::Entity {
             name: e.name.to_string(),
@@ -369,9 +376,12 @@ fn push_plain_node(out: &mut Vec<Inline>, text: &str, start: usize, end: usize, 
 }
 
 fn normalize_cr_plain_text(text: &str) -> (String, bool) {
+    crate::metrics::scan_work(text.len());
     if text.as_bytes().contains(&b'\r') {
+        crate::metrics::scan_work(text.len());
         (text.replace('\r', "\n"), false)
     } else {
+        crate::metrics::scan_work(text.len());
         (text.to_string(), true)
     }
 }
@@ -699,6 +709,7 @@ fn markdown_emphasis_at(
                 ("**", "Bold", false, 2usize),
                 ("*", "Italic", false, 1usize),
             ] {
+                crate::metrics::scan_work(pattern.len());
                 let cls = class_idx(ch);
                 if no_closer[cls][k - 1] {
                     continue;
@@ -729,6 +740,7 @@ fn markdown_emphasis_at(
                 ("__", "Bold", false, 2usize),
                 ("_", "Italic", false, 1usize),
             ] {
+                crate::metrics::scan_work(pattern.len());
                 let cls = class_idx(ch);
                 if no_closer[cls][k - 1] {
                     continue;
@@ -852,7 +864,9 @@ fn aux_nested_emphasis_md(node: Inline, source: &str, source_base: usize) -> Inl
             span,
         } => {
             let mut reparsed = Vec::new();
+            // scan-owner: (b) suffix-absence miss-cache / accepted subtree — Markdown nested-emphasis child repair
             for child in children {
+                crate::metrics::scan_work(1);
                 match child {
                     Inline::Plain {
                         text,
@@ -1020,6 +1034,7 @@ fn source_slice_for_span(source: &str, source_base: usize, span: Span) -> Option
 }
 
 fn clear_inline_spans(node: &mut Inline) {
+    crate::metrics::scan_work(1);
     match node {
         Inline::Plain { span, span_map, .. } => {
             *span = None;
@@ -1083,7 +1098,9 @@ fn parse_nested_plain_md(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
     let terminal_odd_backslash = ends_with_odd_backslash_run(bb);
     let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
     let mut md_link_scan = crate::inline::MdLinkScan::new();
+    // scan-owner: (b) suffix-absence miss-cache / accepted subtree — Markdown nested plain reparse cursor
     while i < bb.len() {
+        crate::metrics::scan_work(1);
         if matches!(bb[i], b'*' | b'_' | b'~' | b'^' | b'=') {
             if let Ok(hit) = markdown_emphasis_at(
                 text,
@@ -1206,6 +1223,7 @@ fn try_nested_link_or_link_md(
     base: usize,
     scan: &mut crate::inline::MdLinkScan,
 ) -> Option<(Inline, usize)> {
+    crate::metrics::scan_work(2);
     if s[at..].starts_with("[[") {
         if let Some((end, content)) =
             crate::inline::parse_nested_link_with_scan(s, at, scan.page_ref_scan())
@@ -1252,6 +1270,7 @@ fn try_markdown_script_at(s: &str, bb: &[u8], i: usize, base: usize) -> Option<(
     while j < bb.len() && bb[j] != b'}' && bb[j] != b'\n' && bb[j] != b'\r' {
         j += char_len_at(bb, j);
     }
+    crate::metrics::scan_work(j - body_start + usize::from(j < bb.len()));
     if j == body_start || bb.get(j) != Some(&b'}') {
         return None;
     }
@@ -1273,7 +1292,9 @@ fn parse_markdown_script_body(text: &str, base: usize) -> Vec<Inline> {
     let mut i = 0usize;
     let mut no_closer = [[false; 3]; 5];
     let terminal_odd_backslash = ends_with_odd_backslash_run(bb);
+    // scan-owner: (a) consumed-on-match — Markdown braced script body cursor
     while i < bb.len() {
+        crate::metrics::scan_work(1);
         if matches!(bb[i], b'*' | b'_' | b'~' | b'^' | b'=') {
             if let Ok(hit) = markdown_emphasis_at(
                 text,
@@ -1320,39 +1341,51 @@ fn markdown_entity_or_plain_at(s: &str, i: usize, base: usize) -> Option<(Inline
     while end < bb.len() && bb[end].is_ascii_alphabetic() {
         end += 1;
     }
+    crate::metrics::scan_work(end - start + usize::from(end < bb.len()));
     let name = &s[start..end];
     if s[end..].starts_with("{}") {
+        crate::metrics::scan_work(2);
         end += 2;
     }
     match crate::entities::find(name) {
-        Some(e) => Some((
-            Inline::Entity {
-                name: e.name.to_string(),
-                latex: e.latex.to_string(),
-                latex_mathp: e.latex_mathp,
-                html: e.html.to_string(),
-                ascii: e.ascii.to_string(),
-                unicode: e.unicode.to_string(),
-                span: Some(Span(base + i, base + end)),
-            },
-            end,
-        )),
-        None => Some((
-            crate::source_map::make_plain(
-                name.to_string(),
-                Span(base + i, base + end),
-                vec![OriginSegment::new(0, base + i + 1, name.len(), name.len())],
-                s,
-                base,
-            ),
-            end,
-        )),
+        Some(e) => {
+            crate::metrics::scan_work(
+                e.name.len() + e.latex.len() + e.html.len() + e.ascii.len() + e.unicode.len(),
+            );
+            Some((
+                Inline::Entity {
+                    name: e.name.to_string(),
+                    latex: e.latex.to_string(),
+                    latex_mathp: e.latex_mathp,
+                    html: e.html.to_string(),
+                    ascii: e.ascii.to_string(),
+                    unicode: e.unicode.to_string(),
+                    span: Some(Span(base + i, base + end)),
+                },
+                end,
+            ))
+        }
+        None => {
+            crate::metrics::scan_work(name.len());
+            Some((
+                crate::source_map::make_plain(
+                    name.to_string(),
+                    Span(base + i, base + end),
+                    vec![OriginSegment::new(0, base + i + 1, name.len(), name.len())],
+                    s,
+                    base,
+                ),
+                end,
+            ))
+        }
     }
 }
 
 fn concat_plains_without_pos(nodes: Vec<Inline>) -> Vec<Inline> {
     let mut out: Vec<Inline> = Vec::new();
+    // scan-owner: (a2) caller-owned accepted range — Markdown plain-node concatenation
     for node in nodes {
+        crate::metrics::scan_work(1);
         match (out.last_mut(), node) {
             (
                 Some(Inline::Plain {
@@ -1388,6 +1421,7 @@ fn concat_plains_without_pos(nodes: Vec<Inline>) -> Vec<Inline> {
                         }
                     }
                 }
+                crate::metrics::scan_work(text.len());
                 prev.push_str(&text);
                 *prev_span = match (*prev_span, span) {
                     (Some(Span(start, _)), Some(Span(_, end))) => Some(Span(start, end)),
@@ -1413,7 +1447,9 @@ fn find_delim_token_containing(
     end: usize,
     ch: u8,
 ) -> Option<usize> {
+    // scan-owner: (a2) caller-owned accepted range — Markdown delimiter token lookup
     while t < toks.len() {
+        crate::metrics::scan_work(1);
         match toks[t].kind {
             Kind::Delim { ch: dch, len }
                 if dch == ch && toks[t].off <= start && start < toks[t].off + len =>
@@ -1436,7 +1472,9 @@ fn try_code_span(s: &str, off: usize, base: usize) -> Option<(Inline, usize)> {
     }
     let (mut node, end) = crate::lexer::code_span(s, off)?;
     if let Inline::Code { text, .. } = &mut node {
+        crate::metrics::scan_work(text.len());
         if text.as_bytes().contains(&b'\r') {
+            crate::metrics::scan_work(text.len());
             *text = text.replace('\r', "\n");
         }
     }
@@ -1465,6 +1503,8 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     // Bracket-pairing disciplines (KEPT — Goal 3): nested-link escape-FREE balance, page-ref
     // escape-AWARE real `]]`. Computed once; consulted by the [[…]] dispatch in O(1). `crlf`
     // is the monotone next-`\n`/`\r` (page-ref eol boundary).
+    // scan-owner: (b) monotone cursor + per-buffer tables — Markdown bracket precompute gate
+    crate::metrics::scan_work(bb.len());
     let has_brk = bb.contains(&b'[');
     let nested_close = if has_brk {
         crate::inline::build_nested_close(s)
@@ -1741,7 +1781,9 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     }
 
     let mut t = 0usize;
+    // scan-owner: (b) monotone cursor + per-buffer tables — Markdown resolver token loop
     while t < toks.len() {
+        crate::metrics::scan_work(1);
         let off = toks[t].off;
         match md_dispatch_byte(&toks[t].kind) {
             // inline.ml:1344 — `| '\n' -> breakline`
@@ -2008,7 +2050,9 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         }
                     }
                     if end.is_none() {
+                        // scan-owner: (b) monotone cursor + per-buffer tables — Markdown real-dbl cursor
                         while real_dbl.get(real_dbl_cur).is_some_and(|&p| p < off + 2) {
+                            crate::metrics::scan_work(1);
                             real_dbl_cur += 1;
                         }
                         if let Some(&d) = real_dbl.get(real_dbl_cur) {
@@ -2140,7 +2184,10 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
         base,
     );
                         out.push(Inline::Hiccup {
-                            v: s[off..e].to_string(),
+                            v: {
+                                crate::metrics::scan_work(e - off);
+                                s[off..e].to_string()
+                            },
                             span: Some(Span(base + off, base + e)),
                         });
                         end = Some(e);
@@ -2482,10 +2529,13 @@ fn plain_origin_boundary(origins: &[OriginSegment], len: usize, fallback: usize)
 /// Count of trailing mldoc whitespace bytes that make the next byte a fresh
 /// dispatch point. Unlike hard breaks, this includes form feed.
 fn trailing_dispatch_ws(s: &str) -> usize {
-    s.bytes()
+    let n = s
+        .bytes()
         .rev()
         .take_while(|&b| matches!(b, b' ' | b'\t' | 0x0c))
-        .count()
+        .count();
+    crate::metrics::scan_work(n + usize::from(n < s.len()));
+    n
 }
 
 fn md_dispatch_byte(kind: &Kind) -> u8 {
@@ -2548,6 +2598,7 @@ fn resync(
     timestamp_scan: &mut crate::inline::TimestampCloseScan,
 ) -> usize {
     let n = s.len();
+    // scan-owner: (a2) caller-owned accepted range — Markdown token resync cursor
     while t < toks.len()
         && (if t + 1 < toks.len() {
             toks[t + 1].off
@@ -2555,6 +2606,7 @@ fn resync(
             n
         }) <= end
     {
+        crate::metrics::scan_work(1);
         t += 1;
     }
     if t < toks.len() && toks[t].off < end {
@@ -2624,6 +2676,7 @@ fn resync(
             tail.len(),
             tail.len(),
         ));
+        crate::metrics::scan_work(tail.len());
         pending.push_str(tail);
         *fresh = trailing_dispatch_ws(tail) > 0;
         t += 1;
@@ -2799,7 +2852,9 @@ fn try_md_link(
     md_link_scan: &mut crate::inline::MdLinkScan,
     base: usize,
 ) -> Option<(Inline, usize)> {
+    // scan-owner: (a) consumed-on-match — Markdown link `](` cursor
     while lbp.get(*lbp_cur).is_some_and(|&p| p < at) {
+        crate::metrics::scan_work(1);
         *lbp_cur += 1;
     }
     let rb = *lbp.get(*lbp_cur)?;

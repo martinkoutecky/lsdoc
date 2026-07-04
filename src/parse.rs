@@ -491,6 +491,7 @@ fn build_indexes(lines: &[Line], input: &str) -> (EndTrie, Vec<usize>, Vec<usize
     // later 3+ run of EITHER char (length/info-agnostic), so closing is char-AGNOSTIC: one list.
     let mut fence_lines: Vec<usize> = Vec::new();
     for (idx, l) in lines.iter().enumerate() {
+        crate::metrics::scan_work(1);
         let t = ocaml_trim(l.text);
         if t.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("#+END_")) {
             end_trie.insert(&t[6..], idx);
@@ -508,6 +509,7 @@ fn build_indexes(lines: &[Line], input: &str) -> (EndTrie, Vec<usize>, Vec<usize
     // block-hiccup dispatch then does an O(1) array lookup + a `close <= body_end` clamp, instead of
     // a per-opener `parse_hiccup` re-scan to `body_end` (the O(n²) on an unbalanced `[:`-run). Only
     // built when the input actually has a `[:` (else an empty `Vec` — the `.get` lookup falls to MAX).
+    crate::metrics::scan_work(input.len());
     let hiccup_close = if input.contains("[:") {
         crate::inline::build_hiccup_close(input)
     } else {
@@ -533,6 +535,8 @@ fn parse_md_streaming<'a>(
     source_body: &str,
 ) -> Vec<Block> {
     let mut lines = split_lines(input);
+    // scan-owner: (b) monotone block cursor + frame owner — Markdown driver document-level reverse bracket probe
+    crate::metrics::scan_work(input.len());
     let last_rbracket = input.rfind(']');
     let (end_trie, drawer_end_idxs, fence_lines, hiccup_close) = build_indexes(&lines, input);
     let n = lines.len();
@@ -578,12 +582,16 @@ fn parse_md_streaming<'a>(
     let mut i = 0;
 
     loop {
+        // scan-owner: (b) monotone block cursor + frame owner — Markdown streaming line/frame loop
+        crate::metrics::scan_work(1);
         // --- Phase 1: close at the HARD bound. Any frame with `hi <= i` closes: a HARD frame (root
         // / `#+BEGIN_X` callout, `gt_level==0`) CONSUMES its `#+END_` closer (`i+=1`) and swallows
         // following blanks (F6); a `>`-frame that lazily continued up to the enclosing closer closes
         // WITHOUT consuming. (A `>`-frame's DYNAMIC continuation-close, at `i < hi`, is phase 2a —
         // so phase 1 never needs `offs`, and after it every open frame has `hi > i`.)
+        // scan-owner: (b) monotone block cursor + frame owner — Markdown frame close stack walk
         while stack.len() > 1 && stack.last().unwrap().hi <= i {
+            crate::metrics::scan_work(1);
             let consume = stack.last().unwrap().gt_level == 0;
             if close_top(
                 &mut stack,
@@ -602,7 +610,9 @@ fn parse_md_streaming<'a>(
                 // mldoc ends a `#+BEGIN_X` callout with `<* optional eols` (F6): swallow following
                 // blank lines. Bounded by the parent's `hi`; whitespace-only lines are NOT eols.
                 let top_hi = stack.last().unwrap().hi;
+                // scan-owner: (b) monotone block cursor + frame owner — Markdown callout trailing blank swallow
                 while i < top_hi && lines[i].text.is_empty() {
+                    crate::metrics::scan_work(1);
                     i += 1;
                 }
             }
@@ -644,6 +654,7 @@ fn parse_md_streaming<'a>(
             // slice.
             let mut gt_closed = false;
             while stack.len() > 1 && stack.last().unwrap().gt_level > 0 {
+                crate::metrics::scan_work(1);
                 let l = stack.last().unwrap().gt_level;
                 if md_quote_cont_line_slice(&line2[offs[(l - 1).min(g)]..], line_has_eol(&lines[i]))
                     .is_some()
@@ -682,6 +693,7 @@ fn parse_md_streaming<'a>(
                     && (lines[i].text.is_empty()
                         || (top_gt > 0 && gt_cont_line_view(&lines[i], top_strip_ctx, top_gt) == Some("")))
                 {
+                    crate::metrics::scan_work(1);
                     i += 1;
                 }
                 if i != before {
@@ -718,9 +730,11 @@ fn parse_md_streaming<'a>(
                 };
                 let mut opened_any = false;
                 let mut opened_count = 0usize;
+                // scan-owner: (b) monotone block cursor + frame owner — Markdown quote-frame open chain
                 while let Some(inner) =
                     md_quote_first_slice(cur, line_has_eol(&lines[i]) || h > 0 || opened_any)
                 {
+                    crate::metrics::scan_work(1);
                     let (p_hi, p_strip, p_gt) = {
                         let top = stack.last_mut().unwrap();
                         if !opened_any {
@@ -898,6 +912,7 @@ fn parse_md_streaming<'a>(
                 );
                 let mut end = i + 1;
                 while end < p_hi {
+                    crate::metrics::scan_work(1);
                     match gt_cont_line_view(&lines[end], strip_ctx, p_gt) {
                         Some(v) => {
                             append_view_with_origin(
@@ -1025,6 +1040,7 @@ fn dispatch_md_line<'a>(
     // single-line leaves (`$$`/raw-html/hr), paragraphs, and NESTED `>`-quotes stay copy-free below,
     // so a pure-quote staircase never reaches here. (Over-routing is only a perf cost — the fallback
     // runs the identical ladder — so these tells may be conservative.)
+    // scan-owner: (b) monotone block cursor + frame owner — Markdown gt-frame fallback tell probes
     if gt_level > 0
         && (fence_marker(t).is_some()
             || callout_begin(t).is_some()
@@ -1063,7 +1079,9 @@ fn dispatch_md_line<'a>(
                 // break on the following paragraph). Bounded by `hi` (the closer is non-blank).
                 let mut ni = close + 1;
                 let mut end = lines[close].end;
+                // scan-owner: (b) monotone block cursor + frame owner — Markdown fence trailing blank swallow
                 while ni < hi && lines[ni].text.is_empty() {
+                    crate::metrics::scan_work(1);
                     end = lines[ni].end;
                     ni += 1;
                 }
@@ -1132,6 +1150,7 @@ fn dispatch_md_line<'a>(
         let mut ni = i + 1;
         let mut end = line_end;
         while ni < hi && lines[ni].text.is_empty() {
+            crate::metrics::scan_work(1);
             end = lines[ni].end;
             ni += 1;
         }
@@ -1179,7 +1198,9 @@ fn dispatch_md_line<'a>(
         // a Break-paragraph (mldoc's `Paragraph.sep`-last ordering). Never trim. F1.
         flush_para(out, para, para_buf, para_map, input, false, origin, source_body, origin_cursor);
         let mut ni = i + 1;
+        // scan-owner: (b) monotone block cursor + frame owner — Markdown LaTeX consumed-line mapping
         while ni < lines.len() && lines[ni].start < consumed_end {
+            crate::metrics::scan_work(1);
             ni += 1;
         }
         // In a remap_spans frame `content` sliced from raw `input` keeps the per-line indent.
@@ -1188,6 +1209,7 @@ fn dispatch_md_line<'a>(
         // body line belongs to exactly one leaf construct.
         let content = if remap_spans {
             let mut s = String::new();
+            // scan-owner: (b) monotone block cursor + frame owner — Markdown remapped LaTeX body copy
             for k in i..ni {
                 let view = line_text(lines, k, strip_ctx);
                 crate::metrics::scan_work(view.len());
@@ -1757,6 +1779,7 @@ fn dispatch_md_line<'a>(
         let mut captured = false;
         let mut rewritten_line = None;
         loop {
+            crate::metrics::scan_work(1);
             if cur >= hi {
                 return Step::Next(cur);
             }
@@ -1909,6 +1932,7 @@ fn dispatch_md_line<'a>(
                             // directive with leading + trailing truly-empty-line absorption.
                             let mut k = j;
                             while k < hi && lines[k].text.is_empty() {
+                                crate::metrics::scan_work(1);
                                 k += 1;
                             }
                             if k < hi {
@@ -1916,6 +1940,7 @@ fn dispatch_md_line<'a>(
                                     props.push(Property::parse2(kv));
                                     j = k + 1;
                                     while j < hi && lines[j].text.is_empty() {
+                                        crate::metrics::scan_work(1);
                                         j += 1;
                                     }
                                     continue;
@@ -1955,6 +1980,7 @@ fn dispatch_md_line<'a>(
         let mut cur = i; // line index whose leading `[:…]` we are trying to consume
         let mut captured = false;
         loop {
+            crate::metrics::scan_work(1);
             // At/after the frame's closer line: defer to the main loop (frame pop + eol absorb).
             // `i < hi` always holds on entry, so the first iteration never trips this.
             if cur >= hi {
@@ -1991,6 +2017,7 @@ fn dispatch_md_line<'a>(
             let bytes = input.as_bytes();
             let mut resume = cap_end;
             while resume < bytes.len() && matches!(bytes[resume], b'\n' | b'\r') {
+                crate::metrics::scan_work(1);
                 resume += 1;
             }
             if resume >= bytes.len() {
@@ -2000,6 +2027,7 @@ fn dispatch_md_line<'a>(
             // else rewrite it to the remainder slice — then loop to try the next vector at it.
             let mut ri = cur;
             while ri < lines.len() && lines[ri].end <= resume {
+                crate::metrics::scan_work(1);
                 ri += 1;
             }
             if ri >= lines.len() {
@@ -2176,6 +2204,7 @@ fn find_displayed_math_close_in_view(s: &str) -> Option<usize> {
 }
 
 fn view_abs_start(line: &Line<'_>, view: &str) -> usize {
+    // scan-owner: (a2) caller-owned slice/helper — suffix assertion on current line view
     debug_assert!(line.text.ends_with(view));
     line.start + line.text.len() - view.len()
 }
@@ -2261,6 +2290,7 @@ fn flush_para(
         *para = None;
         if trim_eol {
             while buf.ends_with('\n') || buf.ends_with('\r') {
+                crate::metrics::scan_work(1);
                 buf.pop();
             }
             para_map.truncate_text_len(buf.len());
@@ -2285,6 +2315,7 @@ fn flush_para(
     if let Some((s, mut e)) = para.take() {
         if trim_eol {
             while e > s && matches!(input.as_bytes()[e - 1], b'\n' | b'\r') {
+                crate::metrics::scan_work(1);
                 e -= 1;
             }
             if e == s {
@@ -2445,8 +2476,10 @@ fn stub_inline_mapped(
 /// Split a leading ATX `#`-run that forms a heading size (uncapped `#`-count, must be
 /// followed by a space/tab or end-of-line) off `s`. Returns (size, rest-after-the-run,
 /// leading-ws-trimmed). `None` when there is no valid `#`-run (`#nospace`, `text`).
+// scan-owner: (a2) caller-owned line helper — ATX marker run scan on current line/title slice
 fn atx_size(s: &str) -> (Option<u32>, &str) {
     let hashes = s.bytes().take_while(|&b| b == b'#').count();
+    crate::metrics::scan_work(hashes + usize::from(hashes < s.len()));
     if hashes > 0 {
         let after = &s[hashes..];
         if mldoc_heading_boundary(after) {
@@ -2464,6 +2497,7 @@ fn split_markers(s: &str, marker_eof: bool) -> (Option<String>, Option<String>, 
     for m in MARKERS {
         if let Some(rest) = s.strip_prefix(m) {
             if rest.starts_with(' ') || (rest.is_empty() && marker_eof) {
+                crate::metrics::scan_work(m.len());
                 marker = Some((*m).to_string());
                 s = mldoc_trim_spaces_start(rest);
                 break;
@@ -2473,6 +2507,7 @@ fn split_markers(s: &str, marker_eof: bool) -> (Option<String>, Option<String>, 
     // priority `[#X]` (exactly "[#", one ASCII char, "]")
     let b = s.as_bytes();
     let priority = if b.len() >= 4 && b[0] == b'[' && b[1] == b'#' && b[2] < 0x80 && b[3] == b']' {
+        crate::metrics::scan_work(1);
         let p = (b[2] as char).to_string();
         s = mldoc_trim_spaces_start(&s[4..]);
         Some(p)
@@ -2553,6 +2588,7 @@ struct MdCommentCapture {
 
 #[inline]
 fn md_view_abs_start(line: &Line<'_>, view: &str) -> usize {
+    // scan-owner: (a2) caller-owned slice/helper — suffix assertion on current line view
     debug_assert!(line.text.ends_with(view));
     line.start + line.text.len() - view.len()
 }
@@ -2592,6 +2628,7 @@ fn md_line_comment_capture(
 }
 
 fn md_html_comment_opener(first_view: &str) -> Option<usize> {
+    // scan-owner: (a2) caller-owned slice/helper — current-line HTML comment opener probe
     let tail = first_view
         .strip_prefix("<!---")
         .or_else(|| first_view.strip_prefix("<!--"))?;
@@ -2658,6 +2695,8 @@ fn md_html_comment_capture(
 fn fence_lang(info: &str) -> String {
     let info = mldoc_trim_spaces_start(info);
     let end = info.bytes().take_while(|&b| !mldoc_is_space(b)).count();
+    crate::metrics::scan_work(end + usize::from(end < info.len()));
+    crate::metrics::scan_work(end);
     info[..end].to_string()
 }
 
@@ -2675,6 +2714,7 @@ fn fence_marker(s: &str) -> Option<(u8, usize)> {
     while k < b.len() && b[k] == c {
         k += 1;
     }
+    crate::metrics::scan_work(k - ws + usize::from(k < b.len()));
     // mldoc's fence marker is EXACTLY 3 chars: a 3+ run opens/closes, but only the first 3 are
     // the marker — extra run chars (and the rest of the line) are the info/lang string. So the
     // info begins at `ws + 3`, not past the whole run (`####js` → lang "`js", not "js").
@@ -2693,6 +2733,7 @@ fn fence_closer_marker(s: &str) -> Option<(u8, usize)> {
     while off < b0.len() && crate::block_common::ocaml_trim_byte(b0[off]) {
         off += 1;
     }
+    crate::metrics::scan_work(off + usize::from(off < b0.len()));
     let t = ocaml_trim_end(&s[off..]);
     let b = t.as_bytes();
     let c = *b.first()?;
@@ -2703,6 +2744,7 @@ fn fence_closer_marker(s: &str) -> Option<(u8, usize)> {
     while k < b.len() && b[k] == c {
         k += 1;
     }
+    crate::metrics::scan_work(k + usize::from(k < b.len()));
     (k >= 3).then_some((c, off + 3))
 }
 
@@ -2712,10 +2754,12 @@ fn fence_closer_marker(s: &str) -> Option<(u8, usize)> {
 /// (uncapped), and `hend` = the within-line byte index just past the `#`-run. A
 /// space/tab must follow the hashes — or the line is just (ws +) the hashes. `None`
 /// when the first non-ws char isn't such a `#`-run.
+// scan-owner: (a2) caller-owned line helper — heading marker run scan on current line
 fn heading_at(s: &str) -> Option<(u32, u32, usize)> {
     let lw = mldoc_spaces_len(s);
     let rest0 = &s[lw..];
     let hashes = rest0.bytes().take_while(|&b| b == b'#').count();
+    crate::metrics::scan_work(hashes + usize::from(hashes < rest0.len()));
     if hashes == 0 {
         return None;
     }
@@ -2733,6 +2777,7 @@ fn is_hr(s: &str) -> bool {
         return false;
     }
     let c = t.as_bytes()[0];
+    crate::metrics::scan_work(t.len());
     (c == b'-' || c == b'*' || c == b'_') && t.bytes().all(|b| b == c)
 }
 
@@ -2791,6 +2836,7 @@ fn md_marker(s: &str) -> Option<MdMarker> {
     }
     // ordered N.  (NOT N))
     let digits = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+    crate::metrics::scan_work(digits + usize::from(digits < rest.len()));
     if digits > 0 {
         if let Some(after) = rest[digits..].strip_prefix('.') {
             if after.as_bytes().first().is_some_and(|&b| mldoc_is_space(b)) {
@@ -2848,7 +2894,9 @@ fn md_definition_split(
     origin: &OriginMap,
     source_body: &str,
 ) -> Option<(Vec<Inline>, String, OriginMap)> {
-    let pos = content.find(" ::")?;
+    let found = content.find(" ::");
+    crate::metrics::scan_work(found.map_or(content.len(), |pos| pos + 3));
+    let pos = found?;
     if pos + 3 != content.len() {
         return None; // the first " ::" is not at the end ⇒ consume:All fails ⇒ no definition
     }
@@ -3047,6 +3095,7 @@ fn collapse_resume(flat_indents: &[u32], p_indent: u32) -> usize {
     let mut cur_indent = p_indent;
     let mut cur_index = flat_indents.len();
     loop {
+        crate::metrics::scan_work(cur_index);
         let q = (0..cur_index).rev().find(|&j| flat_indents[j] <= cur_indent);
         match q {
             None => return cur_index,                                       // first item overall
@@ -3203,9 +3252,11 @@ fn md_property_non_space_eol(b: u8) -> bool {
 }
 
 fn skip_md_property_spaces(bytes: &[u8], mut i: usize) -> usize {
+    let start = i;
     while i < bytes.len() && md_property_space(bytes[i]) {
         i += 1;
     }
+    crate::metrics::scan_work(i - start + usize::from(i < bytes.len()));
     i
 }
 
@@ -3216,9 +3267,12 @@ fn trim_md_property_value(s: &str) -> &str {
     while start < end && md_property_trim(bytes[start]) {
         start += 1;
     }
+    let leading_work = start + usize::from(start < bytes.len());
     while end > start && md_property_trim(bytes[end - 1]) {
         end -= 1;
     }
+    let trailing_work = bytes.len() - end + usize::from(end > start);
+    crate::metrics::scan_work(leading_work + trailing_work);
     &s[start..end]
 }
 
@@ -3247,6 +3301,7 @@ fn fold_md_property_group<'a>(
     let mut span_end = first_end;
 
     while cur < hi {
+        crate::metrics::scan_work(1);
         let text = line_text(lines, cur, strip_ctx);
         if let Some(kv) = property(text) {
             props.push(Property::parse1(kv));
@@ -3271,6 +3326,7 @@ fn fold_md_property_group<'a>(
         if text.is_empty() {
             let mut k = cur + 1;
             while k < hi && line_text(lines, k, strip_ctx).is_empty() {
+                crate::metrics::scan_work(1);
                 k += 1;
             }
             if k < hi {
@@ -3308,6 +3364,7 @@ fn fold_adjacent_md_properties_drawer<'a>(
     }
     let mut props = Vec::new();
     for k in opener + 1..close {
+        crate::metrics::scan_work(1);
         props.push(drawer_property(line_text(lines, k, strip_ctx)).map(Property::parse1)?);
     }
     Some((props, close + 1, lines[close].end))
@@ -3345,6 +3402,7 @@ fn fold_md_footnote_def<'a>(
     let mut last_content_line = first_line;
     let mut j = first_line + 1;
     while j < hi {
+        crate::metrics::scan_work(1);
         match md_footnote_body_line(line_text(lines, j, strip_ctx), line_has_nl(input, &lines[j])) {
             Some(content) => {
                 append_line_joiner(
@@ -3370,6 +3428,7 @@ fn fold_md_footnote_def<'a>(
         }
     }
     while j < hi && lines[j].text.is_empty() {
+        crate::metrics::scan_work(1);
         j += 1;
     }
     Some(MdFootnoteFold {
@@ -3394,10 +3453,12 @@ fn md_footnote_def_start(s: &str) -> Option<(String, &str)> {
         }
         end += 1;
     }
+    crate::metrics::scan_work(end + usize::from(end < bytes.len()));
     if end == 0 || bytes.get(end) != Some(&b']') {
         return None;
     }
     let after = rest[end + 1..].strip_prefix(':')?;
+    crate::metrics::scan_work(end);
     Some((rest[..end].to_string(), mldoc_trim_spaces_start(after)))
 }
 
@@ -3410,6 +3471,7 @@ fn md_footnote_body_line(text: &str, followed_by_nl: bool) -> Option<&str> {
         return None;
     }
     let eol = bytes.iter().position(|&b| b == b'\r' || b == b'\n');
+    crate::metrics::scan_work(eol.map_or(bytes.len(), |pos| pos + 1));
     let core_len = eol.unwrap_or(bytes.len());
     if core_len < 2 {
         return None;
@@ -3426,8 +3488,11 @@ fn md_footnote_body_line(text: &str, followed_by_nl: bool) -> Option<&str> {
 /// drawer (mldoc drawer.ml `parse2`). Returns (name, value).
 fn directive_property(s: &str) -> Option<(String, String)> {
     let t = mldoc_trim_spaces_start(s).strip_prefix("#+")?;
-    let pos = t.find(':')?;
+    let found = t.find(':');
+    crate::metrics::scan_work(found.map_or(t.len(), |pos| pos + 1));
+    let pos = found?;
     let key = &t[..pos];
+    crate::metrics::scan_work(key.len());
     if key.is_empty()
         || key
             .bytes()
@@ -3436,6 +3501,7 @@ fn directive_property(s: &str) -> Option<(String, String)> {
         return None;
     }
     let value = mldoc_trim_spaces_start(&t[pos + 1..]);
+    crate::metrics::scan_work(key.len() + value.len());
     Some((key.to_string(), value.to_string()))
 }
 
@@ -3496,6 +3562,7 @@ fn build_def_list(
     let mut items = Vec::new();
     let mut term_i = i;
     loop {
+        crate::metrics::scan_work(1);
         let term = mldoc_trim_spaces_start(line_text(lines, term_i, strip_ctx)); // name = `spaces *> line`
         let name = stub_inline_mapped(
             term,
@@ -3508,6 +3575,7 @@ fn build_def_list(
         let mut content: Vec<Block> = Vec::new();
         let mut j = term_i + 1;
         while j < hi && is_def_opener(line_text(lines, j, strip_ctx)) {
+            crate::metrics::scan_work(1);
             // item first line: drop `<spaces>:` then the required ws (and any more spaces).
             let line = line_text(lines, j, strip_ctx);
             let first =
@@ -3526,6 +3594,7 @@ fn build_def_list(
             j += 1;
             // continuation lines (non-`:`-leading, same ≥2-byte rule), joined with '\n'.
             while j < hi && is_def_continuation(line_text(lines, j, strip_ctx)) {
+                crate::metrics::scan_work(1);
                 append_line_joiner(
                     &mut item_text,
                     &mut item_map,
@@ -3574,6 +3643,7 @@ fn build_def_list(
 
         // absorb true-empty lines only (mldoc `definition_parse <* optional eols`).
         while j < hi && line_text(lines, j, strip_ctx).is_empty() {
+            crate::metrics::scan_work(1);
             j += 1;
         }
         if j < hi
@@ -3597,7 +3667,11 @@ fn callout_begin(s: &str) -> Option<String> {
         // leads) is NOT a block — a plain paragraph. (Do NOT `split_whitespace`-skip leading ws.)
         let rest = &t[8..];
         let n = rest.bytes().take_while(|&b| !mldoc_is_space(b)).count();
-        (n > 0).then(|| rest[..n].to_string())
+        crate::metrics::scan_work(n + usize::from(n < rest.len()));
+        (n > 0).then(|| {
+            crate::metrics::scan_work(n);
+            rest[..n].to_string()
+        })
     } else {
         None
     }
@@ -3631,11 +3705,13 @@ fn raw_callout_block(
     span_start: usize,
     strip_ctx: StripCtx<'_>,
 ) -> (Block, usize) {
+    crate::metrics::scan_work(close.saturating_sub(i + 1));
     let texts: Vec<&str> = (i + 1..close).map(|k| line_text(lines, k, strip_ctx)).collect();
     let code = crate::org::block_code_texts(&texts);
     let mut ni = close + 1;
     let mut end = lines[close].end;
     while ni < hi && lines[ni].text.is_empty() {
+        crate::metrics::scan_work(1);
         end = lines[ni].end;
         ni += 1;
     }
@@ -3654,11 +3730,14 @@ fn drawer_begin(s: &str) -> Option<String> {
     while start < bytes.len() && matches!(bytes[start], b' ' | b'\t' | 0x0c | 0x1a) {
         start += 1;
     }
+    crate::metrics::scan_work(start + usize::from(start < bytes.len()));
     let inner = s[start..].strip_prefix(':')?.strip_suffix(':')?;
     if inner.is_empty() {
         return None;
     }
+    crate::metrics::scan_work(inner.len());
     if inner.bytes().all(|b| b != b':' && b != b' ' && b != b'\n' && b != b'\r') {
+        crate::metrics::scan_work(inner.len());
         Some(inner.to_ascii_lowercase())
     } else {
         None
@@ -4363,6 +4442,7 @@ mod tests {
 /// is a Paragraph, not a row (C3: prevents table over-detection + phantom refs).
 fn md_table_row(s: &str) -> bool {
     let t = ocaml_trim_end(mldoc_trim_spaces_start(s));
+    crate::metrics::scan_work(usize::from(!t.is_empty()) * 2);
     t.len() >= 2 && t.starts_with('|') && t.ends_with('|')
 }
 
@@ -4411,6 +4491,7 @@ fn md_table_line(s: &str, has_nl: bool) -> bool {
 }
 
 fn md_tblfm_line(s: &str) -> bool {
+    crate::metrics::scan_work("#+TBLFM:".len().min(s.len()));
     mldoc_trim_spaces_start(s).starts_with("#+TBLFM:")
 }
 
@@ -4445,6 +4526,7 @@ fn md_separator_aligns(row: MdTableRow<'_>) -> Option<Vec<Option<crate::ast::Ali
     let mut first = None;
     let mut last = None;
     for &b in inner {
+        crate::metrics::scan_work(1);
         match b {
             b'|' => {
                 aligns.push(align_from_sep_cell(has_dash, first, last));
@@ -4477,6 +4559,7 @@ fn build_table(
     source_body: &str,
     origin_cursor: &mut OriginCursor,
 ) -> Block {
+    crate::metrics::scan_work(rows.len());
     let table_rows: Vec<MdTableRow<'_>> =
         rows.iter().map(|l| MdTableRow { text: l.text, has_nl: line_has_nl(input, l) }).collect();
     build_table_from_rows(&table_rows, start, end, input, origin, source_body, origin_cursor)
@@ -4499,6 +4582,7 @@ fn build_table_from_rows(
         let t = ocaml_trim_end(mldoc_trim_spaces_start(s));
         let t = t.strip_prefix('|').unwrap_or(t);
         let t = t.strip_suffix('|').unwrap_or(t);
+        crate::metrics::scan_work(t.len());
         t.split('|')
             .map(|c| {
                 let c = ocaml_trim(c);

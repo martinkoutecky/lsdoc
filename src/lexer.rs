@@ -200,8 +200,10 @@ fn lex_backslash(
             while j < n && b[j].is_ascii_alphabetic() {
                 j += 1;
             }
+            crate::metrics::scan_work(j - start + usize::from(j < n));
             let name = &s[start..j];
             if s[j..].starts_with("{}") {
+                crate::metrics::scan_work(2);
                 j += 2;
             }
             match crate::entities::find(name) {
@@ -215,6 +217,7 @@ fn lex_backslash(
                     toks.push(Token {
                         off: at,
                         kind: Kind::Leaf(Inline::Entity {
+                            // scan-owner: (a) consumed-on-match — Markdown entity strings copied after run is consumed
                             name: e.name.to_string(),
                             latex: e.latex.to_string(),
                             latex_mathp: e.latex_mathp,
@@ -228,6 +231,7 @@ fn lex_backslash(
                 None => {
                     // unknown entity → the bare letters, as a fresh-making Escape token.
                     flush_into(pending, pending_off, toks);
+                    crate::metrics::scan_work(name.len());
                     toks.push(Token { off: at, kind: Kind::Escape(name.to_string()) });
                 }
             }
@@ -237,6 +241,7 @@ fn lex_backslash(
             // escape: drop the backslash, keep the punctuation literally (Escape token).
             let w = char_len(ch);
             flush_into(pending, pending_off, toks);
+            crate::metrics::scan_work(w);
             toks.push(Token { off: at, kind: Kind::Escape(s[at + 1..at + 1 + w].to_string()) });
             *i = at + 1 + w;
         }
@@ -270,12 +275,15 @@ pub(crate) fn code_span(s: &str, at: usize) -> Option<(Inline, usize)> {
         while j < n && b[j] != b'`' && b[j] != b'\n' && b[j] != b'\r' {
             j += 1;
         }
+        crate::metrics::scan_work(j - start + usize::from(j < n));
         if j > start && j < n && b[j] == b'`' {
+            crate::metrics::scan_work(j - start);
             return Some((Inline::Code { text: s[start..j].to_string(), span: None }, j + 1));
         }
         return None;
     }
     let start = at + 2;
     let end = crate::inline::find_sub(b, start, b"``")?;
+    crate::metrics::scan_work(end - start);
     Some((Inline::Code { text: s[start..end].to_string(), span: None }, end + 2))
 }

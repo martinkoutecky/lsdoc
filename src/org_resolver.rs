@@ -501,7 +501,9 @@ fn take_while1_include_backslash(
 }
 
 fn push_plain_node(out: &mut Vec<Inline>, text: &str, start: usize, end: usize, base: usize) {
+    crate::metrics::scan_work(text.len());
     if text.as_bytes().contains(&b'\r') {
+        crate::metrics::scan_work(text.len());
         out.push(crate::source_map::make_plain(
             text.replace('\r', "\n"),
             Span(base + start, base + end),
@@ -510,6 +512,7 @@ fn push_plain_node(out: &mut Vec<Inline>, text: &str, start: usize, end: usize, 
             base + start,
         ));
     } else {
+        crate::metrics::scan_work(text.len());
         out.push(Inline::Plain {
             text: text.to_string(),
             span: Some(Span(base + start, base + end)),
@@ -714,6 +717,7 @@ fn org_emphasis_at(
         return Err(EmFail::NotMatch);
     };
     let mut parse = |pattern: &str, typ: &str, k: usize, lookahead: bool| {
+        crate::metrics::scan_work(pattern.len());
         let cls = class_idx(ch);
         if no_closer[cls][k - 1] {
             return Err(EmFail::NotMatch);
@@ -768,7 +772,9 @@ fn aux_nested_emphasis_org(node: Inline) -> Inline {
             span,
         } => {
             let mut reparsed = Vec::new();
+            // scan-owner: (b) suffix-absence miss-cache / accepted subtree — Org nested-emphasis child repair
             for child in children {
+                crate::metrics::scan_work(1);
                 match child {
                     Inline::Plain {
                         text,
@@ -833,7 +839,9 @@ fn parse_nested_plain_org(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
     let terminal_odd_backslash = ends_with_odd_backslash_run(bb);
     let mut script_rbrace_scan = crate::inline::ByteBeforeEolScan::new(b'}');
     let mut org_inline_scan = OrgInlineScan::new();
+    // scan-owner: (a) consumed-on-match — Org nested plain reparse cursor
     while i < bb.len() {
+        crate::metrics::scan_work(1);
         if matches!(bb[i], b'*' | b'_' | b'/' | b'+' | b'^') {
             if let Ok(hit) =
                 org_emphasis_at(text, i, None, &mut no_closer, base, terminal_odd_backslash)
@@ -950,6 +958,7 @@ pub(crate) fn try_nested_link_or_link_org(
     base: usize,
     scan: &mut OrgInlineScan,
 ) -> Option<(Inline, usize)> {
+    crate::metrics::scan_work(2);
     if s[at..].starts_with("[[") {
         if let Some((end, node)) = org_link_1_at(s, bb, at, base, scan) {
             return Some((node, end));
@@ -974,7 +983,9 @@ pub(crate) fn try_nested_link_or_link_org(
 
 fn concat_plains_without_pos(nodes: Vec<Inline>) -> Vec<Inline> {
     let mut out: Vec<Inline> = Vec::new();
+    // scan-owner: (a2) caller-owned accepted range — Org plain-node concatenation
     for node in nodes {
+        crate::metrics::scan_work(1);
         match (out.last_mut(), node) {
             (
                 Some(Inline::Plain {
@@ -1010,6 +1021,7 @@ fn concat_plains_without_pos(nodes: Vec<Inline>) -> Vec<Inline> {
                         }
                     }
                 }
+                crate::metrics::scan_work(text.len());
                 prev.push_str(&text);
                 *prev_span = match (*prev_span, span) {
                     (Some(Span(start, _)), Some(Span(_, end))) => Some(Span(start, end)),
@@ -1046,6 +1058,8 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     // Bracket-pairing maps (shared with md; computed once when `[` is present) + monotone
     // closer cursors (the v1 `seq_present`/`has_rbracket`/`next_real_dbl`/`next_crlf` floors,
     // expressed as forward cursors — keep the gated `[`×n / `{{ `×n / `(( `×n runs linear).
+    // scan-owner: (b) monotone cursor + per-buffer memos — Org bracket precompute gate
+    crate::metrics::scan_work(bb.len());
     let has_brk = bb.contains(&b'[');
     let nested_close = if has_brk {
         crate::inline::build_nested_close(s)
@@ -1076,6 +1090,8 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut bare_url_scan = crate::inline::BareUrlScan::new();
     let mut org_inline_scan = OrgInlineScan::new();
     let terminal_odd_backslash = ends_with_odd_backslash_run(bb);
+    // scan-owner: (b) monotone cursor + per-buffer memos — Org tag boundary precompute gate
+    crate::metrics::scan_work(bb.len());
     let tag_boundary_runs = if ctx.tags && bb.contains(&b'#') {
         crate::inline::build_tag_boundary_runs(s)
     } else {
@@ -1277,7 +1293,9 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     }
 
     let mut t = 0usize;
+    // scan-owner: (b) monotone cursor + per-buffer memos — Org resolver token loop
     while t < toks.len() {
+        crate::metrics::scan_work(1);
         let off = toks[t].off;
         match org_dispatch_byte(&toks[t].kind) {
             // inline.ml:1376 — `| '\n' -> breakline`
@@ -1659,7 +1677,9 @@ fn try_script(
         while j < n && bb[j] != b'}' && bb[j] != b'\n' && bb[j] != b'\r' {
             j += 1;
         }
+        crate::metrics::scan_work(j - body_start + usize::from(j < n));
         if j < n && bb[j] == b'}' && j > body_start {
+            crate::metrics::scan_work(j - body_start);
             Some((s[body_start..j].to_string(), body_start, j + 1))
         } else {
             None
@@ -1678,6 +1698,8 @@ fn try_script(
         while j < n && !is_org_space(bb[j]) {
             j += char_len(bb[j]);
         }
+        crate::metrics::scan_work(j - start + usize::from(j < n));
+        crate::metrics::scan_work(j - start);
         (s[start..j].to_string(), start, j)
     };
     let children = parse_org_script_body(&content, base + content_start);
@@ -1704,7 +1726,9 @@ fn parse_org_script_body(text: &str, base: usize) -> Vec<Inline> {
     let mut i = 0usize;
     let mut no_closer = [[false; 2]; 5];
     let terminal_odd_backslash = ends_with_odd_backslash_run(bb);
+    // scan-owner: (a) consumed-on-match / caller-gated — Org script body cursor
     while i < bb.len() {
+        crate::metrics::scan_work(1);
         if matches!(bb[i], b'*' | b'_' | b'/' | b'+' | b'^') {
             if let Ok(hit) =
                 org_emphasis_at(text, i, None, &mut no_closer, base, terminal_odd_backslash)
@@ -1727,7 +1751,10 @@ fn parse_org_script_body(text: &str, base: usize) -> Vec<Inline> {
             }
         }
         return vec![Inline::Plain {
-            text: text.to_string(),
+            text: {
+                crate::metrics::scan_work(text.len());
+                text.to_string()
+            },
             span: Some(Span(base, base + text.len())),
             span_map: None,
         }];
@@ -1744,33 +1771,43 @@ fn org_entity_at(s: &str, bb: &[u8], i: usize, base: usize) -> Option<(Inline, u
     while end < bb.len() && bb[end].is_ascii_alphabetic() {
         end += 1;
     }
+    crate::metrics::scan_work(end - start + usize::from(end < bb.len()));
     let name = &s[start..end];
     if s[end..].starts_with("{}") {
+        crate::metrics::scan_work(2);
         end += 2;
     }
     match crate::entities::find(name) {
-        Some(e) => Some((
-            Inline::Entity {
-                name: e.name.to_string(),
-                latex: e.latex.to_string(),
-                latex_mathp: e.latex_mathp,
-                html: e.html.to_string(),
-                ascii: e.ascii.to_string(),
-                unicode: e.unicode.to_string(),
-                span: Some(Span(base + i, base + end)),
-            },
-            end,
-        )),
-        None => Some((
-            crate::source_map::make_plain(
-                name.to_string(),
-                Span(base + i, base + end),
-                vec![OriginSegment::new(0, base + i + 1, name.len(), name.len())],
-                s,
-                base,
-            ),
-            end,
-        )),
+        Some(e) => {
+            crate::metrics::scan_work(
+                e.name.len() + e.latex.len() + e.html.len() + e.ascii.len() + e.unicode.len(),
+            );
+            Some((
+                Inline::Entity {
+                    name: e.name.to_string(),
+                    latex: e.latex.to_string(),
+                    latex_mathp: e.latex_mathp,
+                    html: e.html.to_string(),
+                    ascii: e.ascii.to_string(),
+                    unicode: e.unicode.to_string(),
+                    span: Some(Span(base + i, base + end)),
+                },
+                end,
+            ))
+        }
+        None => {
+            crate::metrics::scan_work(name.len());
+            Some((
+                crate::source_map::make_plain(
+                    name.to_string(),
+                    Span(base + i, base + end),
+                    vec![OriginSegment::new(0, base + i + 1, name.len(), name.len())],
+                    s,
+                    base,
+                ),
+                end,
+            ))
+        }
     }
 }
 
@@ -1792,7 +1829,9 @@ fn class_idx(c: u8) -> usize {
 /// token at/after byte `end`. Emphasis/script ends land on a token boundary; tag/bare-url
 /// straddles are handled by `resync_straddle`.
 fn resync(toks: &[Token], mut t: usize, end: usize) -> usize {
+    // scan-owner: (a2) caller-owned accepted range — Org token resync cursor
     while t < toks.len() && toks[t].off < end {
+        crate::metrics::scan_work(1);
         t += 1;
     }
     t
@@ -1836,23 +1875,35 @@ fn org_backslash_at(s: &str, bb: &[u8], i: usize, ctx: Ctx, latex_ok: bool) -> (
             while j < n && bb[j].is_ascii_alphabetic() {
                 j += 1;
             }
+            crate::metrics::scan_work(j - start + usize::from(j < n));
+            crate::metrics::scan_work(j - start);
             let name = s[start..j].to_string();
             if s[j..].starts_with("{}") {
+                crate::metrics::scan_work(2);
                 j += 2;
             }
             return match crate::entities::find(&name) {
-                Some(e) => (
-                    Bs::Node(Inline::Entity {
-                        name: e.name.to_string(),
-                        latex: e.latex.to_string(),
-                        latex_mathp: e.latex_mathp,
-                        html: e.html.to_string(),
-                        ascii: e.ascii.to_string(),
-                        unicode: e.unicode.to_string(),
-                        span: None,
-                    }),
-                    j,
-                ),
+                Some(e) => {
+                    crate::metrics::scan_work(
+                        e.name.len()
+                            + e.latex.len()
+                            + e.html.len()
+                            + e.ascii.len()
+                            + e.unicode.len(),
+                    );
+                    (
+                        Bs::Node(Inline::Entity {
+                            name: e.name.to_string(),
+                            latex: e.latex.to_string(),
+                            latex_mathp: e.latex_mathp,
+                            html: e.html.to_string(),
+                            ascii: e.ascii.to_string(),
+                            unicode: e.unicode.to_string(),
+                            span: None,
+                        }),
+                        j,
+                    )
+                }
                 None => (Bs::Plain(name), j),
             };
         }
@@ -1860,9 +1911,13 @@ fn org_backslash_at(s: &str, bb: &[u8], i: usize, ctx: Ctx, latex_ok: bool) -> (
     match bb.get(i + 1) {
         Some(&c) if c.is_ascii_punctuation() => {
             let w = char_len(c);
+            crate::metrics::scan_work(1 + w);
             (Bs::Plain(s[i..i + 1 + w].to_string()), i + 1 + w)
         }
-        _ => (Bs::Plain("\\".to_string()), i + 1),
+        _ => {
+            crate::metrics::scan_work(1);
+            (Bs::Plain("\\".to_string()), i + 1)
+        }
     }
 }
 
@@ -1898,6 +1953,7 @@ fn resync_straddle(
     timestamp_scan: &mut crate::inline::TimestampCloseScan,
 ) -> usize {
     let n = s.len();
+    // scan-owner: (a2) caller-owned accepted range — Org straddle token resync cursor
     while t < toks.len()
         && (if t + 1 < toks.len() {
             toks[t + 1].off
@@ -1905,6 +1961,7 @@ fn resync_straddle(
             n
         }) <= end
     {
+        crate::metrics::scan_work(1);
         t += 1;
     }
     if t < toks.len() && toks[t].off < end {
@@ -1959,6 +2016,7 @@ fn resync_straddle(
             tail.len(),
         ));
         *fresh = !tail.is_empty() && tail.bytes().all(crate::inline::is_ws);
+        crate::metrics::scan_work(tail.len());
         pending.push_str(tail);
         t += 1;
     } else {
@@ -1979,7 +2037,9 @@ fn try_code_verbatim_at(s: &str, bb: &[u8], i: usize, marker: u8) -> Option<(Inl
     while j < n && bb[j] != marker && bb[j] != b'\n' && bb[j] != b'\r' {
         j += 1;
     }
+    crate::metrics::scan_work(j - start + usize::from(j < n));
     if j > start && j < n && bb[j] == marker {
+        crate::metrics::scan_work(j - start);
         let body = s[start..j].to_string();
         let node = if marker == b'~' {
             Inline::Code {
@@ -2020,6 +2080,7 @@ fn try_target_angle_at(
         let inner_start = i + 2;
         if let Some(j) = org_inline_scan.target_gt_close(bb, inner_start) {
             if j > inner_start && j + 1 < n && bb[j] == b'>' && bb[j + 1] == b'>' {
+                crate::metrics::scan_work(j - inner_start);
                 return Some((
                     Inline::Target {
                         text: s[inner_start..j].to_string(),
@@ -2039,6 +2100,7 @@ fn try_target_angle_at(
                 && bb[j + 1] == b'>'
                 && bb[j + 2] == b'>'
             {
+                crate::metrics::scan_work(j - inner_start);
                 return Some((
                     Inline::Target {
                         text: s[inner_start..j].to_string(),
@@ -2090,6 +2152,7 @@ fn try_macro_at(s: &str, bb: &[u8], i: usize) -> Option<(Inline, usize)> {
         while j < n && bb[j] != b'}' && bb[j] != b'\n' && bb[j] != b'\r' {
             j += 1;
         }
+        crate::metrics::scan_work(j - inner_start + usize::from(j < n));
         if j == inner_start || !s[j..].starts_with(close) {
             continue;
         }
@@ -2118,10 +2181,13 @@ fn try_block_ref_at(s: &str, bb: &[u8], i: usize) -> Option<(Inline, usize)> {
     while j < n && bb[j] != b')' {
         j += 1;
     }
+    crate::metrics::scan_work(j - inner_start + usize::from(j < n));
     if j == inner_start {
         return None;
     }
     if j + 1 < n && bb[j] == b')' && bb[j + 1] == b')' {
+        crate::metrics::scan_work(j - inner_start);
+        crate::metrics::scan_work(j + 2 - i);
         let inner = s[inner_start..j].to_string();
         let full = s[i..j + 2].to_string();
         return Some((
@@ -2176,7 +2242,9 @@ fn try_bracket_at(
                 ));
             }
         }
+        // scan-owner: (b) OrgInlineScan owner / (a) accepted copy — Org real-dbl cursor
         while real_dbl.get(*real_dbl_cur).is_some_and(|&p| p < off + 2) {
+            crate::metrics::scan_work(1);
             *real_dbl_cur += 1;
         }
         if let Some(&d) = real_dbl.get(*real_dbl_cur) {
@@ -2207,6 +2275,7 @@ fn try_bracket_at(
     }
     if ctx.hiccup && bb.get(off + 1) == Some(&b':') && crate::inline::hiccup_head_ok(s, off) {
         if let Some(end) = hiccup_close.get(off).copied().filter(|&e| e != usize::MAX) {
+            crate::metrics::scan_work(end - off);
             return Some((
                 Inline::Hiccup {
                     v: s[off..end].to_string(),
@@ -2238,7 +2307,9 @@ fn org_link_1_at(
     }
     let label_start = j + 2;
     let close = find_org_label_end(bb, label_start, scan)?;
+    crate::metrics::scan_work(j - url_start);
     let url_text = s[url_start..j].to_string();
+    crate::metrics::scan_work(close - label_start);
     let label_text = s[label_start..close].to_string();
     let mut end = close + 2;
     let metadata = read_metadata(s, bb, &mut end, scan);
@@ -2246,9 +2317,13 @@ fn org_link_1_at(
     // label_text is a raw slice of `s` starting at `label_start` → children index off that.
     let label = parse_ctx(&label_text, Ctx::label(), base + label_start);
     let label_first = match label.first() {
-        Some(Inline::Plain { text, .. }) => text.clone(),
+        Some(Inline::Plain { text, .. }) => {
+            crate::metrics::scan_work(text.len());
+            text.clone()
+        }
         _ => String::new(),
     };
+    crate::metrics::scan_work(url_text.len() + label_first.len() + metadata.len() + 6);
     let full = format!("[[{}][{}]]{}", url_text, label_first, metadata);
     // span set by the caller over [at, end).
     Some((
@@ -2318,14 +2393,19 @@ fn org_link_2_at(
     let name_start = at + 2;
     scan.check_source(bb.len());
     let close = scan.page_ref_scan().org_link2_close(bb, at)?;
+    crate::metrics::scan_work(close - name_start);
     let name = s[name_start..close].to_string();
     let url = crate::org::classify_org_link_2(&name);
+    crate::metrics::scan_work(name.len() + 4);
     let full = format!("[[{}]]", name);
     // the synthetic label (== name) is a raw slice of `s` at `name_start` → span it.
     let label = match &url {
         crate::projection::Url::PageRef { .. } => vec![],
             _ => vec![Inline::Plain {
-                text: name.clone(),
+                text: {
+                    crate::metrics::scan_work(name.len());
+                    name.clone()
+                },
                 span: Some(Span(base + name_start, base + close)),
                 span_map: None,
             }],
@@ -2489,6 +2569,7 @@ fn org_balanced_label_chunk(bb: &[u8], at: usize, scan: &mut OrgInlineScan) -> u
 fn read_metadata(s: &str, bb: &[u8], end: &mut usize, scan: &mut OrgInlineScan) -> String {
     if bb.get(*end) == Some(&b'{') {
         if let Some(close) = scan.metadata_close(bb, *end + 1) {
+            crate::metrics::scan_work(close + 1 - *end);
             let meta = s[*end..close + 1].to_string();
             *end = close + 1;
             return meta;
@@ -2513,9 +2594,11 @@ fn org_footnote_at(s: &str, i: usize, scan: &mut OrgInlineScan) -> Option<(usize
     while j < rb.len() && rb[j] != b':' && rb[j] != b']' && rb[j] != b'\n' && rb[j] != b'\r' {
         j += 1;
     }
+    crate::metrics::scan_work(j + usize::from(j < rb.len()));
     if j == 0 {
         return None;
     }
+    crate::metrics::scan_work(j);
     let name = rest[..j].to_string();
     let after = &rest[j..];
     if after.starts_with(':') {

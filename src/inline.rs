@@ -174,36 +174,48 @@ fn first_footnote_ref_stop_for_scan(bb: &[u8], from: usize) -> usize {
 }
 
 /// First index of `needle` in `b[from..]`, or None. (No newline restriction.)
+// scan-owner: (a2) caller-owned slice helper — raw current-slice search helper
 pub(crate) fn find_sub(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || from > b.len() {
         return None;
     }
     let mut i = from;
+    let mut scanned = 0usize;
     while i + needle.len() <= b.len() {
+        scanned += needle.len();
         if &b[i..i + needle.len()] == needle {
+            crate::metrics::scan_work(scanned);
             return Some(i);
         }
         i += 1;
     }
+    crate::metrics::scan_work(scanned);
     None
 }
 
 /// Like `find_sub` but stops at a newline (returns None if a `\n` precedes needle).
 #[allow(dead_code)]
+// scan-owner: (a2) caller-owned slice helper — raw current-line search helper
 pub(crate) fn find_sub_line(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     if needle.is_empty() {
         return None;
     }
     let mut i = from;
+    let mut scanned = 0usize;
     while i + needle.len() <= b.len() {
+        scanned += 1;
         if b[i] == b'\n' {
+            crate::metrics::scan_work(scanned);
             return None;
         }
+        scanned += needle.len();
         if &b[i..i + needle.len()] == needle {
+            crate::metrics::scan_work(scanned);
             return Some(i);
         }
         i += 1;
     }
+    crate::metrics::scan_work(scanned);
     None
 }
 
@@ -713,7 +725,10 @@ impl PageRefScan {
             .copied()
             .unwrap_or(PR_MEMO_UNSEEN);
         if cached != PR_MEMO_UNSEEN {
-            return (cached != PR_MEMO_NONE).then(|| (cached, s[at..cached].to_string()));
+            return (cached != PR_MEMO_NONE).then(|| {
+                crate::metrics::scan_work(cached - at);
+                (cached, s[at..cached].to_string())
+            });
         }
         let end = match_brackets_end_with_scan(s, at, self).and_then(|end| {
             let inner = &s[at + 2..end - 2];
@@ -723,7 +738,10 @@ impl PageRefScan {
             let memo = self.nested_link_memo(s.len());
             memo[at] = end.unwrap_or(PR_MEMO_NONE);
         }
-        end.map(|end| (end, s[at..end].to_string()))
+        end.map(|end| {
+            crate::metrics::scan_work(end - at);
+            (end, s[at..end].to_string())
+        })
     }
 }
 
@@ -813,6 +831,7 @@ fn build_page_ref(s: &str, at: usize, end: usize) -> (usize, String, String) {
     let name_start = at + 2;
     let close = end - 2;
     let name = unescape(&s[name_start..close]); // value is unescaped; full stays raw
+    crate::metrics::scan_work(end - at);
     let full = s[at..end].to_string();
     (end, name, full)
 }
@@ -852,11 +871,13 @@ fn page_ref_close_raw(b: &[u8], name_start: usize) -> usize {
 }
 
 /// nested link `[[ ... ]]` whose inner text parses into >1 (label | nested) child.
+// scan-owner: (b) PageRefScan owner / (a) accepted copy — page/nested-link accepted copy
 pub(crate) fn parse_nested_link(s: &str, at: usize) -> Option<(usize, String)> {
     let end = match_brackets_end_raw(s, at)?;
     let content = &s[at..end];
     let inner = &content[2..content.len() - 2];
     if nested_children_count(inner) > 1 {
+        crate::metrics::scan_work(content.len());
         Some((end, content.to_string()))
     } else {
         None
@@ -873,11 +894,14 @@ pub(crate) fn parse_nested_link_with_scan(
 
 /// Bracket matcher: from `[[`, count levels using `]]` chunks (mldoc match_brackets).
 /// Returns (end_index, matched_string). Stops at a newline (returns None).
+// scan-owner: (b) PageRefScan owner / (a) accepted copy — page/nested-link accepted copy
 fn match_brackets(s: &str, at: usize) -> Option<(usize, String)> {
     let end = match_brackets_end_raw(s, at)?;
+    crate::metrics::scan_work(end - at);
     Some((end, s[at..end].to_string()))
 }
 
+// scan-owner: (a2) caller-owned slice helper — raw nested-link bracket walk helper
 fn match_brackets_end_raw(s: &str, at: usize) -> Option<usize> {
     let b = s.as_bytes();
     if !s[at..].starts_with("[[") {
@@ -915,6 +939,7 @@ fn match_brackets_end_with_scan(s: &str, at: usize, scan: &mut PageRefScan) -> O
     }
 }
 
+// scan-owner: (a2) caller-owned slice helper — raw next-]]-or-newline helper
 fn next_rr_or_nl_raw(b: &[u8], from: usize) -> Option<usize> {
     let mut k = from;
     while k + 1 < b.len() {
@@ -932,6 +957,7 @@ fn next_rr_or_nl_raw(b: &[u8], from: usize) -> Option<usize> {
     None
 }
 
+// scan-owner: (a2) caller-owned slice helper — raw substring count helper
 fn count_occurrences(hay: &str, needle: &str) -> usize {
     if needle.is_empty() {
         return 0;
@@ -954,9 +980,11 @@ fn count_occurrences(hay: &str, needle: &str) -> usize {
 
 /// Count the (label | inner-nested-link) children of a nested-link's inner text.
 /// Returns 1 if the inner text doesn't fully decompose (mldoc: single Label fallback).
+// scan-owner: (a2) caller-owned slice helper — nested-link child count over accepted inner text
 fn nested_children_count(inner: &str) -> usize {
     let b = inner.as_bytes();
     let n = b.len();
+    crate::metrics::scan_work(n);
     let mut j = 0;
     let mut count = 0;
     while j < n {
@@ -1123,6 +1151,7 @@ fn reparse_tag_name(
                 plain_start = $local_start;
             }
             plain_end = $local_end;
+            crate::metrics::scan_work($local_end - $local_start);
             plain.push_str(&tag[$local_start..$local_end]);
         }};
     }
@@ -1185,7 +1214,12 @@ fn reparse_tag_name(
 }
 
 fn tag_plain(raw: &str, abs_start: usize, abs_end: usize, unescape_plain: bool) -> Inline {
-    let text = if unescape_plain { unescape(raw) } else { raw.to_string() };
+    let text = if unescape_plain {
+        unescape(raw)
+    } else {
+        crate::metrics::scan_work(raw.len());
+        raw.to_string()
+    };
     if unescape_plain && raw.contains('\\') {
         crate::source_map::make_plain(
             text,
@@ -1271,6 +1305,7 @@ fn concat_plains(nodes: Vec<Inline>) -> Vec<Inline> {
                         }
                     }
                 }
+                crate::metrics::scan_work(text.len());
                 prev.push_str(&text);
                 *prev_span = match (*prev_span, span) {
                     (Some(Span(start, _)), Some(Span(_, end))) => Some(Span(start, end)),
@@ -1287,6 +1322,7 @@ fn concat_plains(nodes: Vec<Inline>) -> Vec<Inline> {
 
 /// Parse a macro inner string into (name, args). Returns None if arg splitting
 /// doesn't consume the whole arg string with valid macro_args (mldoc consume:All).
+// scan-owner: (b) fresh macro-buffer PageRefScan / (a) accepted copy — macro name/arg scan and copies
 pub(crate) fn parse_macro(inner: &str) -> Option<(String, Vec<String>)> {
     let b = inner.as_bytes();
     let n = b.len();
@@ -1295,9 +1331,11 @@ pub(crate) fn parse_macro(inner: &str) -> Option<(String, Vec<String>)> {
     while j < n && b[j] != b'}' && b[j] != b'(' && b[j] != b' ' {
         j += char_len(b[j]);
     }
+    crate::metrics::scan_work(j + usize::from(j < n));
     if j == 0 {
         return None;
     }
+    crate::metrics::scan_work(j);
     let name = inner[..j].to_string();
     let args_str = &inner[j..];
     if args_str.is_empty() {
@@ -1316,6 +1354,7 @@ fn parse_macro_args(s: &str, scan: &mut PageRefScan) -> Option<Vec<String>> {
     let mut i = 0;
     let skip_sp = |b: &[u8], mut i: usize| {
         while i < b.len() && b[i] == b' ' {
+            crate::metrics::scan_work(1);
             i += 1;
         }
         i
@@ -1368,6 +1407,7 @@ fn parse_macro_arg(s: &str, at: usize, scan: &mut PageRefScan) -> Option<(String
         let inner_start = at + 2;
         if let Some(j) = scan.first_macro_rparen_at_or_after(b, inner_start) {
             if j > inner_start && j + 1 < n && b[j + 1] == b')' {
+                crate::metrics::scan_work(j + 2 - at);
                 return Some((s[at..j + 2].to_string(), j + 2));
             }
         }
@@ -1375,7 +1415,9 @@ fn parse_macro_arg(s: &str, at: usize, scan: &mut PageRefScan) -> Option<(String
     // quoted "..."
     if b[at] == b'"' {
         let mut j = at + 1;
+        let mut scanned = 0usize;
         while j < n && b[j] != b'"' {
+            scanned += 1;
             if b[j] == b'\\' && j + 1 < n {
                 j += 2;
             } else {
@@ -1383,17 +1425,21 @@ fn parse_macro_arg(s: &str, at: usize, scan: &mut PageRefScan) -> Option<(String
             }
         }
         if j < n && b[j] == b'"' {
+            crate::metrics::scan_work(scanned + 1 + (j + 1 - at));
             return Some((s[at..j + 1].to_string(), j + 1));
         }
+        crate::metrics::scan_work(scanned);
     }
     // until ','
     let mut j = at;
     while j < n && b[j] != b',' {
         j += char_len(b[j]);
     }
+    crate::metrics::scan_work(j - at + usize::from(j < n));
     if j == at {
         return None;
     }
+    crate::metrics::scan_work(j - at);
     Some((s[at..j].to_string(), j))
 }
 
@@ -1842,7 +1888,9 @@ fn materialize_label_part(
     let b = s.as_bytes();
     let mut j = at + 1;
     let mut raw_nodes: Vec<Inline> = Vec::new();
+    let mut walked = 0usize;
     while j < delimiter {
+        walked += 1;
         let c = b[j];
         if let Some(end) = take_while1_include_backslash_len(s, j, b"[]", |c| {
             c != b'\n' && c != b'\r' && !matches!(c, b'`' | b'[' | b']')
@@ -1896,6 +1944,7 @@ fn materialize_label_part(
         push_label_plain(&mut raw_nodes, &s[j..end], base + j);
         j = end;
     }
+    crate::metrics::scan_work(walked);
     (j == delimiter).then_some(raw_nodes)
 }
 
@@ -1910,6 +1959,7 @@ fn finish_markdown_label(nodes: Vec<Inline>, reparse_plain: bool) -> Vec<Inline>
 fn unescape_markdown_label(nodes: Vec<Inline>) -> Vec<Inline> {
     let mut out = Vec::new();
     for node in nodes {
+        crate::metrics::scan_work(1);
         match node {
             Inline::Plain { text, span, .. } => {
                 let value = unescape(&text);
@@ -1963,10 +2013,15 @@ fn push_label_plain(nodes: &mut Vec<Inline>, raw: &str, abs_start: usize) {
 fn label_text_for_full(nodes: &[Inline]) -> String {
     let mut out = String::new();
     for node in nodes {
+        crate::metrics::scan_work(1);
         match node {
-            Inline::Plain { text, .. } => out.push_str(text),
+            Inline::Plain { text, .. } => {
+                crate::metrics::scan_work(text.len());
+                out.push_str(text);
+            }
             Inline::Code { text, .. } => {
                 out.push('`');
+                crate::metrics::scan_work(text.len());
                 out.push_str(text);
                 out.push('`');
             }
@@ -1979,6 +2034,7 @@ fn label_text_for_full(nodes: &[Inline]) -> String {
 fn reparse_markdown_label(nodes: Vec<Inline>) -> Vec<Inline> {
     let mut out = Vec::new();
     for node in nodes {
+        crate::metrics::scan_work(1);
         match node {
             Inline::Plain { text, span, .. } => {
                 let base = span.map(|Span(start, _)| start).unwrap_or(0);
@@ -2018,6 +2074,7 @@ fn reparse_markdown_label(nodes: Vec<Inline>) -> Vec<Inline> {
 fn concat_label_plains(nodes: Vec<Inline>) -> Vec<Inline> {
     let mut out: Vec<Inline> = Vec::new();
     for node in nodes {
+        crate::metrics::scan_work(1);
         match (out.last_mut(), node) {
             (
                 Some(Inline::Plain {
@@ -2053,6 +2110,7 @@ fn concat_label_plains(nodes: Vec<Inline>) -> Vec<Inline> {
                         }
                     }
                 }
+                crate::metrics::scan_work(text.len());
                 prev.push_str(&text);
                 *prev_span = match (*prev_span, span) {
                     (Some(Span(start, _)), Some(Span(_, end))) => Some(Span(start, end)),
@@ -2105,8 +2163,10 @@ where
 
 fn code_inner(span: &str) -> String {
     if span.starts_with("``") {
+        crate::metrics::scan_work(span.len() - 4);
         span[2..span.len() - 2].to_string()
     } else {
+        crate::metrics::scan_work(span.len() - 2);
         span[1..span.len() - 1].to_string()
     }
 }
@@ -2147,6 +2207,7 @@ fn link_url_part_inner(
     let mut j = url_range.start;
     let mut parts: Vec<(MdUrlType, String)> = Vec::new();
     while j < n {
+        crate::metrics::scan_work(1);
         if let Some((kind, value, end)) = url_part_piece(s, j, n, scan.page_ref_scan()) {
             parts.push((kind, value));
             j = end;
@@ -2170,6 +2231,7 @@ fn link_url_part_inner(
         (MdUrlType::Other, parts.into_iter().map(|(_, value)| value).collect())
     };
     while j < n && matches!(b[j], b' ' | b'\t' | 0x16 | 0x0c) {
+        crate::metrics::scan_work(1);
         j += 1;
     }
     let title = if j >= n {
@@ -2184,6 +2246,7 @@ fn link_url_part_inner(
         if j != n {
             return None;
         }
+        crate::metrics::scan_work(end - start);
         Some(s[start..end].to_string())
     } else {
         return None;
@@ -2206,7 +2269,9 @@ fn url_part_piece(
         while j < limit && b[j] != b')' {
             j += char_len(b[j]);
         }
+        crate::metrics::scan_work(j - at + usize::from(j < limit));
         if j > at + 2 && j + 1 < limit && b[j] == b')' && b[j + 1] == b')' {
+            crate::metrics::scan_work(j + 2 - at);
             return Some((MdUrlType::BlockRef, s[at..j + 2].to_string(), j + 2));
         }
     }
@@ -2216,6 +2281,7 @@ fn url_part_piece(
             c != b'<' && c != b'>'
         })?;
         if end < limit && b[end] == b'>' {
+            crate::metrics::scan_work(end - start);
             return Some((MdUrlType::Other1, s[start..end].to_string(), end + 1));
         }
     }
@@ -2224,12 +2290,15 @@ fn url_part_piece(
         while j < limit && !is_ws_or_nl(b[j]) && b[j] != b'[' {
             j += char_len(b[j]);
         }
+        crate::metrics::scan_work(j - at + usize::from(j < limit));
         if j > at {
+            crate::metrics::scan_work(j - at);
             return Some((MdUrlType::Other2, s[at..j].to_string(), j));
         }
     }
     if s[at..].starts_with("[[") {
         if let Some(end) = parse_page_ref_end_with_scan(s, at, scan).filter(|&end| end <= limit) {
+            crate::metrics::scan_work(end - at);
             let full = s[at..end].to_string();
             return Some((MdUrlType::PageRef, full, end));
         }
@@ -2238,31 +2307,46 @@ fn url_part_piece(
         return None;
     }
     let w = char_len(b[at]);
+    crate::metrics::scan_work(w);
     Some((MdUrlType::Other2, s[at..at + w].to_string(), at + w))
 }
 
 fn classify_markdown_url(link_type: MdUrlType, url: &str) -> Url {
     match link_type {
-        MdUrlType::BlockRef => Url::BlockRef { v: url[2..url.len().saturating_sub(2)].to_string() },
-        MdUrlType::PageRef => Url::PageRef { v: url[2..url.len().saturating_sub(2)].to_string() },
+        MdUrlType::BlockRef => {
+            let inner = &url[2..url.len().saturating_sub(2)];
+            crate::metrics::scan_work(inner.len());
+            Url::BlockRef { v: inner.to_string() }
+        }
+        MdUrlType::PageRef => {
+            let inner = &url[2..url.len().saturating_sub(2)];
+            crate::metrics::scan_work(inner.len());
+            Url::PageRef { v: inner.to_string() }
+        }
         MdUrlType::Other => {
-            if let Some(idx) = url.find(':') {
+            let colon = url.find(':');
+            crate::metrics::scan_work(colon.map_or(url.len(), |idx| idx + 1));
+            if let Some(idx) = colon {
                 let protocol = &url[..idx];
                 if !protocol.is_empty() && url[idx..].starts_with("://") {
                     let mut link = &url[idx + 3..];
                     if let Some(stripped) = link.strip_prefix("//") {
                         link = stripped;
                     }
+                    crate::metrics::scan_work(protocol.len() + link.len());
                     return Url::Complex {
                         protocol: Some(protocol.to_string()),
                         link: Some(link.to_string()),
                     };
                 }
             }
+            crate::metrics::scan_work(url.len());
             let lower = url.to_ascii_lowercase();
             if url.len() > 3 && (lower.ends_with(".md") || lower.ends_with(".markdown")) {
+                crate::metrics::scan_work(url.len());
                 Url::File { v: url.to_string() }
             } else {
+                crate::metrics::scan_work(url.len());
                 Url::Search { v: url.to_string() }
             }
         }
@@ -2274,6 +2358,7 @@ fn classify_markdown_url(link_type: MdUrlType, url: &str) -> Url {
 fn read_metadata(s: &str, b: &[u8], end: &mut usize, scan: &mut MdLinkScan) -> String {
     if b.get(*end) == Some(&b'{') {
         if let Some(close) = scan.metadata_close(b, *end + 1) {
+            crate::metrics::scan_work(close + 1 - *end);
             let meta = s[*end..close + 1].to_string();
             *end = close + 1;
             return meta;
@@ -2481,6 +2566,7 @@ pub(crate) fn parse_statistics_cookie(s: &str, at: usize) -> Option<(usize, Inli
     while j < b.len() && (b[j].is_ascii_digit() || b[j] == b'/' || b[j] == b'%') {
         j += 1;
     }
+    crate::metrics::scan_work(j - at + usize::from(j < b.len()));
     if j == at + 1 || b.get(j) != Some(&b']') {
         return None;
     }
@@ -2516,6 +2602,7 @@ fn scan_cookie_int(body: &str, mut i: usize) -> Option<(i64, usize)> {
     while i < b.len() && b[i].is_ascii_digit() {
         i += 1;
     }
+    crate::metrics::scan_work(i - start + usize::from(i < b.len()));
     if i == start {
         return None;
     }
@@ -2556,6 +2643,7 @@ pub(crate) fn parse_latex_env(
     while p < line_end && crate::block_common::mldoc_is_space(b[p]) {
         p += 1;
     }
+    crate::metrics::scan_work(p - line_start + usize::from(p < line_end));
     if !input[p..].starts_with("\\begin{") {
         return None;
     }
@@ -2564,6 +2652,7 @@ pub(crate) fn parse_latex_env(
     while j < line_end && b[j] != b'}' {
         j += 1;
     }
+    crate::metrics::scan_work(j - name_start + usize::from(j < line_end));
     if j >= line_end || b[j] != b'}' || j == name_start {
         return None;
     }
@@ -2575,13 +2664,22 @@ pub(crate) fn parse_latex_env(
     {
         cs += 1;
     }
+    crate::metrics::scan_work(cs - (j + 1) + usize::from(cs < input.len()));
     let ending = format!("\\end{{{}}}", name);
+    crate::metrics::scan_work(ending.len());
     match find_ci(input, cs, &ending) {
-        Some(e) => Some((name.to_ascii_lowercase(), input[cs..e].to_string(), e + ending.len())),
-        None => Some((name.to_ascii_lowercase(), input[cs..].to_string(), input.len())),
+        Some(e) => {
+            crate::metrics::scan_work(name.len() + e - cs);
+            Some((name.to_ascii_lowercase(), input[cs..e].to_string(), e + ending.len()))
+        }
+        None => {
+            crate::metrics::scan_work(name.len() + input.len() - cs);
+            Some((name.to_ascii_lowercase(), input[cs..].to_string(), input.len()))
+        }
     }
 }
 
+// scan-owner: (a2) caller-owned slice helper — raw case-insensitive search helper
 pub(crate) fn find_ci(s: &str, from: usize, needle: &str) -> Option<usize> {
     let hay = s.as_bytes();
     let nb = needle.as_bytes();
@@ -2590,16 +2688,20 @@ pub(crate) fn find_ci(s: &str, from: usize, needle: &str) -> Option<usize> {
         return None;
     }
     let mut i = from;
+    let mut scanned = 0usize;
     while i + nb.len() <= n {
+        scanned += nb.len();
         if hay[i..i + nb.len()]
             .iter()
             .zip(nb.iter())
             .all(|(a, c)| a.eq_ignore_ascii_case(c))
         {
+            crate::metrics::scan_work(scanned);
             return Some(i);
         }
         i += 1;
     }
+    crate::metrics::scan_work(scanned);
     None
 }
 
@@ -2793,7 +2895,9 @@ fn string_contains_balanced_brackets_multi_end(
 /// sequences in extracted string *values* — ref names, tag text, url links — while
 /// leaving `full_text` raw). `\<punct>` → `<punct>`, `\\` → `\`; other `\` kept.
 pub(crate) fn unescape(s: &str) -> String {
+    crate::metrics::scan_work(s.len());
     if !s.contains('\\') {
+        crate::metrics::scan_work(s.len());
         return s.to_string();
     }
     let b = s.as_bytes();
@@ -2802,10 +2906,12 @@ pub(crate) fn unescape(s: &str) -> String {
     let mut i = 0;
     while i < n {
         if b[i] == b'\\' && i + 1 < n && b[i + 1].is_ascii_punctuation() {
+            crate::metrics::scan_work(1);
             out.push(b[i + 1] as char);
             i += 2;
         } else {
             let w = char_len(b[i]);
+            crate::metrics::scan_work(w);
             out.push_str(&s[i..i + w]);
             i += w;
         }
@@ -2819,6 +2925,7 @@ fn unescape_origins(raw: &str, base: usize) -> Vec<OriginSegment> {
     let mut out = Vec::new();
     let mut text_off = 0usize;
     let mut i = 0usize;
+    crate::metrics::scan_work(n);
     while i < n {
         if b[i] == b'\\' && i + 1 < n && b[i + 1].is_ascii_punctuation() {
             out.push(OriginSegment::new(text_off, base + i + 1, 1, 1));
@@ -2911,6 +3018,7 @@ pub(crate) fn hiccup_head_ok(s: &str, at: usize) -> bool {
     while j < n && b[j].is_ascii_alphanumeric() {
         j += 1;
     }
+    crate::metrics::scan_work(j - name_start + usize::from(j < n));
     if j == name_start || !is_hiccup_tag(&s[name_start..j]) {
         return false;
     }
@@ -3036,6 +3144,7 @@ pub(crate) fn parse_latex_backslash_at(s: &str, at: usize) -> Option<(Inline, us
     };
     let body_start = at + 2;
     let end = find_sub(b, body_start, close.as_bytes())?;
+    crate::metrics::scan_work(mode.len() + end - body_start);
     Some((
         Inline::Latex { mode: mode.to_string(), body: s[body_start..end].to_string(), span: None },
         end + 2,
@@ -3059,6 +3168,7 @@ pub(crate) fn parse_latex_dollar_at(s: &str, at: usize) -> Option<(Inline, usize
     if after == b'$' {
         let body_start = at + 2;
         let end = latex_display_body_end(b, body_start)?;
+        crate::metrics::scan_work("Displayed".len() + end - body_start);
         return Some((
             Inline::Latex { mode: "Displayed".to_string(), body: s[body_start..end].to_string(), span: None },
             end + 2,
@@ -3072,6 +3182,7 @@ pub(crate) fn parse_latex_dollar_at(s: &str, at: usize) -> Option<(Inline, usize
     while j < n && b[j] != b'$' && b[j] != b'\n' && b[j] != b'\r' {
         j += 1;
     }
+    crate::metrics::scan_work(j - tail_start + usize::from(j < n));
     if j >= n || b[j] != b'$' {
         return None;
     }
@@ -3079,7 +3190,10 @@ pub(crate) fn parse_latex_dollar_at(s: &str, at: usize) -> Option<(Inline, usize
         return None;
     }
     Some((
-        Inline::Latex { mode: "Inline".to_string(), body: s[at + 1..j].to_string(), span: None },
+        {
+            crate::metrics::scan_work("Inline".len() + j - (at + 1));
+            Inline::Latex { mode: "Inline".to_string(), body: s[at + 1..j].to_string(), span: None }
+        },
         j + 1,
     ))
 }
@@ -3424,6 +3538,7 @@ fn parse_date_time_at(
     while i < b.len() && b[i].is_ascii_alphabetic() {
         i += 1;
     }
+    crate::metrics::scan_work(i - wday_start + usize::from(i < b.len()));
     if i == wday_start {
         return None;
     }
@@ -3485,6 +3600,7 @@ fn timestamp_node(kind: TimestampKind, point: serde_json::Value) -> Inline {
         point
     };
     Inline::Timestamp {
+        // The label is a fixed string, so only the parser-selected value construction is charged.
         ts: kind.label().to_string(),
         date,
         span: None,
@@ -3505,6 +3621,7 @@ fn timestamp_point(
         "date".to_string(),
         serde_json::json!({ "year": year, "month": month, "day": day }),
     );
+    crate::metrics::scan_work(wday.len());
     obj.insert("wday".to_string(), serde_json::json!(wday));
     if let Some((hour, min)) = time {
         obj.insert("time".to_string(), serde_json::json!({ "hour": hour, "min": min }));
@@ -3522,9 +3639,11 @@ fn is_mldoc_timestamp_space(c: u8) -> bool {
 }
 
 fn skip_mldoc_spaces(b: &[u8], mut i: usize) -> usize {
+    let start = i;
     while i < b.len() && is_mldoc_timestamp_space(b[i]) {
         i += 1;
     }
+    crate::metrics::scan_work(i - start + usize::from(i < b.len()));
     i
 }
 
@@ -3536,6 +3655,7 @@ fn take_mldoc_ws1(b: &[u8], i: usize) -> Option<usize> {
 }
 
 fn ascii_ci_starts_with(b: &[u8], at: usize, pat: &[u8]) -> bool {
+    crate::metrics::scan_work(pat.len());
     b.get(at..at + pat.len()).is_some_and(|got| {
         got.iter()
             .zip(pat)
@@ -3564,6 +3684,7 @@ fn scan_i64_prefix(b: &[u8], mut i: usize) -> Option<(i64, usize)> {
     while i < b.len() && b[i].is_ascii_digit() {
         i += 1;
     }
+    crate::metrics::scan_work(i - start + usize::from(i < b.len()));
     if i == digit_start {
         return None;
     }

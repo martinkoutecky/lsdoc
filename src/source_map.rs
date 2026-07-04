@@ -149,7 +149,9 @@ impl OriginMap {
 
     pub(crate) fn truncate_text_len(&mut self, len: usize) {
         let mut keep = 0usize;
+        // scan-owner: (b) structural map cursor — OriginMap segment prefix trim
         while keep < self.segments.len() {
+            crate::metrics::scan_work(1);
             let seg = self.segments[keep];
             if seg.text_off >= len {
                 break;
@@ -388,7 +390,9 @@ pub(crate) fn remap_inlines(
     origin: &OriginMap,
     cursor: &mut OriginCursor,
 ) {
+    // scan-owner: (b) monotone cursor / (o) span-map output — source-map inline remap walk
     for node in inlines {
+        crate::metrics::scan_work(1);
         remap_inline(node, current_input, source_body, origin, cursor);
     }
 }
@@ -517,7 +521,9 @@ fn remap_existing_plain_map(
     cursor: &mut OriginCursor,
 ) -> Vec<SpanMapSegment> {
     let mut out = Vec::new();
+    // scan-owner: (b) monotone cursor / (o) span-map output — existing span-map segment remap
     for SpanMapSegment(text_off, local_src, len) in local.iter().copied() {
+        crate::metrics::scan_work(1);
         remap_exact_interval(
             &mut out,
             text,
@@ -632,6 +638,7 @@ fn remap_origin_piece(
     let text_bytes = &text.as_bytes()[text_off..text_off + len];
     let current_bytes = &current_input.as_bytes()[local_src..local_src + len];
     let source_bytes = &source_body.as_bytes()[src_off..src_off + len];
+    crate::metrics::scan_work(len);
     if text_bytes == current_bytes && text_bytes == source_bytes {
         push_wire_segment(out, text_off, src_off, len);
     }
