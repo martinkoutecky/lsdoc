@@ -130,7 +130,10 @@ fn scan_file(rel: &str, original: &str, stripped: &str, misses: &mut Vec<String>
             }
         }
         brace_depth = brace_depth.saturating_add(opens).saturating_sub(closes);
-        while fn_stack.last().is_some_and(|scope| brace_depth < scope.depth) {
+        while fn_stack
+            .last()
+            .is_some_and(|scope| brace_depth < scope.depth)
+        {
             fn_stack.pop();
         }
     }
@@ -386,7 +389,9 @@ fn raw_string_end(bytes: &[u8], i: usize) -> Option<(usize, usize)> {
     let hashes = j - hash_start;
     j += 1;
     while j < bytes.len() {
-        if bytes[j] == b'"' && bytes.get(j + 1..j + 1 + hashes) == Some(&bytes[hash_start..hash_start + hashes]) {
+        if bytes[j] == b'"'
+            && bytes.get(j + 1..j + 1 + hashes) == Some(&bytes[hash_start..hash_start + hashes])
+        {
             let end = j + 1 + hashes;
             return Some((end, end - i));
         }

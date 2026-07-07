@@ -36,7 +36,10 @@ fn org_linear_cases(n: usize) -> Vec<(&'static str, String)> {
         ("o_export_snippet_interleave", "/a/@@a: b\n".repeat(n / 10)),
         ("o_blockref_interleave", "/a/((".repeat(n / 5)),
         ("o_links", "[[a][b]] ".repeat(n / 9)),
-        ("o_deep_emph", format!("{}x{}", "*".repeat(n / 2), "*".repeat(n / 2))),
+        (
+            "o_deep_emph",
+            format!("{}x{}", "*".repeat(n / 2), "*".repeat(n / 2)),
+        ),
         // Org multi-line list: long sibling run, long single-item continuation fold,
         // and the indented-`-` COLLAPSE (a memoised collapse-floor keeps repeated
         // collapse attempts linear instead of O(n²) suffix re-scanning).
@@ -45,7 +48,10 @@ fn org_linear_cases(n: usize) -> Vec<(&'static str, String)> {
         ("o_list_collapse", format!("{}  - z", "- a\n".repeat(n / 4))),
         // Org footnote-definition body absorbing a long continuation-line run
         // (mldoc `footnote_definition = many1 l`): must be single-pass / linear.
-        ("o_fn_fold", format!("[fn:1] body{}", "\ncont".repeat(n / 4))),
+        (
+            "o_fn_fold",
+            format!("[fn:1] body{}", "\ncont".repeat(n / 4)),
+        ),
         // Org unclosed-opener families (audit P3/P5/P8/P9): a run of openers with NO
         // closer ahead must NOT re-scan to EOF per opener (was O(n²) / O(n³)).
         ("o_block_open", "#+BEGIN_FOO\n".repeat(n / 4)), // P3: no #+END
@@ -89,7 +95,10 @@ fn linear_cases(n: usize) -> Vec<(&'static str, String)> {
         ("macro_interleave", "*a*{{".repeat(n / 5)),
         ("export_snippet_interleave", "*a*@@a: b\n".repeat(n / 10)),
         ("blockref_interleave", "*a*((".repeat(n / 5)),
-        ("raw_html_unbalanced_interleave", "*a*<div><div>x</div>".repeat(n / 20)),
+        (
+            "raw_html_unbalanced_interleave",
+            "*a*<div><div>x</div>".repeat(n / 20),
+        ),
         ("tags", "#tag ".repeat(n / 5)),
         ("tag_hash_run", "#".repeat(n)),
         ("tag_word_interleave", "x #a".repeat(n / 4)),
@@ -112,7 +121,7 @@ fn linear_cases(n: usize) -> Vec<(&'static str, String)> {
         // consecutive whole-line block hiccups: the in-place remainder split keeps this
         // linear (no per-hiccup re-precomputation / recursion).
         ("md_hiccup_blocks", "[:a]".repeat(n / 4)),
-        ("md_hiccup_inline", "x [:a] ".repeat(n / 7)),    // inline hiccups in a paragraph
+        ("md_hiccup_inline", "x [:a] ".repeat(n / 7)), // inline hiccups in a paragraph
         // Markdown multi-line list (mirrors the org cases): a long sibling run, a single item
         // with a long continuation-fold tail, and the deeper-unparseable-shape COLLAPSE (the
         // memoised `collapse_floor` must keep repeated collapse attempts linear, not O(n^2)
@@ -179,10 +188,16 @@ fn assert_no_overflow(d: usize) {
         // overflow the 1 MiB test stack — but that recursive drop (and the recursive project/serialize
         // a consumer does) is a DOWNSTREAM property of a recursive AST, not a parser one, inherent and
         // bounded by the consumer's stack (mldoc overflows far earlier, at PARSE time ~1000).
-        .spawn(move || inputs.iter().for_each(|s| std::mem::forget(lsdoc::parse(s, "md"))))
+        .spawn(move || {
+            inputs
+                .iter()
+                .for_each(|s| std::mem::forget(lsdoc::parse(s, "md")))
+        })
         .expect("spawn parse thread")
         .join()
-        .expect("deep nesting overflowed a 1 MiB stack — the streaming parser is not bounded-depth");
+        .expect(
+            "deep nesting overflowed a 1 MiB stack — the streaming parser is not bounded-depth",
+        );
 }
 
 /// Org-only deep inputs under the STREAMING driver. `>`×d on one line nests ⌈d/2⌉ Org
@@ -193,10 +208,10 @@ fn assert_no_overflow(d: usize) {
 /// paragraph), the case the old recurse-on-body would stack-overflow uncapped.
 fn org_deep_cases(d: usize) -> Vec<String> {
     vec![
-        format!("{}x", ">".repeat(d)),       // `>`×d on ONE line (single-line peel)
-        format!("x\n{}y", ">".repeat(d)),    // deep `>` line below a paragraph (single-line peel)
-        format!("{}x\n> y", ">".repeat(d)),  // MULTI-LINE: deep opener + a lazily-absorbed cont
-        "> x\n".repeat(d / 10),              // wide (single quote, many body lines)
+        format!("{}x", ">".repeat(d)), // `>`×d on ONE line (single-line peel)
+        format!("x\n{}y", ">".repeat(d)), // deep `>` line below a paragraph (single-line peel)
+        format!("{}x\n> y", ">".repeat(d)), // MULTI-LINE: deep opener + a lazily-absorbed cont
+        "> x\n".repeat(d / 10),        // wide (single quote, many body lines)
     ]
 }
 
@@ -212,7 +227,11 @@ fn assert_no_overflow_org(d: usize) {
         // of a recursive AST (the consumer's stack), not a parser one. We call the streaming
         // root entry point directly (`__parse_org_streaming`, identical to the public `parse`,
         // which is now the streaming driver).
-        .spawn(move || inputs.iter().for_each(|s| std::mem::forget(lsdoc::__parse_org_streaming(s))))
+        .spawn(move || {
+            inputs
+                .iter()
+                .for_each(|s| std::mem::forget(lsdoc::__parse_org_streaming(s)))
+        })
         .expect("spawn parse thread")
         .join()
         .expect("deep org `>` nesting overflowed a 1 MiB stack — streaming quote peel not bounded");
@@ -261,15 +280,29 @@ fn best_us(input: &str, is_org: bool, runs: usize) -> u128 {
 fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
     vec![
         // R2-P1: `[`×m + a markdown link tail on a LATER line → was O(n³). Small base.
-        ("md_link_nl", false, 1500, |n| format!("{}\n](x)", "[".repeat(n))),
+        ("md_link_nl", false, 1500, |n| {
+            format!("{}\n](x)", "[".repeat(n))
+        }),
         // R2-P2: `[`×m + `]]` on a later line → O(n²) (md + org).
-        ("md_pageref_nl", false, 25_000, |n| format!("{}\n]]", "[".repeat(n))),
-        ("org_pageref_nl", true, 25_000, |n| format!("{}\n]]", "[".repeat(n))),
+        ("md_pageref_nl", false, 25_000, |n| {
+            format!("{}\n]]", "[".repeat(n))
+        }),
+        ("org_pageref_nl", true, 25_000, |n| {
+            format!("{}\n]]", "[".repeat(n))
+        }),
         // R2-P3: org inline present-closer — macro `{{`, block-ref `((` (later closer).
-        ("md_macro_closer", false, 25_000, |n| "{{x ".repeat(n) + "}}"),
-        ("org_macro_closer", true, 25_000, |n| "{{x ".repeat(n) + "}}"),
-        ("md_blockref_closer", false, 25_000, |n| "((x ".repeat(n) + "))"),
-        ("org_blockref_closer", true, 25_000, |n| "((x ".repeat(n) + "))"),
+        ("md_macro_closer", false, 25_000, |n| {
+            "{{x ".repeat(n) + "}}"
+        }),
+        ("org_macro_closer", true, 25_000, |n| {
+            "{{x ".repeat(n) + "}}"
+        }),
+        ("md_blockref_closer", false, 25_000, |n| {
+            "((x ".repeat(n) + "))"
+        }),
+        ("org_blockref_closer", true, 25_000, |n| {
+            "((x ".repeat(n) + "))"
+        }),
         // R2-P4: name-independent floor defeated by ONE non-matching `#+END_BAR` (md + org).
         ("md_block_mismatch", false, 25_000, |n| {
             "#+BEGIN_FOO\n".repeat(n) + "#+END_BAR\n"
@@ -278,19 +311,29 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
             "#+BEGIN_FOO\n".repeat(n) + "#+END_BAR\n"
         }),
         // R2-P5: hiccup `[:div `×n + a single trailing `]` defeated the rbracket caches.
-        ("md_hiccup_present", false, 25_000, |n| "[:div ".repeat(n) + "]"),
-        ("org_hiccup_present", true, 25_000, |n| "[:div ".repeat(n) + "]"),
+        ("md_hiccup_present", false, 25_000, |n| {
+            "[:div ".repeat(n) + "]"
+        }),
+        ("org_hiccup_present", true, 25_000, |n| {
+            "[:div ".repeat(n) + "]"
+        }),
         // F2: consecutive CLOSED, nested hiccup vectors — the org 13b remainder loop, which (like
         // md 11d') re-dispatched the whole shrinking line per vector and re-ran `property`-style
         // O(len) predicates on the tail → O(n²). Now consumed in one local pass. (md is locked
         // separately in `md_hiccup_nested_scales_linearly_heavy`.)
-        ("org_hiccup_nested", true, 8_000, |n| "[:div [:span x] [:b y]] ".repeat(n)),
+        ("org_hiccup_nested", true, 8_000, |n| {
+            "[:div [:span x] [:b y]] ".repeat(n)
+        }),
         // Nested-emphasis reparse guard (design-review concern): content is re-scanned on a
         // shrinking substring. mldoc's first-valid-closer pairs the NEAREST closer, so nesting
         // depth is bounded (~5 distinct markers) → this is O(n), measured ≈2×/doubling. The
         // probe locks that in so the lexer/resolver rewrite can't reintroduce O(n²) here.
-        ("md_emph_alt", false, 25_000, |n| "*_".repeat(n) + "x" + &"_*".repeat(n)),
-        ("org_emph_alt", true, 25_000, |n| "*/".repeat(n) + "x" + &"/*".repeat(n)),
+        ("md_emph_alt", false, 25_000, |n| {
+            "*_".repeat(n) + "x" + &"_*".repeat(n)
+        }),
+        ("org_emph_alt", true, 25_000, |n| {
+            "*/".repeat(n) + "x" + &"/*".repeat(n)
+        }),
         // Latex `\(`×n with NO `\)` closer. Was O(n²) in Org (a `find_sub` EOF re-scan per
         // `\(`); the monotone closer floor (resolver.rs + org_resolver.rs) makes it linear.
         // Ratio-gated because the absolute-budget `o_inline_latex` case masked the quadratic
@@ -306,7 +349,12 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         ("md_link_code_interleave", false, 8_000, |n| {
             format!("{}x`](u)", "[`".repeat(n))
         }),
-        ("md_html_comment_unclosed", false, 8_000, md_html_comment_unclosed),
+        (
+            "md_html_comment_unclosed",
+            false,
+            8_000,
+            md_html_comment_unclosed,
+        ),
         ("md_html_comment_quote", false, 8_000, md_html_comment_quote),
         (
             "md_html_comment_indented_begin",
@@ -314,13 +362,48 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
             8_000,
             md_html_comment_indented_begin,
         ),
-        ("md_html_comment_list_item", false, 8_000, md_html_comment_list_item),
-        ("org_fn_anon_newline_tail", true, 8_000, org_fn_anon_newline_tail),
-        ("org_fn_named_newline_tail", true, 8_000, org_fn_named_newline_tail),
-        ("org_fn_anon_no_close_line", true, 8_000, org_fn_anon_no_close_line),
-        ("org_fn_named_no_close_line", true, 8_000, org_fn_named_no_close_line),
-        ("org_link1_missing_label_close", true, 4_000, org_link1_missing_label_close),
-        ("org_link1_overlapping_chunks", true, 4_000, org_link1_overlapping_chunks),
+        (
+            "md_html_comment_list_item",
+            false,
+            8_000,
+            md_html_comment_list_item,
+        ),
+        (
+            "org_fn_anon_newline_tail",
+            true,
+            8_000,
+            org_fn_anon_newline_tail,
+        ),
+        (
+            "org_fn_named_newline_tail",
+            true,
+            8_000,
+            org_fn_named_newline_tail,
+        ),
+        (
+            "org_fn_anon_no_close_line",
+            true,
+            8_000,
+            org_fn_anon_no_close_line,
+        ),
+        (
+            "org_fn_named_no_close_line",
+            true,
+            8_000,
+            org_fn_named_no_close_line,
+        ),
+        (
+            "org_link1_missing_label_close",
+            true,
+            4_000,
+            org_link1_missing_label_close,
+        ),
+        (
+            "org_link1_overlapping_chunks",
+            true,
+            4_000,
+            org_link1_overlapping_chunks,
+        ),
         (
             "org_link1_balanced_tail_present",
             true,
@@ -357,16 +440,36 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
             8_000,
             org_tag_link_metadata_missing_close,
         ),
-        ("f5_tag_pageref_simple_md", false, 2_000, f5_tag_pageref_simple),
-        ("f5_tag_pageref_simple_org", true, 2_000, f5_tag_pageref_simple),
+        (
+            "f5_tag_pageref_simple_md",
+            false,
+            2_000,
+            f5_tag_pageref_simple,
+        ),
+        (
+            "f5_tag_pageref_simple_org",
+            true,
+            2_000,
+            f5_tag_pageref_simple,
+        ),
         (
             "f5_org_tag_pageref_link1_shape",
             true,
             2_000,
             f5_org_tag_pageref_link1_shape,
         ),
-        ("f5_tag_pageref_fail_lf_md", false, 2_000, f5_tag_pageref_fail_lf),
-        ("f5_tag_pageref_fail_lf_org", true, 2_000, f5_tag_pageref_fail_lf),
+        (
+            "f5_tag_pageref_fail_lf_md",
+            false,
+            2_000,
+            f5_tag_pageref_fail_lf,
+        ),
+        (
+            "f5_tag_pageref_fail_lf_org",
+            true,
+            2_000,
+            f5_tag_pageref_fail_lf,
+        ),
         (
             "f5_tag_pageref_cross_call_md",
             false,
@@ -385,8 +488,18 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
             2_000,
             f5_org_tag_pageref_bs_lf_hop,
         ),
-        ("f5_control_separate_tags_md", false, 2_000, f5_control_separate_tags),
-        ("f5_control_separate_tags_org", true, 2_000, f5_control_separate_tags),
+        (
+            "f5_control_separate_tags_md",
+            false,
+            2_000,
+            f5_control_separate_tags,
+        ),
+        (
+            "f5_control_separate_tags_org",
+            true,
+            2_000,
+            f5_control_separate_tags,
+        ),
         (
             "f5_control_single_brackets_md",
             false,
@@ -399,8 +512,18 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
             2_000,
             f5_control_single_brackets,
         ),
-        ("f5_control_plain_tag_md", false, 2_000, f5_control_plain_tag),
-        ("f5_control_plain_tag_org", true, 2_000, f5_control_plain_tag),
+        (
+            "f5_control_plain_tag_md",
+            false,
+            2_000,
+            f5_control_plain_tag,
+        ),
+        (
+            "f5_control_plain_tag_org",
+            true,
+            2_000,
+            f5_control_plain_tag,
+        ),
         (
             "audit3_md_footnote_no_close",
             false,
@@ -486,48 +609,124 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
         ),
         // Phase B leaf-linearity: construct-interleaved inline LEAF misses. Homogeneous
         // opener runs were already covered; these force a fresh dispatch before each opener.
-        ("md_email_domain_interleave", false, 25_000, |n| "*a*<x@".repeat(n)),
-        ("org_email_domain_interleave", true, 25_000, |n| "/a/<x@".repeat(n)),
-        ("md_timestamp_angle_interleave", false, 25_000, |n| "*a*<20".repeat(n)),
-        ("org_timestamp_angle_interleave", true, 25_000, |n| "/a/<20".repeat(n)),
-        ("md_autolink_interleave", false, 25_000, |n| "*a*<a:".repeat(n)),
+        ("md_email_domain_interleave", false, 25_000, |n| {
+            "*a*<x@".repeat(n)
+        }),
+        ("org_email_domain_interleave", true, 25_000, |n| {
+            "/a/<x@".repeat(n)
+        }),
+        ("md_timestamp_angle_interleave", false, 25_000, |n| {
+            "*a*<20".repeat(n)
+        }),
+        ("org_timestamp_angle_interleave", true, 25_000, |n| {
+            "/a/<20".repeat(n)
+        }),
+        ("md_autolink_interleave", false, 25_000, |n| {
+            "*a*<a:".repeat(n)
+        }),
         ("md_macro_interleave", false, 25_000, |n| "*a*{{".repeat(n)),
         ("org_macro_interleave", true, 25_000, |n| "/a/{{".repeat(n)),
-        ("md_blockref_interleave", false, 25_000, |n| "*a*((".repeat(n)),
-        ("org_blockref_interleave", true, 25_000, |n| "/a/((".repeat(n)),
+        ("md_blockref_interleave", false, 25_000, |n| {
+            "*a*((".repeat(n)
+        }),
+        ("org_blockref_interleave", true, 25_000, |n| {
+            "/a/((".repeat(n)
+        }),
         ("md_tag_hash_run", false, 25_000, |n| "#".repeat(n)),
-        ("md_tag_word_interleave", false, 25_000, |n| "x #a".repeat(n)),
-        ("md_bare_url_interleave", false, 25_000, |n| "*a*httpx".repeat(n)),
+        ("md_tag_word_interleave", false, 25_000, |n| {
+            "x #a".repeat(n)
+        }),
+        ("md_bare_url_interleave", false, 25_000, |n| {
+            "*a*httpx".repeat(n)
+        }),
         ("md_raw_html_unbalanced_interleave", false, 8_000, |n| {
             "*a*<div><div>x</div>".repeat(n)
         }),
         ("org_raw_html_unbalanced_interleave", true, 8_000, |n| {
             "/a/<div><div>x</div>".repeat(n)
         }),
-        ("md_nested_callout_raw_html", false, 200, nested_callout_raw_html),
-        ("org_nested_callout_raw_html", true, 200, nested_callout_raw_html),
-        ("md_nested_reuse_after_child_raw_html", false, 200, nested_reuse_after_child_raw_html),
-        ("org_nested_reuse_after_child_raw_html", true, 200, nested_reuse_after_child_raw_html),
-        ("md_raw_html_sibling_alternation", false, 200, raw_html_sibling_alternation),
-        ("org_raw_html_sibling_alternation", true, 200, raw_html_sibling_alternation),
-        ("md_raw_html_sibling_pairs", false, 10_000, raw_html_sibling_pairs),
-        ("org_raw_html_sibling_pairs", true, 10_000, raw_html_sibling_pairs),
-        ("md_raw_html_closes_then_opens", false, 10_000, raw_html_closes_then_opens),
-        ("org_raw_html_closes_then_opens", true, 10_000, raw_html_closes_then_opens),
+        (
+            "md_nested_callout_raw_html",
+            false,
+            200,
+            nested_callout_raw_html,
+        ),
+        (
+            "org_nested_callout_raw_html",
+            true,
+            200,
+            nested_callout_raw_html,
+        ),
+        (
+            "md_nested_reuse_after_child_raw_html",
+            false,
+            200,
+            nested_reuse_after_child_raw_html,
+        ),
+        (
+            "org_nested_reuse_after_child_raw_html",
+            true,
+            200,
+            nested_reuse_after_child_raw_html,
+        ),
+        (
+            "md_raw_html_sibling_alternation",
+            false,
+            200,
+            raw_html_sibling_alternation,
+        ),
+        (
+            "org_raw_html_sibling_alternation",
+            true,
+            200,
+            raw_html_sibling_alternation,
+        ),
+        (
+            "md_raw_html_sibling_pairs",
+            false,
+            10_000,
+            raw_html_sibling_pairs,
+        ),
+        (
+            "org_raw_html_sibling_pairs",
+            true,
+            10_000,
+            raw_html_sibling_pairs,
+        ),
+        (
+            "md_raw_html_closes_then_opens",
+            false,
+            10_000,
+            raw_html_closes_then_opens,
+        ),
+        (
+            "org_raw_html_closes_then_opens",
+            true,
+            10_000,
+            raw_html_closes_then_opens,
+        ),
         // Callout closer-finding adversarial cases. The on-demand dispatch (correct: only
         // top-level openers are reached) finds `#+END_<name>` via the by-all-prefixes index — an
         // O(1) bucket lookup, no EOF scan. So even these stay ~linear, where mldoc's own
         // `take_until` is O(n²) (measured: 4000 unclosed openers = 68s in mldoc):
         //  - UNIQUE-name openers each with a non-matching `#+END_` (absent bucket ⇒ O(1)/opener):
         ("md_callout_uniq", false, 8_000, |n| {
-            (0..n).map(|k| format!("#+BEGIN_A{k}\n#+END_Z{k}\n")).collect::<String>()
+            (0..n)
+                .map(|k| format!("#+BEGIN_A{k}\n#+END_Z{k}\n"))
+                .collect::<String>()
         }),
         ("org_callout_uniq", true, 8_000, |n| {
-            (0..n).map(|k| format!("#+BEGIN_A{k}\n#+END_Z{k}\n")).collect::<String>()
+            (0..n)
+                .map(|k| format!("#+BEGIN_A{k}\n#+END_Z{k}\n"))
+                .collect::<String>()
         }),
         //  - a validly-closed callout with a LONG NAME (index build is O(name), lookup O(1)):
-        ("md_callout_longname", false, 8_000, |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n))),
-        ("org_callout_longname", true, 8_000, |n| format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n))),
+        ("md_callout_longname", false, 8_000, |n| {
+            format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n))
+        }),
+        ("org_callout_longname", true, 8_000, |n| {
+            format!("#+BEGIN_{0}\n#+END_{0}x", "b".repeat(n))
+        }),
         // DEEPLY-NESTED distinct callouts that close → the OLD recurse-on-body (mldoc is itself
         // O(n²) here AND stack-overflows). Both streaming drivers open each as a HEAP frame —
         // each line classified once → genuine O(n), NO cap (ratio ≈2×/doubling). Both bases are
@@ -557,7 +756,12 @@ fn scaling_pairs() -> Vec<(&'static str, bool, usize, fn(usize) -> String)> {
             4_000,
             org_indented_quote_table_rows,
         ),
-        ("md_rebulleted_def_list", false, 4_000, md_rebulleted_def_list),
+        (
+            "md_rebulleted_def_list",
+            false,
+            4_000,
+            md_rebulleted_def_list,
+        ),
         ("md_d35_rollback_siblings", false, 12, d35_rollback_siblings),
         ("org_d35_rollback_siblings", true, 12, d35_rollback_siblings),
         ("md_d35_query_noop_chain", false, 35, d35_query_noop_chain),
@@ -1121,18 +1325,29 @@ fn render_html_nested_callout_is_linear_heavy() {
                     ]
                 };
                 let mut node = Block::Quote {
-                    children: vec![Block::Paragraph { inline: lead(), span: None }],
+                    children: vec![Block::Paragraph {
+                        inline: lead(),
+                        span: None,
+                    }],
                     span: None,
                 };
                 for _ in 1..depth {
                     node = Block::Quote {
-                        children: vec![Block::Paragraph { inline: lead(), span: None }, node],
+                        children: vec![
+                            Block::Paragraph {
+                                inline: lead(),
+                                span: None,
+                            },
+                            node,
+                        ],
                         span: None,
                     };
                 }
                 vec![node]
             }
-            let opts = lsdoc::RenderOpts { format: lsdoc::Format::Md };
+            let opts = lsdoc::RenderOpts {
+                format: lsdoc::Format::Md,
+            };
             let blocks = build(4000);
             let render_us = || -> u128 {
                 let t = Instant::now();

@@ -1,6 +1,6 @@
 //! Org-mode parser (M6).
 //!
-//! A from-scratch Org parser, behavior-equivalent to mldoc 1.5.7's Org config
+//! A from-scratch Org parser, behavior-equivalent to pinned latest mldoc's Org config
 //! (`format:"Org"`), verified against the live oracle. This module is the line-based
 //! block segmenter (`parse`); inline markup is resolved by the lexer+resolver in
 //! [`crate::org_resolver`]. Org-specific `[[…]]`/`[[…][…]]` link classification lives here
@@ -24,12 +24,12 @@
 // `EndTrie`, fence/drawer lookups, the task-marker table, `Builder`, `GT_FALLBACK_NEST_CAP` — live once
 // in `crate::block_common`. The dispatch ladders and driver loops below stay per-format.
 use crate::block_common::{
-    displayed_math_opener, find_displayed_math_close, find_drawer_end, find_matching_fence,
-    first_body_indent, leading_ws, mldoc_heading_boundary, mldoc_is_space, mldoc_spaces_len,
-    mldoc_trim_spaces, mldoc_trim_spaces_end_len, mldoc_trim_spaces_start, ocaml_trim,
-    ocaml_trim_end, para_ws_only, raw_html_block_start, raw_html_end_at, raw_html_raw_capture,
-    raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie, Line, RawHtmlScan,
-    StripCtx, StripSeqTree, GT_FALLBACK_NEST_CAP, MARKERS,
+    begin_export_fields, displayed_math_opener, find_displayed_math_close, find_drawer_end,
+    find_matching_fence, first_body_indent, leading_ws, mldoc_heading_boundary, mldoc_is_space,
+    mldoc_spaces_len, mldoc_trim_spaces, mldoc_trim_spaces_end_len, mldoc_trim_spaces_start,
+    ocaml_trim, ocaml_trim_end, para_ws_only, raw_html_block_start, raw_html_end_at,
+    raw_html_raw_capture, raw_html_view_capture, split_checkbox, split_lines, Builder, EndTrie,
+    Line, RawHtmlScan, StripCtx, StripSeqTree, GT_FALLBACK_NEST_CAP, MARKERS,
 };
 use crate::projection::{Block, Inline, ListItem, Property, Span, SpanMapSegment, Url};
 use crate::source_map::{OriginCursor, OriginMap};
@@ -489,9 +489,9 @@ fn parse_org_streaming<'a>(
     let mut nonstd_cursor: usize = 0; // monotone nonstd-eol cursor (body_is_clean_window), ditto.
     let mut origin_cursor = OriginCursor::new(); // one cursor for this parse pass's parent OriginMap.
     let mut offs: Vec<usize> = Vec::new(); // reused `>`-prefix offset scratch (scan_gt_prefix)
-    // F4/M3: set by an empty headline marker to the marker line's END offset (the boundary
-    // between the marker's trailing-ws `" \n"` and following true blank lines). A drop-trigger
-    // block drops `[para.start, boundary)` while preserving `[boundary, para.end)`.
+                                           // F4/M3: set by an empty headline marker to the marker line's END offset (the boundary
+                                           // between the marker's trailing-ws `" \n"` and following true blank lines). A drop-trigger
+                                           // block drops `[para.start, boundary)` while preserving `[boundary, para.end)`.
     let mut ws_drop: Option<usize> = None;
     let mut i = 0;
 
@@ -619,7 +619,7 @@ fn parse_org_streaming<'a>(
                     absorb: false,
                     builder: Some(Builder::Quote),
                     open_span_start: lines[i].start,
-                    strip: p_strip,   // inherit the ancestor indent strip
+                    strip: p_strip, // inherit the ancestor indent strip
                     strip_seq_pushed: false,
                     remap_spans: true, // a `>`-body is transformed ⇒ remap inline spans on pop
                     gt_level: p_gt + 1,
@@ -967,7 +967,17 @@ fn dispatch_org_line<'a>(
     // 1. directive `#+KEY: value` (KEY != BEGIN_…) — not a list-item content block.
     if let Some((name, value)) = org_directive(t).filter(|_| !in_item) {
         drop_marker_ws(para, was_ws_drop, input);
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+        flush_para(
+            out,
+            para,
+            para_buf,
+            para_map,
+            input,
+            trim,
+            origin,
+            source_body,
+            origin_cursor,
+        );
         out.push(Block::Directive {
             name,
             value,
@@ -992,7 +1002,17 @@ fn dispatch_org_line<'a>(
             property_end_cursor,
         ) {
             drop_marker_ws(para, was_ws_drop, input);
-            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+            flush_para(
+                out,
+                para,
+                para_buf,
+                para_map,
+                input,
+                trim,
+                origin,
+                source_body,
+                origin_cursor,
+            );
             out.push(Block::Properties {
                 props,
                 span: Some(Span(line_start, span_end)),
@@ -1004,7 +1024,17 @@ fn dispatch_org_line<'a>(
 
     // 2b. comment `# text` (mldoc Comment) — IS a valid list-item content block (not gated).
     if let Some(text) = org_comment(t) {
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+        flush_para(
+            out,
+            para,
+            para_buf,
+            para_map,
+            input,
+            trim,
+            origin,
+            source_body,
+            origin_cursor,
+        );
         crate::metrics::scan_work(text.len());
         out.push(Block::Comment {
             text: text.to_string(),
@@ -1023,7 +1053,17 @@ fn dispatch_org_line<'a>(
         if let Some(close) = find_drawer_end(drawer_end_idxs, drawer_cursor, i) {
             if close < hi {
                 drop_marker_ws(para, was_ws_drop, input);
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+                flush_para(
+                    out,
+                    para,
+                    para_buf,
+                    para_map,
+                    input,
+                    trim,
+                    origin,
+                    source_body,
+                    origin_cursor,
+                );
                 out.push(Block::Drawer {
                     name,
                     span: Some(Span(line_start, lines[close].end)),
@@ -1062,7 +1102,17 @@ fn dispatch_org_line<'a>(
                 raw_html_scan,
             )
         {
-            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+            flush_para(
+                out,
+                para,
+                para_buf,
+                para_map,
+                input,
+                trim,
+                origin,
+                source_body,
+                origin_cursor,
+            );
             out.push(Block::Bullet {
                 level,
                 size: None,
@@ -1106,7 +1156,17 @@ fn dispatch_org_line<'a>(
             return Step::Next(i);
         }
 
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+        flush_para(
+            out,
+            para,
+            para_buf,
+            para_map,
+            input,
+            trim,
+            origin,
+            source_body,
+            origin_cursor,
+        );
         let mut inline = org_inline(content, crate::inline::ptr_base(content, input));
         let htags = extract_htags(&mut inline);
         let empty_title = inline.is_empty() && htags.is_empty();
@@ -1135,7 +1195,17 @@ fn dispatch_org_line<'a>(
     // 4. table (group of consecutive well-formed `|…|` rows), bounded by `hi`.
     if is_table_row(t) {
         drop_marker_ws(para, was_ws_drop, input);
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+        flush_para(
+            out,
+            para,
+            para_buf,
+            para_map,
+            input,
+            trim,
+            origin,
+            source_body,
+            origin_cursor,
+        );
         let start = i;
         let mut ni = i;
         // scan-owner: (b) monotone block cursor + frame owner — Org table row run
@@ -1166,7 +1236,17 @@ fn dispatch_org_line<'a>(
         // latex_env is the ONLY block_content construct that does NOT consume the preceding eol,
         // so inside a `#+BEGIN_X` / `>`-quote body a paragraph KEEPS its trailing Break before it
         // and the eol AFTER it becomes a Break-paragraph (mldoc `Paragraph.sep`-last). Never trim.
-        flush_para(out, para, para_buf, para_map, input, false, origin, source_body, origin_cursor);
+        flush_para(
+            out,
+            para,
+            para_buf,
+            para_map,
+            input,
+            false,
+            origin,
+            source_body,
+            origin_cursor,
+        );
         let mut ni = i + 1;
         // scan-owner: (b) monotone block cursor + frame owner — Org LaTeX consumed-line mapping
         while ni < lines.len() && lines[ni].start < consumed_end {
@@ -1222,7 +1302,17 @@ fn dispatch_org_line<'a>(
         if let Some(close) = find_matching_fence(fence_lines, fence_cursor, i) {
             if close < hi {
                 drop_marker_ws(para, was_ws_drop, input);
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+                flush_para(
+                    out,
+                    para,
+                    para_buf,
+                    para_map,
+                    input,
+                    trim,
+                    origin,
+                    source_body,
+                    origin_cursor,
+                );
                 // Body lines via line_text: strip-view drops the cumulative indent (= block_code
                 // semantics for strip>0) and is identical to `input[start..end]` for strip==0
                 // (clean-window bodies have only plain-`\n` lines, so text+"\n" == raw slice).
@@ -1263,13 +1353,24 @@ fn dispatch_org_line<'a>(
                 crate::metrics::scan_work(name.len());
                 match lname.as_str() {
                     "src" => {
-                        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+                        flush_para(
+                            out,
+                            para,
+                            para_buf,
+                            para_map,
+                            input,
+                            trim,
+                            origin,
+                            source_body,
+                            origin_cursor,
+                        );
                         let lang = begin_lang(t);
                         // Body via line_text: applies the cumulative strip (matching block_code
                         // semantics for nested indented bodies; no-op for strip==0).
                         // scan-owner: (b) monotone block cursor + frame owner — Org SRC body line table
-                        let texts: Vec<&str> =
-                            (i + 1..close).map(|k| line_text(lines, k, strip_ctx)).collect();
+                        let texts: Vec<&str> = (i + 1..close)
+                            .map(|k| line_text(lines, k, strip_ctx))
+                            .collect();
                         crate::metrics::scan_work(texts.len());
                         let inner = block_code_texts(&texts);
                         out.push(Block::Src {
@@ -1281,14 +1382,77 @@ fn dispatch_org_line<'a>(
                         return Step::Next(close + 1);
                     }
                     "example" => {
-                        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+                        flush_para(
+                            out,
+                            para,
+                            para_buf,
+                            para_map,
+                            input,
+                            trim,
+                            origin,
+                            source_body,
+                            origin_cursor,
+                        );
                         // scan-owner: (b) monotone block cursor + frame owner — Org EXAMPLE body line table
-                        let texts: Vec<&str> =
-                            (i + 1..close).map(|k| line_text(lines, k, strip_ctx)).collect();
+                        let texts: Vec<&str> = (i + 1..close)
+                            .map(|k| line_text(lines, k, strip_ctx))
+                            .collect();
                         crate::metrics::scan_work(texts.len());
                         let inner = block_code_texts(&texts);
                         out.push(Block::Example {
                             code: inner,
+                            span: Some(Span(line_start, lines[close].end)),
+                        });
+                        *absorb = true;
+                        return Step::Next(close + 1);
+                    }
+                    "export" => {
+                        flush_para(
+                            out,
+                            para,
+                            para_buf,
+                            para_map,
+                            input,
+                            trim,
+                            origin,
+                            source_body,
+                            origin_cursor,
+                        );
+                        // scan-owner: (b) monotone block cursor + frame owner — Org EXPORT body line table
+                        let texts: Vec<&str> = (i + 1..close)
+                            .map(|k| line_text(lines, k, strip_ctx))
+                            .collect();
+                        crate::metrics::scan_work(texts.len());
+                        let content = block_code_texts(&texts);
+                        let (name, options) = begin_export_fields(t);
+                        out.push(Block::Export {
+                            name,
+                            options,
+                            content,
+                            span: Some(Span(line_start, lines[close].end)),
+                        });
+                        *absorb = true;
+                        return Step::Next(close + 1);
+                    }
+                    "comment" => {
+                        flush_para(
+                            out,
+                            para,
+                            para_buf,
+                            para_map,
+                            input,
+                            trim,
+                            origin,
+                            source_body,
+                            origin_cursor,
+                        );
+                        // scan-owner: (b) monotone block cursor + frame owner — Org COMMENT body line table
+                        let texts: Vec<&str> = (i + 1..close)
+                            .map(|k| line_text(lines, k, strip_ctx))
+                            .collect();
+                        crate::metrics::scan_work(texts.len());
+                        out.push(Block::CommentBlock {
+                            content: block_code_texts(&texts),
                             span: Some(Span(line_start, lines[close].end)),
                         });
                         *absorb = true;
@@ -1343,7 +1507,17 @@ fn dispatch_org_line<'a>(
     // 7. verbatim block (Org): consecutive lines starting with `:` → Example. Bounded by `hi`.
     if is_verbatim_line(t) {
         drop_marker_ws(para, was_ws_drop, input);
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+        flush_para(
+            out,
+            para,
+            para_buf,
+            para_map,
+            input,
+            trim,
+            origin,
+            source_body,
+            origin_cursor,
+        );
         let start = i;
         let mut code = String::new();
         let mut ni = i;
@@ -1403,7 +1577,17 @@ fn dispatch_org_line<'a>(
             };
             if !captured {
                 drop_marker_ws(para, was_ws_drop, input);
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+                flush_para(
+                    out,
+                    para,
+                    para_buf,
+                    para_map,
+                    input,
+                    trim,
+                    origin,
+                    source_body,
+                    origin_cursor,
+                );
             }
             out.push(Block::DisplayedMath {
                 text: cap.text,
@@ -1454,7 +1638,16 @@ fn dispatch_org_line<'a>(
                 input.len()
             };
             let cap = if remap_spans || (cur == i && !captured && view.is_some()) {
-                raw_html_view_capture(lines, cur, hi, strip_ctx, cur_view, body_end, input, raw_html_scan)
+                raw_html_view_capture(
+                    lines,
+                    cur,
+                    hi,
+                    strip_ctx,
+                    cur_view,
+                    body_end,
+                    input,
+                    raw_html_scan,
+                )
             } else {
                 raw_html_raw_capture(lines, cur, hi, body_end, input, cur_view, raw_html_scan)
             };
@@ -1463,7 +1656,17 @@ fn dispatch_org_line<'a>(
             };
             if !captured {
                 drop_marker_ws(para, was_ws_drop, input);
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+                flush_para(
+                    out,
+                    para,
+                    para_buf,
+                    para_map,
+                    input,
+                    trim,
+                    origin,
+                    source_body,
+                    origin_cursor,
+                );
             }
             out.push(Block::RawHtml {
                 text: cap.text,
@@ -1494,7 +1697,17 @@ fn dispatch_org_line<'a>(
     // `Footnote`, so `[fn:n] …` there stays a paragraph with an inline footnote ref). The
     // body absorbs following continuation lines (mldoc `many1 l`); bounded by `hi`. F2.
     if let Some((name, content)) = footnote_def(t).filter(|_| !in_item && !ctx.in_quote) {
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+        flush_para(
+            out,
+            para,
+            para_buf,
+            para_map,
+            input,
+            trim,
+            origin,
+            source_body,
+            origin_cursor,
+        );
         let mut body = String::new();
         let mut body_map = OriginMap::new();
         let mut body_cursor = OriginCursor::new();
@@ -1509,7 +1722,10 @@ fn dispatch_org_line<'a>(
         let mut last_content_line = i;
         let mut j = i + 1;
         while j < hi {
-            match footnote_cont(line_text(lines, j, strip_ctx), line_has_nl(input, &lines[j])) {
+            match footnote_cont(
+                line_text(lines, j, strip_ctx),
+                line_has_nl(input, &lines[j]),
+            ) {
                 Some(c) => {
                     append_line_joiner(
                         &mut body,
@@ -1570,7 +1786,17 @@ fn dispatch_org_line<'a>(
             &mut list_origin_cursor,
         ) {
             Ok((block, next)) => {
-                flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+                flush_para(
+                    out,
+                    para,
+                    para_buf,
+                    para_map,
+                    input,
+                    trim,
+                    origin,
+                    source_body,
+                    origin_cursor,
+                );
                 *origin_cursor = list_origin_cursor;
                 out.push(block);
                 *absorb = false;
@@ -1583,7 +1809,17 @@ fn dispatch_org_line<'a>(
             }) => {
                 *collapse_floor = trigger;
                 if let Some(block) = kept {
-                    flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+                    flush_para(
+                        out,
+                        para,
+                        para_buf,
+                        para_map,
+                        input,
+                        trim,
+                        origin,
+                        source_body,
+                        origin_cursor,
+                    );
                     *origin_cursor = list_origin_cursor;
                     out.push(block);
                     *absorb = false;
@@ -1597,7 +1833,17 @@ fn dispatch_org_line<'a>(
     // 13. horizontal rule (exactly 5 dashes).
     if is_org_hr(t) {
         drop_marker_ws(para, was_ws_drop, input);
-        flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor);
+        flush_para(
+            out,
+            para,
+            para_buf,
+            para_map,
+            input,
+            trim,
+            origin,
+            source_body,
+            origin_cursor,
+        );
         out.push(Block::Hr {
             span: Some(Span(line_start, line_end)),
         });
@@ -1640,7 +1886,17 @@ fn dispatch_org_line<'a>(
             }
             // A preceding paragraph drops its trailing Break before a Hiccup inside a blockquote
             // body / list item, but keeps it at the document level.
-            flush_para(out, para, para_buf, para_map, input, trim, origin, source_body, origin_cursor); // no-op after the first
+            flush_para(
+                out,
+                para,
+                para_buf,
+                para_map,
+                input,
+                trim,
+                origin,
+                source_body,
+                origin_cursor,
+            ); // no-op after the first
             crate::metrics::scan_work(cap_end - rec);
             out.push(Block::Hiccup {
                 v: input[rec..cap_end].to_string(),
@@ -1882,10 +2138,7 @@ fn flush_para(
             &mut para_map_cursor,
         );
         para_map.clear();
-        out.push(Block::Paragraph {
-            inline,
-            span: None,
-        });
+        out.push(Block::Paragraph { inline, span: None });
         return;
     }
     if let Some((s, mut e)) = para.take() {
@@ -1900,14 +2153,7 @@ fn flush_para(
             }
         }
         out.push(Block::Paragraph {
-            inline: org_inline_mapped(
-                &input[s..e],
-                s,
-                input,
-                origin,
-                source_body,
-                origin_cursor,
-            ),
+            inline: org_inline_mapped(&input[s..e], s, input, origin, source_body, origin_cursor),
             span: Some(Span(s, e)),
         });
     }
@@ -1920,7 +2166,11 @@ fn drop_marker_ws(para: &mut Option<(usize, usize)>, was_ws_drop: Option<usize>,
     if let Some(boundary) = was_ws_drop {
         if let Some((_, e)) = *para {
             if para_ws_only(para, input) {
-                *para = if boundary < e { Some((boundary, e)) } else { None };
+                *para = if boundary < e {
+                    Some((boundary, e))
+                } else {
+                    None
+                };
             }
         }
     }
@@ -2295,12 +2545,17 @@ fn org_comment(s: &str) -> Option<&str> {
 
 /// `:NAME:` alone on a line opens a drawer. Lowercased name.
 fn drawer_begin(s: &str) -> Option<String> {
-    let inner = mldoc_trim_spaces_start(s).strip_prefix(':')?.strip_suffix(':')?;
+    let inner = mldoc_trim_spaces_start(s)
+        .strip_prefix(':')?
+        .strip_suffix(':')?;
     if inner.is_empty() {
         return None;
     }
     crate::metrics::scan_work(inner.len());
-    if inner.bytes().any(|b| b == b':' || b == b' ' || b == b'\n' || b == b'\r') {
+    if inner
+        .bytes()
+        .any(|b| b == b':' || b == b' ' || b == b'\n' || b == b'\r')
+    {
         return None;
     }
     crate::metrics::scan_work(inner.len());
@@ -2418,7 +2673,8 @@ fn extract_htags(title: &mut Vec<Inline>) -> Vec<String> {
         text,
         span: old_span,
         span_map: old_map,
-    }) = title.last() else {
+    }) = title.last()
+    else {
         return Vec::new();
     };
     let old_text = text.clone();
@@ -2463,7 +2719,8 @@ fn extract_htags(title: &mut Vec<Inline>) -> Vec<String> {
             text,
             span,
             span_map,
-        }) = title.last().cloned() else {
+        }) = title.last().cloned()
+        else {
             unreachable!();
         };
         let trimmed = text.trim_end();
@@ -2537,7 +2794,9 @@ fn plain_from_existing_slice(
                 .zip(text.as_bytes())
                 .take_while(|(a, b)| a == b)
                 .count();
-            crate::metrics::scan_work(copied_len + usize::from(copied_len < source_slice.len().min(text.len())));
+            crate::metrics::scan_work(
+                copied_len + usize::from(copied_len < source_slice.len().min(text.len())),
+            );
             crate::source_map::push_wire_segment(&mut out, 0, span.0, copied_len);
             Some(out)
         };
@@ -2592,10 +2851,7 @@ fn block_begin(s: &str) -> Option<String> {
         // mldoc's block name = `take_while1(non-space)` immediately after `#+BEGIN_`; an empty
         // name (`#+BEGIN_` / `#+BEGIN_ X`) is NOT a block (a plain paragraph). C: don't skip ws.
         let rest = &t[8..];
-        let n = rest
-            .bytes()
-            .take_while(|&b| !mldoc_is_space(b))
-            .count();
+        let n = rest.bytes().take_while(|&b| !mldoc_is_space(b)).count();
         crate::metrics::scan_work(n + usize::from(n < rest.len()));
         (n > 0).then(|| {
             crate::metrics::scan_work(n);
@@ -2773,7 +3029,11 @@ fn quote_line_content_line_slice(s: &str, has_eol: bool) -> Option<&str> {
     let t = mldoc_trim_spaces_start(s);
     let had_gt = t.starts_with('>');
     crate::metrics::scan_work(usize::from(!t.is_empty()));
-    let rest = if had_gt { mldoc_trim_spaces_start(&t[1..]) } else { t };
+    let rest = if had_gt {
+        mldoc_trim_spaces_start(&t[1..])
+    } else {
+        t
+    };
     if rest.is_empty() {
         return if had_gt && has_eol { Some("") } else { None };
     }
@@ -3109,7 +3369,11 @@ fn collect_list(
             } else {
                 i
             };
-            *origin_cursor = if r == 0 { start_cursor } else { flat_cursors[r - 1] };
+            *origin_cursor = if r == 0 {
+                start_cursor
+            } else {
+                flat_cursors[r - 1]
+            };
             flat.truncate(r);
             flat_boundaries.truncate(r);
             let kept = if flat.is_empty() {
@@ -3482,6 +3746,8 @@ mod tests {
                 Block::Bullet { .. } => "bullet",
                 Block::List { .. } => "list",
                 Block::Src { .. } => "src",
+                Block::Export { .. } => "export",
+                Block::CommentBlock { .. } => "comment_block",
                 Block::Quote { .. } => "quote",
                 Block::Custom { .. } => "custom",
                 Block::Properties { .. } => "properties",
@@ -3496,6 +3762,7 @@ mod tests {
                 Block::Example { .. } => "example",
                 Block::LatexEnv { .. } => "latex_env",
                 Block::Hiccup { .. } => "hiccup",
+                Block::Results { .. } => "results",
             })
             .collect()
     }
@@ -3550,9 +3817,17 @@ mod tests {
         assert_eq!(
             first_nested_paragraph_inline("#+BEGIN_QUOTE\n  \n  a\n#+END_QUOTE"),
             vec![
-                Inline::Plain { text: "  ".into(), span: None, span_map: None },
+                Inline::Plain {
+                    text: "  ".into(),
+                    span: None,
+                    span_map: None
+                },
                 Inline::Break { span: None },
-                Inline::Plain { text: "  a".into(), span: None, span_map: None },
+                Inline::Plain {
+                    text: "  a".into(),
+                    span: None,
+                    span_map: None
+                },
                 Inline::Break { span: None },
             ]
         );
@@ -3560,25 +3835,45 @@ mod tests {
             first_nested_paragraph_inline("#+BEGIN_QUOTE\n\n  a\n#+END_QUOTE"),
             vec![
                 Inline::Break { span: None },
-                Inline::Plain { text: "  a".into(), span: None, span_map: None },
+                Inline::Plain {
+                    text: "  a".into(),
+                    span: None,
+                    span_map: None
+                },
                 Inline::Break { span: None },
             ]
         );
         assert_eq!(
             first_nested_paragraph_inline("#+BEGIN_QUOTE\n\x0c  \n  a\n#+END_QUOTE"),
             vec![
-                Inline::Plain { text: "\x0c  ".into(), span: None, span_map: None },
+                Inline::Plain {
+                    text: "\x0c  ".into(),
+                    span: None,
+                    span_map: None
+                },
                 Inline::Break { span: None },
-                Inline::Plain { text: "  a".into(), span: None, span_map: None },
+                Inline::Plain {
+                    text: "  a".into(),
+                    span: None,
+                    span_map: None
+                },
                 Inline::Break { span: None },
             ]
         );
         assert_eq!(
             first_nested_paragraph_inline("#+BEGIN_QUOTE\n  a\n  b\n#+END_QUOTE"),
             vec![
-                Inline::Plain { text: "a".into(), span: None, span_map: None },
+                Inline::Plain {
+                    text: "a".into(),
+                    span: None,
+                    span_map: None
+                },
                 Inline::Break { span: None },
-                Inline::Plain { text: "b".into(), span: None, span_map: None },
+                Inline::Plain {
+                    text: "b".into(),
+                    span: None,
+                    span_map: None
+                },
                 Inline::Break { span: None },
             ]
         );
@@ -3595,19 +3890,35 @@ mod tests {
     #[test]
     fn d35_sequential_all_ws_end_to_end_shapes() {
         let expected = vec![
-            Inline::Plain { text: "a".into(), span: None, span_map: None },
+            Inline::Plain {
+                text: "a".into(),
+                span: None,
+                span_map: None,
+            },
             Inline::Break { span: None },
-            Inline::Plain { text: " ".into(), span: None, span_map: None },
+            Inline::Plain {
+                text: " ".into(),
+                span: None,
+                span_map: None,
+            },
             Inline::Break { span: None },
-            Inline::Plain { text: "x".into(), span: None, span_map: None },
+            Inline::Plain {
+                text: "x".into(),
+                span: None,
+                span_map: None,
+            },
             Inline::Break { span: None },
         ];
         assert_eq!(
-            first_nested_paragraph_inline("#+BEGIN_A\n  #+BEGIN_QUOTE\n   a\n   \n   x\n  #+END_QUOTE\n#+END_A"),
+            first_nested_paragraph_inline(
+                "#+BEGIN_A\n  #+BEGIN_QUOTE\n   a\n   \n   x\n  #+END_QUOTE\n#+END_A"
+            ),
             expected
         );
         assert_eq!(
-            first_nested_paragraph_inline("#+BEGIN_A\n  #+BEGIN_QUOTE\n   a\n  \n   x\n  #+END_QUOTE\n#+END_A"),
+            first_nested_paragraph_inline(
+                "#+BEGIN_A\n  #+BEGIN_QUOTE\n   a\n  \n   x\n  #+END_QUOTE\n#+END_A"
+            ),
             expected
         );
         assert_eq!(
@@ -3782,6 +4093,14 @@ mod tests {
         assert_eq!(bkinds("* : text"), ["bullet", "example"]);
         assert_eq!(bkinds("* #+BEGIN_SRC\ncode\n#+END_SRC"), ["bullet", "src"]);
         assert_eq!(
+            bkinds("* #+BEGIN_EXPORT html opt\nx\n#+END_EXPORT"),
+            ["bullet", "export"]
+        );
+        assert_eq!(
+            bkinds("* #+BEGIN_COMMENT\nx\n#+END_COMMENT"),
+            ["bullet", "comment_block"]
+        );
+        assert_eq!(
             bkinds("* #+BEGIN_QUOTE\nq\n#+END_QUOTE"),
             ["bullet", "quote"]
         );
@@ -3931,6 +4250,31 @@ mod tests {
         );
         assert_eq!(bkinds("#+BEGIN_QUOTE\nq\n#+END_QUOTE"), ["quote"]);
         assert_eq!(bkinds("#+BEGIN_EXAMPLE\nlit\n#+END_EXAMPLE"), ["example"]);
+        assert_eq!(
+            bkinds("#+BEGIN_EXPORT html opt\n  x\n#+END_EXPORT"),
+            ["export"]
+        );
+        assert_eq!(
+            bkinds("#+BEGIN_COMMENT\n  x\n#+END_COMMENT"),
+            ["comment_block"]
+        );
+        match &parse("#+BEGIN_EXPORT html opt\n  x\n#+END_EXPORT")[0] {
+            Block::Export {
+                name,
+                options,
+                content,
+                ..
+            } => {
+                assert_eq!(name, "html");
+                assert_eq!(options.as_deref(), Some(&["opt".to_string()][..]));
+                assert_eq!(content, "x\n");
+            }
+            b => panic!("expected Export, got {b:?}"),
+        }
+        match &parse("#+BEGIN_COMMENT\n  x\n#+END_COMMENT")[0] {
+            Block::CommentBlock { content, .. } => assert_eq!(content, "x\n"),
+            b => panic!("expected CommentBlock, got {b:?}"),
+        }
         // a `*` line inside SRC stays code, not a headline.
         match &parse("#+BEGIN_SRC\n* star line\n#+END_SRC")[0] {
             Block::Src { code, .. } => assert_eq!(code, "* star line\n"),
@@ -4189,6 +4533,8 @@ mod tests {
                     Block::Hr { .. } => "hr",
                     Block::DisplayedMath { .. } => "displayed_math",
                     Block::Src { .. } => "src",
+                    Block::Export { .. } => "export",
+                    Block::CommentBlock { .. } => "comment_block",
                     _ => "other",
                 })
                 .collect(),

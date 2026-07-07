@@ -82,7 +82,13 @@ impl OriginMap {
         &self.segments
     }
 
-    pub(crate) fn push(&mut self, text_off: usize, src_off: usize, text_len: usize, src_len: usize) {
+    pub(crate) fn push(
+        &mut self,
+        text_off: usize,
+        src_off: usize,
+        text_len: usize,
+        src_len: usize,
+    ) {
         if text_len == 0 || src_len == 0 {
             return;
         }
@@ -140,7 +146,13 @@ impl OriginMap {
                 parent.copy_interval_into(self, text_off, parent_text_off, parent_text_len, cursor);
             } else {
                 let mut cursor = OriginCursor::new();
-                parent.copy_interval_into(self, text_off, parent_text_off, parent_text_len, &mut cursor);
+                parent.copy_interval_into(
+                    self,
+                    text_off,
+                    parent_text_off,
+                    parent_text_len,
+                    &mut cursor,
+                );
             }
         } else {
             self.push(text_off, parent_text_off, 1, parent_text_len);
@@ -449,9 +461,7 @@ fn remap_inline(
             }));
             *span_map = wire;
         }
-        Inline::Emphasis {
-            children, span, ..
-        }
+        Inline::Emphasis { children, span, .. }
         | Inline::Subscript { children, span }
         | Inline::Superscript { children, span }
         | Inline::Tag { children, span } => {
@@ -461,7 +471,13 @@ fn remap_inline(
                 collapsed(local, origin, &mut collapsed_cursor)
             }));
             let mut child_cursor = node_cursor;
-            remap_inlines(children, current_input, source_body, origin, &mut child_cursor);
+            remap_inlines(
+                children,
+                current_input,
+                source_body,
+                origin,
+                &mut child_cursor,
+            );
         }
         Inline::Link { label, span, .. } => {
             let local = span.take();
@@ -497,14 +513,16 @@ fn remap_inline(
     }
 }
 
-fn remapped_span(span: Option<Span>, origin: &OriginMap, cursor: &mut OriginCursor) -> Option<Span> {
+fn remapped_span(
+    span: Option<Span>,
+    origin: &OriginMap,
+    cursor: &mut OriginCursor,
+) -> Option<Span> {
     let span = span?;
-    origin
-        .envelope(span.0, span.1, cursor)
-        .or_else(|| {
-            let p = origin.boundary_at(span.0, cursor);
-            Some(Span(p, p))
-        })
+    origin.envelope(span.0, span.1, cursor).or_else(|| {
+        let p = origin.boundary_at(span.0, cursor);
+        Some(Span(p, p))
+    })
 }
 
 fn collapsed(span: Option<Span>, origin: &OriginMap, cursor: &mut OriginCursor) -> Span {

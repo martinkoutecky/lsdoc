@@ -1,5 +1,5 @@
 //! Inline leaf-parser library — the shared, context-free building blocks of inline
-//! parsing, behavior-equivalent to mldoc 1.5.7's inline grammar (`lib/syntax/inline.ml`,
+//! parsing, behavior-equivalent to pinned latest mldoc's inline grammar (`lib/syntax/inline.ml`,
 //! verified against the live oracle).
 //!
 //! The top-level ctx-aware inline pass (lexer → one-pass resolve) lives in the two format
@@ -51,6 +51,1012 @@ pub(crate) fn is_ws_or_nl(c: u8) -> bool {
     is_ws(c) || c == b'\n' || c == b'\r'
 }
 
+pub(crate) fn plain_fast_path_markdown(s: &str, base: usize) -> Option<Vec<Inline>> {
+    plain_fast_path(s, base, PlainFastFormat::Markdown, true)
+}
+
+pub(crate) fn plain_fast_path_org(s: &str, base: usize) -> Option<Vec<Inline>> {
+    plain_fast_path(s, base, PlainFastFormat::Org, true)
+}
+
+#[derive(Clone, Copy)]
+enum PlainFastFormat {
+    Markdown,
+    Org,
+}
+
+fn plain_fast_path(
+    s: &str,
+    base: usize,
+    format: PlainFastFormat,
+    allow_tags: bool,
+) -> Option<Vec<Inline>> {
+    let bb = s.as_bytes();
+    if let Some(out) = plain_break_only_fast_path(s, base, format) {
+        return Some(out);
+    }
+    let mut out = Vec::new();
+    let mut plain_start = 0usize;
+    let mut i = 0usize;
+    let mut page_ref_scan = PageRefScan::new();
+    let mut md_link_scan = MdLinkScan::new();
+    let mut footnote_ref_scan = FootnoteRefScan::new();
+    let mut org_inline_scan = crate::org_resolver::OrgInlineScan::new();
+    let mut bare_url_scan = BareUrlScan::new();
+    let mut dollar_scan = ByteBeforeEolScan::new(b'$');
+    let mut hiccup_close: Option<Vec<(usize, usize)>> = None;
+    let mut raw_html_scan = crate::block_common::RawHtmlScan::new();
+    let mut autolink_scan = AutolinkScan::new();
+    let mut timestamp_scan = TimestampCloseScan::new();
+    let mut email_scan = EmailAutolinkScan::new();
+    let mut md_no_closer = [[false; 3]; 5];
+    let md_terminal_odd_backslash = matches!(format, PlainFastFormat::Markdown)
+        && crate::resolver::markdown_terminal_odd_backslash(s);
+    let mut org_no_closer = [[false; 2]; 5];
+    let org_terminal_odd_backslash = matches!(format, PlainFastFormat::Org)
+        && crate::org_resolver::org_terminal_odd_backslash(s);
+    let mut last_plain_char: Option<u8> = None;
+    let mut fresh = true;
+    let mut needs_concat_plains = false;
+
+    // scan-owner: (a2) top-level plain-inline fast path — each byte is classified once
+    // until a construct-start byte declines to the full resolver; accepted plain slices
+    // are copied exactly once into emitted Plain nodes.
+    while i < bb.len() {
+        crate::metrics::scan_work(1);
+        let c = bb[i];
+        if allow_tags && fresh && matches!(c, b'S' | b'C' | b'D' | b's' | b'c' | b'd') {
+            if let Some((end, mut node)) =
+                parse_keyword_timestamp_with_scan(s, i, &mut timestamp_scan)
+            {
+                push_plain(&mut out, s, base, plain_start, i);
+                crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+                out.push(node);
+                i = end;
+                plain_start = i;
+                fresh = true;
+                continue;
+            }
+        }
+        if fresh && plain_fast_common_bare_url_candidate(s, i) {
+            if let Some((end, mut node)) = parse_bare_url_with_scan(s, i, &mut bare_url_scan, base)
+            {
+                push_plain(&mut out, s, base, plain_start, i);
+                crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+                out.push(node);
+                i = end;
+                plain_start = i;
+                fresh = true;
+                continue;
+            }
+        }
+        let plain_run_end = plain_fast_plain_run_end(bb, i, format);
+        if plain_run_end > i {
+            crate::metrics::scan_work(plain_run_end - i);
+            last_plain_char = Some(bb[plain_run_end - 1]);
+            i = plain_run_end;
+            fresh = false;
+            continue;
+        }
+        if is_ws(c) {
+            let start = i;
+            i += 1;
+            // scan-owner: (a2) inline whitespace run — this run is part of the current
+            // plain buffer and is consumed once while preserving freshness for the next byte.
+            while i < bb.len() && is_ws(bb[i]) {
+                i += 1;
+            }
+            crate::metrics::scan_work(i - start);
+            last_plain_char = Some(bb[i - 1]);
+            fresh = true;
+            continue;
+        }
+        if matches!(format, PlainFastFormat::Markdown) && c == b'[' {
+            if bb.get(i + 1) == Some(&b'^') {
+                if let Some((end, name)) = parse_footnote_ref(s, i, &mut footnote_ref_scan) {
+                    push_plain(&mut out, s, base, plain_start, i);
+                    out.push(Inline::Fnref {
+                        name,
+                        span: Some(Span(base + i, base + end)),
+                    });
+                    i = end;
+                    plain_start = i;
+                    fresh = true;
+                    continue;
+                }
+            }
+            if bb.get(i + 1) == Some(&b'[') {
+                if let Some((end, content)) = parse_nested_link_with_scan(s, i, &mut page_ref_scan)
+                {
+                    push_plain(&mut out, s, base, plain_start, i);
+                    out.push(Inline::NestedLink {
+                        content,
+                        span: Some(Span(base + i, base + end)),
+                    });
+                    i = end;
+                    plain_start = i;
+                    fresh = true;
+                    continue;
+                }
+                if let Some((end, name, full)) = parse_page_ref_with_scan(s, i, &mut page_ref_scan)
+                {
+                    push_plain(&mut out, s, base, plain_start, i);
+                    out.push(Inline::Link {
+                        url: Url::PageRef { v: name },
+                        label: Vec::new(),
+                        full,
+                        image: false,
+                        metadata: String::new(),
+                        title: None,
+                        span: Some(Span(base + i, base + end)),
+                    });
+                    i = end;
+                    plain_start = i;
+                    fresh = true;
+                    continue;
+                }
+            }
+            if let Some((mut node, end)) = md_link_with_scan(s, i, false, base, &mut md_link_scan) {
+                push_plain(&mut out, s, base, plain_start, i);
+                crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+                out.push(node);
+                i = end;
+                plain_start = i;
+                fresh = true;
+                continue;
+            }
+            if let Some((end, mut node)) =
+                parse_bracket_timestamp_with_scan(s, i, &mut timestamp_scan)
+            {
+                push_plain(&mut out, s, base, plain_start, i);
+                crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+                out.push(node);
+                i = end;
+                plain_start = i;
+                fresh = true;
+                continue;
+            }
+            if let Some((end, mut node)) = parse_statistics_cookie(s, i) {
+                push_plain(&mut out, s, base, plain_start, i);
+                crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+                out.push(node);
+                i = end;
+                plain_start = i;
+                fresh = true;
+                continue;
+            }
+            if bb.get(i + 1) == Some(&b':') && hiccup_head_ok(s, i) {
+                let close = hiccup_close.get_or_insert_with(|| build_hiccup_close_sparse(s));
+                if let Some(end) = hiccup_sparse_close_at(close, i) {
+                    push_plain(&mut out, s, base, plain_start, i);
+                    crate::metrics::scan_work(end - i);
+                    out.push(Inline::Hiccup {
+                        // scan-owner: (a) accepted inline hiccup copy — slice belongs to this emitted Hiccup node.
+                        v: s[i..end].to_string(),
+                        span: Some(Span(base + i, base + end)),
+                    });
+                    i = end;
+                    plain_start = i;
+                    fresh = true;
+                    continue;
+                }
+            }
+            last_plain_char = Some(c);
+            i += 1;
+            fresh = true;
+            continue;
+        }
+        if matches!(format, PlainFastFormat::Org) && c == b'[' {
+            if bb.get(i + 1) == Some(&b'[') {
+                if let Some((mut node, end)) = crate::org_resolver::try_nested_link_or_link_org(
+                    s,
+                    bb,
+                    i,
+                    base,
+                    &mut org_inline_scan,
+                ) {
+                    push_plain(&mut out, s, base, plain_start, i);
+                    crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+                    out.push(node);
+                    i = end;
+                    plain_start = i;
+                    fresh = true;
+                    continue;
+                }
+            }
+            if let Some((end, mut node)) =
+                parse_bracket_timestamp_with_scan(s, i, &mut timestamp_scan)
+            {
+                push_plain(&mut out, s, base, plain_start, i);
+                crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+                out.push(node);
+                i = end;
+                plain_start = i;
+                fresh = true;
+                continue;
+            }
+            if let Some((end, name)) =
+                crate::org_resolver::org_footnote_at(s, i, &mut org_inline_scan)
+            {
+                push_plain(&mut out, s, base, plain_start, i);
+                out.push(Inline::Fnref {
+                    name,
+                    span: Some(Span(base + i, base + end)),
+                });
+                i = end;
+                plain_start = i;
+                fresh = true;
+                continue;
+            }
+            if let Some((end, mut node)) = parse_statistics_cookie(s, i) {
+                push_plain(&mut out, s, base, plain_start, i);
+                crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+                out.push(node);
+                i = end;
+                plain_start = i;
+                fresh = true;
+                continue;
+            }
+            if bb.get(i + 1) == Some(&b':') && hiccup_head_ok(s, i) {
+                let close = hiccup_close.get_or_insert_with(|| build_hiccup_close_sparse(s));
+                if let Some(end) = hiccup_sparse_close_at(close, i) {
+                    push_plain(&mut out, s, base, plain_start, i);
+                    crate::metrics::scan_work(end - i);
+                    out.push(Inline::Hiccup {
+                        // scan-owner: (a) accepted Org inline hiccup copy — slice belongs to this emitted Hiccup node.
+                        v: s[i..end].to_string(),
+                        span: Some(Span(base + i, base + end)),
+                    });
+                    i = end;
+                    plain_start = i;
+                    fresh = true;
+                    continue;
+                }
+            }
+            last_plain_char = Some(c);
+            i += 1;
+            fresh = true;
+            continue;
+        }
+        if matches!(format, PlainFastFormat::Markdown) && c == b'`' {
+            if let Some((mut node, end)) = crate::lexer::code_span(s, i) {
+                if let Inline::Code { text, span } = &mut node {
+                    // scan-owner: (a) accepted code-span leaf — inspect/copy only this accepted text.
+                    crate::metrics::scan_work(text.len());
+                    if text.as_bytes().contains(&b'\r') {
+                        crate::metrics::scan_work(text.len());
+                        *text = text.replace('\r', "\n");
+                    }
+                    *span = Some(Span(base + i, base + end));
+                }
+                push_plain(&mut out, s, base, plain_start, i);
+                out.push(node);
+                i = end;
+                plain_start = i;
+            } else {
+                last_plain_char = Some(c);
+                i += 1;
+            }
+            fresh = true;
+            continue;
+        }
+        if matches!(format, PlainFastFormat::Markdown) && c == b'\\' {
+            match bb.get(i + 1).copied() {
+                Some(b'(' | b'[') => return None,
+                Some(next) if next.is_ascii_alphabetic() => {
+                    let name_start = i + 1;
+                    let mut end = name_start;
+                    // scan-owner: (a) consumed Markdown entity name — accepted entity consumes this backslash run; unknown names decline.
+                    while end < bb.len() && bb[end].is_ascii_alphabetic() {
+                        end += 1;
+                    }
+                    crate::metrics::scan_work(end - name_start + usize::from(end < bb.len()));
+                    let name = &s[name_start..end];
+                    if s[end..].starts_with("{}") {
+                        crate::metrics::scan_work(2);
+                        end += 2;
+                    }
+                    let Some(entity) = crate::entities::find(name) else {
+                        return None;
+                    };
+                    crate::metrics::scan_work(
+                        entity.name.len()
+                            + entity.latex.len()
+                            + entity.html.len()
+                            + entity.ascii.len()
+                            + entity.unicode.len(),
+                    );
+                    push_plain(&mut out, s, base, plain_start, i);
+                    out.push(Inline::Entity {
+                        // scan-owner: (a) accepted Markdown entity table-field copies — charged above for this emitted Entity.
+                        name: entity.name.to_string(),
+                        latex: entity.latex.to_string(),
+                        latex_mathp: entity.latex_mathp,
+                        html: entity.html.to_string(),
+                        ascii: entity.ascii.to_string(),
+                        // scan-owner: (a) accepted Markdown entity unicode copy — charged above for this emitted Entity.
+                        unicode: entity.unicode.to_string(),
+                        span: Some(Span(base + i, base + end)),
+                    });
+                    i = end;
+                    plain_start = i;
+                    fresh = true;
+                    continue;
+                }
+                Some(next) if next.is_ascii_punctuation() => {
+                    push_plain(&mut out, s, base, plain_start, i);
+                    push_transformed_plain(&mut out, s, base, i, 2, i + 1, 1);
+                    last_plain_char = Some(next);
+                    needs_concat_plains = true;
+                    i += 2;
+                    plain_start = i;
+                    fresh = true;
+                    continue;
+                }
+                _ => return None,
+            }
+        }
+        if matches!(format, PlainFastFormat::Markdown) && c == b'*' && bb.get(i + 1) == Some(&b'*')
+        {
+            let (node, end) = if let Some((node, end)) = markdown_fast_simple_bold(s, base, i) {
+                (node, end)
+            } else if let Some((node, end)) =
+                crate::resolver::try_markdown_nested_emphasis_at_cached(
+                    s,
+                    i,
+                    base,
+                    None,
+                    &mut md_no_closer,
+                    md_terminal_odd_backslash,
+                )
+            {
+                (node, end)
+            } else {
+                last_plain_char = Some(c);
+                i += 1;
+                fresh = true;
+                continue;
+            };
+            push_plain(&mut out, s, base, plain_start, i);
+            out.push(node);
+            i = end;
+            plain_start = i;
+            fresh = true;
+            continue;
+        }
+        if matches!(format, PlainFastFormat::Markdown)
+            && (c == b'*' || c == b'~' || (c == b'=' && bb.get(i + 1) == Some(&b'=')))
+        {
+            let Some((node, end)) = crate::resolver::try_markdown_nested_emphasis_at_cached(
+                s,
+                i,
+                base,
+                None,
+                &mut md_no_closer,
+                md_terminal_odd_backslash,
+            ) else {
+                last_plain_char = Some(c);
+                i += 1;
+                fresh = true;
+                continue;
+            };
+            push_plain(&mut out, s, base, plain_start, i);
+            out.push(node);
+            i = end;
+            plain_start = i;
+            fresh = true;
+            continue;
+        }
+        if matches!(format, PlainFastFormat::Markdown)
+            && matches!(c, b'_' | b'^')
+            && bb.get(i + 1) == Some(&b'{')
+        {
+            let state_char = if i > plain_start {
+                bb.get(i - 1).copied()
+            } else {
+                last_plain_char
+            };
+            let Some((node, end)) = crate::resolver::try_markdown_script_after_emphasis_declines(
+                s, i, base, state_char,
+            ) else {
+                return None;
+            };
+            push_plain(&mut out, s, base, plain_start, i);
+            out.push(node);
+            i = end;
+            plain_start = i;
+            fresh = true;
+            continue;
+        }
+        if matches!(format, PlainFastFormat::Markdown) && matches!(c, b'_' | b'^') {
+            let state_char = if i > plain_start {
+                Some(bb[i - 1])
+            } else {
+                last_plain_char
+            };
+            if let Some((node, end)) = crate::resolver::try_markdown_nested_emphasis_at_cached(
+                s,
+                i,
+                base,
+                state_char,
+                &mut md_no_closer,
+                md_terminal_odd_backslash,
+            ) {
+                push_plain(&mut out, s, base, plain_start, i);
+                out.push(node);
+                i = end;
+                plain_start = i;
+                fresh = true;
+                continue;
+            }
+            last_plain_char = Some(c);
+            i += 1;
+            fresh = true;
+            continue;
+        }
+        if matches!(format, PlainFastFormat::Org) && fresh && matches!(c, b'=' | b'~') {
+            let Some((node, end)) = crate::org_resolver::try_org_code_or_verbatim_at(s, i, base)
+            else {
+                return None;
+            };
+            push_plain(&mut out, s, base, plain_start, i);
+            out.push(node);
+            i = end;
+            plain_start = i;
+            fresh = true;
+            continue;
+        }
+        if matches!(format, PlainFastFormat::Org)
+            && (c == b'*' || c == b'/' || c == b'+' || (c == b'^' && bb.get(i + 1) == Some(&b'^')))
+        {
+            if let Some((node, end)) = crate::org_resolver::try_org_nested_emphasis_at_cached(
+                s,
+                i,
+                base,
+                last_plain_char,
+                &mut org_no_closer,
+                org_terminal_odd_backslash,
+            ) {
+                push_plain(&mut out, s, base, plain_start, i);
+                out.push(node);
+                i = end;
+                plain_start = i;
+                fresh = true;
+                continue;
+            }
+            if c == b'^' {
+                return None;
+            }
+            last_plain_char = Some(c);
+            i += 1;
+            fresh = true;
+            continue;
+        }
+        if c == b'$' {
+            if dollar_scan.has_before_eol(bb, i + 2) {
+                if let Some((mut node, end)) = parse_latex_dollar_at(s, i) {
+                    push_plain(&mut out, s, base, plain_start, i);
+                    crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+                    out.push(node);
+                    i = end;
+                    plain_start = i;
+                    fresh = true;
+                    continue;
+                }
+            }
+            last_plain_char = Some(c);
+            i += 1;
+            fresh = true;
+            continue;
+        }
+        if matches!(format, PlainFastFormat::Org) && c == b'<' {
+            if fresh {
+                if let Some((mut node, end)) = crate::org_resolver::try_target_angle_at(
+                    s,
+                    bb,
+                    i,
+                    base,
+                    crate::org_resolver::Ctx::top(),
+                    &mut org_inline_scan,
+                    &mut raw_html_scan,
+                    &mut autolink_scan,
+                    &mut timestamp_scan,
+                    &mut email_scan,
+                ) {
+                    push_plain(&mut out, s, base, plain_start, i);
+                    crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+                    out.push(node);
+                    i = end;
+                    plain_start = i;
+                    fresh = true;
+                    continue;
+                }
+            }
+            last_plain_char = Some(c);
+            i += 1;
+            fresh = false;
+            continue;
+        }
+        if matches!(format, PlainFastFormat::Markdown) && allow_tags && c == b'<' {
+            if fresh {
+                if let Some((mut node, end)) = crate::resolver::try_markdown_angle_at(
+                    s,
+                    i,
+                    crate::resolver::Ctx::top(),
+                    &mut raw_html_scan,
+                    &mut autolink_scan,
+                    &mut timestamp_scan,
+                    &mut email_scan,
+                    base,
+                ) {
+                    push_plain(&mut out, s, base, plain_start, i);
+                    crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+                    out.push(node);
+                    i = end;
+                    plain_start = i;
+                    fresh = true;
+                    continue;
+                }
+            }
+            last_plain_char = Some(c);
+            i += 1;
+            fresh = false;
+            continue;
+        }
+        if matches!(format, PlainFastFormat::Markdown) && c == b'!' && bb.get(i + 1) == Some(&b'[')
+        {
+            if !fresh {
+                last_plain_char = Some(c);
+                i += 1;
+                fresh = false;
+                continue;
+            }
+            let Some((mut node, end)) = md_link_with_scan(s, i + 1, true, base, &mut md_link_scan)
+            else {
+                return None;
+            };
+            push_plain(&mut out, s, base, plain_start, i);
+            crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+            out.push(node);
+            i = end;
+            plain_start = i;
+            fresh = true;
+            continue;
+        }
+        if c == b'#' && allow_tags {
+            let (unescape_plain, reparse) = match format {
+                PlainFastFormat::Markdown => (true, TagReparse::Markdown),
+                PlainFastFormat::Org => (false, TagReparse::Org),
+            };
+            let (end, children) = parse_tag_name(
+                s,
+                i + 1,
+                unescape_plain,
+                base,
+                reparse,
+                None,
+                &mut page_ref_scan,
+            );
+            if end > i + 1 && !children.is_empty() {
+                push_plain(&mut out, s, base, plain_start, i);
+                out.push(Inline::Tag {
+                    children,
+                    span: Some(Span(base + i, base + end)),
+                });
+                i = end;
+                plain_start = i;
+                fresh = true;
+                continue;
+            }
+            last_plain_char = Some(c);
+            i += 1;
+            fresh = true;
+            continue;
+        }
+        if allow_tags && fresh && c == b'{' && bb.get(i + 1) == Some(&b'{') {
+            let Some((mut node, end)) = parse_macro_at(s, i) else {
+                return None;
+            };
+            push_plain(&mut out, s, base, plain_start, i);
+            crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+            out.push(node);
+            i = end;
+            plain_start = i;
+            fresh = true;
+            continue;
+        }
+        if allow_tags && fresh && c == b'(' && bb.get(i + 1) == Some(&b'(') {
+            let Some((mut node, end)) = parse_block_ref_at(s, i) else {
+                return None;
+            };
+            push_plain(&mut out, s, base, plain_start, i);
+            crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
+            out.push(node);
+            i = end;
+            plain_start = i;
+            fresh = true;
+            continue;
+        }
+        if plain_fast_rejects(bb, i, c, format, allow_tags) {
+            return None;
+        }
+        if matches!(c, b'\n' | b'\r') {
+            match format {
+                PlainFastFormat::Markdown => {
+                    if let Some(hardbreak_start) = markdown_fast_hardbreak_start(&s[plain_start..i])
+                    {
+                        push_plain(
+                            &mut out,
+                            s,
+                            base,
+                            plain_start,
+                            plain_start + hardbreak_start,
+                        );
+                        out.push(Inline::HardBreak {
+                            span: Some(Span(base + i, base + i + 1)),
+                        });
+                    } else {
+                        push_plain(&mut out, s, base, plain_start, i);
+                        out.push(Inline::Break {
+                            span: Some(Span(base + i, base + i + 1)),
+                        });
+                    }
+                }
+                PlainFastFormat::Org => {
+                    push_plain(&mut out, s, base, plain_start, i);
+                    out.push(Inline::Break {
+                        span: Some(Span(base + i, base + i + 1)),
+                    });
+                }
+            }
+            i += 1;
+            plain_start = i;
+            fresh = true;
+            continue;
+        }
+        fresh = plain_fast_plain_byte_leaves_fresh(bb, i, c, format);
+        let step = char_len(c);
+        last_plain_char = Some(bb[i + step - 1]);
+        i += step;
+    }
+    push_plain(&mut out, s, base, plain_start, bb.len());
+    if needs_concat_plains {
+        Some(concat_plains(out))
+    } else {
+        Some(out)
+    }
+}
+
+fn plain_break_only_fast_path(
+    s: &str,
+    base: usize,
+    format: PlainFastFormat,
+) -> Option<Vec<Inline>> {
+    let bb = s.as_bytes();
+    let mut out = Vec::new();
+    let mut plain_start = 0usize;
+    let mut i = 0usize;
+    // scan-owner: (a2) direct plain/break-only scan — each byte is classified once
+    // until a construct-start byte declines to the fused scanner or the buffer is accepted.
+    while i < bb.len() {
+        let c = bb[i];
+        if matches!(c, b'\n' | b'\r') {
+            match format {
+                PlainFastFormat::Markdown => {
+                    if let Some(hardbreak_start) = markdown_fast_hardbreak_start(&s[plain_start..i])
+                    {
+                        push_plain(
+                            &mut out,
+                            s,
+                            base,
+                            plain_start,
+                            plain_start + hardbreak_start,
+                        );
+                        out.push(Inline::HardBreak {
+                            span: Some(Span(base + i, base + i + 1)),
+                        });
+                    } else {
+                        push_plain(&mut out, s, base, plain_start, i);
+                        out.push(Inline::Break {
+                            span: Some(Span(base + i, base + i + 1)),
+                        });
+                    }
+                }
+                PlainFastFormat::Org => {
+                    push_plain(&mut out, s, base, plain_start, i);
+                    out.push(Inline::Break {
+                        span: Some(Span(base + i, base + i + 1)),
+                    });
+                }
+            }
+            crate::metrics::scan_work(1);
+            i += 1;
+            plain_start = i;
+            continue;
+        }
+        if plain_break_only_rejects(bb, i, c, format) {
+            return None;
+        }
+        let step = char_len(c);
+        crate::metrics::scan_work(step);
+        i += step;
+    }
+    push_plain(&mut out, s, base, plain_start, bb.len());
+    Some(out)
+}
+
+fn plain_break_only_rejects(bb: &[u8], i: usize, c: u8, format: PlainFastFormat) -> bool {
+    if c == 0x1a || (c == b':' && bb.get(i + 1) == Some(&b'/') && bb.get(i + 2) == Some(&b'/')) {
+        return true;
+    }
+    match format {
+        PlainFastFormat::Markdown => matches!(
+            c,
+            b'\\'
+                | b'_'
+                | b'^'
+                | b'['
+                | b'*'
+                | b'~'
+                | b'`'
+                | b'='
+                | b'$'
+                | b'#'
+                | b'<'
+                | b'!'
+                | b'('
+                | b'{'
+                | b'@'
+        ),
+        PlainFastFormat::Org => {
+            matches!(
+                c,
+                b'\\'
+                    | b'_'
+                    | b'^'
+                    | b'['
+                    | b'*'
+                    | b'/'
+                    | b'+'
+                    | b'$'
+                    | b'#'
+                    | b'~'
+                    | b'='
+                    | b'<'
+                    | b'('
+                    | b'{'
+                    | b'@'
+            )
+        }
+    }
+}
+
+fn push_plain(out: &mut Vec<Inline>, s: &str, base: usize, start: usize, end: usize) {
+    if start >= end {
+        return;
+    }
+    crate::metrics::scan_work(end - start);
+    out.push(Inline::Plain {
+        // scan-owner: (a) accepted plain-fast copy — slice belongs to this emitted Plain node.
+        text: s[start..end].to_string(),
+        span: Some(Span(base + start, base + end)),
+        span_map: None,
+    });
+}
+
+fn push_transformed_plain(
+    out: &mut Vec<Inline>,
+    s: &str,
+    base: usize,
+    raw_start: usize,
+    raw_len: usize,
+    text_start: usize,
+    text_len: usize,
+) {
+    crate::metrics::scan_work(text_len);
+    out.push(crate::source_map::make_plain(
+        // scan-owner: (a) accepted transformed Plain copy — slice belongs to this emitted Plain node.
+        s[text_start..text_start + text_len].to_string(),
+        Span(base + raw_start, base + raw_start + raw_len),
+        vec![OriginSegment::new(0, base + text_start, text_len, text_len)],
+        s,
+        base,
+    ));
+}
+
+#[inline]
+fn plain_fast_plain_run_end(bb: &[u8], mut i: usize, format: PlainFastFormat) -> usize {
+    // scan-owner: (a2) top-level plain-inline run skip — each skipped byte is classified once.
+    while i < bb.len() && !plain_fast_plain_run_stops(bb, i, bb[i], format) {
+        i += 1;
+    }
+    i
+}
+
+#[inline]
+fn plain_fast_plain_run_stops(bb: &[u8], i: usize, c: u8, format: PlainFastFormat) -> bool {
+    if c == 0x1a
+        || is_ws(c)
+        || matches!(c, b'\n' | b'\r')
+        || (c == b':' && bb.get(i + 1) == Some(&b'/') && bb.get(i + 2) == Some(&b'/'))
+    {
+        return true;
+    }
+    match format {
+        PlainFastFormat::Markdown => {
+            matches!(
+                c,
+                b'\\' | b'_' | b'^' | b'[' | b'*' | b'~' | b'`' | b'=' | b'$' | b'#'
+            ) || c == b'<'
+                || (c == b'!' && bb.get(i + 1) == Some(&b'['))
+                || (c == b'(' && bb.get(i + 1) == Some(&b'('))
+                || (c == b'{' && bb.get(i + 1) == Some(&b'{'))
+                || (c == b'@' && bb.get(i + 1) == Some(&b'@'))
+        }
+        PlainFastFormat::Org => {
+            matches!(
+                c,
+                b'\\' | b'_' | b'^' | b'[' | b'*' | b'/' | b'+' | b'$' | b'#'
+            ) || matches!(c, b'~' | b'=' | b'<')
+                || (c == b'(' && bb.get(i + 1) == Some(&b'('))
+                || (c == b'{' && bb.get(i + 1) == Some(&b'{'))
+                || (c == b'@' && bb.get(i + 1) == Some(&b'@'))
+        }
+    }
+}
+
+fn plain_fast_rejects(
+    bb: &[u8],
+    i: usize,
+    c: u8,
+    format: PlainFastFormat,
+    allow_tags: bool,
+) -> bool {
+    if c == 0x1a || (c == b':' && bb.get(i + 1) == Some(&b'/') && bb.get(i + 2) == Some(&b'/')) {
+        return true;
+    }
+    match format {
+        PlainFastFormat::Markdown => {
+            // scan-owner: (c) constant byte-set membership — checked once for the current byte.
+            (!is_ws(c)
+                && crate::inline_driver::MARKDOWN_PLAIN_DELIMITER_BYTES.contains(&c)
+                && (allow_tags || c != b'#')
+                && !markdown_fast_plain_identifier_underscore(bb, i))
+                && !markdown_fast_plain_single_equals(bb, i)
+                || match c {
+                    b'<' => true,
+                    b'!' => bb.get(i + 1) == Some(&b'['),
+                    b'(' => bb.get(i + 1) == Some(&b'('),
+                    b'{' => bb.get(i + 1) == Some(&b'{'),
+                    b'@' => bb.get(i + 1) == Some(&b'@'),
+                    _ => false,
+                }
+        }
+        PlainFastFormat::Org => {
+            // scan-owner: (c) constant byte-set membership — checked once for the current byte.
+            (!is_ws(c) && crate::inline_driver::ORG_PLAIN_DELIMITER_BYTES.contains(&c))
+                || match c {
+                    b'~' | b'=' | b'<' => true,
+                    b'(' => bb.get(i + 1) == Some(&b'('),
+                    b'{' => bb.get(i + 1) == Some(&b'{'),
+                    b'@' => bb.get(i + 1) == Some(&b'@'),
+                    _ => false,
+                }
+        }
+    }
+}
+
+fn markdown_fast_simple_bold(s: &str, base: usize, at: usize) -> Option<(Inline, usize)> {
+    let bb = s.as_bytes();
+    if bb.get(at) != Some(&b'*') || bb.get(at + 1) != Some(&b'*') || bb.get(at + 2) == Some(&b'*') {
+        return None;
+    }
+    let mut i = at + 2;
+    let mut scanned = 0usize;
+    let mut has_non_ws = false;
+    // scan-owner: (a2) accepted simple-bold close probe — scans only until the first
+    // unambiguous same-line `**`; nested star/code cases decline to the full resolver.
+    while i + 1 < bb.len() {
+        scanned += 1;
+        match bb[i] {
+            b'\n' | b'\r' | b'`' => {
+                crate::metrics::scan_work(scanned);
+                return None;
+            }
+            b'*' if bb[i + 1] == b'*' => {
+                crate::metrics::scan_work(scanned + 1);
+                if bb.get(i + 2) == Some(&b'*') || i == at + 2 {
+                    return None;
+                }
+                let inner = &s[at + 2..i];
+                if !has_non_ws {
+                    return None;
+                }
+                let children =
+                    plain_fast_path(inner, base + at + 2, PlainFastFormat::Markdown, false)?;
+                return Some((
+                    Inline::Emphasis {
+                        // scan-owner: (c) constant output label copy — fixed literal.
+                        emph: "Bold".to_string(),
+                        children,
+                        span: Some(Span(base + at, base + i + 2)),
+                    },
+                    i + 2,
+                ));
+            }
+            b'*' => {
+                crate::metrics::scan_work(scanned);
+                return None;
+            }
+            c => {
+                if !matches!(c, b' ' | b'\t' | 0x0c) {
+                    has_non_ws = true;
+                }
+                i += char_len(c);
+            }
+        }
+    }
+    crate::metrics::scan_work(scanned);
+    None
+}
+
+fn markdown_fast_plain_identifier_underscore(bb: &[u8], i: usize) -> bool {
+    bb.get(i) == Some(&b'_')
+        && i > 0
+        && bb[i - 1].is_ascii_alphanumeric()
+        && bb.get(i + 1).is_some_and(|next| *next != b'{')
+}
+
+fn markdown_fast_plain_single_equals(bb: &[u8], i: usize) -> bool {
+    bb.get(i) == Some(&b'=') && bb.get(i + 1) != Some(&b'=')
+}
+
+fn plain_fast_common_bare_url_candidate(s: &str, i: usize) -> bool {
+    let b = s.as_bytes();
+    ascii_starts_with_ci(b, i, b"http://")
+        || ascii_starts_with_ci(b, i, b"https://")
+        || ascii_starts_with_ci(b, i, b"ftp://")
+        || ascii_starts_with_ci(b, i, b"file://")
+}
+
+fn ascii_starts_with_ci(b: &[u8], i: usize, needle: &[u8]) -> bool {
+    let Some(end) = i.checked_add(needle.len()) else {
+        return false;
+    };
+    // scan-owner: (c) constant prefix check — each needle is a fixed URL scheme literal.
+    end <= b.len()
+        && b[i..end]
+            .iter()
+            .zip(needle.iter())
+            .all(|(a, c)| a.eq_ignore_ascii_case(c))
+}
+
+fn plain_fast_plain_byte_leaves_fresh(bb: &[u8], i: usize, c: u8, format: PlainFastFormat) -> bool {
+    if is_ws(c) {
+        return true;
+    }
+    match format {
+        PlainFastFormat::Markdown => {
+            markdown_fast_plain_identifier_underscore(bb, i)
+                || markdown_fast_plain_single_equals(bb, i)
+        }
+        PlainFastFormat::Org => false,
+    }
+}
+
+fn markdown_fast_hardbreak_start(s: &str) -> Option<usize> {
+    let bb = s.as_bytes();
+    let mut start = bb.len();
+    let mut scanned = 0usize;
+    // scan-owner: (a2) caller-owned pending suffix — scans only the plain segment before one newline.
+    while start > 0 && matches!(bb[start - 1], b' ' | b'\t' | 0x0c) {
+        scanned += 1;
+        start -= 1;
+    }
+    crate::metrics::scan_work(scanned + usize::from(start > 0));
+    (start < bb.len() && bb[start] == b' ' && bb.len() - start >= 2).then_some(start)
+}
+
 #[inline]
 fn is_tag_url_space_or_eol(c: u8) -> bool {
     // C6 boundary set: source `space_chars @ eol_chars` as enforced by the local
@@ -96,9 +1102,69 @@ pub(crate) struct ByteBeforeEolScan {
     initialized: bool,
 }
 
+/// Monotone coarse delimiter floor for two-byte sequences. This is only a
+/// necessary-condition check before a source-transcribed parser validates the
+/// construct, so escaped or nested raw hits are harmless false positives.
+pub(crate) struct BytePairScan {
+    first: u8,
+    second: u8,
+    hit: usize,
+    initialized: bool,
+}
+
+impl BytePairScan {
+    pub(crate) fn new(first: u8, second: u8) -> Self {
+        Self {
+            first,
+            second,
+            hit: 0,
+            initialized: false,
+        }
+    }
+
+    pub(crate) fn has_at_or_after(&mut self, bb: &[u8], from: usize) -> bool {
+        if !self.initialized || self.hit < from {
+            self.hit = first_pair_for_scan(bb, from, self.first, self.second);
+            self.initialized = true;
+        }
+        self.hit < bb.len()
+    }
+}
+
+fn first_pair_for_scan(bb: &[u8], from: usize, first: u8, second: u8) -> usize {
+    let mut p = from;
+    let mut scanned = 0usize;
+    // scan-owner: (a2) monotone byte-pair floor — each failed suffix region is
+    // crossed once by the owning `BytePairScan`; raw hits only trigger validation.
+    while p < bb.len() {
+        match memchr::memchr(first, &bb[p..]) {
+            Some(off) => {
+                let hit = p + off;
+                scanned += off + 1;
+                if bb.get(hit + 1) == Some(&second) {
+                    crate::metrics::scan_work(scanned + 1);
+                    return hit;
+                }
+                p = hit + 1;
+            }
+            None => {
+                scanned += bb.len() - p;
+                break;
+            }
+        }
+    }
+    crate::metrics::scan_work(scanned);
+    bb.len()
+}
+
 impl ByteBeforeEolScan {
     pub(crate) fn new(byte: u8) -> Self {
-        Self { byte, hit: 0, eol: 0, initialized: false }
+        Self {
+            byte,
+            hit: 0,
+            eol: 0,
+            initialized: false,
+        }
     }
 
     pub(crate) fn first_before_eol(&mut self, bb: &[u8], from: usize) -> Option<usize> {
@@ -147,7 +1213,10 @@ pub(crate) struct FootnoteRefScan {
 
 impl FootnoteRefScan {
     pub(crate) fn new() -> Self {
-        Self { stop: 0, initialized: false }
+        Self {
+            stop: 0,
+            initialized: false,
+        }
     }
 
     fn first_stop(&mut self, bb: &[u8], from: usize) -> Option<usize> {
@@ -321,14 +1390,15 @@ impl TimestampCloseCursor {
         }
     }
 
-    fn first_close_or_lf(&mut self, b: &[u8], from: usize, close: u8) -> usize {
+    fn first_close(&mut self, b: &[u8], from: usize, close: u8) -> usize {
         if from >= self.no_close_from {
             return b.len();
         }
         if !self.initialized || self.next < from {
             let mut p = from;
             let mut scanned = 0usize;
-            while p < b.len() && b[p] != close && b[p] != b'\n' {
+            // scan-owner: (a2) monotone timestamp close cursor — one forward search per delimiter kind.
+            while p < b.len() && b[p] != close {
                 scanned += 1;
                 p += char_len(b[p]);
             }
@@ -363,18 +1433,18 @@ impl TimestampCloseScan {
         }
     }
 
-    fn first_close_or_lf(&mut self, b: &[u8], from: usize, close: u8) -> usize {
+    fn first_close(&mut self, b: &[u8], from: usize, close: u8) -> usize {
         match close {
-            b'>' => self.angle.first_close_or_lf(b, from, close),
-            b']' => self.bracket.first_close_or_lf(b, from, close),
+            b'>' => self.angle.first_close(b, from, close),
+            b']' => self.bracket.first_close(b, from, close),
             _ => b.len(),
         }
     }
 
-    fn first_token_boundary_or_lf(&mut self, b: &[u8], from: usize, close: u8) -> usize {
+    fn first_token_boundary(&mut self, b: &[u8], from: usize, close: u8) -> usize {
         match close {
-            b'>' => self.angle_token.first_boundary_or_lf(b, from, close),
-            b']' => self.bracket_token.first_boundary_or_lf(b, from, close),
+            b'>' => self.angle_token.first_boundary(b, from, close),
+            b']' => self.bracket_token.first_boundary(b, from, close),
             _ => b.len(),
         }
     }
@@ -396,18 +1466,15 @@ impl TimestampTokenCursor {
         }
     }
 
-    fn first_boundary_or_lf(&mut self, b: &[u8], from: usize, close: u8) -> usize {
+    fn first_boundary(&mut self, b: &[u8], from: usize, close: u8) -> usize {
         if from >= self.no_boundary_from {
             return b.len();
         }
         if !self.initialized || self.next < from {
             let mut p = from;
             let mut scanned = 0usize;
-            while p < b.len()
-                && b[p] != close
-                && b[p] != b'\n'
-                && !is_mldoc_timestamp_space(b[p])
-            {
+            // scan-owner: (a2) monotone timestamp token cursor — close or mldoc-space boundary.
+            while p < b.len() && b[p] != close && !is_mldoc_timestamp_space(b[p]) {
                 scanned += 1;
                 p += char_len(b[p]);
             }
@@ -692,7 +1759,9 @@ impl PageRefScan {
 
     pub(crate) fn next_crlf_at_or_after(&mut self, bb: &[u8], from: usize) -> usize {
         self.check_source(bb.len());
-        if !self.next_crlf_initialized || from > self.next_crlf_hit || from < self.next_crlf_last_query
+        if !self.next_crlf_initialized
+            || from > self.next_crlf_hit
+            || from < self.next_crlf_last_query
         {
             self.next_crlf_hit = first_crlf_for_page_ref_scan(bb, from);
             self.next_crlf_initialized = true;
@@ -1122,7 +2191,11 @@ fn capture_tag_name_end(
         i += char_len(c);
         consumed = true;
     }
-    if consumed { i } else { start }
+    if consumed {
+        i
+    } else {
+        start
+    }
 }
 
 fn reparse_tag_name(
@@ -1187,15 +2260,13 @@ fn reparse_tag_name(
                 TagReparse::Markdown => {
                     try_nested_link_or_link_md_tag(tag, i, tag_base, &mut md_link_scan)
                 }
-                TagReparse::Org => {
-                    crate::org_resolver::try_nested_link_or_link_org(
-                        tag,
-                        b,
-                        i,
-                        tag_base,
-                        &mut org_inline_scan,
-                    )
-                }
+                TagReparse::Org => crate::org_resolver::try_nested_link_or_link_org(
+                    tag,
+                    b,
+                    i,
+                    tag_base,
+                    &mut org_inline_scan,
+                ),
             };
             if let Some((node, next)) = parsed {
                 flush_plain!();
@@ -1245,7 +2316,13 @@ fn try_nested_link_or_link_md_tag(
 ) -> Option<(Inline, usize)> {
     if s[at..].starts_with("[[") {
         if let Some((end, content)) = parse_nested_link_with_scan(s, at, scan.page_ref_scan()) {
-            return Some((Inline::NestedLink { content, span: Some(Span(base + at, base + end)) }, end));
+            return Some((
+                Inline::NestedLink {
+                    content,
+                    span: Some(Span(base + at, base + end)),
+                },
+                end,
+            ));
         }
         if let Some((end, name, full)) = parse_page_ref_with_scan(s, at, scan.page_ref_scan()) {
             return Some((
@@ -1300,7 +2377,12 @@ fn concat_plains(nodes: Vec<Inline>) -> Vec<Inline> {
                         }
                         None => {
                             if let Some(Span(start, end)) = span {
-                                crate::source_map::push_wire_segment(map, shift, start, end - start);
+                                crate::source_map::push_wire_segment(
+                                    map,
+                                    shift,
+                                    start,
+                                    end - start,
+                                );
                             }
                         }
                     }
@@ -1474,6 +2556,7 @@ const MD_LINK_NONE: usize = usize::MAX;
 
 pub(crate) struct MdLinkScan {
     source_len: Option<usize>,
+    label_url_delim: BytePairScan,
     label_brackets: Option<BalancedEndTable>,
     url_parens: Option<BalancedEndTable>,
     page_refs: Option<Vec<usize>>,
@@ -1486,6 +2569,7 @@ impl MdLinkScan {
     pub(crate) fn new() -> Self {
         Self {
             source_len: None,
+            label_url_delim: BytePairScan::new(b']', b'('),
             label_brackets: None,
             url_parens: None,
             page_refs: None,
@@ -1509,6 +2593,11 @@ impl MdLinkScan {
             .end(at)
     }
 
+    fn has_label_url_delim(&mut self, s: &str, from: usize) -> bool {
+        self.check_source(s);
+        self.label_url_delim.has_at_or_after(s.as_bytes(), from)
+    }
+
     fn url_paren_end(&mut self, s: &str, at: usize) -> usize {
         self.check_source(s);
         self.url_parens
@@ -1525,7 +2614,9 @@ impl MdLinkScan {
 
     fn code_span_end(&mut self, s: &str, at: usize) -> Option<usize> {
         self.check_source(s);
-        let ends = self.code_spans.get_or_insert_with(|| build_code_span_ends(s));
+        let ends = self
+            .code_spans
+            .get_or_insert_with(|| build_code_span_ends(s));
         let end = ends.get(at).copied().unwrap_or(MD_LINK_NONE);
         (end != MD_LINK_NONE).then_some(end)
     }
@@ -1631,7 +2722,10 @@ impl BalancedEndTable {
 
     fn end(&self, at: usize) -> usize {
         crate::metrics::scan_work(1);
-        self.end.get(at).copied().unwrap_or_else(|| self.end.len().saturating_sub(1))
+        self.end
+            .get(at)
+            .copied()
+            .unwrap_or_else(|| self.end.len().saturating_sub(1))
     }
 }
 
@@ -1674,8 +2768,16 @@ fn build_code_span_ends(s: &str) -> Vec<usize> {
     let mut next_eol = vec![n; n + 1];
     let mut next_double = vec![n; n + 1];
     for i in (0..n).rev() {
-        next_backtick[i] = if b[i] == b'`' { i } else { next_backtick[i + 1] };
-        next_eol[i] = if b[i] == b'\n' || b[i] == b'\r' { i } else { next_eol[i + 1] };
+        next_backtick[i] = if b[i] == b'`' {
+            i
+        } else {
+            next_backtick[i + 1]
+        };
+        next_eol[i] = if b[i] == b'\n' || b[i] == b'\r' {
+            i
+        } else {
+            next_eol[i + 1]
+        };
         next_double[i] = if i + 1 < n && b[i] == b'`' && b[i + 1] == b'`' {
             i
         } else {
@@ -1785,7 +2887,8 @@ fn markdown_link(
     crate::metrics::scan_work(url_range.len());
     let mut end = after_url;
     let metadata = read_metadata(s, s.as_bytes(), &mut end, scan);
-    let (link_type, url_value, title) = parsed_url.unwrap_or((MdUrlType::Other, url_text.clone(), None));
+    let (link_type, url_value, title) =
+        parsed_url.unwrap_or((MdUrlType::Other, url_text.clone(), None));
     let trimmed = url_value.trim();
     let unescaped;
     let url_value = if link_type == MdUrlType::Other {
@@ -1798,7 +2901,15 @@ fn markdown_link(
     let prefix = if image { "!" } else { "" };
     let full = format!("{}[{}]({}){}", prefix, label.label_text, url_text, metadata);
     Some(MdLink {
-        node: Inline::Link { url, label: label.label, full, image, metadata, title, span: None },
+        node: Inline::Link {
+            url,
+            label: label.label,
+            full,
+            image,
+            metadata,
+            title,
+            span: None,
+        },
         end,
     })
 }
@@ -1822,12 +2933,21 @@ fn label_part(
     let raw_nodes = materialize_label_part(s, at, delimiter, base, scan)?;
     let label_text = label_text_for_full(&raw_nodes);
     let label = finish_markdown_label(raw_nodes, reparse_plain);
-    Some(MdLabelPart { label, label_text, url_start })
+    Some(MdLabelPart {
+        label,
+        label_text,
+        url_start,
+    })
 }
 
 fn label_part_url_start(s: &str, at: usize, scan: &mut MdLinkScan) -> Option<usize> {
     let b = s.as_bytes();
     let n = b.len();
+    // scan-owner: (a2) monotone Markdown link `](` absence floor — validation below
+    // still owns precedence and escaping; this only proves a necessary delimiter exists.
+    if !scan.has_label_url_delim(s, at + 1) {
+        return None;
+    }
     if s[at..].starts_with("[](") {
         return Some(at + 3);
     }
@@ -1997,7 +3117,11 @@ fn push_label_plain(nodes: &mut Vec<Inline>, raw: &str, abs_start: usize) {
     }
     crate::metrics::scan_work(raw.len());
     match nodes.last_mut() {
-        Some(Inline::Plain { text, span, span_map }) => {
+        Some(Inline::Plain {
+            text,
+            span,
+            span_map,
+        }) => {
             text.push_str(raw);
             *span = span.map(|Span(start, _)| Span(start, abs_start + raw.len()));
             *span_map = None;
@@ -2105,7 +3229,12 @@ fn concat_label_plains(nodes: Vec<Inline>) -> Vec<Inline> {
                         }
                         None => {
                             if let Some(Span(start, end)) = span {
-                                crate::source_map::push_wire_segment(map, shift, start, end - start);
+                                crate::source_map::push_wire_segment(
+                                    map,
+                                    shift,
+                                    start,
+                                    end - start,
+                                );
                             }
                         }
                     }
@@ -2172,11 +3301,7 @@ fn code_inner(span: &str) -> String {
 }
 
 /// mldoc `link_url_part` (`syntax/inline.ml:723-733`).
-fn link_url_part_range(
-    s: &str,
-    at: usize,
-    scan: &mut MdLinkScan,
-) -> Option<(Range<usize>, usize)> {
+fn link_url_part_range(s: &str, at: usize, scan: &mut MdLinkScan) -> Option<(Range<usize>, usize)> {
     let end = scan.url_paren_end(s, at);
     if s.as_bytes().get(end) == Some(&b')') {
         return Some((at..end, end + 1));
@@ -2228,7 +3353,10 @@ fn link_url_part_inner(
         if parts.iter().any(|(kind, _)| *kind == MdUrlType::Other1) {
             return None;
         }
-        (MdUrlType::Other, parts.into_iter().map(|(_, value)| value).collect())
+        (
+            MdUrlType::Other,
+            parts.into_iter().map(|(_, value)| value).collect(),
+        )
     };
     while j < n && matches!(b[j], b' ' | b'\t' | 0x16 | 0x0c) {
         crate::metrics::scan_work(1);
@@ -2316,12 +3444,16 @@ fn classify_markdown_url(link_type: MdUrlType, url: &str) -> Url {
         MdUrlType::BlockRef => {
             let inner = &url[2..url.len().saturating_sub(2)];
             crate::metrics::scan_work(inner.len());
-            Url::BlockRef { v: inner.to_string() }
+            Url::BlockRef {
+                v: inner.to_string(),
+            }
         }
         MdUrlType::PageRef => {
             let inner = &url[2..url.len().saturating_sub(2)];
             crate::metrics::scan_work(inner.len());
-            Url::PageRef { v: inner.to_string() }
+            Url::PageRef {
+                v: inner.to_string(),
+            }
         }
         MdUrlType::Other => {
             let colon = url.find(':');
@@ -2371,8 +3503,8 @@ fn read_metadata(s: &str, b: &[u8], end: &mut usize, scan: &mut MdLinkScan) -> S
 
 /// mldoc `quick_link`: `<protocol:optional//link>`, where `link` is nonempty
 /// and stops before whitespace or `>`. Returns (end, node).
-pub(crate) fn parse_quick_link(s: &str, at: usize) -> Option<(usize, Inline)> {
-    parse_quick_link_with_mode(s, at, false, 0)
+pub(crate) fn parse_quick_link_org(s: &str, at: usize, base: usize) -> Option<(usize, Inline)> {
+    parse_quick_link_with_mode(s, at, false, base)
 }
 
 /// Markdown quick links in the compiled mldoc 1.5.7 artifact unescape the
@@ -2552,7 +3684,13 @@ pub(crate) fn parse_email_autolink_cached(
     } else {
         boundary
     };
-    Some((end, Inline::Email { text: val, span: None }))
+    Some((
+        end,
+        Inline::Email {
+            text: val,
+            span: None,
+        },
+    ))
 }
 
 /// mldoc `statistics_cookie`: `[digits/slashes/percents]`, then Scanf-prefix
@@ -2670,11 +3808,19 @@ pub(crate) fn parse_latex_env(
     match find_ci(input, cs, &ending) {
         Some(e) => {
             crate::metrics::scan_work(name.len() + e - cs);
-            Some((name.to_ascii_lowercase(), input[cs..e].to_string(), e + ending.len()))
+            Some((
+                name.to_ascii_lowercase(),
+                input[cs..e].to_string(),
+                e + ending.len(),
+            ))
         }
         None => {
             crate::metrics::scan_work(name.len() + input.len() - cs);
-            Some((name.to_ascii_lowercase(), input[cs..].to_string(), input.len()))
+            Some((
+                name.to_ascii_lowercase(),
+                input[cs..].to_string(),
+                input.len(),
+            ))
         }
     }
 }
@@ -2716,6 +3862,12 @@ pub(crate) fn parse_bare_url_with_scan(
     let b = s.as_bytes();
     let n = b.len();
     if at >= scan.no_scheme_from {
+        return None;
+    }
+    // mldoc's bare-url branch is not dispatched from keyword-leading `c`, `d`, or
+    // `s` bytes (case-insensitive); those remain plain even when followed by
+    // `://`. Explicit markdown link destinations are classified separately.
+    if matches!(b[at].to_ascii_lowercase(), b'c' | b'd' | b's') {
         return None;
     }
     // protocol
@@ -2872,7 +4024,9 @@ fn string_contains_balanced_brackets_multi_end(
             let pc = b[plain_end];
             if other_delims.contains(&pc)
                 || excluded_ending_chars.contains(&pc)
-                || bracket_pairs.iter().any(|&(left, right)| pc == left || pc == right)
+                || bracket_pairs
+                    .iter()
+                    .any(|&(left, right)| pc == left || pc == right)
             {
                 break;
             }
@@ -2949,16 +4103,116 @@ fn unescape_origins(raw: &str, base: usize) -> Vec<OriginSegment> {
 /// source tag set (`Qz`) and cross-checked against the live oracle (every name in / every
 /// HTML5 element not listed out). Keep sorted — `is_hiccup_tag` binary-searches it.
 pub(crate) static HICCUP_TAGS: &[&str] = &[
-    "a", "abbr", "address", "area", "article", "aside", "audio", "b", "base", "bdi", "bdo",
-    "blockquote", "body", "br", "button", "canvas", "caption", "cite", "code", "col", "colgroup", "data",
-    "datalist", "dd", "del", "details", "dfn", "div", "dl", "dt", "em", "embed", "fieldset",
-    "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "head",
-    "header", "hr", "html", "i", "iframe", "img", "input", "ins", "kbd", "keygen", "label",
-    "legend", "li", "link", "main", "map", "mark", "meta", "meter", "nav", "noscript", "object",
-    "ol", "optgroup", "option", "output", "p", "param", "pre", "progress", "q", "rb", "rp",
-    "rt", "rtc", "ruby", "s", "samp", "script", "section", "select", "small", "source", "span",
-    "strong", "style", "sub", "summary", "sup", "table", "tbody", "td", "template", "textarea", "tfoot",
-    "th", "thead", "time", "title", "tr", "track", "u", "ul", "var", "video", "wbr",
+    "a",
+    "abbr",
+    "address",
+    "area",
+    "article",
+    "aside",
+    "audio",
+    "b",
+    "base",
+    "bdi",
+    "bdo",
+    "blockquote",
+    "body",
+    "br",
+    "button",
+    "canvas",
+    "caption",
+    "cite",
+    "code",
+    "col",
+    "colgroup",
+    "data",
+    "datalist",
+    "dd",
+    "del",
+    "details",
+    "dfn",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "embed",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hr",
+    "html",
+    "i",
+    "iframe",
+    "img",
+    "input",
+    "ins",
+    "kbd",
+    "keygen",
+    "label",
+    "legend",
+    "li",
+    "link",
+    "main",
+    "map",
+    "mark",
+    "meta",
+    "meter",
+    "nav",
+    "noscript",
+    "object",
+    "ol",
+    "optgroup",
+    "option",
+    "output",
+    "p",
+    "param",
+    "pre",
+    "progress",
+    "q",
+    "rb",
+    "rp",
+    "rt",
+    "rtc",
+    "ruby",
+    "s",
+    "samp",
+    "script",
+    "section",
+    "select",
+    "small",
+    "source",
+    "span",
+    "strong",
+    "style",
+    "sub",
+    "summary",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "template",
+    "textarea",
+    "tfoot",
+    "th",
+    "thead",
+    "time",
+    "title",
+    "tr",
+    "track",
+    "u",
+    "ul",
+    "var",
+    "video",
+    "wbr",
 ];
 
 /// Case-insensitive membership test against `HICCUP_TAGS`. `name` is ASCII alphanumeric
@@ -2974,7 +4228,9 @@ pub(crate) fn known_html_tag_index(name: &str) -> Option<usize> {
         buf[k] = c.to_ascii_lowercase();
     }
     let lower = &buf[..bytes.len()];
-    HICCUP_TAGS.binary_search_by(|t| t.as_bytes().cmp(lower)).ok()
+    HICCUP_TAGS
+        .binary_search_by(|t| t.as_bytes().cmp(lower))
+        .ok()
 }
 
 /// Case-insensitive membership test against the shared mldoc HTML-element allowlist.
@@ -3024,7 +4280,8 @@ pub(crate) fn hiccup_head_ok(s: &str, at: usize) -> bool {
     }
     // (2) keyword boundary: `]`, mldoc `is_space`, `.` or `#` (CSS-selector start / end).
     matches!(b.get(j), Some(b']') | Some(b'.') | Some(b'#'))
-        || b.get(j).is_some_and(|&c| crate::block_common::mldoc_is_space(c))
+        || b.get(j)
+            .is_some_and(|&c| crate::block_common::mldoc_is_space(c))
 }
 
 /// Pair EVERY `[:`…`]` hiccup vector in `s` in one linear pass (a delimiter stack:
@@ -3066,6 +4323,47 @@ pub(crate) fn build_hiccup_close(s: &str) -> Vec<usize> {
         }
     }
     close
+}
+
+fn build_hiccup_close_sparse(s: &str) -> Vec<(usize, usize)> {
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut pairs = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut in_string = false;
+    let mut p = 0;
+    // scan-owner: (sort exception) sparse inline hiccup close index — one linear
+    // delimiter pass plus one sort over matched opener pairs, avoiding dense per-byte tables.
+    while p < n {
+        match b[p] {
+            b'[' if p + 1 < n && b[p + 1] == b':' => {
+                stack.push(p);
+                p += 2;
+            }
+            b']' if !in_string => {
+                if let Some(o) = stack.pop() {
+                    pairs.push((o, p + 1));
+                }
+                p += 1;
+            }
+            b'"' => {
+                if p == 0 || b[p - 1] != b'\\' {
+                    in_string = !in_string;
+                }
+                p += 1;
+            }
+            c => p += char_len(c),
+        }
+    }
+    pairs.sort_unstable_by_key(|&(opener, _)| opener);
+    pairs
+}
+
+fn hiccup_sparse_close_at(pairs: &[(usize, usize)], opener: usize) -> Option<usize> {
+    pairs
+        .binary_search_by_key(&opener, |&(at, _)| at)
+        .ok()
+        .map(|idx| pairs[idx].1)
 }
 
 /// Pair `[[`…`]]` the way `match_brackets` (nested-link) balances them — a delimiter
@@ -3146,7 +4444,11 @@ pub(crate) fn parse_latex_backslash_at(s: &str, at: usize) -> Option<(Inline, us
     let end = find_sub(b, body_start, close.as_bytes())?;
     crate::metrics::scan_work(mode.len() + end - body_start);
     Some((
-        Inline::Latex { mode: mode.to_string(), body: s[body_start..end].to_string(), span: None },
+        Inline::Latex {
+            mode: mode.to_string(),
+            body: s[body_start..end].to_string(),
+            span: None,
+        },
         end + 2,
     ))
 }
@@ -3170,7 +4472,11 @@ pub(crate) fn parse_latex_dollar_at(s: &str, at: usize) -> Option<(Inline, usize
         let end = latex_display_body_end(b, body_start)?;
         crate::metrics::scan_work("Displayed".len() + end - body_start);
         return Some((
-            Inline::Latex { mode: "Displayed".to_string(), body: s[body_start..end].to_string(), span: None },
+            Inline::Latex {
+                mode: "Displayed".to_string(),
+                body: s[body_start..end].to_string(),
+                span: None,
+            },
             end + 2,
         ));
     }
@@ -3192,7 +4498,11 @@ pub(crate) fn parse_latex_dollar_at(s: &str, at: usize) -> Option<(Inline, usize
     Some((
         {
             crate::metrics::scan_work("Inline".len() + j - (at + 1));
-            Inline::Latex { mode: "Inline".to_string(), body: s[at + 1..j].to_string(), span: None }
+            Inline::Latex {
+                mode: "Inline".to_string(),
+                body: s[at + 1..j].to_string(),
+                span: None,
+            }
         },
         j + 1,
     ))
@@ -3284,7 +4594,14 @@ pub(crate) fn parse_macro_at(s: &str, at: usize) -> Option<(Inline, usize)> {
             continue;
         }
         if let Some((name, args)) = parse_macro(&s[inner_start..j]) {
-            return Some((Inline::Macro { name, args, span: None }, j + close.len()));
+            return Some((
+                Inline::Macro {
+                    name,
+                    args,
+                    span: None,
+                },
+                j + close.len(),
+            ));
         }
     }
     None
@@ -3309,12 +4626,7 @@ pub(crate) fn parse_export_snippet_at(s: &str, at: usize) -> Option<(Inline, usi
     let name_start = at + 2;
     let mut j = name_start;
     let mut scanned = 0usize;
-    while j < n
-        && b[j] != b':'
-        && b[j] != b'\n'
-        && b[j] != b'\r'
-        && !is_export_name_space(b[j])
-    {
+    while j < n && b[j] != b':' && b[j] != b'\n' && b[j] != b'\r' && !is_export_name_space(b[j]) {
         scanned += 1;
         j += char_len(b[j]);
     }
@@ -3369,7 +4681,10 @@ pub(crate) fn parse_keyword_timestamp_with_scan(
     at: usize,
     scan: &mut TimestampCloseScan,
 ) -> Option<(usize, Inline)> {
-    if !matches!(s.as_bytes().get(at), Some(b'S' | b'C' | b'D' | b's' | b'c' | b'd')) {
+    if !matches!(
+        s.as_bytes().get(at),
+        Some(b'S' | b'C' | b'D' | b's' | b'c' | b'd')
+    ) {
         return None;
     }
     parse_timestamp_at_with_scan(s, at, scan)
@@ -3446,17 +4761,23 @@ fn parse_range_at(s: &str, at: usize, scan: &mut TimestampCloseScan) -> Option<(
     let (end2, _kind2, stop) = parse_general_timestamp_at(s, end1 + 2, &mut range_scan)?;
     *scan = range_scan;
     if clock == Some(true) {
-        Some((end2, Inline::Timestamp {
-            ts: "Clock".to_string(),
-            date: serde_json::json!(["Stopped", { "start": start, "stop": stop }]),
-            span: None,
-        }))
+        Some((
+            end2,
+            Inline::Timestamp {
+                ts: "Clock".to_string(),
+                date: serde_json::json!(["Stopped", { "start": start, "stop": stop }]),
+                span: None,
+            },
+        ))
     } else {
-        Some((end2, Inline::Timestamp {
-            ts: "Range".to_string(),
-            date: serde_json::json!({ "start": start, "stop": stop }),
-            span: None,
-        }))
+        Some((
+            end2,
+            Inline::Timestamp {
+                ts: "Range".to_string(),
+                date: serde_json::json!({ "start": start, "stop": stop }),
+                span: None,
+            },
+        ))
     }
 }
 
@@ -3522,7 +4843,7 @@ fn parse_date_time_at(
     scan: &mut TimestampCloseScan,
 ) -> Option<(usize, serde_json::Value)> {
     let b = s.as_bytes();
-    if b.get(at) != Some(&open) || !timestamp_body_has_close_before_lf(s, at, close, scan) {
+    if b.get(at) != Some(&open) || !timestamp_body_has_close(s, at, close, scan) {
         return None;
     }
     let mut i = at + 1;
@@ -3579,17 +4900,15 @@ fn parse_date_time_at(
         (None, Some(_)) => unreachable!(),
     };
 
-    Some((i + 1, timestamp_point(year, month, day, wday, time, repetition, active)))
+    Some((
+        i + 1,
+        timestamp_point(year, month, day, wday, time, repetition, active),
+    ))
 }
 
-fn timestamp_body_has_close_before_lf(
-    s: &str,
-    at: usize,
-    close: u8,
-    scan: &mut TimestampCloseScan,
-) -> bool {
+fn timestamp_body_has_close(s: &str, at: usize, close: u8, scan: &mut TimestampCloseScan) -> bool {
     let b = s.as_bytes();
-    let boundary = scan.first_close_or_lf(b, at + 1, close);
+    let boundary = scan.first_close(b, at + 1, close);
     boundary < b.len() && b[boundary] == close
 }
 
@@ -3624,7 +4943,10 @@ fn timestamp_point(
     crate::metrics::scan_work(wday.len());
     obj.insert("wday".to_string(), serde_json::json!(wday));
     if let Some((hour, min)) = time {
-        obj.insert("time".to_string(), serde_json::json!({ "hour": hour, "min": min }));
+        obj.insert(
+            "time".to_string(),
+            serde_json::json!({ "hour": hour, "min": min }),
+        );
     }
     if let Some(rep) = repetition {
         obj.insert("repetition".to_string(), rep);
@@ -3671,8 +4993,8 @@ fn take_timestamp_non_spaces(
 ) -> Option<(usize, usize)> {
     let b = s.as_bytes();
     let start = i;
-    let end = scan.first_token_boundary_or_lf(b, i, close);
-    (end > start && end < b.len() && b[end] != b'\n').then_some((start, end))
+    let end = scan.first_token_boundary(b, i, close);
+    (end > start && end < b.len()).then_some((start, end))
 }
 
 fn scan_i64_prefix(b: &[u8], mut i: usize) -> Option<(i64, usize)> {
@@ -3688,7 +5010,10 @@ fn scan_i64_prefix(b: &[u8], mut i: usize) -> Option<(i64, usize)> {
     if i == digit_start {
         return None;
     }
-    let n = std::str::from_utf8(&b[start..i]).ok()?.parse::<i64>().ok()?;
+    let n = std::str::from_utf8(&b[start..i])
+        .ok()?
+        .parse::<i64>()
+        .ok()?;
     Some((n, i))
 }
 
@@ -3745,7 +5070,866 @@ fn repetition_parser(tok: &str, first: u8) -> Option<serde_json::Value> {
     if b[1] != b'+' {
         parse_repetition_marker("Plus", &b[1..])
     } else {
-        let kind = if first == b'+' { "DoublePlus" } else { "Dotted" };
+        let kind = if first == b'+' {
+            "DoublePlus"
+        } else {
+            "Dotted"
+        };
         parse_repetition_marker(kind, &b[2..])
+    }
+}
+
+#[cfg(test)]
+mod plain_fast_path_tests {
+    use super::{plain_fast_path_markdown, plain_fast_path_org};
+    use crate::projection::{Inline, Span, SpanMapSegment, Url};
+
+    fn plain(text: &str, start: usize, end: usize) -> Inline {
+        Inline::Plain {
+            text: text.to_string(),
+            span: Some(Span(start, end)),
+            span_map: None,
+        }
+    }
+
+    fn mapped_plain(
+        text: &str,
+        start: usize,
+        end: usize,
+        segments: Vec<(usize, usize, usize)>,
+    ) -> Inline {
+        Inline::Plain {
+            text: text.to_string(),
+            span: Some(Span(start, end)),
+            span_map: Some(
+                segments
+                    .into_iter()
+                    .map(|(text_off, src_off, len)| SpanMapSegment(text_off, src_off, len))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn page_ref(full: &str, name: &str, start: usize, end: usize) -> Inline {
+        Inline::Link {
+            url: Url::PageRef {
+                v: name.to_string(),
+            },
+            label: Vec::new(),
+            full: full.to_string(),
+            image: false,
+            metadata: String::new(),
+            title: None,
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn file_link(label: &str, url: &str, full: &str, start: usize, end: usize) -> Inline {
+        Inline::Link {
+            url: Url::File { v: url.to_string() },
+            label: vec![plain(label, start + 1, start + 1 + label.len())],
+            full: full.to_string(),
+            image: false,
+            metadata: String::new(),
+            title: None,
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn search_link(label: &str, url: &str, full: &str, start: usize, end: usize) -> Inline {
+        Inline::Link {
+            url: Url::Search { v: url.to_string() },
+            label: vec![plain(label, start + 1, start + 1 + label.len())],
+            full: full.to_string(),
+            image: false,
+            metadata: String::new(),
+            title: None,
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn image_link(label: &str, url: &str, full: &str, start: usize, end: usize) -> Inline {
+        Inline::Link {
+            url: Url::Search { v: url.to_string() },
+            label: vec![plain(label, start + 2, start + 2 + label.len())],
+            full: full.to_string(),
+            image: true,
+            metadata: String::new(),
+            title: None,
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn complex_link(protocol: &str, link: &str, full: &str, start: usize, end: usize) -> Inline {
+        Inline::Link {
+            url: Url::Complex {
+                protocol: Some(protocol.to_string()),
+                link: Some(link.to_string()),
+            },
+            label: vec![plain(full, start, end)],
+            full: full.to_string(),
+            image: false,
+            metadata: String::new(),
+            title: None,
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn angle_complex_link(
+        protocol: &str,
+        link: &str,
+        full: &str,
+        start: usize,
+        end: usize,
+    ) -> Inline {
+        Inline::Link {
+            url: Url::Complex {
+                protocol: Some(protocol.to_string()),
+                link: Some(link.to_string()),
+            },
+            label: vec![plain(full, start + 1, end - 1)],
+            full: full.to_string(),
+            image: false,
+            metadata: String::new(),
+            title: None,
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn inline_html(text: &str, start: usize, end: usize) -> Inline {
+        Inline::InlineHtml {
+            text: text.to_string(),
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn target(text: &str, start: usize, end: usize) -> Inline {
+        Inline::Target {
+            text: text.to_string(),
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn amp_entity(start: usize, end: usize) -> Inline {
+        Inline::Entity {
+            name: "amp".to_string(),
+            latex: "\\&".to_string(),
+            latex_mathp: false,
+            html: "&amp;".to_string(),
+            ascii: "&".to_string(),
+            unicode: "&".to_string(),
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn email(local_part: &str, domain: &str, start: usize, end: usize) -> Inline {
+        Inline::Email {
+            text: serde_json::json!({
+                "local_part": local_part,
+                "domain": domain,
+            }),
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn fnref(name: &str, start: usize, end: usize) -> Inline {
+        Inline::Fnref {
+            name: name.to_string(),
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn percent_cookie(value: i64, start: usize, end: usize) -> Inline {
+        Inline::Cookie {
+            kind: "Percent".to_string(),
+            value,
+            total: None,
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn hiccup(v: &str, start: usize, end: usize) -> Inline {
+        Inline::Hiccup {
+            v: v.to_string(),
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn tag(name: &str, hash_start: usize, end: usize) -> Inline {
+        Inline::Tag {
+            children: vec![plain(name, hash_start + 1, end)],
+            span: Some(Span(hash_start, end)),
+        }
+    }
+
+    fn macro_node(name: &str, args: Vec<&str>, start: usize, end: usize) -> Inline {
+        Inline::Macro {
+            name: name.to_string(),
+            args: args.into_iter().map(str::to_string).collect(),
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn block_ref(id: &str, full: &str, start: usize, end: usize) -> Inline {
+        Inline::Link {
+            url: Url::BlockRef { v: id.to_string() },
+            label: Vec::new(),
+            full: full.to_string(),
+            image: false,
+            metadata: String::new(),
+            title: None,
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn code(text: &str, start: usize, end: usize) -> Inline {
+        Inline::Code {
+            text: text.to_string(),
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn verbatim(text: &str, start: usize, end: usize) -> Inline {
+        Inline::Verbatim {
+            text: text.to_string(),
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn emphasis(kind: &str, children: Vec<Inline>, start: usize, end: usize) -> Inline {
+        Inline::Emphasis {
+            emph: kind.to_string(),
+            children,
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn bold(children: Vec<Inline>, start: usize, end: usize) -> Inline {
+        emphasis("Bold", children, start, end)
+    }
+
+    fn subscript(children: Vec<Inline>, start: usize, end: usize) -> Inline {
+        Inline::Subscript {
+            children,
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn superscript(children: Vec<Inline>, start: usize, end: usize) -> Inline {
+        Inline::Superscript {
+            children,
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn latex(mode: &str, body: &str, start: usize, end: usize) -> Inline {
+        Inline::Latex {
+            mode: mode.to_string(),
+            body: body.to_string(),
+            span: Some(Span(start, end)),
+        }
+    }
+
+    fn timestamp(kind: &str, date: serde_json::Value, start: usize, end: usize) -> Inline {
+        Inline::Timestamp {
+            ts: kind.to_string(),
+            date,
+            span: Some(Span(start, end)),
+        }
+    }
+
+    #[test]
+    fn markdown_plain_fast_path_preserves_breaks_and_hardbreaks() {
+        assert_eq!(
+            plain_fast_path_markdown("alpha, beta: gamma\nnext", 10),
+            Some(vec![
+                plain("alpha, beta: gamma", 10, 28),
+                Inline::Break {
+                    span: Some(Span(28, 29)),
+                },
+                plain("next", 29, 33),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("a  \n b", 0),
+            Some(vec![
+                plain("a", 0, 1),
+                Inline::HardBreak {
+                    span: Some(Span(3, 4)),
+                },
+                plain(" b", 4, 6),
+            ])
+        );
+    }
+
+    #[test]
+    fn org_plain_fast_path_keeps_spaces_before_breaks() {
+        assert_eq!(
+            plain_fast_path_org("a  \n b", 0),
+            Some(vec![
+                plain("a  ", 0, 3),
+                Inline::Break {
+                    span: Some(Span(3, 4)),
+                },
+                plain(" b", 4, 6),
+            ])
+        );
+    }
+
+    #[test]
+    fn org_plain_fast_path_accepts_code_verbatim_and_emphasis() {
+        assert_eq!(
+            plain_fast_path_org("Org =code= ~raw~ *bold* ^^hi^^", 2),
+            Some(vec![
+                plain("Org ", 2, 6),
+                verbatim("code", 6, 12),
+                plain(" ", 12, 13),
+                code("raw", 13, 18),
+                plain(" ", 18, 19),
+                emphasis("Bold", vec![plain("bold", 20, 24)], 19, 25),
+                plain(" ", 25, 26),
+                emphasis("Highlight", vec![plain("hi", 28, 30)], 26, 32),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_org("/it/ +gone+", 0),
+            Some(vec![
+                emphasis("Italic", vec![plain("it", 1, 3)], 0, 4),
+                plain(" ", 4, 5),
+                emphasis("Strike_through", vec![plain("gone", 6, 10)], 5, 11),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_org("a/b/c", 0),
+            Some(vec![plain("a/b/c", 0, 5)])
+        );
+        assert_eq!(
+            plain_fast_path_org("a[[P]]/no/", 0),
+            Some(vec![
+                plain("a", 0, 1),
+                page_ref("[[P]]", "P", 1, 6),
+                plain("/no/", 6, 10),
+            ])
+        );
+        assert!(plain_fast_path_org("word=not fresh=", 0).is_none());
+    }
+
+    #[test]
+    fn plain_fast_path_declines_unowned_construct_starts() {
+        assert!(plain_fast_path_markdown("see {{macro", 0).is_none());
+        assert!(plain_fast_path_markdown("see @@html:x@@", 0).is_none());
+        assert!(plain_fast_path_org("see ((11111111-1111-1111-1111-111111111111", 0).is_none());
+        assert!(plain_fast_path_org("see @@html:x@@", 0).is_none());
+    }
+
+    #[test]
+    fn plain_fast_path_accepts_fresh_bare_urls() {
+        assert_eq!(
+            plain_fast_path_markdown("see http://example.com/a", 10),
+            Some(vec![
+                plain("see ", 10, 14),
+                complex_link("http", "example.com/a", "http://example.com/a", 14, 34),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_org("see ftp://example.com/a", 3),
+            Some(vec![
+                plain("see ", 3, 7),
+                complex_link("ftp", "example.com/a", "ftp://example.com/a", 7, 26),
+            ])
+        );
+    }
+
+    #[test]
+    fn plain_fast_path_bare_urls_follow_mldoc_freshness_and_protocol_exclusions() {
+        assert!(plain_fast_path_markdown("src://example.com data://x", 0).is_none());
+        assert!(plain_fast_path_markdown("x!http://example.com", 0).is_none());
+        assert_eq!(
+            plain_fast_path_markdown("x=ftp://example.com", 0),
+            Some(vec![
+                plain("x=", 0, 2),
+                complex_link("ftp", "example.com", "ftp://example.com", 2, 19),
+            ])
+        );
+    }
+
+    #[test]
+    fn markdown_plain_fast_path_accepts_page_refs() {
+        assert_eq!(
+            plain_fast_path_markdown("See [[Page]] now", 5),
+            Some(vec![
+                plain("See ", 5, 9),
+                page_ref("[[Page]]", "Page", 9, 17),
+                plain(" now", 17, 21),
+            ])
+        );
+    }
+
+    #[test]
+    fn markdown_plain_fast_path_accepts_md_links_and_images() {
+        assert_eq!(
+            plain_fast_path_markdown("Go [docs](page.md) now", 2),
+            Some(vec![
+                plain("Go ", 2, 5),
+                file_link("docs", "page.md", "[docs](page.md)", 5, 20),
+                plain(" now", 20, 24),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("See ![alt](pic.png)", 0),
+            Some(vec![
+                plain("See ", 0, 4),
+                image_link("alt", "pic.png", "![alt](pic.png)", 4, 19),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("KITCHE![i](a.png)", 0),
+            Some(vec![
+                plain("KITCHE!", 0, 7),
+                search_link("i", "a.png", "[i](a.png)", 7, 17),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("#![i](a.png)", 0),
+            Some(vec![
+                plain("#", 0, 1),
+                image_link("i", "a.png", "![i](a.png)", 1, 12)
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("See [broken](url", 0),
+            Some(vec![plain("See [broken](url", 0, 16)])
+        );
+    }
+
+    #[test]
+    fn markdown_plain_fast_path_accepts_bracket_constructs_and_failed_fallbacks() {
+        assert_eq!(
+            plain_fast_path_markdown("see [^note] now", 0),
+            Some(vec![
+                plain("see ", 0, 4),
+                fnref("note", 4, 11),
+                plain(" now", 11, 15),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("x [2026-01-01 Thu]", 0),
+            Some(vec![
+                plain("x ", 0, 2),
+                timestamp(
+                    "Date",
+                    serde_json::json!({
+                        "date": {
+                            "year": 2026,
+                            "month": 1,
+                            "day": 1,
+                        },
+                        "wday": "Thu",
+                        "active": false,
+                    }),
+                    2,
+                    18,
+                ),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("p [50%]", 0),
+            Some(vec![plain("p ", 0, 2), percent_cookie(50, 2, 7)])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("x [:div]", 0),
+            Some(vec![plain("x ", 0, 2), hiccup("[:div]", 2, 8)])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("see [fn:1]", 0),
+            Some(vec![plain("see [fn:1]", 0, 10)])
+        );
+    }
+
+    #[test]
+    fn org_plain_fast_path_accepts_bracket_constructs_and_failed_fallbacks() {
+        assert_eq!(
+            plain_fast_path_org("see [[Page]] now", 0),
+            Some(vec![
+                plain("see ", 0, 4),
+                page_ref("[[Page]]", "Page", 4, 12),
+                plain(" now", 12, 16),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_org("x [2026-01-01 Thu]", 0),
+            Some(vec![
+                plain("x ", 0, 2),
+                timestamp(
+                    "Date",
+                    serde_json::json!({
+                        "date": {
+                            "year": 2026,
+                            "month": 1,
+                            "day": 1,
+                        },
+                        "wday": "Thu",
+                        "active": false,
+                    }),
+                    2,
+                    18,
+                ),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_org("see [fn:note]", 0),
+            Some(vec![plain("see ", 0, 4), fnref("note", 4, 13)])
+        );
+        assert_eq!(
+            plain_fast_path_org("p [50%]", 0),
+            Some(vec![plain("p ", 0, 2), percent_cookie(50, 2, 7)])
+        );
+        assert_eq!(
+            plain_fast_path_org("x [:div]", 0),
+            Some(vec![plain("x ", 0, 2), hiccup("[:div]", 2, 8)])
+        );
+        assert_eq!(
+            plain_fast_path_org("see [broken", 0),
+            Some(vec![plain("see [broken", 0, 11)])
+        );
+    }
+
+    #[test]
+    fn org_plain_fast_path_accepts_angle_constructs_and_failed_fallbacks() {
+        assert_eq!(
+            plain_fast_path_org("Go <http://x> now", 2),
+            Some(vec![
+                plain("Go ", 2, 5),
+                angle_complex_link("http", "x", "http://x", 5, 15),
+                plain(" now", 15, 19),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_org("see <<target>>", 0),
+            Some(vec![plain("see ", 0, 4), target("target", 4, 14)])
+        );
+        assert_eq!(
+            plain_fast_path_org("x <2026-01-01 Thu>", 0),
+            Some(vec![
+                plain("x ", 0, 2),
+                timestamp(
+                    "Date",
+                    serde_json::json!({
+                        "date": {
+                            "year": 2026,
+                            "month": 1,
+                            "day": 1,
+                        },
+                        "wday": "Thu",
+                        "active": true,
+                    }),
+                    2,
+                    18,
+                ),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_org("mail <a@b.com>", 0),
+            Some(vec![plain("mail ", 0, 5), email("a", "b.com", 5, 14)])
+        );
+        assert_eq!(
+            plain_fast_path_org("x <not target", 0),
+            Some(vec![plain("x <not target", 0, 13)])
+        );
+    }
+
+    #[test]
+    fn plain_fast_path_accepts_tags() {
+        assert_eq!(
+            plain_fast_path_markdown("See #tag now", 3),
+            Some(vec![
+                plain("See ", 3, 7),
+                tag("tag", 7, 11),
+                plain(" now", 11, 15)
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_org("See #tag now", 3),
+            Some(vec![
+                plain("See ", 3, 7),
+                tag("tag", 7, 11),
+                plain(" now", 11, 15)
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("## not a tag", 0),
+            Some(vec![plain("## not a tag", 0, 12)])
+        );
+    }
+
+    #[test]
+    fn plain_fast_path_accepts_fresh_macros_and_block_refs() {
+        let id = "11111111-1111-1111-1111-111111111111";
+        assert_eq!(
+            plain_fast_path_markdown("See {{embed [[Foo]]}} now", 4),
+            Some(vec![
+                plain("See ", 4, 8),
+                macro_node("embed", vec!["[[Foo]]"], 8, 25),
+                plain(" now", 25, 29),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_org("See ((11111111-1111-1111-1111-111111111111)) now", 0),
+            Some(vec![
+                plain("See ", 0, 4),
+                block_ref(id, "((11111111-1111-1111-1111-111111111111))", 4, 44),
+                plain(" now", 44, 48),
+            ])
+        );
+        assert!(plain_fast_path_markdown("word{{embed x}}", 0).is_none());
+        assert!(
+            plain_fast_path_markdown("word((11111111-1111-1111-1111-111111111111))", 0).is_none()
+        );
+    }
+
+    #[test]
+    fn markdown_plain_fast_path_accepts_identifier_underscores_only() {
+        assert_eq!(
+            plain_fast_path_markdown("FLUSH_ERROR and a_b", 2),
+            Some(vec![plain("FLUSH_ERROR and a_b", 2, 21)])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("_em_", 0),
+            Some(vec![emphasis("Italic", vec![plain("em", 1, 3)], 0, 4)])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("**b**_em_", 0),
+            Some(vec![
+                emphasis("Bold", vec![plain("b", 2, 3)], 0, 5),
+                emphasis("Italic", vec![plain("em", 6, 8)], 5, 9),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("a[[P]]_literal_", 0),
+            Some(vec![
+                plain("a", 0, 1),
+                page_ref("[[P]]", "P", 1, 6),
+                plain("_literal_", 6, 15),
+            ])
+        );
+    }
+
+    #[test]
+    fn markdown_plain_fast_path_accepts_single_equals_only() {
+        assert_eq!(
+            plain_fast_path_markdown("U=100 and x = y", 4),
+            Some(vec![plain("U=100 and x = y", 4, 19)])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("==hi==", 0),
+            Some(vec![emphasis("Highlight", vec![plain("hi", 2, 4)], 0, 6)])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("a==b", 0),
+            Some(vec![plain("a==b", 0, 4)])
+        );
+    }
+
+    #[test]
+    fn markdown_plain_fast_path_accepts_braced_scripts_after_emphasis_declines() {
+        assert_eq!(
+            plain_fast_path_markdown("a_{b} and x^{2}", 0),
+            Some(vec![
+                plain("a", 0, 1),
+                subscript(vec![plain("b", 3, 4)], 1, 5),
+                plain(" and x", 5, 11),
+                superscript(vec![plain("2", 13, 14)], 11, 15),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("a_{#tag}", 0),
+            Some(vec![
+                plain("a", 0, 1),
+                subscript(vec![plain("#tag", 3, 7)], 1, 8)
+            ])
+        );
+        assert!(plain_fast_path_markdown("_{em}_", 0).is_none());
+        assert!(plain_fast_path_markdown("a_{unclosed", 0).is_none());
+    }
+
+    #[test]
+    fn markdown_plain_fast_path_accepts_code_spans() {
+        assert_eq!(
+            plain_fast_path_markdown("Use `code` now", 4),
+            Some(vec![
+                plain("Use ", 4, 8),
+                code("code", 8, 14),
+                plain(" now", 14, 18)
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("Use `unclosed", 0),
+            Some(vec![plain("Use `unclosed", 0, 13)])
+        );
+    }
+
+    #[test]
+    fn markdown_plain_fast_path_accepts_backslash_entities_and_punctuation_escapes() {
+        assert_eq!(
+            plain_fast_path_markdown("a\\*b", 0),
+            Some(vec![mapped_plain("a*b", 0, 4, vec![(0, 0, 1), (1, 2, 2)])])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("see \\amp", 0),
+            Some(vec![plain("see ", 0, 4), amp_entity(4, 8)])
+        );
+        assert!(plain_fast_path_markdown("\\unknown", 0).is_none());
+        assert!(plain_fast_path_markdown("\\(x\\)", 0).is_none());
+    }
+
+    #[test]
+    fn plain_fast_path_accepts_latex_and_failed_dollar_fallbacks() {
+        assert_eq!(
+            plain_fast_path_markdown("a $x$ and $$y$$", 0),
+            Some(vec![
+                plain("a ", 0, 2),
+                latex("Inline", "x", 2, 5),
+                plain(" and ", 5, 10),
+                latex("Displayed", "y", 10, 15),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_org("$USER and $x$", 3),
+            Some(vec![
+                plain("$USER and ", 3, 13),
+                latex("Inline", "x", 13, 16),
+            ])
+        );
+    }
+
+    #[test]
+    fn markdown_plain_fast_path_accepts_angle_constructs_and_failed_fallbacks() {
+        assert_eq!(
+            plain_fast_path_markdown("Go <http://x> now", 2),
+            Some(vec![
+                plain("Go ", 2, 5),
+                angle_complex_link("http", "x", "http://x", 5, 15),
+                plain(" now", 15, 19),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("a <span>x</span> b", 0),
+            Some(vec![
+                plain("a ", 0, 2),
+                inline_html("<span>x</span>", 2, 16),
+                plain(" b", 16, 18),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("mail <a@b.com>", 0),
+            Some(vec![plain("mail ", 0, 5), email("a", "b.com", 5, 14)])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("a <not html and x<a@b.com>", 0),
+            Some(vec![plain("a <not html and x<a@b.com>", 0, 26)])
+        );
+    }
+
+    #[test]
+    fn plain_fast_path_accepts_fresh_keyword_timestamps_before_angle_timestamps() {
+        assert_eq!(
+            plain_fast_path_markdown("x SCHEDULED: <2026-01-01 Thu>", 0),
+            Some(vec![
+                plain("x ", 0, 2),
+                timestamp(
+                    "Scheduled",
+                    serde_json::json!({
+                        "date": {
+                            "year": 2026,
+                            "month": 1,
+                            "day": 1,
+                        },
+                        "wday": "Thu",
+                        "active": true,
+                    }),
+                    2,
+                    29,
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn markdown_plain_fast_path_accepts_simple_bold() {
+        assert_eq!(
+            plain_fast_path_markdown("A **bold** move", 10),
+            Some(vec![
+                plain("A ", 10, 12),
+                bold(vec![plain("bold", 14, 18)], 12, 20),
+                plain(" move", 20, 25),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("A **[[Page]]** move", 0),
+            Some(vec![
+                plain("A ", 0, 2),
+                bold(vec![page_ref("[[Page]]", "Page", 4, 12)], 2, 14),
+                plain(" move", 14, 19),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("A **x#tag y** move", 0),
+            Some(vec![
+                plain("A ", 0, 2),
+                bold(vec![plain("x#tag y", 4, 11)], 2, 13),
+                plain(" move", 13, 18),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("**`code`**", 0),
+            Some(vec![bold(vec![code("code", 2, 8)], 0, 10)])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("**((nope))**", 0),
+            Some(vec![bold(vec![plain("((nope))", 2, 10)], 0, 12)])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("**unclosed ~~also", 0),
+            Some(vec![plain("**unclosed ~~also", 0, 17)])
+        );
+    }
+
+    #[test]
+    fn markdown_plain_fast_path_accepts_source_transcribed_emphasis() {
+        assert_eq!(
+            plain_fast_path_markdown("x *i* ~~s~~ ==h==", 0),
+            Some(vec![
+                plain("x ", 0, 2),
+                emphasis("Italic", vec![plain("i", 3, 4)], 2, 5),
+                plain(" ", 5, 6),
+                emphasis("Strike_through", vec![plain("s", 8, 9)], 6, 11),
+                plain(" ", 11, 12),
+                emphasis("Highlight", vec![plain("h", 14, 15)], 12, 17),
+            ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("***bold italic***", 0),
+            Some(vec![emphasis(
+                "Italic",
+                vec![bold(vec![plain("bold italic", 3, 14)], 0, 17)],
+                0,
+                17
+            )])
+        );
+    }
+
+    #[test]
+    fn plain_fast_path_accepts_non_construct_punctuation() {
+        let md = "Why (now)? email me@example.org! use } and ] literally.";
+        assert_eq!(
+            plain_fast_path_markdown(md, 4),
+            Some(vec![plain(md, 4, 4 + md.len())])
+        );
+
+        let org = "Why (now)? bang! close } ] ) > literally.";
+        assert_eq!(
+            plain_fast_path_org(org, 7),
+            Some(vec![plain(org, 7, 7 + org.len())])
+        );
     }
 }

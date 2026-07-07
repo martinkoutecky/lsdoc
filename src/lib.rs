@@ -1,7 +1,7 @@
 //! lsdoc — a native-Rust parser for Logseq-flavored Markdown and Org into a typed,
 //! `serde`-serializable AST, behavior-equivalent to Logseq's `mldoc` at the
 //! granularity that matters for **indexing and rendering** (verified differentially
-//! against `mldoc@1.5.7`; see `README.md`/`DECISIONS.md`).
+//! against `mldoc@1.5.9`; see `README.md`/`DECISIONS.md`).
 //!
 //! # Public API
 //!
@@ -37,6 +37,7 @@ pub(crate) mod refs;
 pub mod render;
 pub(crate) mod resolver;
 pub(crate) mod source_map;
+pub(crate) mod v2;
 
 /// The render contract: the stable, `serde`-serializable AST. **This IS lsdoc's AST**
 /// (the projection that was once described as "comparison-only" — that framing is
@@ -70,7 +71,7 @@ use projection::Projection;
 /// Parse `input` into the block AST (the render path). `format == "org"` selects Org;
 /// anything else is Markdown. Equivalent to [`parse_format`]`(…).blocks`.
 pub fn parse(input: &str, format: &str) -> Vec<ast::Block> {
-    parse_format(input, format).blocks
+    v2::parse_blocks(input, if format == "org" { "org" } else { "md" })
 }
 
 /// Parse `input` into the OG-faithful inline ref set (the index path). Equivalent to
@@ -103,27 +104,53 @@ pub fn __parse_org_streaming(input: &str) -> Vec<ast::Block> {
 
 /// Parse Markdown into the full [`ast::Projection`] (`{ blocks, refs }`).
 pub fn parse_to_projection(input: &str) -> Projection {
-    let blocks = parse::parse(input);
-    let refs = refs::extract_refs(&blocks, "md");
-    Projection { blocks, refs }
+    parse_format(input, "md")
 }
 
 /// Parse Org into the full [`ast::Projection`]. Same ref extraction (the AST is
 /// format-agnostic once built).
 pub fn parse_org_to_projection(input: &str) -> Projection {
-    let blocks = org::parse(input);
-    let refs = refs::extract_refs(&blocks, "org");
-    Projection { blocks, refs }
+    parse_format(input, "org")
 }
 
 /// Parse into the full [`ast::Projection`], dispatching by format string
 /// (`"org"` → Org, anything else → Markdown).
 pub fn parse_format(input: &str, format: &str) -> Projection {
+    v2::parse_format(input, if format == "org" { "org" } else { "md" })
+}
+
+#[doc(hidden)]
+pub fn __parse_format_legacy(input: &str, format: &str) -> Projection {
     if format == "org" {
-        parse_org_to_projection(input)
+        let blocks = org::parse(input);
+        let refs = refs::extract_refs(&blocks, "org");
+        Projection { blocks, refs }
     } else {
-        parse_to_projection(input)
+        let blocks = parse::parse(input);
+        let refs = refs::extract_refs(&blocks, "md");
+        Projection { blocks, refs }
     }
+}
+
+/// Experimental v2 parser hook (NOT stable API): used by the differential harness while
+/// the blank-slate parser is developed behind the frozen public API.
+#[doc(hidden)]
+pub fn __parse_format_v2(input: &str, format: &str) -> Projection {
+    v2::parse_format(input, format)
+}
+
+/// Experimental v2 strict hook (NOT stable API): returns `None` instead of panicking, so
+/// ownership gaps can be audited without using the legacy parser.
+#[doc(hidden)]
+pub fn __try_parse_format_v2(input: &str, format: &str) -> Option<Projection> {
+    v2::try_parse_format(input, format)
+}
+
+/// Experimental v2 inline hook (NOT stable API): used by `lsdoc-parse --engine v2` for
+/// the inline differential gate.
+#[doc(hidden)]
+pub fn __inline_v2(input: &str, format: &str) -> Vec<ast::Inline> {
+    v2::inline(input, format)
 }
 
 #[cfg(test)]
@@ -142,11 +169,25 @@ mod table_align_tests {
     fn markdown_table_aligns_follow_separator_contract() {
         assert_eq!(
             table_aligns("|a|b|c|d|\n|:---|---:|:--:|---|\n|1|2|3|4|", "md"),
-            vec![Some(Align::Left), Some(Align::Right), Some(Align::Center), None]
+            vec![
+                Some(Align::Left),
+                Some(Align::Right),
+                Some(Align::Center),
+                None
+            ]
         );
-        assert_eq!(table_aligns("|a|b|\n|---|---|\n|1|2|", "md"), vec![None, None]);
-        assert_eq!(table_aligns("|a|b|\n|1|2|", "md"), Vec::<Option<Align>>::new());
-        assert_eq!(table_aligns("|a|b|\n|:--|--:|", "md"), Vec::<Option<Align>>::new());
+        assert_eq!(
+            table_aligns("|a|b|\n|---|---|\n|1|2|", "md"),
+            vec![None, None]
+        );
+        assert_eq!(
+            table_aligns("|a|b|\n|1|2|", "md"),
+            Vec::<Option<Align>>::new()
+        );
+        assert_eq!(
+            table_aligns("|a|b|\n|:--|--:|", "md"),
+            Vec::<Option<Align>>::new()
+        );
         assert_eq!(table_aligns("|a|b|\n|:|::|\n|1|2|", "md"), vec![None, None]);
 
         let ragged = table_aligns("|a|b|c|\n|:--|--:|\n|1|2|3|", "md");
@@ -191,7 +232,8 @@ mod span_tests {
             text,
             span,
             span_map,
-        } = node else {
+        } = node
+        else {
             panic!("expected plain, got {node:?}");
         };
         assert_eq!(text, expected_text);
@@ -241,7 +283,11 @@ mod span_tests {
     }
     fn check_s5_node(input: &str, n: &Inline) {
         match n {
-            Inline::Plain { text, span, span_map } => {
+            Inline::Plain {
+                text,
+                span,
+                span_map,
+            } => {
                 if span_map.is_none() {
                     if let Some(Span(s, e)) = span {
                         assert_eq!(
@@ -292,7 +338,12 @@ mod span_tests {
         } else {
             panic!("out[0] not plain");
         }
-        if let Inline::Emphasis { emph, children, span } = &out[1] {
+        if let Inline::Emphasis {
+            emph,
+            children,
+            span,
+        } = &out[1]
+        {
             assert_eq!(emph, "Bold");
             assert_eq!(*span, Some(Span(2, 7)));
             assert_eq!(children.len(), 1);
@@ -320,11 +371,23 @@ mod span_tests {
         let s = "***x***";
         let out = parse_md(s);
         assert_eq!(out.len(), 1);
-        let Inline::Emphasis { emph, children, span } = &out[0] else { panic!("not emphasis") };
+        let Inline::Emphasis {
+            emph,
+            children,
+            span,
+        } = &out[0]
+        else {
+            panic!("not emphasis")
+        };
         assert_eq!(emph, "Italic");
         assert_eq!(*span, Some(Span(0, 7)));
         assert_eq!(children.len(), 1);
-        let Inline::Emphasis { emph, children, span: inner_span } = &children[0] else {
+        let Inline::Emphasis {
+            emph,
+            children,
+            span: inner_span,
+        } = &children[0]
+        else {
             panic!("inner not emphasis")
         };
         assert_eq!(emph, "Bold");
@@ -332,7 +395,10 @@ mod span_tests {
         let (Some(Span(is, ie)), Some(Span(os, oe))) = (*inner_span, *span) else {
             panic!("missing spans")
         };
-        assert!(os <= is && ie <= oe, "inner {inner_span:?} not contained in outer {span:?}");
+        assert!(
+            os <= is && ie <= oe,
+            "inner {inner_span:?} not contained in outer {span:?}"
+        );
         assert_eq!(children.len(), 1);
         if let Inline::Plain { text, span, .. } = &children[0] {
             assert_eq!(text, "x");
@@ -349,7 +415,9 @@ mod span_tests {
         let s = "[t](u)";
         let out = parse_md(s);
         assert_eq!(out.len(), 1);
-        let Inline::Link { span, label, .. } = &out[0] else { panic!("not link") };
+        let Inline::Link { span, label, .. } = &out[0] else {
+            panic!("not link")
+        };
         assert_eq!(*span, Some(Span(0, 6)));
         assert_eq!(label.len(), 1);
         if let Inline::Plain { text, span, .. } = &label[0] {
@@ -362,13 +430,29 @@ mod span_tests {
     }
 
     #[test]
+    fn bare_url_keyword_leading_protocols_stay_plain() {
+        for parse in [parse_md as fn(&str) -> Vec<Inline>, parse_org] {
+            for input in ["c://x", "d://x", "s://x", "src://x", "data://x"] {
+                let out = parse(input);
+                assert_eq!(out.len(), 1, "{input}");
+                assert_plain(&out[0], input, Span(0, input.len()), None);
+            }
+
+            let out = parse("a://x");
+            assert!(matches!(out.as_slice(), [Inline::Link { .. }]));
+        }
+    }
+
+    #[test]
     fn test_link_multi_node_label() {
         // [**a**~~b~~](u): the label fully decomposes into two emphasis nodes with absolute
         // spans into the block body (S2), each containing its own plain child.
         let s = "[**a**~~b~~](u)";
         let out = parse_md(s);
         assert_eq!(out.len(), 1);
-        let Inline::Link { label, span, .. } = &out[0] else { panic!("not link") };
+        let Inline::Link { label, span, .. } = &out[0] else {
+            panic!("not link")
+        };
         assert_eq!(*span, Some(Span(0, 15)));
         assert_eq!(label.len(), 2);
         if let Inline::Emphasis { emph, span, .. } = &label[0] {
@@ -470,11 +554,15 @@ mod span_tests {
         let out = parse_md("x <a@b co>");
         assert_eq!(out.len(), 3);
         assert!(matches!(&out[0], Inline::Plain { text, .. } if text == "x "));
-        let Inline::Email { text, span } = &out[1] else { panic!("expected email") };
+        let Inline::Email { text, span } = &out[1] else {
+            panic!("expected email")
+        };
         assert_eq!(text.get("local_part").and_then(|v| v.as_str()), Some("a"));
         assert_eq!(text.get("domain").and_then(|v| v.as_str()), Some("b"));
         assert_eq!(*span, Some(Span(2, 6)));
-        assert!(matches!(&out[2], Inline::Plain { text, span, .. } if text == " co>" && *span == Some(Span(6, 10))));
+        assert!(
+            matches!(&out[2], Inline::Plain { text, span, .. } if text == " co>" && *span == Some(Span(6, 10)))
+        );
 
         let out = parse_md("x <a@b.co");
         assert!(matches!(&out[..], [
@@ -510,7 +598,9 @@ mod span_tests {
         assert_eq!(s.len(), 7);
         let out = crate::org_resolver::parse_inline_org(s, 0);
         let tag = out.iter().find(|n| matches!(n, Inline::Tag { .. }));
-        let Some(Inline::Tag { children, span }) = tag else { panic!("expected Tag node") };
+        let Some(Inline::Tag { children, span }) = tag else {
+            panic!("expected Tag node")
+        };
         assert_eq!(*span, Some(Span(0, 7)));
         let plain = children.iter().find(|n| matches!(n, Inline::Plain { .. }));
         if let Some(Inline::Plain { text, span, .. }) = plain {
@@ -532,13 +622,20 @@ mod span_tests {
         };
         // "| hello | world |" is a header-only table (no separator/body), so the cells live
         // in `header`; either way, check whichever holds the row.
-        let row = header.as_ref().map(|h| h.as_slice()).or_else(|| rows.first().map(|r| r.as_slice()));
+        let row = header
+            .as_ref()
+            .map(|h| h.as_slice())
+            .or_else(|| rows.first().map(|r| r.as_slice()));
         let row = row.expect("a header or body row");
         let cell = row.first().expect("a first cell");
         if let Some(Inline::Plain { text, span, .. }) = cell.first() {
             assert_eq!(text, "hello");
             if let Some(Span(s, e)) = span {
-                assert_eq!(&input.as_bytes()[*s..*e], text.as_bytes(), "S5 in table cell");
+                assert_eq!(
+                    &input.as_bytes()[*s..*e],
+                    text.as_bytes(),
+                    "S5 in table cell"
+                );
             } else {
                 panic!("table cell plain has no span");
             }
@@ -564,12 +661,23 @@ mod span_tests {
         assert_break(&quote_body[1], Span(18, 19));
 
         assert_plain(&first_list_paragraph("* item")[0], "item", Span(2, 6), None);
-        assert_plain(&first_list_paragraph("1. item")[0], "item", Span(3, 7), None);
+        assert_plain(
+            &first_list_paragraph("1. item")[0],
+            "item",
+            Span(3, 7),
+            None,
+        );
 
         let blocks = crate::parse("* > b c\n  > d", "md");
-        let Block::List { items, .. } = &blocks[0] else { panic!("expected list") };
-        let Block::Quote { children, .. } = &items[0].content[0] else { panic!("expected quote") };
-        let Block::Paragraph { inline, .. } = &children[0] else { panic!("expected paragraph") };
+        let Block::List { items, .. } = &blocks[0] else {
+            panic!("expected list")
+        };
+        let Block::Quote { children, .. } = &items[0].content[0] else {
+            panic!("expected quote")
+        };
+        let Block::Paragraph { inline, .. } = &children[0] else {
+            panic!("expected paragraph")
+        };
         assert_plain(&inline[0], "b c", Span(4, 7), None);
         assert_break(&inline[1], Span(7, 8));
         assert_plain(&inline[2], "d", Span(12, 13), None);
@@ -610,7 +718,9 @@ mod span_tests {
         );
 
         let quick = parse_md("<https://a\\*b>");
-        let Inline::Link { label, .. } = &quick[0] else { panic!("expected quick link") };
+        let Inline::Link { label, .. } = &quick[0] else {
+            panic!("expected quick link")
+        };
         assert_plain(
             &label[0],
             "https://a*b",
@@ -619,7 +729,9 @@ mod span_tests {
         );
 
         let blocks = crate::parse("* TODO task with :tag1:tag2:", "org");
-        let Block::Bullet { inline, htags, .. } = &blocks[0] else { panic!("expected org headline") };
+        let Block::Bullet { inline, htags, .. } = &blocks[0] else {
+            panic!("expected org headline")
+        };
         assert_eq!(htags, &vec!["tag1".to_string(), "tag2".to_string()]);
         assert_plain(&inline[0], "task with ", Span(7, 17), None);
     }
@@ -627,7 +739,9 @@ mod span_tests {
     #[test]
     fn inline_spans_v2_cr_and_unknown_entity_maps() {
         let md = parse_md("*a\rb*");
-        let Inline::Emphasis { children, .. } = &md[0] else { panic!("expected emphasis") };
+        let Inline::Emphasis { children, .. } = &md[0] else {
+            panic!("expected emphasis")
+        };
         assert_plain(
             &children[0],
             "a\nb",

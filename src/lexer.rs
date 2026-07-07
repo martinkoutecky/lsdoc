@@ -64,7 +64,10 @@ fn is_marker(c: u8) -> bool {
 fn is_special(c: u8) -> bool {
     matches!(c, b'\\' | b'`')
         || is_marker(c)
-        || matches!(c, b'$' | b'[' | b']' | b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b'#' | b'!' | b'@')
+        || matches!(
+            c,
+            b'$' | b'[' | b']' | b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b'#' | b'!' | b'@'
+        )
 }
 
 /// mldoc `md_escape_chars`: every ASCII punctuation char.
@@ -86,7 +89,10 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
     macro_rules! flush {
         () => {
             if !pending.is_empty() {
-                toks.push(Token { off: pending_off, kind: Kind::Text(std::mem::take(&mut pending)) });
+                toks.push(Token {
+                    off: pending_off,
+                    kind: Kind::Text(std::mem::take(&mut pending)),
+                });
             }
         };
     }
@@ -107,7 +113,10 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
         match c {
             b'\n' | b'\r' => {
                 flush!();
-                toks.push(Token { off: i, kind: Kind::Newline(c) });
+                toks.push(Token {
+                    off: i,
+                    kind: Kind::Newline(c),
+                });
                 i += 1;
             }
             b' ' | b'\t' | 0x0c => {
@@ -121,7 +130,10 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
                     i += 1;
                 }
                 crate::metrics::scan_work(i - start); // A1: charge the copied ws bytes
-                toks.push(Token { off: start, kind: Kind::Text(s[start..i].to_string()) });
+                toks.push(Token {
+                    off: start,
+                    kind: Kind::Text(s[start..i].to_string()),
+                });
             }
             b'\\' => lex_backslash(s, &mut i, &mut pending, &mut pending_off, &mut toks),
             b'`' => {
@@ -132,7 +144,10 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
                 // (fresh-making); the position after it is a fresh dispatch point (`` `((uuid)) ``
                 // → `` ` `` + block-ref).
                 flush!();
-                toks.push(Token { off: i, kind: Kind::Punct(b'`') });
+                toks.push(Token {
+                    off: i,
+                    kind: Kind::Punct(b'`'),
+                });
                 i += 1;
             }
             _ if is_marker(c) => {
@@ -142,13 +157,19 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
                 while j < n && b[j] == c {
                     j += 1;
                 }
-                toks.push(Token { off: i, kind: Kind::Delim { ch: c, len: j - i } });
+                toks.push(Token {
+                    off: i,
+                    kind: Kind::Delim { ch: c, len: j - i },
+                });
                 i = j;
             }
             _ if is_special(c) => {
                 // deferred special byte (brackets / $ / # / !) — render literally for now.
                 flush!();
-                toks.push(Token { off: i, kind: Kind::Punct(c) });
+                toks.push(Token {
+                    off: i,
+                    kind: Kind::Punct(c),
+                });
                 i += 1;
             }
             _ => {
@@ -188,9 +209,15 @@ fn lex_backslash(
         Some(ch @ (b'(' | b'[')) => {
             // `\(` / `\[` — defer to the resolver (latex vs escape is ctx-dependent).
             if !pending.is_empty() {
-                toks.push(Token { off: *pending_off, kind: Kind::Text(std::mem::take(pending)) });
+                toks.push(Token {
+                    off: *pending_off,
+                    kind: Kind::Text(std::mem::take(pending)),
+                });
             }
-            toks.push(Token { off: at, kind: Kind::LatexBs(ch) });
+            toks.push(Token {
+                off: at,
+                kind: Kind::LatexBs(ch),
+            });
             *i = at + 2;
         }
         Some(ch) if ch.is_ascii_alphabetic() => {
@@ -232,7 +259,10 @@ fn lex_backslash(
                     // unknown entity → the bare letters, as a fresh-making Escape token.
                     flush_into(pending, pending_off, toks);
                     crate::metrics::scan_work(name.len());
-                    toks.push(Token { off: at, kind: Kind::Escape(name.to_string()) });
+                    toks.push(Token {
+                        off: at,
+                        kind: Kind::Escape(name.to_string()),
+                    });
                 }
             }
             *i = j;
@@ -242,13 +272,19 @@ fn lex_backslash(
             let w = char_len(ch);
             flush_into(pending, pending_off, toks);
             crate::metrics::scan_work(w);
-            toks.push(Token { off: at, kind: Kind::Escape(s[at + 1..at + 1 + w].to_string()) });
+            toks.push(Token {
+                off: at,
+                kind: Kind::Escape(s[at + 1..at + 1 + w].to_string()),
+            });
             *i = at + 1 + w;
         }
         _ => {
             // lone backslash (before digit / space / eol / EOF): kept (Escape token).
             flush_into(pending, pending_off, toks);
-            toks.push(Token { off: at, kind: Kind::Escape("\\".to_string()) });
+            toks.push(Token {
+                off: at,
+                kind: Kind::Escape("\\".to_string()),
+            });
             *i = at + 1;
         }
     }
@@ -257,7 +293,10 @@ fn lex_backslash(
 /// Flush the lexer's pending text run into a `Text` token (if non-empty).
 fn flush_into(pending: &mut String, pending_off: &mut usize, toks: &mut Vec<Token>) {
     if !pending.is_empty() {
-        toks.push(Token { off: *pending_off, kind: Kind::Text(std::mem::take(pending)) });
+        toks.push(Token {
+            off: *pending_off,
+            kind: Kind::Text(std::mem::take(pending)),
+        });
     }
     let _ = pending_off;
 }
@@ -278,12 +317,24 @@ pub(crate) fn code_span(s: &str, at: usize) -> Option<(Inline, usize)> {
         crate::metrics::scan_work(j - start + usize::from(j < n));
         if j > start && j < n && b[j] == b'`' {
             crate::metrics::scan_work(j - start);
-            return Some((Inline::Code { text: s[start..j].to_string(), span: None }, j + 1));
+            return Some((
+                Inline::Code {
+                    text: s[start..j].to_string(),
+                    span: None,
+                },
+                j + 1,
+            ));
         }
         return None;
     }
     let start = at + 2;
     let end = crate::inline::find_sub(b, start, b"``")?;
     crate::metrics::scan_work(end - start);
-    Some((Inline::Code { text: s[start..end].to_string(), span: None }, end + 2))
+    Some((
+        Inline::Code {
+            text: s[start..end].to_string(),
+            span: None,
+        },
+        end + 2,
+    ))
 }

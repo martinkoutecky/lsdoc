@@ -35,8 +35,8 @@ pub(crate) const GT_FALLBACK_NEST_CAP: usize = 64;
 /// One source line: byte window `[start, end)` (end is just past the trailing terminator, or
 /// EOF) plus the content text WITHOUT the trailing `\n`/`\r\n`.
 pub(crate) struct Line<'a> {
-    pub(crate) start: usize, // byte offset of line start
-    pub(crate) end: usize,   // byte offset just past the trailing '\n' (or EOF)
+    pub(crate) start: usize,  // byte offset of line start
+    pub(crate) end: usize,    // byte offset just past the trailing '\n' (or EOF)
     pub(crate) text: &'a str, // line content WITHOUT the trailing '\n'
     /// Synthetic mid-line remainders have already passed the frame's clear-indent point.
     /// Re-dispatch must see them verbatim, not through the enclosing strip view.
@@ -127,7 +127,11 @@ impl StripSeqTree {
     }
 
     pub(crate) fn pop_positive(&mut self) {
-        let idx = self.values.len().checked_sub(1).expect("strip tree pop underflow");
+        let idx = self
+            .values
+            .len()
+            .checked_sub(1)
+            .expect("strip tree pop underflow");
         self.values.pop();
         self.set_leaf(idx, STRIP_INF);
     }
@@ -266,7 +270,9 @@ mod strip_seq_tests {
     }
 
     fn next_rand(state: &mut u64) -> u64 {
-        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         *state
     }
 
@@ -368,7 +374,12 @@ pub(crate) fn split_lines(input: &str) -> Vec<Line<'_>> {
         } else {
             j
         };
-        lines.push(Line { start, end, text: &input[start..content_end], no_strip: false });
+        lines.push(Line {
+            start,
+            end,
+            text: &input[start..content_end],
+            no_strip: false,
+        });
         i = end;
     }
     lines
@@ -390,7 +401,11 @@ pub(crate) fn mldoc_is_space(b: u8) -> bool {
 /// Count leading mldoc parser spaces (`Parsers.spaces` / `tabs_or_ws`).
 // scan-owner: (a2) caller-owned slice helper — trim/space scan over caller-owned line/view slice
 pub(crate) fn mldoc_spaces_len(s: &str) -> usize {
-    let n = s.as_bytes().iter().take_while(|&&b| mldoc_is_space(b)).count();
+    let n = s
+        .as_bytes()
+        .iter()
+        .take_while(|&&b| mldoc_is_space(b))
+        .count();
     crate::metrics::scan_work(n + usize::from(n < s.len()));
     n
 }
@@ -526,7 +541,9 @@ pub(crate) fn drawer_property(s: &str) -> Option<(String, String)> {
     let key = &t[..pos];
     crate::metrics::scan_work(key.len());
     if key.is_empty()
-        || key.bytes().any(|b| b == b':' || b == b' ' || b == b'\n' || b == b'\r')
+        || key
+            .bytes()
+            .any(|b| b == b':' || b == b' ' || b == b'\n' || b == b'\r')
         || key.eq_ignore_ascii_case("end")
     {
         return None;
@@ -547,7 +564,11 @@ pub(crate) fn displayed_math_opener(s: &str) -> Option<usize> {
 /// First `$$` after a block-level opener, bounded to this block body's byte
 /// window. This is intentionally a single monotone byte walk: no per-line
 /// restart and no backtracking.
-pub(crate) fn find_displayed_math_close(input: &str, opener: usize, body_end: usize) -> Option<usize> {
+pub(crate) fn find_displayed_math_close(
+    input: &str,
+    opener: usize,
+    body_end: usize,
+) -> Option<usize> {
     let bytes = input.as_bytes();
     let mut p = opener + 2;
     let mut scanned = 0usize;
@@ -591,10 +612,9 @@ impl RawHtmlScan {
         {
             let id = (_input.as_ptr() as usize, _input.len());
             match self.input_id {
-                Some(prev) => debug_assert_eq!(
-                    prev, id,
-                    "RawHtmlScan reused with a different input string"
-                ),
+                Some(prev) => {
+                    debug_assert_eq!(prev, id, "RawHtmlScan reused with a different input string")
+                }
                 None => self.input_id = Some(id),
             }
         }
@@ -816,11 +836,15 @@ impl RawHtmlTagIndex {
             };
         }
 
-        while self.event_cursor < self.event_pos.len() && self.event_pos[self.event_cursor] < after_tag {
+        while self.event_cursor < self.event_pos.len()
+            && self.event_pos[self.event_cursor] < after_tag
+        {
             crate::metrics::scan_work(1);
             self.event_cursor += 1;
         }
-        while self.close_cursor < self.close_pos.len() && self.close_pos[self.close_cursor] < after_tag {
+        while self.close_cursor < self.close_pos.len()
+            && self.close_pos[self.close_cursor] < after_tag
+        {
             crate::metrics::scan_work(1);
             self.close_cursor += 1;
         }
@@ -946,7 +970,12 @@ mod raw_html_index_tests {
             event_prefix_after.push(prefix);
         }
 
-        LegacyEvents { event_pos, event_prefix_after, close_pos, self_close_pos }
+        LegacyEvents {
+            event_pos,
+            event_prefix_after,
+            close_pos,
+            self_close_pos,
+        }
     }
 
     fn legacy_attempt(input: &str, opener: usize, body_end: usize) -> RawHtmlAttempt {
@@ -962,7 +991,10 @@ mod raw_html_index_tests {
                 }
                 let cached = parse_raw_html_impl(input, opener, body_end, Some(&mut state), true);
                 let legacy = legacy_attempt(input, opener, body_end);
-                assert_eq!(cached, legacy, "input={input:?} opener={opener} body_end={body_end}");
+                assert_eq!(
+                    cached, legacy,
+                    "input={input:?} opener={opener} body_end={body_end}"
+                );
             }
         }
     }
@@ -979,7 +1011,10 @@ mod raw_html_index_tests {
             let idx = RawHtmlTagIndex::build(input.as_bytes(), tag);
             let legacy = legacy_events(input.as_bytes(), tag, input.len());
             assert_eq!(idx.event_pos, legacy.event_pos, "{input:?} {tag}");
-            assert_eq!(idx.event_prefix_after, legacy.event_prefix_after, "{input:?} {tag}");
+            assert_eq!(
+                idx.event_prefix_after, legacy.event_prefix_after,
+                "{input:?} {tag}"
+            );
             assert_eq!(idx.close_pos, legacy.close_pos, "{input:?} {tag}");
             assert_eq!(idx.self_close_pos, legacy.self_close_pos, "{input:?} {tag}");
         }
@@ -1047,8 +1082,15 @@ pub(crate) struct RawHtmlCapture {
 
 #[derive(Clone, Copy, Debug)]
 enum RawHtmlHead<'a> {
-    Tag { tag: &'a str, index: usize },
-    Special { opener: &'static str, closer: &'static str, miss: usize },
+    Tag {
+        tag: &'a str,
+        index: usize,
+    },
+    Special {
+        opener: &'static str,
+        closer: &'static str,
+        miss: usize,
+    },
 }
 
 const MAX_HTML_TAG_LEN: usize = 10;
@@ -1073,28 +1115,51 @@ enum RawHtmlAttempt {
     Miss(RawHtmlMiss),
 }
 
-fn raw_html_head_at(input: &str, at: usize, limit: usize, require_peek: bool) -> Option<RawHtmlHead<'_>> {
+fn raw_html_head_at(
+    input: &str,
+    at: usize,
+    limit: usize,
+    require_peek: bool,
+) -> Option<RawHtmlHead<'_>> {
     if at >= limit || limit > input.len() || input.as_bytes().get(at) != Some(&b'<') {
         return None;
     }
-    debug_assert!(crate::inline::HICCUP_TAGS.iter().all(|t| t.len() <= MAX_HTML_TAG_LEN));
+    debug_assert!(crate::inline::HICCUP_TAGS
+        .iter()
+        .all(|t| t.len() <= MAX_HTML_TAG_LEN));
     // mldoc Raw_html.parse begins with `peek_string 10`; Angstrom fails before dispatch when
     // fewer than ten bytes remain. This is the source of `<b>ab</b>` (9 bytes) being plain.
     if require_peek && limit.saturating_sub(at) < 10 {
         return None;
     }
     if starts_with_at(input.as_bytes(), at, b"<?", limit) {
-        return Some(RawHtmlHead::Special { opener: "<?", closer: "?>", miss: 0 });
+        return Some(RawHtmlHead::Special {
+            opener: "<?",
+            closer: "?>",
+            miss: 0,
+        });
     }
     if starts_with_at(input.as_bytes(), at, b"<!--", limit) {
-        return Some(RawHtmlHead::Special { opener: "<!--", closer: "-->", miss: 1 });
+        return Some(RawHtmlHead::Special {
+            opener: "<!--",
+            closer: "-->",
+            miss: 1,
+        });
     }
     if starts_with_at(input.as_bytes(), at, b"<![CDATA[", limit) {
         // Source exact: mldoc 1.5.7 uses "]]" as the strict wrapper closer here.
-        return Some(RawHtmlHead::Special { opener: "<![CDATA[", closer: "]]", miss: 2 });
+        return Some(RawHtmlHead::Special {
+            opener: "<![CDATA[",
+            closer: "]]",
+            miss: 2,
+        });
     }
     if starts_with_at(input.as_bytes(), at, b"<!", limit) {
-        return Some(RawHtmlHead::Special { opener: "<!", closer: ">", miss: 3 });
+        return Some(RawHtmlHead::Special {
+            opener: "<!",
+            closer: ">",
+            miss: 3,
+        });
     }
 
     // mldoc raw_html.ml: after `<`, `take_till1 (is_space || (=) '>')` is the tag token.
@@ -1148,7 +1213,12 @@ fn starts_with_at(bytes: &[u8], at: usize, needle: &[u8], end: usize) -> bool {
     at + needle.len() <= end && &bytes[at..at + needle.len()] == needle
 }
 
-fn find_exact_bounded(bytes: &[u8], from: usize, end: usize, needle: &[u8]) -> (Option<usize>, usize) {
+fn find_exact_bounded(
+    bytes: &[u8],
+    from: usize,
+    end: usize,
+    needle: &[u8],
+) -> (Option<usize>, usize) {
     if needle.is_empty() || from > end || needle.len() > end.saturating_sub(from) {
         return (None, 0);
     }
@@ -1164,7 +1234,12 @@ fn find_exact_bounded(bytes: &[u8], from: usize, end: usize, needle: &[u8]) -> (
     (None, scanned)
 }
 
-fn find_end_string_bounded(bytes: &[u8], from: usize, end: usize, closer: &[u8]) -> (Option<usize>, usize) {
+fn find_end_string_bounded(
+    bytes: &[u8],
+    from: usize,
+    end: usize,
+    closer: &[u8],
+) -> (Option<usize>, usize) {
     let (found, scanned) = find_exact_bounded(bytes, from, end, closer);
     if closer.len() == 1 && found == Some(from) {
         return (None, scanned);
@@ -1208,13 +1283,20 @@ fn parse_raw_html_impl(
         return RawHtmlAttempt::Miss(RawHtmlMiss::NoGrammar);
     };
     match head {
-        RawHtmlHead::Special { opener: open, closer, miss } => {
+        RawHtmlHead::Special {
+            opener: open,
+            closer,
+            miss,
+        } => {
             let from = opener + open.len();
             let (found, scanned) =
                 find_end_string_bounded(input.as_bytes(), from, body_end, closer.as_bytes());
             crate::metrics::scan_work(scanned);
             match found {
-                Some(pos) => RawHtmlAttempt::Match(RawHtmlExtent { start: opener, end: pos + closer.len() }),
+                Some(pos) => RawHtmlAttempt::Match(RawHtmlExtent {
+                    start: opener,
+                    end: pos + closer.len(),
+                }),
                 None => RawHtmlAttempt::Miss(RawHtmlMiss::MissingSpecialCloser { miss }),
             }
         }
@@ -1245,8 +1327,13 @@ fn parse_raw_html_impl(
                     first_self_close = Some(p + 2);
                 }
                 if starts_with_ci_at(bytes, p, close, body_end) {
-                    let (opens, chunk_scanned) =
-                        count_tag_opens_in_chunk(bytes, chunk_start, p, open_plain, open_with_attrs);
+                    let (opens, chunk_scanned) = count_tag_opens_in_chunk(
+                        bytes,
+                        chunk_start,
+                        p,
+                        open_plain,
+                        open_with_attrs,
+                    );
                     scanned += chunk_scanned;
                     saw_close = true;
                     level += opens as isize;
@@ -1255,7 +1342,10 @@ fn parse_raw_html_impl(
                     chunk_start = p;
                     if level <= 0 {
                         crate::metrics::scan_work(scanned);
-                        return RawHtmlAttempt::Match(RawHtmlExtent { start: opener, end: p });
+                        return RawHtmlAttempt::Match(RawHtmlExtent {
+                            start: opener,
+                            end: p,
+                        });
                     }
                     continue;
                 }
@@ -1289,7 +1379,9 @@ fn parse_raw_html_at_cached_with_gate(
     if let Some(s) = state.as_deref() {
         match head {
             RawHtmlHead::Tag { index, .. } if s.no_tag_end_until[index] >= body_end => return None,
-            RawHtmlHead::Special { miss, .. } if s.no_special_until[miss] >= body_end => return None,
+            RawHtmlHead::Special { miss, .. } if s.no_special_until[miss] >= body_end => {
+                return None
+            }
             _ => {}
         }
     }
@@ -1353,7 +1445,11 @@ fn copy_capture_text(s: &str) -> String {
 }
 
 // scan-owner: (a) consumed-on-match accepted copy — raw-HTML canonical close construction
-fn raw_html_canonical_close(input: &str, opener: usize, close_end: usize) -> Option<(usize, String)> {
+fn raw_html_canonical_close(
+    input: &str,
+    opener: usize,
+    close_end: usize,
+) -> Option<(usize, String)> {
     if opener >= close_end || close_end > input.len() {
         return None;
     }
@@ -1427,7 +1523,12 @@ pub(crate) fn raw_html_capture_text(input: &str, opener: usize, close_end: usize
     normalize_ci_matched_closes(s, scan_start, &close_tag).unwrap_or_else(|| copy_capture_text(s))
 }
 
-fn normalize_raw_html_view_text(text: String, input: &str, opener: usize, close_end: usize) -> String {
+fn normalize_raw_html_view_text(
+    text: String,
+    input: &str,
+    opener: usize,
+    close_end: usize,
+) -> String {
     let Some((scan_start, close_tag)) = raw_html_canonical_close(input, opener, close_end) else {
         return text;
     };
@@ -1512,7 +1613,13 @@ pub(crate) fn raw_html_raw_capture<'a>(
             span_end = lines[next].end;
             next += 1;
         }
-        Some(RawHtmlCapture { text, span_start: opener, span_end, next, rewrite: None })
+        Some(RawHtmlCapture {
+            text,
+            span_start: opener,
+            span_end,
+            next,
+            rewrite: None,
+        })
     }
 }
 
@@ -1537,7 +1644,9 @@ pub(crate) fn raw_html_view_capture<'a>(
     let opener = line_view_abs_start(&lines[cur], first_view) + opener_off;
     let view_body_raw_end = lines[hi - 1].start + lines[hi - 1].text.len();
     debug_assert!(view_body_raw_end <= body_end);
-    let close_end = parse_raw_html_at_cached_after_view_peek(input, opener, view_body_raw_end, Some(state))?.end;
+    let close_end =
+        parse_raw_html_at_cached_after_view_peek(input, opener, view_body_raw_end, Some(state))?
+            .end;
     let mut close_line = cur;
     while close_line < hi && lines[close_line].start + lines[close_line].text.len() < close_end {
         crate::metrics::scan_work(1);
@@ -1589,7 +1698,13 @@ pub(crate) fn raw_html_view_capture<'a>(
             span_end = lines[next].end;
             next += 1;
         }
-        Some(RawHtmlCapture { text, span_start, span_end, next, rewrite: None })
+        Some(RawHtmlCapture {
+            text,
+            span_start,
+            span_end,
+            next,
+            rewrite: None,
+        })
     }
 }
 
@@ -1657,7 +1772,11 @@ mod raw_html_capture_tests {
 /// Next fence-marker line at/after `from`, advancing the monotone `cursor` (the drivers reach
 /// fence openers in increasing `from`, so the cursor only advances — O(1) amortized).
 // scan-owner: (b) monotone cursor — fence closer index cursor
-pub(crate) fn find_matching_fence(fence_lines: &[usize], cursor: &mut usize, from: usize) -> Option<usize> {
+pub(crate) fn find_matching_fence(
+    fence_lines: &[usize],
+    cursor: &mut usize,
+    from: usize,
+) -> Option<usize> {
     // the main loop reaches fence openers in increasing `from`, so the cursor only advances.
     while *cursor < fence_lines.len() && fence_lines[*cursor] <= from {
         crate::metrics::scan_work(1);
@@ -1672,7 +1791,11 @@ pub(crate) fn find_matching_fence(fence_lines: &[usize], cursor: &mut usize, fro
 /// cursor stops AT (does not consume) the first closer `> from`, so a repeated/equal `from` is
 /// idempotent.
 // scan-owner: (b) monotone cursor — drawer closer index cursor
-pub(crate) fn find_drawer_end(drawer_end_idxs: &[usize], cursor: &mut usize, from: usize) -> Option<usize> {
+pub(crate) fn find_drawer_end(
+    drawer_end_idxs: &[usize],
+    cursor: &mut usize,
+    from: usize,
+) -> Option<usize> {
     while *cursor < drawer_end_idxs.len() && drawer_end_idxs[*cursor] <= from {
         crate::metrics::scan_work(1);
         *cursor += 1;
@@ -1695,7 +1818,11 @@ pub(crate) struct EndTrie {
 }
 impl EndTrie {
     pub(crate) fn new() -> Self {
-        EndTrie { kids: vec![Vec::new()], ends: vec![Vec::new()], cursor: vec![Cell::new(0)] }
+        EndTrie {
+            kids: vec![Vec::new()],
+            ends: vec![Vec::new()],
+            cursor: vec![Cell::new(0)],
+        }
     }
     /// Index `#+END_` line `idx` under the leading non-ws run of `suffix` (the text after
     /// `#+END_`), lowercased. The empty prefix (root) matches any opener name (incl. `""`).
@@ -1777,7 +1904,39 @@ impl Builder {
     pub(crate) fn finish(self, children: Vec<Block>, span: Option<Span>) -> Block {
         match self {
             Builder::Quote => Block::Quote { children, span },
-            Builder::Custom(name) => Block::Custom { name, children, span },
+            Builder::Custom(name) => Block::Custom {
+                name,
+                children,
+                span,
+            },
         }
     }
+}
+
+/// `#+BEGIN_EXPORT <name> <options...>` fields from mldoc's
+/// `block_name_options_parser` + `separate_name_options`.
+// scan-owner: (a2) caller-owned line helper — export opener option split scans only current line tail
+pub(crate) fn begin_export_fields(s: &str) -> (String, Option<Vec<String>>) {
+    let Some(t) = mldoc_trim_spaces_start(s).get(8..) else {
+        return (String::new(), None);
+    };
+    let name_len = t.bytes().take_while(|&b| !mldoc_is_space(b)).count();
+    crate::metrics::scan_work(name_len + usize::from(name_len < t.len()));
+    let rest = &t[name_len..];
+    let ws = mldoc_spaces_len(rest);
+    let options = &rest[ws..];
+    if options.is_empty() {
+        return (String::new(), None);
+    }
+    crate::metrics::scan_work(options.len());
+    // scan-owner: (a2) caller-owned line helper — split the already charged export option tail
+    let mut parts = options.split(' ');
+    let name = parts.next().unwrap_or("").to_string();
+    let options: Vec<String> = parts.map(str::to_string).collect();
+    let options = if options.is_empty() {
+        None
+    } else {
+        Some(options)
+    };
+    (name, options)
 }

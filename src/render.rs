@@ -45,7 +45,10 @@ impl RenderOpts {
 
 /// Render a block tree to the canonical HTML skeleton (see module docs).
 pub fn render_html(blocks: &[Block], opts: &RenderOpts) -> String {
-    let mut r = Renderer { out: String::new(), opts: *opts };
+    let mut r = Renderer {
+        out: String::new(),
+        opts: *opts,
+    };
     r.blocks(blocks);
     r.out
 }
@@ -104,7 +107,10 @@ struct Renderer {
 /// A `paragraph`/`bullet`/`heading` — an inline-flow block. Consecutive inline-flow
 /// blocks are `<br>`-joined (the frontend's `renderBlocks` line-stacked look).
 fn is_inline_flow(b: &Block) -> bool {
-    matches!(b, Block::Paragraph { .. } | Block::Bullet { .. } | Block::Heading { .. })
+    matches!(
+        b,
+        Block::Paragraph { .. } | Block::Bullet { .. } | Block::Heading { .. }
+    )
 }
 
 impl Renderer {
@@ -129,7 +135,12 @@ impl Renderer {
                 Some(s) => self.heading_text(*s, inline),
                 None => self.inlines(inline),
             },
-            Block::Heading { level, size, inline, .. } => {
+            Block::Heading {
+                level,
+                size,
+                inline,
+                ..
+            } => {
                 // Displayed heading level = the ATX/setext `size` (1–6); the AST `level`
                 // is mldoc's outline nesting (always 1 for a standalone `#`-heading), so
                 // `### x` has level=1, size=3. The catalog confirms the rendered level is
@@ -147,7 +158,12 @@ impl Renderer {
             Block::Quote { children, .. } => self.quote(children),
             Block::Custom { name, children, .. } => self.custom(name, children),
             Block::Properties { props, .. } => self.properties(props),
-            Block::Table { header, rows, aligns, .. } => self.table(header.as_deref(), rows, aligns.as_slice()),
+            Block::Table {
+                header,
+                rows,
+                aligns,
+                ..
+            } => self.table(header.as_deref(), rows, aligns.as_slice()),
             Block::Hr { .. } => self.out.push_str("<hr class=\"md-hr\">"),
             // Block-level math: empty element + raw tex hook (consumer renders KaTeX).
             Block::DisplayedMath { text, .. } => self.math_block(text),
@@ -157,7 +173,8 @@ impl Renderer {
             // raw HTML is never emitted live — escaped original in `data-raw`.
             Block::RawHtml { text, .. } => self.raw_html(text),
             Block::FootnoteDef { name, inline, .. } => {
-                self.out.push_str("<div class=\"footnote-def\"><sup class=\"footnote-ref\">");
+                self.out
+                    .push_str("<div class=\"footnote-def\"><sup class=\"footnote-ref\">");
                 esc_text(name, &mut self.out);
                 self.out.push_str("</sup> ");
                 self.inlines(inline);
@@ -169,8 +186,13 @@ impl Renderer {
                 self.out.push_str("</span>");
             }
             // Not rendered (match the frontend): org drawers / `#+KEY:` keywords /
-            // `# comment` lines.
-            Block::Drawer { .. } | Block::Directive { .. } | Block::Comment { .. } => {}
+            // `# comment` lines / export-comment blocks.
+            Block::Drawer { .. }
+            | Block::Directive { .. }
+            | Block::Comment { .. }
+            | Block::Export { .. }
+            | Block::CommentBlock { .. }
+            | Block::Results { .. } => {}
         }
     }
 
@@ -191,7 +213,8 @@ impl Renderer {
     }
 
     fn code_block(&mut self, lang: &str, code: &str) {
-        self.out.push_str("<pre class=\"code-block\"><code class=\"hljs\"");
+        self.out
+            .push_str("<pre class=\"code-block\"><code class=\"hljs\"");
         push_attr(&mut self.out, "data-lang", lang);
         self.out.push('>');
         esc_text(code, &mut self.out);
@@ -216,9 +239,11 @@ impl Renderer {
         }
         self.out.push_str("<span class=\"block-properties\">");
         for Property(k, v, _) in props {
-            self.out.push_str("<span class=\"block-property\"><span class=\"block-property-key\">");
+            self.out
+                .push_str("<span class=\"block-property\"><span class=\"block-property-key\">");
             esc_text(k, &mut self.out);
-            self.out.push_str("</span> <span class=\"block-property-val\">");
+            self.out
+                .push_str("</span> <span class=\"block-property-val\">");
             // Property values are inline markup — render via lsdoc's own (format-aware)
             // inline parser. (One parser: this is `lsdoc::inline`, not a second scanner.)
             let inlines = crate::inline(v, self.opts.fmt_str());
@@ -228,13 +253,16 @@ impl Renderer {
         self.out.push_str("</span>");
     }
 
-    fn table(&mut self, header: Option<&[Vec<Inline>]>, rows: &[Vec<Vec<Inline>>], aligns: &[Option<Align>]) {
-        let align_attr = |out: &mut String, col: usize| {
-            match aligns.get(col).copied().flatten() {
-                Some(Align::Center) => push_attr(out, "data-align", "center"),
-                Some(Align::Right) => push_attr(out, "data-align", "right"),
-                Some(Align::Left) | None => {}
-            }
+    fn table(
+        &mut self,
+        header: Option<&[Vec<Inline>]>,
+        rows: &[Vec<Vec<Inline>>],
+        aligns: &[Option<Align>],
+    ) {
+        let align_attr = |out: &mut String, col: usize| match aligns.get(col).copied().flatten() {
+            Some(Align::Center) => push_attr(out, "data-align", "center"),
+            Some(Align::Right) => push_attr(out, "data-align", "right"),
+            Some(Align::Left) | None => {}
         };
         self.out.push_str("<table class=\"md-table\">");
         if let Some(h) = header {
@@ -268,7 +296,9 @@ impl Renderer {
     fn quote(&mut self, children: &[Block]) {
         let callout = match children.first() {
             Some(Block::Paragraph { inline, .. }) => match inline.first() {
-                Some(Inline::Plain { text, .. }) => parse_callout_lead(text).map(|(ty, title)| (ty, title, inline)),
+                Some(Inline::Plain { text, .. }) => {
+                    parse_callout_lead(text).map(|(ty, title)| (ty, title, inline))
+                }
                 _ => None,
             },
             _ => None,
@@ -278,8 +308,10 @@ impl Renderer {
             // `[!TYPE]` text remainder + any inline markup on the title line) is the TITLE;
             // everything after begins the BODY. (Previously only `[!TYPE]`'s first plain
             // segment was the title, so `[!NOTE] Heads **up**` spilled `**up**` into the body.)
-            let break_idx =
-                lead_inline[1..].iter().position(|n| matches!(n, Inline::Break { .. })).map(|p| p + 1);
+            let break_idx = lead_inline[1..]
+                .iter()
+                .position(|n| matches!(n, Inline::Break { .. }))
+                .map(|p| p + 1);
             let (title_markup, body_inlines): (&[Inline], &[Inline]) = match break_idx {
                 Some(k) => (&lead_inline[1..k], &lead_inline[k + 1..]),
                 None => (&lead_inline[1..], &[]),
@@ -303,7 +335,11 @@ impl Renderer {
             }
             let tail = &children[1..];
             for (i, b) in tail.iter().enumerate() {
-                let prev_inline_flow = if i == 0 { lead_is_para } else { is_inline_flow(&tail[i - 1]) };
+                let prev_inline_flow = if i == 0 {
+                    lead_is_para
+                } else {
+                    is_inline_flow(&tail[i - 1])
+                };
                 if prev_inline_flow && is_inline_flow(b) {
                     self.out.push_str("<br>");
                 }
@@ -359,7 +395,11 @@ impl Renderer {
     /// ordinal for the whole list block (matches the frontend's per-list `cbItems`).
     fn list(&mut self, items: &[ListItem], cb: &mut usize) {
         let ordered = items.first().map(|i| i.ordered).unwrap_or(false);
-        self.out.push_str(if ordered { "<ol class=\"md-list\">" } else { "<ul class=\"md-list\">" });
+        self.out.push_str(if ordered {
+            "<ol class=\"md-list\">"
+        } else {
+            "<ul class=\"md-list\">"
+        });
         for item in items {
             self.out.push_str("<li class=\"md-list-item");
             if item.checkbox.is_some() {
@@ -443,7 +483,13 @@ impl Renderer {
                 self.inlines(children);
                 self.out.push_str("</sup>");
             }
-            Inline::Link { url, label, image, metadata, .. } => self.link(url, label, *image, metadata),
+            Inline::Link {
+                url,
+                label,
+                image,
+                metadata,
+                ..
+            } => self.link(url, label, *image, metadata),
             Inline::NestedLink { content, .. } => {
                 // Logseq `[[a [[b]] c]]` — routed as a page ref (catalog), inner kept raw.
                 self.out.push_str("<a class=\"page-ref\"");
@@ -478,7 +524,11 @@ impl Renderer {
                 }
             }
             Inline::Latex { mode, body, .. } => {
-                let cls = if mode == "Displayed" { "math math-display" } else { "math" };
+                let cls = if mode == "Displayed" {
+                    "math math-display"
+                } else {
+                    "math"
+                };
                 self.out.push_str("<span class=\"");
                 self.out.push_str(cls);
                 self.out.push('"');
@@ -486,7 +536,9 @@ impl Renderer {
                 self.out.push_str("></span>");
             }
             Inline::Timestamp { ts, date, .. } => self.timestamp(ts, date),
-            Inline::Cookie { kind, value, total, .. } => esc_text(&cookie_text(kind, *value, *total), &mut self.out),
+            Inline::Cookie {
+                kind, value, total, ..
+            } => esc_text(&cookie_text(kind, *value, *total), &mut self.out),
             Inline::Fnref { name, .. } => {
                 self.out.push_str("<sup class=\"footnote-ref\">");
                 esc_text(name, &mut self.out);
@@ -541,8 +593,16 @@ impl Renderer {
                     self.image(&dest, label, metadata);
                 } else if dest.to_ascii_lowercase().ends_with(".pdf") {
                     let filename = dest.rsplit('/').next().unwrap_or(&dest);
-                    let label_str = if label.is_empty() { filename.to_string() } else { flatten_text(label) };
-                    let label_str = if label_str.is_empty() { filename.to_string() } else { label_str };
+                    let label_str = if label.is_empty() {
+                        filename.to_string()
+                    } else {
+                        flatten_text(label)
+                    };
+                    let label_str = if label_str.is_empty() {
+                        filename.to_string()
+                    } else {
+                        label_str
+                    };
                     self.out.push_str("<a class=\"external-link pdf-link\"");
                     push_attr(&mut self.out, "href", &dest);
                     self.out.push_str(">\u{1F4C4} ");
@@ -564,10 +624,16 @@ impl Renderer {
     }
 
     fn image(&mut self, dest: &str, label: &[Inline], metadata: &str) {
-        let alt = if label.is_empty() { String::new() } else { flatten_text(label) };
+        let alt = if label.is_empty() {
+            String::new()
+        } else {
+            flatten_text(label)
+        };
         match media_kind(dest) {
             Some("video") => {
-                self.out.push_str("<span class=\"media-embed-wrap\"><video class=\"media-embed\" controls");
+                self.out.push_str(
+                    "<span class=\"media-embed-wrap\"><video class=\"media-embed\" controls",
+                );
                 push_attr(&mut self.out, "data-asset", dest);
                 if !metadata.is_empty() {
                     push_attr(&mut self.out, "data-metadata", metadata);
@@ -584,7 +650,8 @@ impl Renderer {
             }
             // image or unknown extension → an <img> (frontend AssetImage).
             _ => {
-                self.out.push_str("<span class=\"inline-image-wrap\"><img class=\"inline-image\"");
+                self.out
+                    .push_str("<span class=\"inline-image-wrap\"><img class=\"inline-image\"");
                 push_attr(&mut self.out, "data-asset", dest);
                 push_attr(&mut self.out, "alt", &alt);
                 if !metadata.is_empty() {
@@ -604,7 +671,11 @@ impl Renderer {
             let active = date.get("active").and_then(Value::as_bool).unwrap_or(true);
             (active, fmt_ts_point(date))
         };
-        let cls = if active { "org-timestamp" } else { "org-timestamp inactive" };
+        let cls = if active {
+            "org-timestamp"
+        } else {
+            "org-timestamp inactive"
+        };
         let (open, close) = if active { ("<", ">") } else { ("[", "]") };
         self.out.push_str("<span class=\"");
         self.out.push_str(cls);
@@ -630,7 +701,10 @@ fn fmt_timestamp_range(date: &Value) -> (bool, String) {
         return (true, fmt_ts_point(date));
     };
     let active = start.get("active").and_then(Value::as_bool).unwrap_or(true);
-    (active, format!("{}--{}", fmt_ts_point(start), fmt_ts_point(stop)))
+    (
+        active,
+        format!("{}--{}", fmt_ts_point(start), fmt_ts_point(stop)),
+    )
 }
 
 // ===========================================================================
@@ -681,8 +755,12 @@ fn flatten_text(inlines: &[Inline]) -> String {
 fn flatten_into(inlines: &[Inline], out: &mut String) {
     for s in inlines {
         match s {
-            Inline::Plain { text, .. } | Inline::Code { text, .. } | Inline::Verbatim { text, .. } => out.push_str(text),
-            Inline::Emphasis { children, .. } | Inline::Subscript { children, .. } | Inline::Superscript { children, .. } => {
+            Inline::Plain { text, .. }
+            | Inline::Code { text, .. }
+            | Inline::Verbatim { text, .. } => out.push_str(text),
+            Inline::Emphasis { children, .. }
+            | Inline::Subscript { children, .. }
+            | Inline::Superscript { children, .. } => {
                 flatten_into(children, out);
             }
             Inline::Tag { children, .. } => {
@@ -700,7 +778,9 @@ fn flatten_into(inlines: &[Inline], out: &mut String) {
             Inline::Target { text, .. } => out.push_str(text),
             Inline::Entity { unicode, .. } => out.push_str(unicode),
             Inline::Latex { body, .. } => out.push_str(body),
-            Inline::Cookie { kind, value, total, .. } => out.push_str(&cookie_text(kind, *value, *total)),
+            Inline::Cookie {
+                kind, value, total, ..
+            } => out.push_str(&cookie_text(kind, *value, *total)),
             Inline::Hiccup { v, .. } => out.push_str(v),
             // Not part of `astText`: contribute no text.
             Inline::Break { .. }
@@ -743,7 +823,12 @@ fn email_addr(v: &Value) -> String {
 /// Format a single timestamp point `{date:{year,month,day}, wday?, time?}` →
 /// `year-MM-dd[ wday][ HH:mm]`. Mirrors the frontend `fmtTsPoint`.
 fn fmt_ts_point(p: &Value) -> String {
-    let g = |k: &str| p.get("date").and_then(|d| d.get(k)).and_then(Value::as_i64).unwrap_or(0);
+    let g = |k: &str| {
+        p.get("date")
+            .and_then(|d| d.get(k))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    };
     let mut s = format!("{}-{:02}-{:02}", g("year"), g("month"), g("day"));
     if let Some(w) = p.get("wday").and_then(Value::as_str) {
         if !w.is_empty() {
@@ -773,7 +858,9 @@ fn ext_of(s: &str) -> String {
 fn media_kind(s: &str) -> Option<&'static str> {
     const IMAGE: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"];
     const VIDEO: &[&str] = &["mp4", "webm", "mov", "flv", "avi", "mkv", "m4v", "ogv"];
-    const AUDIO: &[&str] = &["mp3", "ogg", "oga", "wav", "m4a", "flac", "wma", "aac", "opus", "mpeg"];
+    const AUDIO: &[&str] = &[
+        "mp3", "ogg", "oga", "wav", "m4a", "flac", "wma", "aac", "opus", "mpeg",
+    ];
     let e = ext_of(s);
     if IMAGE.contains(&e.as_str()) {
         Some("image")

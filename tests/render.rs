@@ -10,10 +10,18 @@ use lsdoc::{render_html, Format, RenderOpts};
 
 /// Parse `input` in `fmt`, then render to the canonical HTML skeleton.
 fn md(input: &str) -> String {
-    render_html(&lsdoc::parse(input, "md"), &RenderOpts { format: Format::Md })
+    render_html(
+        &lsdoc::parse(input, "md"),
+        &RenderOpts { format: Format::Md },
+    )
 }
 fn org(input: &str) -> String {
-    render_html(&lsdoc::parse(input, "org"), &RenderOpts { format: Format::Org })
+    render_html(
+        &lsdoc::parse(input, "org"),
+        &RenderOpts {
+            format: Format::Org,
+        },
+    )
 }
 
 // ===========================================================================
@@ -22,13 +30,22 @@ fn org(input: &str) -> String {
 
 #[test]
 fn paragraph_is_a_bare_inline_run() {
-    assert_eq!(md("hello **world** and *em*"), "hello <strong>world</strong> and <em>em</em>");
+    assert_eq!(
+        md("hello **world** and *em*"),
+        "hello <strong>world</strong> and <em>em</em>"
+    );
 }
 
 #[test]
 fn heading_wraps_in_heading_text_with_level() {
-    assert_eq!(md("# Title here"), r#"<span class="heading-text h1">Title here</span>"#);
-    assert_eq!(md("### Deep"), r#"<span class="heading-text h3">Deep</span>"#);
+    assert_eq!(
+        md("# Title here"),
+        r#"<span class="heading-text h1">Title here</span>"#
+    );
+    assert_eq!(
+        md("### Deep"),
+        r#"<span class="heading-text h3">Deep</span>"#
+    );
 }
 
 #[test]
@@ -41,7 +58,10 @@ fn bullet_is_a_bare_inline_run() {
 fn heading_above_6_is_bare() {
     // size ∈ 1..=6 wraps; size 7 (mldoc allows it) → no heading-text wrapper, matching the
     // frontend facet (no h7 CSS) (audit F).
-    assert_eq!(md("###### six"), r#"<span class="heading-text h6">six</span>"#);
+    assert_eq!(
+        md("###### six"),
+        r#"<span class="heading-text h6">six</span>"#
+    );
     assert_eq!(md("####### seven"), "seven");
 }
 
@@ -49,7 +69,10 @@ fn heading_above_6_is_bare() {
 fn bullet_authored_heading_wraps() {
     // `- ## x` carries Bullet.size → rendered as a heading (D1, the common bulleted-graph
     // heading form); a plain bullet stays bare; size 7 falls back to bare (F).
-    assert_eq!(md("- ## Section"), r#"<span class="heading-text h2">Section</span>"#);
+    assert_eq!(
+        md("- ## Section"),
+        r#"<span class="heading-text h2">Section</span>"#
+    );
     assert_eq!(md("- plain bullet"), "plain bullet");
     assert_eq!(md("- ####### deep"), "deep");
 }
@@ -69,8 +92,14 @@ fn emphasis_variants() {
 
 #[test]
 fn inline_code_and_verbatim_escape() {
-    assert_eq!(md("use `x < y`"), r#"use <code class="inline-code">x &lt; y</code>"#);
-    assert_eq!(org("a =v < w= b"), r#"a <code class="inline-code">v &lt; w</code> b"#);
+    assert_eq!(
+        md("use `x < y`"),
+        r#"use <code class="inline-code">x &lt; y</code>"#
+    );
+    assert_eq!(
+        org("a =v < w= b"),
+        r#"a <code class="inline-code">v &lt; w</code> b"#
+    );
 }
 
 #[test]
@@ -84,8 +113,14 @@ fn subscript_superscript_org() {
 
 #[test]
 fn page_ref_bare_and_labeled() {
-    assert_eq!(md("see [[My Page]] ok"), r#"see <a class="page-ref" data-page="My Page">[[My Page]]</a> ok"#);
-    assert_eq!(md("[lbl]([[My Page]])"), r#"<a class="page-ref" data-page="My Page">lbl</a>"#);
+    assert_eq!(
+        md("see [[My Page]] ok"),
+        r#"see <a class="page-ref" data-page="My Page">[[My Page]]</a> ok"#
+    );
+    assert_eq!(
+        md("[lbl]([[My Page]])"),
+        r#"<a class="page-ref" data-page="My Page">lbl</a>"#
+    );
 }
 
 #[test]
@@ -102,9 +137,18 @@ fn block_ref_short_id_and_labeled() {
 
 #[test]
 fn external_pdf_bare_links() {
-    assert_eq!(md("see [Google](https://google.com) ok"), r#"see <a class="external-link" href="https://google.com">Google</a> ok"#);
-    assert_eq!(md("[doc](file.pdf)"), "<a class=\"external-link pdf-link\" href=\"file.pdf\">\u{1F4C4} doc</a>");
-    assert_eq!(md("https://example.com/x"), r#"<a class="external-link" href="https://example.com/x">https://example.com/x</a>"#);
+    assert_eq!(
+        md("see [Google](https://google.com) ok"),
+        r#"see <a class="external-link" href="https://google.com">Google</a> ok"#
+    );
+    assert_eq!(
+        md("[doc](file.pdf)"),
+        "<a class=\"external-link pdf-link\" href=\"file.pdf\">\u{1F4C4} doc</a>"
+    );
+    assert_eq!(
+        md("https://example.com/x"),
+        r#"<a class="external-link" href="https://example.com/x">https://example.com/x</a>"#
+    );
 }
 
 #[test]
@@ -113,22 +157,43 @@ fn image_video_audio() {
         md("![alt <x>](../assets/x.png){:width 200}"),
         r#"<span class="inline-image-wrap"><img class="inline-image" data-asset="../assets/x.png" alt="alt &lt;x&gt;" data-metadata="{:width 200}"></span>"#
     );
-    assert_eq!(md("![v](movie.mp4)"), r#"<span class="media-embed-wrap"><video class="media-embed" controls data-asset="movie.mp4"></video></span>"#);
-    assert_eq!(md("![a](sound.mp3)"), r#"<span class="media-embed-wrap media-audio-wrap"><audio class="media-embed media-audio" controls data-asset="sound.mp3"></audio></span>"#);
+    assert_eq!(
+        md("![v](movie.mp4)"),
+        r#"<span class="media-embed-wrap"><video class="media-embed" controls data-asset="movie.mp4"></video></span>"#
+    );
+    assert_eq!(
+        md("![a](sound.mp3)"),
+        r#"<span class="media-embed-wrap media-audio-wrap"><audio class="media-embed media-audio" controls data-asset="sound.mp3"></audio></span>"#
+    );
 }
 
 #[test]
 fn tags() {
-    assert_eq!(md("a #foo b"), r#"a <a class="tag" data-page="foo">#foo</a> b"#);
-    assert_eq!(md("a #[[bar baz]] b"), r#"a <a class="tag" data-page="bar baz">#bar baz</a> b"#);
+    assert_eq!(
+        md("a #foo b"),
+        r#"a <a class="tag" data-page="foo">#foo</a> b"#
+    );
+    assert_eq!(
+        md("a #[[bar baz]] b"),
+        r#"a <a class="tag" data-page="bar baz">#bar baz</a> b"#
+    );
 }
 
 #[test]
 fn email_entity_target() {
-    assert_eq!(md("contact <a.b@c.com> now"), r#"contact <a class="external-link" href="mailto:a.b@c.com">a.b@c.com</a> now"#);
+    assert_eq!(
+        md("contact <a.b@c.com> now"),
+        r#"contact <a class="external-link" href="mailto:a.b@c.com">a.b@c.com</a> now"#
+    );
     assert_eq!(md("alpha \\Delta beta"), "alpha \u{0394} beta");
-    assert_eq!(org("see <<anchor>> here"), r#"see <span class="org-target">anchor</span> here"#);
-    assert_eq!(md("progress [01/02] and [50%%]"), "progress [1/2] and [50%]");
+    assert_eq!(
+        org("see <<anchor>> here"),
+        r#"see <span class="org-target">anchor</span> here"#
+    );
+    assert_eq!(
+        md("progress [01/02] and [50%%]"),
+        "progress [1/2] and [50%]"
+    );
 }
 
 // ===========================================================================
@@ -145,14 +210,23 @@ fn macro_emits_hooks_not_output() {
 
 #[test]
 fn export_snippet_html_renders_raw_other_names_empty() {
-    assert_eq!(md("x @@html: <b>raw</b>@@ y @@name: hidden@@"), "x <b>raw</b> y ");
+    assert_eq!(
+        md("x @@html: <b>raw</b>@@ y @@name: hidden@@"),
+        "x <b>raw</b> y "
+    );
     assert_eq!(org("@@html: <i>raw</i>@@"), "<i>raw</i>");
 }
 
 #[test]
 fn inline_and_block_math_are_empty_with_tex_hook() {
-    assert_eq!(md("math $a<b$ here"), r#"math <span class="math" data-tex="a&lt;b"></span> here"#);
-    assert_eq!(md("$$x^2 < y$$"), r#"<span class="math math-display" data-tex="x^2 &lt; y"></span>"#);
+    assert_eq!(
+        md("math $a<b$ here"),
+        r#"math <span class="math" data-tex="a&lt;b"></span> here"#
+    );
+    assert_eq!(
+        md("$$x^2 < y$$"),
+        r#"<span class="math math-display" data-tex="x^2 &lt; y"></span>"#
+    );
     assert_eq!(
         org("\\begin{align}\na &= b\n\\end{align}"),
         "<span class=\"math math-display\" data-tex=\"\\begin{align}a &amp;= b\n\\end{align}\"></span>"
@@ -161,7 +235,10 @@ fn inline_and_block_math_are_empty_with_tex_hook() {
 
 #[test]
 fn hiccup_block_and_inline() {
-    assert_eq!(md("[:b.foo hi]"), r#"<span class="ast-hiccup">[:b.foo hi]</span>"#);
+    assert_eq!(
+        md("[:b.foo hi]"),
+        r#"<span class="ast-hiccup">[:b.foo hi]</span>"#
+    );
 }
 
 // ===========================================================================
@@ -170,14 +247,23 @@ fn hiccup_block_and_inline() {
 
 #[test]
 fn timestamp_active_inactive_range() {
-    assert_eq!(md("do <2026-06-30 Mon 14:30>"), r#"do <span class="org-timestamp">&lt;2026-06-30 Mon 14:30&gt;</span>"#);
-    assert_eq!(org("do [2026-06-30 Mon 14:30]"), r#"do <span class="org-timestamp inactive">[2026-06-30 Mon 14:30]</span>"#);
+    assert_eq!(
+        md("do <2026-06-30 Mon 14:30>"),
+        r#"do <span class="org-timestamp">&lt;2026-06-30 Mon 14:30&gt;</span>"#
+    );
+    assert_eq!(
+        org("do [2026-06-30 Mon 14:30]"),
+        r#"do <span class="org-timestamp inactive">[2026-06-30 Mon 14:30]</span>"#
+    );
     assert_eq!(
         md("<2026-06-30 Mon 14:30>--<2026-07-02 Wed 16:00>"),
         r#"<span class="org-timestamp">&lt;2026-06-30 Mon 14:30--2026-07-02 Wed 16:00&gt;</span>"#
     );
     // date-only (weekday, no time) — mldoc needs the weekday to recognize a timestamp.
-    assert_eq!(org("[2026-06-30 Mon]"), r#"<span class="org-timestamp inactive">[2026-06-30 Mon]</span>"#);
+    assert_eq!(
+        org("[2026-06-30 Mon]"),
+        r#"<span class="org-timestamp inactive">[2026-06-30 Mon]</span>"#
+    );
 }
 
 // ===========================================================================
@@ -199,8 +285,14 @@ fn src_and_example_emit_escaped_code_and_data_lang() {
 #[test]
 fn hr_and_footnote_and_displayed_math() {
     assert_eq!(md("---"), r#"<hr class="md-hr">"#);
-    assert_eq!(md("[^1]: the note body"), r#"<div class="footnote-def"><sup class="footnote-ref">1</sup> the note body</div>"#);
-    assert_eq!(md("$$a < b$$"), r#"<span class="math math-display" data-tex="a &lt; b"></span>"#);
+    assert_eq!(
+        md("[^1]: the note body"),
+        r#"<div class="footnote-def"><sup class="footnote-ref">1</sup> the note body</div>"#
+    );
+    assert_eq!(
+        md("$$a < b$$"),
+        r#"<span class="math math-display" data-tex="a &lt; b"></span>"#
+    );
 }
 
 #[test]
@@ -228,7 +320,10 @@ fn properties_render_all_pairs_value_as_inline() {
 
 #[test]
 fn quote_plain_blockquote() {
-    assert_eq!(md("> just a quote\n> more"), r#"<blockquote class="md-quote">just a quote<br>more<br></blockquote>"#);
+    assert_eq!(
+        md("> just a quote\n> more"),
+        r#"<blockquote class="md-quote">just a quote<br>more<br></blockquote>"#
+    );
 }
 
 #[test]
@@ -236,6 +331,8 @@ fn drawer_directive_comment_render_nothing() {
     assert_eq!(org(":LOGBOOK:\nstuff\n:END:"), "");
     assert_eq!(org("#+TITLE: Hello"), "");
     assert_eq!(org("# a comment line"), "");
+    assert_eq!(org("#+BEGIN_EXPORT html\n<b>x</b>\n#+END_EXPORT"), "");
+    assert_eq!(org("#+BEGIN_COMMENT\nhidden\n#+END_COMMENT"), "");
 }
 
 #[test]
@@ -336,8 +433,14 @@ fn callout_title_keeps_inline_markup() {
 
 #[test]
 fn unordered_and_ordered_list() {
-    assert_eq!(md("* a\n* b"), r#"<ul class="md-list"><li class="md-list-item">a</li><li class="md-list-item">b</li></ul>"#);
-    assert_eq!(md("1. one\n2. two"), r#"<ol class="md-list"><li class="md-list-item">one</li><li class="md-list-item">two</li></ol>"#);
+    assert_eq!(
+        md("* a\n* b"),
+        r#"<ul class="md-list"><li class="md-list-item">a</li><li class="md-list-item">b</li></ul>"#
+    );
+    assert_eq!(
+        md("1. one\n2. two"),
+        r#"<ol class="md-list"><li class="md-list-item">one</li><li class="md-list-item">two</li></ol>"#
+    );
 }
 
 #[test]
@@ -429,7 +532,10 @@ fn table_partial_alignment() {
 #[test]
 fn plain_text_escapes_angle_and_amp() {
     // `<` `>` `&` escaped in text; `"` left as-is in text (per the contract).
-    assert_eq!(md(r#"5 < 3 & 2 > 1 say "hi""#), r#"5 &lt; 3 &amp; 2 &gt; 1 say "hi""#);
+    assert_eq!(
+        md(r#"5 < 3 & 2 > 1 say "hi""#),
+        r#"5 &lt; 3 &amp; 2 &gt; 1 say "hi""#
+    );
 }
 
 #[test]
@@ -468,11 +574,17 @@ fn plain_para(text: &str) -> Block {
 #[test]
 fn consecutive_inline_flow_blocks_are_br_joined() {
     let blocks = vec![plain_para("a"), plain_para("b"), plain_para("c")];
-    assert_eq!(render_html(&blocks, &RenderOpts { format: Format::Md }), "a<br>b<br>c");
+    assert_eq!(
+        render_html(&blocks, &RenderOpts { format: Format::Md }),
+        "a<br>b<br>c"
+    );
 }
 
 #[test]
 fn non_inline_flow_block_breaks_the_join() {
     let blocks = vec![plain_para("a"), Block::Hr { span: None }, plain_para("b")];
-    assert_eq!(render_html(&blocks, &RenderOpts { format: Format::Md }), r#"a<hr class="md-hr">b"#);
+    assert_eq!(
+        render_html(&blocks, &RenderOpts { format: Format::Md }),
+        r#"a<hr class="md-hr">b"#
+    );
 }

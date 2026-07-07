@@ -12,7 +12,7 @@
 
 const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const parseUuid = (s) => (typeof s === "string" && UUID.test(s.trim()) ? s.trim() : null);
-const LITERAL = new Set(["Src", "Code", "Latex_Fragment", "Latex_Environment", "Export", "Export_Snippet", "Raw_Html", "Inline_Html"]);
+const LITERAL = new Set(["Src", "Code", "Latex_Fragment", "Latex_Environment", "Export", "CommentBlock", "Export_Snippet", "Raw_Html", "Inline_Html"]);
 const unbr = (s) => { const m = /^\[\[([\s\S]*)\]\]$/.exec((s ?? "").trim()); return m ? m[1] : s; };
 const blockRefId = (s) => { const m = /^\(\(([\s\S]*)\)\)$/.exec((s ?? "").trim()); return m ? m[1].trim() : null; };
 

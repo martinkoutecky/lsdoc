@@ -48,8 +48,8 @@ Tine-side (consume the AST, delete `parseInline.ts`, repoint `refs.rs`'s inline 
 
 ## The oracle
 
-Correctness is checked **differentially against real mldoc** (`mldoc@1.5.7`, the
-version OG pins), run under Node:
+Correctness is checked **differentially against real mldoc** (pinned latest
+`mldoc@1.5.9`), run under Node:
 
 ```
 input string
@@ -112,7 +112,7 @@ cargo test                             # unit tests + fast perf/stack smoke
 cargo test --release -- --ignored      # full-scale perf + stack-overflow gate
 
 # Oracle harness (Node 20):
-cd harness && npm install              # installs mldoc@1.5.7 (once)
+cd harness && npm install              # installs mldoc@1.5.9 (once)
 
 # One-command differential regression loop (the dev gate):
 #   corpus (inline + block + mined + real) → mldoc oracle → lsdoc → compare → report

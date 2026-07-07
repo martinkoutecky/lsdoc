@@ -10,6 +10,6 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "mldoc": "^1.5.7"
+    "mldoc": "1.5.9"
   }
 }

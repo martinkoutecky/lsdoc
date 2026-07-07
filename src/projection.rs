@@ -141,7 +141,12 @@ mod tests {
     fn separator_aligns_require_hyphen_per_cell() {
         assert_eq!(
             parse_separator_aligns("|:---|---:|:--:|---|"),
-            vec![Some(Align::Left), Some(Align::Right), Some(Align::Center), None]
+            vec![
+                Some(Align::Left),
+                Some(Align::Right),
+                Some(Align::Center),
+                None
+            ]
         );
         assert_eq!(parse_separator_aligns("|:|::|"), vec![None, None]);
     }
@@ -214,6 +219,26 @@ pub enum Block {
     Custom {
         name: String,
         children: Vec<Block>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
+    /// Org-mode export block `#+BEGIN_EXPORT … #+END_EXPORT` (mldoc `Export`).
+    /// Renderers decide whether a backend name is visible; lsdoc's bundled HTML
+    /// renderer follows mldoc's markdown exporter and emits nothing.
+    #[serde(rename = "export")]
+    Export {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        options: Option<Vec<String>>,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
+    /// Org-mode comment block `#+BEGIN_COMMENT … #+END_COMMENT`
+    /// (mldoc `CommentBlock`). The content is opaque and not rendered.
+    #[serde(rename = "comment_block")]
+    CommentBlock {
+        content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },
@@ -313,6 +338,11 @@ pub enum Block {
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
     },
+    #[serde(rename = "block:Results")]
+    Results {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -355,16 +385,19 @@ pub fn nest_items(flat: Vec<ListItem>) -> Vec<ListItem> {
     let mut roots: Vec<ListItem> = Vec::new();
     let mut stack: Vec<Frame> = Vec::new();
 
-    let push_done = |item: ListItem, stack: &mut Vec<Frame>, roots: &mut Vec<ListItem>| {
-        match stack.last_mut() {
-            Some(parent) => parent.children.push(item),
-            None => roots.push(item),
-        }
+    let push_done = |item: ListItem, stack: &mut Vec<Frame>, roots: &mut Vec<ListItem>| match stack
+        .last_mut()
+    {
+        Some(parent) => parent.children.push(item),
+        None => roots.push(item),
     };
 
     for (i, mut cur) in flat.into_iter().enumerate() {
         // Close frames whose child-run `cur` is too shallow to join.
-        while stack.last().is_some_and(|top| cur.indent < top.child_min_indent) {
+        while stack
+            .last()
+            .is_some_and(|top| cur.indent < top.child_min_indent)
+        {
             let f = stack.pop().unwrap();
             let mut done = f.item;
             done.items = f.children;
@@ -373,7 +406,11 @@ pub fn nest_items(flat: Vec<ListItem>) -> Vec<ListItem> {
         cur.items = Vec::new();
         if i + 1 < n && indents[i + 1] > cur.indent {
             // `cur` opens a child run floored at the next item's indent.
-            stack.push(Frame { item: cur, children: Vec::new(), child_min_indent: indents[i + 1] });
+            stack.push(Frame {
+                item: cur,
+                children: Vec::new(),
+                child_min_indent: indents[i + 1],
+            });
         } else {
             push_done(cur, &mut stack, &mut roots);
         }
@@ -408,15 +445,18 @@ pub(crate) fn nest_items_with_boundaries(
     let mut roots: Vec<ListItem> = Vec::new();
     let mut stack: Vec<Frame> = Vec::new();
 
-    let push_done = |item: ListItem, stack: &mut Vec<Frame>, roots: &mut Vec<ListItem>| {
-        match stack.last_mut() {
-            Some(parent) => parent.children.push(item),
-            None => roots.push(item),
-        }
+    let push_done = |item: ListItem, stack: &mut Vec<Frame>, roots: &mut Vec<ListItem>| match stack
+        .last_mut()
+    {
+        Some(parent) => parent.children.push(item),
+        None => roots.push(item),
     };
 
     for (i, mut cur) in flat.into_iter().enumerate() {
-        while stack.last().is_some_and(|top| cur.indent < top.child_min_indent) {
+        while stack
+            .last()
+            .is_some_and(|top| cur.indent < top.child_min_indent)
+        {
             let f = stack.pop().unwrap();
             let mut done = f.item;
             done.items = f.children;
@@ -425,7 +465,11 @@ pub(crate) fn nest_items_with_boundaries(
         cur.items = Vec::new();
         let blocked_by_blank = boundary_before.get(i + 1).copied().unwrap_or(false);
         if i + 1 < n && !blocked_by_blank && indents[i + 1] > cur.indent {
-            stack.push(Frame { item: cur, children: Vec::new(), child_min_indent: indents[i + 1] });
+            stack.push(Frame {
+                item: cur,
+                children: Vec::new(),
+                child_min_indent: indents[i + 1],
+            });
         } else {
             push_done(cur, &mut stack, &mut roots);
         }

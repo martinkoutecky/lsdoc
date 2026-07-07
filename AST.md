@@ -4,7 +4,7 @@ This maps **every renderable construct → its AST variant + exact payload field
 consumer (Tine) can render exhaustively from the AST alone and extract refs, with no
 re-parsing of `full`/raw text. It is the renderer's checklist and the proof that the
 mldoc-vs-projection delta is closed: every field here is gated 0-diff against
-`mldoc@1.5.7` (`harness/run.mjs`, 621 inputs), except the explicitly-marked
+pinned latest `mldoc@1.5.9` (`harness/run.mjs`), except the explicitly-marked
 derived/excluded ones.
 
 The types live in [`src/projection.rs`](src/projection.rs) (`lsdoc::ast`); the JS mirror
@@ -39,6 +39,8 @@ Markdown and Org produce the **same** AST.
 | `src` | `lang: string`, `code: string` | `span` | fenced/`#+BEGIN_SRC` code block. `lang` may be `""` |
 | `quote` | `children: Block[]` | `span` | `>` blockquote / `#+BEGIN_QUOTE` |
 | `custom` | `name: string`, `children: Block[]` | `span` | `#+BEGIN_X … #+END_X`, X≠QUOTE (NOTE/TIP/WARNING/…) |
+| `export` | `name: string`, `content: string` | `options: string[]`, `span` | `#+BEGIN_EXPORT … #+END_EXPORT` (not rendered) |
+| `comment_block` | `content: string` | `span` | `#+BEGIN_COMMENT … #+END_COMMENT` (not rendered) |
 | `raw_html` | `text: string` | `span` | block-level raw HTML |
 | `displayed_math` | `text: string` | `span` | block `$$…$$` (mldoc `Displayed_Math`) |
 | `drawer` | `name: string` | `span` | org `:NAME: … :END:` (content opaque — name only) |
@@ -51,6 +53,7 @@ Markdown and Org produce the **same** AST.
 | `table` | `header: Inline[][] \| null`, `rows: Inline[][][]`, `aligns: ("left"\|"center"\|"right"\|null)[]` | `span` | table. `aligns` is always serialized; see Notes |
 | `footnote_def` | `name: string`, `inline: Inline[]` | `span` | `[^id]: body` / org `[fn:id] body` |
 | `hiccup` | `v: string` | `span` | block-level Clojure-hiccup vector `[:tag …]` occupying a whole line (mldoc `Hiccup`). `v` = the RAW bracket text verbatim (children NOT parsed). md + org |
+| `block:Results` | — | `span` | mldoc `Results` marker in regular-list item content (`#+RESULTS:`); not rendered |
 
 `marker` = task marker (`TODO`/`DOING`/`DONE`/…). `priority` = org `[#A]` → `"A"`.
 `htags` = org headline `:tag1:tag2:`.

@@ -302,7 +302,57 @@ pub(crate) fn org_lex(s: &str) -> Vec<Token> {
 /// Parse an Org inline run at top level. `base` is the absolute byte offset of `text[0]` in
 /// the block body — every emitted node's `span` is absolute (S2).
 pub(crate) fn parse_inline_org(text: &str, base: usize) -> Vec<Inline> {
+    if let Some(nodes) = crate::inline::plain_fast_path_org(text, base) {
+        return nodes;
+    }
     parse_ctx(text, Ctx::top(), base)
+}
+
+/// mldoc `Property.property_references`: parse property values with
+/// `inline_skip_macro = true`, then keep only top-level reference-shaped inlines.
+pub(crate) fn parse_property_reference_inlines_org(text: &str, base: usize) -> Vec<Inline> {
+    let mut ctx = Ctx::top();
+    ctx.macros = false;
+    parse_ctx(text, ctx, base)
+}
+
+pub(crate) fn org_terminal_odd_backslash(text: &str) -> bool {
+    ends_with_odd_backslash_run(text.as_bytes())
+}
+
+pub(crate) fn try_org_nested_emphasis_at_cached(
+    text: &str,
+    at: usize,
+    base: usize,
+    state_char: Option<u8>,
+    no_closer: &mut [[bool; 2]; 5],
+    terminal_odd_backslash: bool,
+) -> Option<(Inline, usize)> {
+    nested_emphasis_at_org(
+        text,
+        at,
+        state_char,
+        no_closer,
+        base,
+        terminal_odd_backslash,
+    )
+    .ok()
+    .map(|hit| (hit.node, hit.end))
+}
+
+pub(crate) fn try_org_code_or_verbatim_at(
+    text: &str,
+    at: usize,
+    base: usize,
+) -> Option<(Inline, usize)> {
+    let bb = text.as_bytes();
+    let marker = *bb.get(at)?;
+    if !matches!(marker, b'=' | b'~') {
+        return None;
+    }
+    let (mut node, end) = try_code_verbatim_at(text, bb, at, marker)?;
+    crate::projection::set_inline_span(&mut node, Some(Span(base + at, base + end)));
+    Some((node, end))
 }
 
 fn parse_ctx(text: &str, ctx: Ctx, base: usize) -> Vec<Inline> {
@@ -419,16 +469,8 @@ fn ends_with_odd_backslash_run(bb: &[u8]) -> bool {
 }
 
 #[inline]
-fn early_escape_close_at(
-    bb: &[u8],
-    i: usize,
-    pattern_c: u8,
-    terminal_odd_backslash: bool,
-) -> bool {
-    if !terminal_odd_backslash
-        || bb.get(i) != Some(&b'\\')
-        || bb.get(i + 1) != Some(&pattern_c)
-    {
+fn early_escape_close_at(bb: &[u8], i: usize, pattern_c: u8, terminal_odd_backslash: bool) -> bool {
+    if !terminal_odd_backslash || bb.get(i) != Some(&b'\\') || bb.get(i + 1) != Some(&pattern_c) {
         return false;
     }
     let Some(&following) = bb.get(i + 2) else {
@@ -753,8 +795,7 @@ fn nested_emphasis_at_org(
     base: usize,
     terminal_odd_backslash: bool,
 ) -> Result<EmParsed, EmFail> {
-    let mut hit =
-        org_emphasis_at(s, at, state_char, no_closer, base, terminal_odd_backslash)?;
+    let mut hit = org_emphasis_at(s, at, state_char, no_closer, base, terminal_odd_backslash)?;
     hit.node = aux_nested_emphasis_org(hit.node);
     Ok(hit)
 }
@@ -1016,7 +1057,12 @@ fn concat_plains_without_pos(nodes: Vec<Inline>) -> Vec<Inline> {
                         }
                         None => {
                             if let Some(Span(start, end)) = span {
-                                crate::source_map::push_wire_segment(map, shift, start, end - start);
+                                crate::source_map::push_wire_segment(
+                                    map,
+                                    shift,
+                                    start,
+                                    end - start,
+                                );
                             }
                         }
                     }
@@ -1121,12 +1167,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 plain_end = base + $off + $len;
             }
             plain_extent_end = base + $off + $len;
-            plain_origins.push(OriginSegment::new(
-                pending.len(),
-                base + $off,
-                $len,
-                $len,
-            ));
+            plain_origins.push(OriginSegment::new(pending.len(), base + $off, $len, $len));
         }};
     }
     macro_rules! append_transformed {
@@ -1489,6 +1530,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         s,
                         bb,
                         off,
+                        base,
                         ctx,
                         &mut org_inline_scan,
                         &mut raw_html_scan,
@@ -1856,7 +1898,7 @@ fn org_backslash_at(s: &str, bb: &[u8], i: usize, ctx: Ctx, latex_ok: bool) -> (
                 // (`lib/syntax/inline.ml:456`): consume the backslash plus the
                 // EOL byte this resolver matched. CRLF intentionally leaves the
                 // following LF for normal break dispatch in this byte path.
-                return (Bs::Node(Inline::HardBreak { span: None }), i + 2)
+                return (Bs::Node(Inline::HardBreak { span: None }), i + 2);
             }
             _ => {}
         }
@@ -2059,10 +2101,11 @@ fn try_code_verbatim_at(s: &str, bb: &[u8], i: usize, marker: u8) -> Option<(Inl
 }
 
 /// Org `<` arm: quick_link → target → radio_target → timestamp → inline_html → email.
-fn try_target_angle_at(
+pub(crate) fn try_target_angle_at(
     s: &str,
     bb: &[u8],
     i: usize,
+    base: usize,
     ctx: Ctx,
     org_inline_scan: &mut OrgInlineScan,
     raw_html_scan: &mut crate::block_common::RawHtmlScan,
@@ -2072,7 +2115,7 @@ fn try_target_angle_at(
 ) -> Option<(Inline, usize)> {
     let n = bb.len();
     if crate::inline::autolink_has_closing_boundary(s, i, autolink_scan) {
-        if let Some((end, node)) = crate::inline::parse_quick_link(s, i) {
+        if let Some((end, node)) = crate::inline::parse_quick_link_org(s, i, base) {
             return Some((node, end));
         }
     }
@@ -2347,7 +2390,11 @@ fn find_org_link_url_rbracket(bb: &[u8], start: usize, scan: &mut OrgInlineScan)
         if j >= bb.len() {
             break bb.len();
         }
-        let memo = scan.url_memo(bb.len()).get(j).copied().unwrap_or(ORG_MEMO_UNSEEN);
+        let memo = scan
+            .url_memo(bb.len())
+            .get(j)
+            .copied()
+            .unwrap_or(ORG_MEMO_UNSEEN);
         if memo != ORG_MEMO_UNSEEN {
             break memo;
         }
@@ -2401,15 +2448,15 @@ fn org_link_2_at(
     // the synthetic label (== name) is a raw slice of `s` at `name_start` → span it.
     let label = match &url {
         crate::projection::Url::PageRef { .. } => vec![],
-            _ => vec![Inline::Plain {
-                text: {
-                    crate::metrics::scan_work(name.len());
-                    name.clone()
-                },
-                span: Some(Span(base + name_start, base + close)),
-                span_map: None,
-            }],
-        };
+        _ => vec![Inline::Plain {
+            text: {
+                crate::metrics::scan_work(name.len());
+                name.clone()
+            },
+            span: Some(Span(base + name_start, base + close)),
+            span_map: None,
+        }],
+    };
     // span set by the caller over [at, j + 2).
     Some((
         close + 2,
@@ -2435,7 +2482,11 @@ fn find_org_label_end(bb: &[u8], start: usize, scan: &mut OrgInlineScan) -> Opti
         if j >= bb.len() {
             break ORG_MEMO_NONE;
         }
-        let memo = scan.label_memo(bb.len()).get(j).copied().unwrap_or(ORG_MEMO_NONE);
+        let memo = scan
+            .label_memo(bb.len())
+            .get(j)
+            .copied()
+            .unwrap_or(ORG_MEMO_NONE);
         if memo != ORG_MEMO_UNSEEN {
             break memo;
         }
@@ -2500,7 +2551,11 @@ fn take_org_label_plain(bb: &[u8], at: usize) -> Option<usize> {
 }
 
 fn org_balanced_label_chunk(bb: &[u8], at: usize, scan: &mut OrgInlineScan) -> usize {
-    let cached = scan.chunk_memo(bb.len()).get(at).copied().unwrap_or(ORG_MEMO_UNSEEN);
+    let cached = scan
+        .chunk_memo(bb.len())
+        .get(at)
+        .copied()
+        .unwrap_or(ORG_MEMO_UNSEEN);
     if cached != ORG_MEMO_UNSEEN {
         return cached;
     }
@@ -2579,7 +2634,11 @@ fn read_metadata(s: &str, bb: &[u8], end: &mut usize, scan: &mut OrgInlineScan) 
 }
 
 /// `[fn:name]` / `[fn:name:def]` / `[fn::def]` → name — v1 org_footnote_ref.
-fn org_footnote_at(s: &str, i: usize, scan: &mut OrgInlineScan) -> Option<(usize, String)> {
+pub(crate) fn org_footnote_at(
+    s: &str,
+    i: usize,
+    scan: &mut OrgInlineScan,
+) -> Option<(usize, String)> {
     let rest = s[i..].strip_prefix("[fn:")?;
     if rest.strip_prefix(':').is_some() {
         let def_start = i + 5;

@@ -3,7 +3,7 @@
 // Tine owns the outline layer: each block carries `raw` (de-bulleted :block/content).
 // To render, it RE-BULLETS (`format!("{pattern} {}", raw.trim_start())`, pattern `-`/`*`)
 // and parses. This reproduces that EXACTLY over every real block of the shared graphs
-// (block-raws.json exported by Tine at each graph root) and diffs lsdoc vs mldoc@1.5.7.
+// (block-raws.json exported by Tine at each graph root) and diffs lsdoc vs pinned mldoc.
 // This is the most realistic possible gate (real block bodies, fed the OG way) and is
 // meant to be a hard 0-gate.
 //

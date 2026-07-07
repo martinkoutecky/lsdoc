@@ -1,4 +1,5 @@
-// The live oracle: run every corpus input through mldoc@1.5.7 and emit the
+// The live oracle: run every corpus input through the pinned latest mldoc package
+// (currently mldoc@1.5.9) and emit the
 // normalized observable projection { blocks, refs } that lsdoc's Rust side also
 // produces. Output: oracle-out.json = [{ id, input, projection }].
 //

@@ -57,6 +57,8 @@ const KEPT = {
   Raw_Html: ["*scalar*"], Displayed_Math: ["*scalar*"],
   Latex_Environment: ["*name+content*"],
   Directive: ["*key+value*"],
+  Export: ["*name+options+content*"],
+  CommentBlock: ["*content*"],
   Example: ["*lines*"],
   Drawer: ["*name-only*"],
 };

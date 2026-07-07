@@ -137,11 +137,28 @@ if (r.status !== 0) { console.error("lsdoc-parse FAILED (possible panic):\n", r.
 const byId = Object.fromEntries(JSON.parse(readFileSync(outPath, "utf8")).map(x => [x.id, x]));
 
 let refMis = 0, blkMis = 0, shown = 0;
+let oracleTransient = 0;
 const diffs = [];
 for (const c of inputs) {
   let op; try { op = oracle(c.input, c.format); } catch { continue; }
   const lp = byId[c.id]?.projection; if (!lp) continue;
-  const rb = S(op.refs) !== S(lp.refs), bb = S(op.blocks) !== S(lp.blocks);
+  let rb = S(op.refs) !== S(lp.refs), bb = S(op.blocks) !== S(lp.blocks);
+  // mldoc's JS artifact has at least one stateful first-parse edge in long
+  // sequences (`...}}```\n  ```` after earlier real inputs). Confirm a
+  // mismatch with one immediate reparse before treating it as a v2 bug.
+  if (rb || bb) {
+    let retry = null;
+    try { retry = oracle(c.input, c.format); } catch {}
+    if (retry && S(retry.refs) === S(lp.refs) && S(retry.blocks) === S(lp.blocks)) {
+      oracleTransient++;
+      continue;
+    }
+    if (retry) {
+      op = retry;
+      rb = S(op.refs) !== S(lp.refs);
+      bb = S(op.blocks) !== S(lp.blocks);
+    }
+  }
   if (rb) refMis++; if (bb) blkMis++;
   if (rb || bb) {
     diffs.push({ id: c.id, input: c.input, src: c._src, fmt: c.format,
@@ -156,6 +173,7 @@ for (const c of inputs) {
 }
 writeFileSync(join(__dir, "realmut-divergences.json"), JSON.stringify(diffs, null, 1));
 console.log(`\nrealmut: ${inputs.length} mutated-real inputs — refMismatch=${refMis} blockMismatch=${blkMis}`);
+if (oracleTransient) console.log(`realmut: ignored ${oracleTransient} transient mldoc oracle mismatch(es) after immediate reparse`);
 console.log(diffs.length === 0
   ? `✓ 0 divergences (${AGGRESSIVE ? "aggressive" : "realistic"}): no mutated-real input reaches a parity gap.`
   : `✗ ${diffs.length} divergences = REACHABLE bugs with real-derived reproducers (see realmut-divergences.json).`);
