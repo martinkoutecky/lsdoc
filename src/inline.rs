@@ -968,8 +968,21 @@ fn markdown_fast_simple_bold(s: &str, base: usize, at: usize) -> Option<(Inline,
                 if bb.get(i + 2) == Some(&b'*') || i == at + 2 {
                     return None;
                 }
+                if crate::block_common::mldoc_is_space(bb[i - 1]) {
+                    return None;
+                }
                 let inner = &s[at + 2..i];
                 if !has_non_ws {
+                    return None;
+                }
+                if inner
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|&c| crate::block_common::mldoc_is_space(c))
+                {
+                    return None;
+                }
+                if !markdown_simple_bold_inner_is_plain_safe(inner.as_bytes()) {
                     return None;
                 }
                 let children =
@@ -989,7 +1002,7 @@ fn markdown_fast_simple_bold(s: &str, base: usize, at: usize) -> Option<(Inline,
                 return None;
             }
             c => {
-                if !matches!(c, b' ' | b'\t' | 0x0c) {
+                if !crate::block_common::mldoc_is_space(c) {
                     has_non_ws = true;
                 }
                 i += char_len(c);
@@ -998,6 +1011,34 @@ fn markdown_fast_simple_bold(s: &str, base: usize, at: usize) -> Option<(Inline,
     }
     crate::metrics::scan_work(scanned);
     None
+}
+
+fn markdown_simple_bold_inner_is_plain_safe(inner: &[u8]) -> bool {
+    // scan-owner: (a2) caller-owned simple-bold body safety scan — runs once over
+    // the already closed candidate body before either accepting or delegating.
+    crate::metrics::scan_work(inner.len());
+    let mut i = 0;
+    while i < inner.len() {
+        let c = inner[i];
+        match c {
+            b'$' | b'<' | b'_' => return false,
+            b':' if inner.get(i + 1) == Some(&b'/') && inner.get(i + 2) == Some(&b'/') => {
+                return false;
+            }
+            b'!' if inner.get(i + 1) == Some(&b'[') => return false,
+            b'[' if inner.get(i + 1) != Some(&b'[') => return false,
+            b'\\'
+                if inner
+                    .get(i + 1)
+                    .is_some_and(|next| next.is_ascii_alphabetic()) =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        i += char_len(c);
+    }
+    true
 }
 
 fn markdown_fast_plain_identifier_underscore(bb: &[u8], i: usize) -> bool {
@@ -1447,6 +1488,19 @@ impl TimestampCloseScan {
             b']' => self.bracket_token.first_boundary(b, from, close),
             _ => b.len(),
         }
+    }
+
+    fn merge_absence_from(&mut self, other: &Self) {
+        self.angle.no_close_from = self.angle.no_close_from.min(other.angle.no_close_from);
+        self.bracket.no_close_from = self.bracket.no_close_from.min(other.bracket.no_close_from);
+        self.angle_token.no_boundary_from = self
+            .angle_token
+            .no_boundary_from
+            .min(other.angle_token.no_boundary_from);
+        self.bracket_token.no_boundary_from = self
+            .bracket_token
+            .no_boundary_from
+            .min(other.bracket_token.no_boundary_from);
     }
 }
 
@@ -2435,7 +2489,7 @@ fn parse_macro_args(s: &str, scan: &mut PageRefScan) -> Option<Vec<String>> {
     let n = b.len();
     let mut i = 0;
     let skip_sp = |b: &[u8], mut i: usize| {
-        while i < b.len() && b[i] == b' ' {
+        while i < b.len() && crate::block_common::mldoc_is_space(b[i]) {
             crate::metrics::scan_work(1);
             i += 1;
         }
@@ -2989,6 +3043,7 @@ fn label_part_url_start(s: &str, at: usize, scan: &mut MdLinkScan) -> Option<usi
                 j = end;
                 continue;
             }
+            return None;
         }
         if c == b']' || c == b'\n' || c == b'\r' {
             return None;
@@ -3056,6 +3111,7 @@ fn materialize_label_part(
                 j = end;
                 continue;
             }
+            return None;
         }
         if c == b']' || c == b'\n' || c == b'\r' {
             return None;
@@ -4732,8 +4788,17 @@ fn parse_timestamp_at_with_scan(
     if let Some(range) = parse_range_at(s, at, scan) {
         return Some(range);
     }
-    let (end, kind, point) = parse_general_timestamp_at(s, at, scan)?;
-    Some((end, timestamp_node(kind, point)))
+    let mut general_scan = scan.clone();
+    match parse_general_timestamp_at(s, at, &mut general_scan) {
+        Some((end, kind, point)) => {
+            *scan = general_scan;
+            Some((end, timestamp_node(kind, point)))
+        }
+        None => {
+            scan.merge_absence_from(&general_scan);
+            None
+        }
+    }
 }
 
 fn parse_range_at(s: &str, at: usize, scan: &mut TimestampCloseScan) -> Option<(usize, Inline)> {
@@ -4843,7 +4908,10 @@ fn parse_date_time_at(
     scan: &mut TimestampCloseScan,
 ) -> Option<(usize, serde_json::Value)> {
     let b = s.as_bytes();
-    if b.get(at) != Some(&open) || !timestamp_body_has_close(s, at, close, scan) {
+    if b.get(at) != Some(&open) || !timestamp_date_token_can_start(b.get(at + 1).copied()?) {
+        return None;
+    }
+    if !timestamp_body_has_close(s, at, close, scan) {
         return None;
     }
     let mut i = at + 1;
@@ -4904,6 +4972,11 @@ fn parse_date_time_at(
         i + 1,
         timestamp_point(year, month, day, wday, time, repetition, active),
     ))
+}
+
+#[inline]
+fn timestamp_date_token_can_start(c: u8) -> bool {
+    c.is_ascii_digit() || matches!(c, b'+' | b'-')
 }
 
 fn timestamp_body_has_close(s: &str, at: usize, close: u8, scan: &mut TimestampCloseScan) -> bool {
@@ -5533,6 +5606,31 @@ mod plain_fast_path_tests {
             ])
         );
         assert_eq!(
+            plain_fast_path_markdown("x [2026-07-07 Tue 12:22:19--[2026-07-07 Tue 12:22:20] y", 0),
+            Some(vec![
+                plain("x [2026-07-07 Tue 12:22:19--", 0, 28),
+                timestamp(
+                    "Date",
+                    serde_json::json!({
+                        "date": {
+                            "year": 2026,
+                            "month": 7,
+                            "day": 7,
+                        },
+                        "wday": "Tue",
+                        "time": {
+                            "hour": 12,
+                            "min": 22,
+                        },
+                        "active": false,
+                    }),
+                    28,
+                    53,
+                ),
+                plain(" y", 53, 55),
+            ])
+        );
+        assert_eq!(
             plain_fast_path_markdown("p [50%]", 0),
             Some(vec![plain("p ", 0, 2), percent_cookie(50, 2, 7)])
         );
@@ -5863,6 +5961,25 @@ mod plain_fast_path_tests {
                 bold(vec![plain("bold", 14, 18)], 12, 20),
                 plain(" move", 20, 25),
             ])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("**x $a$**", 0),
+            Some(vec![bold(vec![plain("x $a$", 2, 7)], 0, 9)])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("** x**", 0),
+            Some(vec![plain("** x**", 0, 6)])
+        );
+        assert_eq!(
+            plain_fast_path_markdown("**x_u_**", 0),
+            Some(vec![bold(
+                vec![
+                    plain("x", 2, 3),
+                    emphasis("Italic", vec![plain("u", 4, 5)], 3, 6)
+                ],
+                0,
+                8
+            )])
         );
         assert_eq!(
             plain_fast_path_markdown("A **[[Page]]** move", 0),

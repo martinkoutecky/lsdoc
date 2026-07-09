@@ -26,6 +26,9 @@ harness/report.json
 # Fuzz harness temp outputs (regenerated)
 harness/corpus.fuzz.json
 harness/lsdoc-fuzz.json
+harness/corpus.audit-v2-shortcuts.json
+harness/_*.json
+harness/_iso_done
 
 # Subagent working notes (internal; not part of the published parser)
 subagent-tasks/

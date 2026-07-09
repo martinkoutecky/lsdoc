@@ -145,6 +145,44 @@ constant/N/A rows do not add parser charges.
 | Markdown synthetic-emphasis unescape @ `src/resolver.rs:791`, `src/resolver.rs:833` | bounded accepted emphasis subtree | The synthetic nested-emphasis repair maps over the already accepted subtree once. Plain children use their own span to recover the raw slice and `markdown_plain_text` charges that slice; concat then touches only the repaired children. Σ work is bounded by the accepted emphasis body bytes. |
 | OriginCursor monotonicity tripwire @ `src/source_map.rs:179`, assert @ `src/source_map.rs:189` | debug invariant for monotone owner rows | `advance_to` binds the cursor to one map and debug-asserts that callers never query behind the last skipped segment. The assertion documents and enforces the monotone-cursor precondition used by the source-map remap rows above; no residual missing-assert risk remains. |
 
+## 2026-07-09 shortcut audit amendments
+
+- `markdown_fast_simple_bold` performs one bounded body scan only after a candidate
+  closing `**` has been found. Accepted simple-strong spans are disjoint; rejected
+  context-sensitive candidates fall through to the cached source-transcribed
+  nested-emphasis parser. The worst case is therefore the existing current-buffer
+  fast scan plus one fallback resolver pass for the same buffer, not an unbounded
+  retry family.
+- The added quote/callout guards for `*` and `_` are constant-time checks on the
+  current stripped line. They reduce shortcut ownership and do not add a scan.
+- Full trailing-separator trimming before structural child blocks pops each
+  `Inline::Break` at most once during the existing AST trim walk. Preserving the
+  Markdown line-comment exception is a branch on the already-adjacent child block.
+- Transformed-body span remapping stays on the existing owners: inline spans use a
+  monotone `OriginCursor`; block spans use the documented origin-segment binary
+  search helper when a cursor would rewind; paragraph block-span clearing is an AST
+  mutation over already-emitted children; and the direct Org generic-drawer rewrite
+  remaps only inlines, preserving local block spans without another body pass.
+- Top-level vs nested paragraph separator ownership is carried by the existing line
+  cursor. A paragraph break is either appended once to the active paragraph run
+  (document context) or popped once before an accepted structural child block
+  (block/list content). The Markdown-comment and LaTeX exceptions are single
+  parser-order branches on already-classified child blocks.
+- Empty-marker fence-tail handling uses the existing fence close index/closer cursor.
+  A marker-looking ``` or `~~~` line is not enough to trigger a tail drop; the helper
+  checks that the following fence would actually be accepted. Unclosed candidates
+  therefore fall through to paragraph ownership without adding a new suffix scan.
+- Timestamp fallback commits only delimiter-absence facts from failed general
+  attempts and keeps full cursor commits for successful range/general parses. The
+  date-start prefilter is a constant byte check before close search, so malformed
+  timestamp-looking prose cannot force repeated close scans.
+- Markdown link label `[` handling is owned by `MdLinkScan`'s label table. A malformed
+  `[` now fails the candidate with O(1) table/memo queries instead of scanning forward
+  as plain label text; many-openers/one-close inputs share the per-buffer table.
+- Org link-label and link2 fixes reuse `OrgInlineScan`'s existing label/link2
+  successor memos. Changing the accepted grammar/context does not add a new scan
+  owner.
+
 Documented non-inline exceptions:
 
 | exception @ file:line | bound | note |

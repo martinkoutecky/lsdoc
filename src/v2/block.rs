@@ -56,6 +56,25 @@ fn try_parse_leaf_blocks(input: &str, format: &str) -> Option<Vec<Block>> {
     try_parse_leaf_blocks_in(input, format, BlockParseContext::Document)
 }
 
+// mldoc source distinction:
+// - top-level `mldoc_parser.ml` puts `Paragraph.sep` before real block parsers,
+//   so a newline before a heading/table/list/etc. remains in the pending paragraph.
+// - `block0.ml` block/list-content parsers put block parsers with leading
+//   `optional eols` before `Paragraph.sep`, so the next block consumes the
+//   separator and the previous paragraph is parsed without its final newline.
+fn flush_before_real_block(
+    para: &mut ParagraphRun<'_>,
+    blocks: &mut Vec<Block>,
+    format: &str,
+    context: BlockParseContext,
+) {
+    if context == BlockParseContext::Document {
+        para.flush(blocks, format);
+    } else {
+        para.flush_before_block(blocks, format);
+    }
+}
+
 fn try_parse_leaf_blocks_in(
     input: &str,
     format: &str,
@@ -92,43 +111,51 @@ fn try_parse_leaf_blocks_in(
                 continue;
             }
         }
-        if let Some((name, value)) = directive_line(line.text) {
-            para.flush(&mut blocks, format);
-            let (span_end, next_i) = directive_span_end(&source.lines, i);
-            blocks.push(Block::Directive {
-                name,
-                value,
-                span: Some(Span(line.start, span_end)),
-            });
-            i = next_i;
-            continue;
-        }
-        match property_or_drawer(
-            &source,
-            i,
-            format,
-            &mut drawer_end_cursor,
-            &mut property_end_cursor,
-            &mut fence_cursor,
-            &mut raw_html_scan,
-        ) {
-            PropertyDrawerDecision::Emit {
-                block,
-                after_blocks,
-                next,
-                tail_start,
-            } => {
-                para.flush(&mut blocks, format);
-                blocks.push(block);
-                blocks.extend(after_blocks);
-                if let Some((tail_line, tail_start)) = tail_start {
-                    para.push_tail(&source.lines[tail_line], tail_start);
-                }
-                i = next;
+        if context.list_content_mode() != Some(ListContentMode::Document) {
+            if let Some((name, value)) = directive_line(line.text) {
+                flush_before_real_block(&mut para, &mut blocks, format, context);
+                let (span_end, next_i) = directive_span_end(&source.lines, i);
+                blocks.push(Block::Directive {
+                    name,
+                    value,
+                    span: Some(Span(line.start, span_end)),
+                });
+                i = next_i;
                 continue;
             }
-            PropertyDrawerDecision::Delegate => return None,
-            PropertyDrawerDecision::No => {}
+        }
+        if !(context.is_list_content() && directive_property_line(line.text).is_some()) {
+            match property_or_drawer(
+                &source,
+                i,
+                format,
+                &mut drawer_end_cursor,
+                &mut property_end_cursor,
+                &mut fence_cursor,
+                &mut raw_html_scan,
+            ) {
+                PropertyDrawerDecision::Emit {
+                    block,
+                    after_blocks,
+                    next,
+                    tail_start,
+                } => {
+                    if format == "md" {
+                        para.flush(&mut blocks, format);
+                    } else {
+                        flush_before_real_block(&mut para, &mut blocks, format, context);
+                    }
+                    blocks.push(block);
+                    blocks.extend(after_blocks);
+                    if let Some((tail_line, tail_start)) = tail_start {
+                        para.push_tail(&source.lines[tail_line], tail_start);
+                    }
+                    i = next;
+                    continue;
+                }
+                PropertyDrawerDecision::Delegate => return None,
+                PropertyDrawerDecision::No => {}
+            }
         }
         match heading_line(line, format) {
             HeadingDecision::Emit(heading) => {
@@ -244,7 +271,7 @@ fn try_parse_leaf_blocks_in(
                 next,
                 tail_start,
             } => {
-                para.flush(&mut blocks, format);
+                flush_before_real_block(&mut para, &mut blocks, format, context);
                 blocks.push(block);
                 if let Some((tail_line, tail_start)) = tail_start {
                     para.push_tail(&source.lines[tail_line], tail_start);
@@ -277,7 +304,7 @@ fn try_parse_leaf_blocks_in(
         }
         match fence_sequence(&source, i, &mut fence_cursor) {
             FenceDecision::Emit { block, next } => {
-                para.flush(&mut blocks, format);
+                flush_before_real_block(&mut para, &mut blocks, format, context);
                 blocks.push(block);
                 i = next;
                 continue;
@@ -291,7 +318,7 @@ fn try_parse_leaf_blocks_in(
         }
         match raw_src_example_sequence(&source, i) {
             RawSrcExampleDecision::Emit { block, next } => {
-                para.flush(&mut blocks, format);
+                flush_before_real_block(&mut para, &mut blocks, format, context);
                 blocks.push(block);
                 i = next;
                 continue;
@@ -300,7 +327,7 @@ fn try_parse_leaf_blocks_in(
         }
         match callout_container_sequence(&source, i, format) {
             CalloutContainerDecision::Emit { block, next } => {
-                para.flush(&mut blocks, format);
+                flush_before_real_block(&mut para, &mut blocks, format, context);
                 blocks.push(block);
                 i = next;
                 continue;
@@ -309,7 +336,7 @@ fn try_parse_leaf_blocks_in(
         }
         match markdown_blockquote_sequence(&source, i, format) {
             BlockquoteDecision::Emit { block, next } => {
-                para.flush(&mut blocks, format);
+                flush_before_real_block(&mut para, &mut blocks, format, context);
                 blocks.push(block);
                 i = next;
                 continue;
@@ -336,7 +363,7 @@ fn try_parse_leaf_blocks_in(
                 next,
                 tail_start,
             } => {
-                para.flush(&mut blocks, format);
+                flush_before_real_block(&mut para, &mut blocks, format, context);
                 blocks.extend(math_blocks);
                 if let Some((tail_line, tail_start)) = tail_start {
                     para.push_tail(&source.lines[tail_line], tail_start);
@@ -366,7 +393,7 @@ fn try_parse_leaf_blocks_in(
                 next,
                 tail_start,
             } => {
-                para.flush(&mut blocks, format);
+                flush_before_real_block(&mut para, &mut blocks, format, context);
                 blocks.extend(html_blocks);
                 if let Some((tail_line, tail_start)) = tail_start {
                     para.push_tail(&source.lines[tail_line], tail_start);
@@ -391,7 +418,7 @@ fn try_parse_leaf_blocks_in(
                 next,
                 tail_start,
             } => {
-                para.flush(&mut blocks, format);
+                flush_before_real_block(&mut para, &mut blocks, format, context);
                 blocks.extend(hiccup_blocks);
                 if let Some((tail_line, tail_start)) = tail_start {
                     para.push_tail(&source.lines[tail_line], tail_start);
@@ -403,7 +430,7 @@ fn try_parse_leaf_blocks_in(
             HiccupDecision::No => {}
         }
         if let Some((block, next)) = org_verbatim_sequence(&source, i, format) {
-            para.flush(&mut blocks, format);
+            flush_before_real_block(&mut para, &mut blocks, format, context);
             blocks.push(block);
             i = next;
             continue;
@@ -425,7 +452,7 @@ fn try_parse_leaf_blocks_in(
         } else {
             match regular_list_sequence(&source, i, format, context) {
                 ListDecision::Emit { block, next } => {
-                    para.flush(&mut blocks, format);
+                    flush_before_real_block(&mut para, &mut blocks, format, context);
                     blocks.push(block);
                     i = next;
                     continue;
@@ -441,14 +468,14 @@ fn try_parse_leaf_blocks_in(
         }
         if !context.is_list_content() {
             if let Some((block, next)) = markdown_definition_sequence(&source, i, format) {
-                para.flush(&mut blocks, format);
+                flush_before_real_block(&mut para, &mut blocks, format, context);
                 blocks.push(block);
                 i = next;
                 continue;
             }
         }
         if hr_accepts_eol(line.eol) && is_hr_line(line.text, format) {
-            para.flush(&mut blocks, format);
+            flush_before_real_block(&mut para, &mut blocks, format, context);
             blocks.push(Block::Hr {
                 span: Some(Span(line.start, line.end)),
             });
@@ -456,7 +483,11 @@ fn try_parse_leaf_blocks_in(
             continue;
         }
         if let Some(comment) = comment_line(line.text, format) {
-            para.flush(&mut blocks, format);
+            if format == "md" {
+                para.flush(&mut blocks, format);
+            } else {
+                flush_before_real_block(&mut para, &mut blocks, format, context);
+            }
             if format == "org" {
                 let (span_end, next_i) = directive_span_end(&source.lines, i);
                 blocks.push(Block::Comment {
@@ -731,18 +762,36 @@ impl<'a> ParagraphRun<'a> {
     }
 
     fn flush(&mut self, blocks: &mut Vec<Block>, format: &str) {
+        self.flush_with_eol_mode(blocks, format, true);
+    }
+
+    fn flush_before_block(&mut self, blocks: &mut Vec<Block>, format: &str) {
+        self.flush_with_eol_mode(blocks, format, false);
+    }
+
+    fn flush_with_eol_mode(&mut self, blocks: &mut Vec<Block>, format: &str, keep_final_eol: bool) {
         let Some(start) = self.start.take() else {
             return;
         };
-        let inline_text = if self.direct {
-            &self.source[start..self.end]
+        let (inline, span_end) = if self.direct {
+            let mut end = self.end;
+            if !keep_final_eol && end > start && self.source.as_bytes().get(end - 1) == Some(&b'\n')
+            {
+                end -= 1;
+            }
+            (
+                super::inline_at(&self.source[start..end], format, start),
+                end,
+            )
         } else {
-            &self.text
+            if !keep_final_eol && self.text.ends_with('\n') {
+                self.text.pop();
+            }
+            (super::inline_at(&self.text, format, start), self.end)
         };
-        let inline = super::inline_at(inline_text, format, start);
         blocks.push(Block::Paragraph {
             inline,
-            span: Some(Span(start, self.end)),
+            span: Some(Span(start, span_end)),
         });
         self.text.clear();
         self.direct = true;
@@ -2288,7 +2337,20 @@ fn callout_fast_plain_line_safe(text: &str, format: &str) -> bool {
         && !could_start_non_paragraph(text, format)
         && !matches!(
             t.as_bytes().first().copied(),
-            Some(b'<' | b'|' | b':' | b'$' | b'`' | b'~' | b'\\' | b'[' | b'#' | b'-' | b'+')
+            Some(
+                b'<' | b'|'
+                    | b':'
+                    | b'$'
+                    | b'`'
+                    | b'~'
+                    | b'\\'
+                    | b'['
+                    | b'#'
+                    | b'-'
+                    | b'+'
+                    | b'*'
+                    | b'_',
+            )
         )
         && !t.as_bytes().first().is_some_and(|b| b.is_ascii_digit())
 }
@@ -2381,7 +2443,8 @@ fn try_parse_unindented_callout_body(
                 return None;
             }
             let top = stack.last_mut()?;
-            top.para.flush(&mut top.children, source.input, format);
+            top.para
+                .flush_before_block(&mut top.children, source.input, format);
             let child_strip = if i + 1 < close {
                 let next_view =
                     callout_fast_line_view(&source.lines[i + 1], current_strip, &strip_seq);
@@ -2404,7 +2467,8 @@ fn try_parse_unindented_callout_body(
         if current_strip == 0 {
             if let Some(block) = callout_fast_raw_html_line(source, i) {
                 let top = stack.last_mut()?;
-                top.para.flush(&mut top.children, source.input, format);
+                top.para
+                    .flush_before_block(&mut top.children, source.input, format);
                 top.children.push(block);
                 i += 1;
                 continue;
@@ -2763,9 +2827,26 @@ impl QuoteFastParagraph {
     }
 
     fn flush(&mut self, out: &mut Vec<Block>, body: &str, format: &str) {
+        self.flush_with_eol_mode(out, body, format, true);
+    }
+
+    fn flush_before_block(&mut self, out: &mut Vec<Block>, body: &str, format: &str) {
+        self.flush_with_eol_mode(out, body, format, false);
+    }
+
+    fn flush_with_eol_mode(
+        &mut self,
+        out: &mut Vec<Block>,
+        body: &str,
+        format: &str,
+        keep_final_eol: bool,
+    ) {
         let Some(start) = self.start.take() else {
             return;
         };
+        if !keep_final_eol && self.text.ends_with('\n') {
+            self.text.pop();
+        }
         let mut inline = super::inline(&self.text, format);
         let mut cursor = OriginCursor::new();
         crate::source_map::remap_inlines(&mut inline, &self.text, body, &self.map, &mut cursor);
@@ -2861,7 +2942,20 @@ fn quote_fast_paragraph_safe(text: &str, format: &str) -> bool {
     }
     !matches!(
         t.as_bytes().first().copied(),
-        Some(b'<' | b'|' | b':' | b'$' | b'`' | b'~' | b'\\' | b'[' | b'#' | b'-' | b'+')
+        Some(
+            b'<' | b'|'
+                | b':'
+                | b'$'
+                | b'`'
+                | b'~'
+                | b'\\'
+                | b'['
+                | b'#'
+                | b'-'
+                | b'+'
+                | b'*'
+                | b'_',
+        )
     ) && !t.as_bytes().first().is_some_and(|b| b.is_ascii_digit())
 }
 
@@ -2924,7 +3018,7 @@ fn try_parse_quote_only_body(body: &str, format: &str) -> Option<Vec<Block>> {
                     return None;
                 }
                 let top = stack.last_mut()?;
-                top.para.flush(&mut top.children, body, format);
+                top.para.flush_before_block(&mut top.children, body, format);
                 stack.push(QuoteFastFrame::quote(view.abs, view.line_end));
                 view = content;
                 continue;
@@ -3403,18 +3497,15 @@ fn trim_paragraph_breaks_before_blocks_shallow(blocks: &mut Vec<Block>, format: 
         let mut drop_block = false;
         if trim_before_next_block {
             if let Block::Paragraph { inline, span } = &mut block {
-                if inline.is_empty() {
-                    drop_block = true;
-                }
-                if matches!(inline.last(), Some(Inline::Break { .. })) {
+                while matches!(inline.last(), Some(Inline::Break { .. })) {
                     inline.pop();
-                    if let (Some(Span(start, end)), Some(last_end)) =
-                        (span.as_mut(), inline.last().and_then(inline_span_end))
-                    {
+                }
+                if let Some(Span(start, end)) = span.as_mut() {
+                    if let Some(last_end) = inline.last().and_then(inline_span_end) {
                         *end = last_end.max(*start);
                     }
-                    drop_block = inline.is_empty();
                 }
+                drop_block = inline.is_empty();
             }
         }
         if !drop_block {
@@ -6871,13 +6962,28 @@ fn empty_marker_tail_drops(
         || (format == "org" && drawer_begin(line.text).is_some())
         || (format == "org" && org_verbatim_line(line.text))
         || table_line_start(line)
-        || fence_marker(line.text).is_some()
+        || accepted_fence_after_empty_marker(source, j)
         || block_begin_name(line.text).is_some_and(|name| special_body_block_name(&name))
         || empty_callout_line_matches(source, j)
         || displayed_math_opener(line.text).is_some()
         || raw_html_line_matches(source, j, raw_html_scan)
         || blockquote_line_content(line, true).is_some()
         || (hr_accepts_eol(line.eol) && is_hr_line(line.text, format))
+}
+
+fn accepted_fence_after_empty_marker(source: &Source<'_>, line_idx: usize) -> bool {
+    let line = &source.lines[line_idx];
+    if fence_marker(line.text).is_none() || line.eol == Eol::Cr {
+        return false;
+    }
+    let close_pos = source
+        .events
+        .fence_lines
+        .partition_point(|&idx| idx <= line_idx);
+    let Some(&close) = source.events.fence_lines.get(close_pos) else {
+        return false;
+    };
+    !lines_have_lone_cr(&source.lines[line_idx + 1..close])
 }
 
 fn empty_callout_line_matches(source: &Source<'_>, line_idx: usize) -> bool {
@@ -9319,6 +9425,19 @@ mod tests {
                 "{format} {input:?}"
             );
         }
+
+        let blocks = try_parse("#+BEGIN_QUOTE\na\n***\n#+END_QUOTE", "md").unwrap();
+        assert!(matches!(
+            blocks.as_slice(),
+            [Block::Quote { children, .. }]
+                if matches!(
+                    children.as_slice(),
+                    [
+                        Block::Paragraph { inline, .. },
+                        Block::Hr { .. },
+                    ] if matches!(inline.as_slice(), [Inline::Plain { text, .. }] if text == "a")
+                )
+        ));
     }
 
     #[test]
@@ -9398,6 +9517,32 @@ mod tests {
                 Block::Comment { text, .. },
                 Block::Paragraph { .. },
             ] if matches!(inline.last(), Some(Inline::Break { .. })) && text == "c"
+        ));
+
+        let blocks = try_parse("> a\n>\n> ---", "md").unwrap();
+        assert!(matches!(
+            blocks.as_slice(),
+            [Block::Quote { children, .. }]
+                if matches!(
+                    children.as_slice(),
+                    [
+                        Block::Paragraph { inline, .. },
+                        Block::Hr { .. },
+                    ] if matches!(inline.as_slice(), [Inline::Plain { text, .. }] if text == "a")
+                )
+        ));
+
+        let blocks = try_parse("> a\n> ***", "md").unwrap();
+        assert!(matches!(
+            blocks.as_slice(),
+            [Block::Quote { children, .. }]
+                if matches!(
+                    children.as_slice(),
+                    [
+                        Block::Paragraph { inline, .. },
+                        Block::Hr { .. },
+                    ] if matches!(inline.as_slice(), [Inline::Plain { text, .. }] if text == "a")
+                )
         ));
 
         let blocks = try_parse("> ## > Third", "md").unwrap();
@@ -10811,6 +10956,21 @@ y=2
         assert_eq!(
             try_parse("- \nnext", "md"),
             Some(vec![bullet(1, 0, 1), paragraph(" \nnext", "md", 1, 7)])
+        );
+        assert_eq!(
+            try_parse("- \n```rust", "md"),
+            Some(vec![bullet(1, 0, 1), paragraph(" \n```rust", "md", 1, 10)])
+        );
+        assert_eq!(
+            try_parse("- \n```\nx\n```", "md"),
+            Some(vec![
+                bullet(1, 0, 3),
+                Block::Src {
+                    lang: String::new(),
+                    code: "x\n".into(),
+                    span: Some(Span(3, 12)),
+                },
+            ])
         );
         assert_eq!(
             try_parse("*    \n#+END_EXAMPLE\n", "org"),

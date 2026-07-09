@@ -34,6 +34,8 @@ pub(crate) struct Ctx {
     pub timestamps: bool,
     pub angle: bool,
     pub code: bool,
+    pub verbatim: bool,
+    pub nested_emphasis: bool,
     pub breaks: bool,
     pub entity: bool,
     pub footnotes: bool,
@@ -55,6 +57,8 @@ impl Ctx {
             timestamps: true,
             angle: true,
             code: true,
+            verbatim: true,
+            nested_emphasis: true,
             breaks: true,
             entity: true,
             footnotes: true,
@@ -64,12 +68,14 @@ impl Ctx {
         }
     }
     /// `[[url][label]]` label re-parse (`org_link_1`): latex/code/entity/scripts/emphasis,
-    /// NO nested links, NO tags.
+    /// NO verbatim, nested-emphasis repair, nested links, or tags.
     fn label() -> Ctx {
         Ctx {
             use_state: false,
             latex: true,
             code: true,
+            verbatim: false,
+            nested_emphasis: false,
             entity: true,
             scripts: true,
             links: false,
@@ -1299,14 +1305,26 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 _ => unreachable!(),
             };
             let state_char = if ctx.use_state { last_plain_char } else { None };
-            if let Ok(hit) = nested_emphasis_at_org(
-                s,
-                $off,
-                state_char,
-                &mut no_closer,
-                base,
-                terminal_odd_backslash,
-            ) {
+            let emphasis_hit = if ctx.nested_emphasis {
+                nested_emphasis_at_org(
+                    s,
+                    $off,
+                    state_char,
+                    &mut no_closer,
+                    base,
+                    terminal_odd_backslash,
+                )
+            } else {
+                org_emphasis_at(
+                    s,
+                    $off,
+                    state_char,
+                    &mut no_closer,
+                    base,
+                    terminal_odd_backslash,
+                )
+            };
+            if let Ok(hit) = emphasis_hit {
                 flush_pending!();
                 out.push(hit.node);
                 fresh = true;
@@ -1605,7 +1623,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             // inline.ml:1400 — `| '=' -> code config <|> verbatim`
             b'=' => {
                 let mut hit = None;
-                if ctx.code && fresh {
+                if ctx.verbatim && fresh {
                     if let Some((mut node, e)) = try_code_verbatim_at(s, bb, off, b'=') {
                         flush_pending!();
                         crate::projection::set_inline_span(

@@ -75,4 +75,10 @@ const ig = run("node", [join(__dir, "inlinegate.mjs")], { allowFail: true });
 //    written in step 3; inlinegate/blockgate write their own files, so it's still intact).
 const sg = run("node", [join(__dir, "spans.mjs")], { allowFail: true });
 console.log("spans gate:", sg.status === 0 ? "ok" : "FAIL");
-process.exit((cmp.status ?? 0) || (bg.status ?? 0) || (ig.status ?? 0) || (sg.status ?? 0));
+// 8. v2 shortcut/post-processor audit: deterministic boundary alphabets for the
+//    optimized paths whose proof obligation is "strict subset or decline".
+const ag = run("node", [join(__dir, "audit-v2-shortcuts.mjs")], { allowFail: true });
+console.log("shortcut audit:", ag.status === 0 ? "ok" : "FAIL");
+process.exit(
+  (cmp.status ?? 0) || (bg.status ?? 0) || (ig.status ?? 0) || (sg.status ?? 0) || (ag.status ?? 0)
+);

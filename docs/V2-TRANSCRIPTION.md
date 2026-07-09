@@ -47,6 +47,67 @@ published mldoc behavior, currently `mldoc@1.5.9`, not the old `1.5.7` oracle.
 | Org slash/plus emphasis fast path | `lib/syntax/inline.ml` | `v2::inline`, `org_resolver::try_org_nested_emphasis_at_cached` | Extends the top-level Org plain fast path to own `/.../` italic and `+...+` strike-through with mldoc's `last_plain_char` backward delimiter gate. The scanner records the last byte appended to top-level plain text across accepted non-plain leaves, shares the resolver-style Org no-closer table and terminal-backslash result across delimiter attempts, and swallows failed `*`, `/`, and `+` opener bytes as literal plain while still declining failed `^^` to the script-aware resolver path. | fused byte scanner + cached Org emphasis no-closer table |
 | Refs | OG `block.cljs` port in `harness/lib/refs.mjs`; `lib/syntax/property.ml` | `src/refs.rs` | UUID gate and embed-only macro refs remain OG semantics. The Rust extractor now walks blocks, list items, tables, and inline child slices with explicit stacks, so deeply nested `Custom`/`Quote`/list/inline trees do not depend on native recursion. Parse1 property values source-transcribe `Property.property_references`: empty or fully quoted values emit no refs, parse2 `#+NAME:` entries keep mldoc's empty refs list, and parse1 values are reparsed in the document format with `inline_skip_macro = true` before keeping only top-level `Tag`/`Link`/`Nested_link` candidates. This preserves cases like `key:: {{query [[Page]]}}`, where property refs see `[[Page]]` even though ordinary inline refs ignore non-embed macro arguments. Sorting/deduplication remains the bounded `O(R log R)` exception over emitted references. | explicit AST/inline stack + property-value inline-skip-macro reparse + ref sort exception |
 
+## 2026-07-09 shortcut audit addendum
+
+- Markdown simple strong (`**...**`) fast ownership is now a strict mldoc-safe
+  subset. The body must start with non-mldoc-whitespace. Bodies whose top-level
+  fast output matches mldoc nested-emphasis repair, such as plain text, `[[page]]`
+  and nested links, code spans, `#` text, ordinary punctuation, and safe nested
+  emphasis/script cases, may stay on the shortcut. Context-sensitive bodies whose
+  top-level fast output would differ, including `$...$`, `![...]`, single-bracket
+  fnref/cookie/timestamp/hiccup/link families, raw angle/autolink/html, bare
+  `://` URLs, alphabetic entities, `_` delimiter-state cases, and leading-space
+  repair, consume nothing and delegate to
+  `resolver::try_markdown_nested_emphasis_at_cached`.
+- Markdown quote-only and callout clean-frame shortcuts now decline on `*` and `_`
+  line starters, in addition to the existing block-content starters. Horizontal
+  rules such as `***` and `___` therefore re-enter the source-transcribed
+  block-content path instead of being materialized as paragraph text.
+- Quote/callout/list paragraph-separator trimming removes the full trailing
+  `Inline::Break` run before a following structural child block. The existing
+  Markdown line-comment exception is preserved, matching mldoc's observable blank
+  line ownership in block-content bodies.
+- Transformed-body span policy is part of the parity contract, not a presentation
+  detail: clean callout-frame children keep remapped block spans; ordinary
+  transformed quote/callout/list children remap inline and leaf-block spans through
+  their `OriginMap`; transformed paragraph block spans are cleared where the public
+  projection historically has no absolute paragraph span; and direct Org
+  generic-drawer rewrites preserve local child block spans while remapping only
+  inline spans. The span gate checks inline in-bounds, containment, sibling order,
+  and plain/span-map fidelity over the full differential corpus.
+- Paragraph separator ownership is context-dependent. At document top level,
+  `mldoc_parser.ml` places `Paragraph.sep` before later real block alternatives,
+  so a paragraph followed by a heading/list/table/fence-looking real block keeps the
+  separator in the paragraph. Inside `block0.ml` block content and `lists0.ml`
+  list content, the child block parsers consume leading optional EOLs before
+  `Paragraph.sep`, so v2 uses nested flush modes that trim paragraph breaks before
+  accepted structural child blocks. The exceptions are source exceptions: Markdown
+  comments do not take leading EOLs, Markdown property/drawer-looking blocks are
+  suppressed in those contexts, document-list content suppresses `Directive.parse`
+  except for the case-sensitive `#+RESULTS` leaf, and `Latex_env.parse` uses
+  `spaces` rather than `eols` at its boundary.
+- Org `org_link_1` labels are reparsed with the source label context, not ordinary
+  top-level Org inline and not nested-emphasis repair. That context allows Org code
+  `~raw~`, rejects Org verbatim `=raw=`, and disables nested-emphasis recovery. Org
+  `org_link_2` classification follows the source first-colon `://` shape: `://x`
+  and `a://` are URL-like, while `a:b://x` is page-like because the first colon is
+  not followed by `//`.
+- Fenced-code title/list-marker tails depend on an accepted block, not a marker
+  prefix. `block0.ml` backtracks unclosed fences, so `- \n```\n` leaves the tail as
+  paragraph text; only a later matching close permits the empty marker's tail-drop
+  behavior.
+- Timestamp close scans are transactional. Failed general timestamp attempts may
+  commit only absence facts that cannot change a later parser choice, while accepted
+  range/general timestamps commit the full scan state. The date token is prefiltered
+  to the source `Scanf.sscanf "%d-%d-%d"` shape, so non digit/sign starts do not
+  search for a distant close and then poison fallback.
+- Markdown link labels follow `label_part_choices`: a `[` inside the label is not
+  ordinary text unless it starts a page/nested reference or a balanced-bracket chunk.
+  Malformed bracket openers therefore decline the candidate link instead of being
+  materialized as plain label text.
+- Macro argument parsing skips mldoc spaces (` `, tab, SUB, FF) around atom bodies,
+  matching the source whitespace parser rather than ASCII-space-only trimming.
+
 ## Forward-Fix Decisions
 
 None yet. Add rows here only after an isolated probe distinguishes latest mldoc

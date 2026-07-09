@@ -3616,7 +3616,7 @@ pub(crate) fn classify_org_link_1(url_text: &str, label_text: &str) -> Url {
 }
 
 /// Classify a `[[url]]` destination (mldoc `org_link_2`): `file:` → File;
-/// `proto://link` → Complex; else Page_ref.
+/// first-colon `proto://link` → Complex, accepting empty protocol or link; else Page_ref.
 pub(crate) fn classify_org_link_2(name: &str) -> Url {
     if name.len() > 5 && name.starts_with("file:") {
         crate::metrics::scan_work(name.len());
@@ -3624,14 +3624,15 @@ pub(crate) fn classify_org_link_2(name: &str) -> Url {
             v: name.to_string(),
         };
     }
-    if let Some(idx) = name.find("://") {
-        crate::metrics::scan_work(idx + 3);
-        let protocol = &name[..idx];
-        if !protocol.is_empty() {
-            crate::metrics::scan_work(protocol.len() + name[idx + 3..].len());
+    if let Some(idx) = name.find(':') {
+        crate::metrics::scan_work(idx + 1);
+        if name[idx..].starts_with("://") {
+            let protocol = &name[..idx];
+            let link = &name[idx + 3..];
+            crate::metrics::scan_work(protocol.len() + link.len());
             return Url::Complex {
                 protocol: Some(protocol.to_string()),
-                link: Some(name[idx + 3..].to_string()),
+                link: Some(link.to_string()),
             };
         }
     } else {

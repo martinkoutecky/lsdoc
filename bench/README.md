@@ -24,6 +24,8 @@ here purely as a benchmark peer — **not** a re-addition to lsdoc/Tine at runti
 source ../scripts/env.sh
 bash fetch-corpus.sh                                   # clones logseq/docs (md) + worg (org), gitignored
 cargo build --release
+# If an old conda toolchain leaks through scripts/env.sh, use:
+# env -u CC -u CFLAGS -u CXX -u CXXFLAGS -u AR -u ARFLAGS -u RANLIB cargo build --release
 
 ./target/release/lsdoc-bench --graph corpus/logseq-docs           # md
 ./target/release/lsdoc-bench --graph corpus/worg --format org     # org
@@ -38,15 +40,15 @@ cargo build --release
 All file I/O happens before timing; each parser gets a warm-up pass then the **min of N**
 full passes (default `--iters 5`).
 
-## Results (2026-07-07, /aux dev box, `cargo 1.96`, release + thin-LTO, v2 public parser)
+## Results (2026-07-09, /aux dev box, `cargo 1.96`, release + thin-LTO, v2 public parser)
 
 **Representative regime — per-file / per-block, i.e. how lsdoc and Tine actually parse:**
 
 | corpus | lsdoc MB/s | peer MB/s | verdict |
 |---|---:|---:|---|
-| logseq/docs (md, 313 files, 542.5 KB) | 67.5 | comrak 99.8 | **lsdoc 1.48× slower** (pulldown ceiling 238.4 → 3.53×) |
-| worg (org, 293 files, 7.64 MB) | 113.2 | orgize 163.9 | **lsdoc 1.45× slower** |
-| private brain graph (md, 261 files, 3.51 MB) | 128.0 | comrak 189.3 | **lsdoc 1.48× slower** (pulldown ceiling 490.2 → 3.83×) |
+| logseq/docs (md, 313 files, 542.5 KB) | 69.0 | comrak 97.7 | **lsdoc 1.42× slower** (pulldown ceiling 239.8 → 3.48×) |
+| worg (org, 293 files, 7.64 MB) | 113.2 | orgize 165.1 | **lsdoc 1.46× slower** |
+| private brain graph (md, 265 files, 3.58 MB) | 126.0 | comrak 185.4 | **lsdoc 1.47× slower** (pulldown ceiling 484.8 → 3.85×) |
 
 `lsdoc::parse` is now block-only; `lsdoc::parse_format` (+refs) is ~3–15% slower on these
 corpora, so the Logseq **ref index is a small tax, not the main cost** — block+inline
@@ -56,8 +58,8 @@ construction is.
 
 | corpus | lsdoc per-doubling | peer per-doubling |
 |---|---|---|
-| md (logseq/docs concat) | 2.02×, 2.03× | comrak 2.02×, 1.99× |
-| org (worg concat) | 1.79×, 2.02× | orgize 1.90×, 2.16× |
+| md (logseq/docs concat) | 2.09×, 2.07× | comrak 2.10×, 2.15× |
+| org (small Org slice from logseq/docs scale run) | 2.00×, 1.98× | orgize 1.93×, 2.08× |
 
 **lsdoc is cleanly linear on real content** — the divergence-fixing grind has *not* left a
 real-content quadratic. (Note: on a *single* multi-MB document lsdoc's per-byte constant is
@@ -66,7 +68,7 @@ ASTs, not super-linearity, and not representative of block-based use.)
 
 ## Bottom line
 
-lsdoc v2 is now **~1.45-1.48× slower than best-in-class fair peers** on the representative
+lsdoc v2 is now **~1.42-1.47× slower than best-in-class fair peers** on the representative
 public and private corpora, clearing the "within ~50% of comrak/orgize" target in this
 per-file/block regime. It remains comfortably linear in the dedicated perf/complexity gates
 and stays well ahead of mldoc. The remaining gap is real headroom, and part of it is
@@ -93,12 +95,12 @@ legitimate (below).
   graphs are prose-heavy, hence the original ~3.8× aggregate. The 2026-07-07 top-level
   plain-inline/page-ref/Markdown-bracket/Markdown-link/image/tag/common-URL/macro/block-ref/keyword-timestamp/LaTeX/Markdown-angle/Markdown-escape/entity/identifier-underscore/single-equals/braced-script/code-span/Markdown-delimiter-state/Markdown-emphasis/Org-bracket/Org-angle/Org-slash-plus-emphasis/Org-code-verbatim/Org-emphasis fast path, direct plain/break-only inline builder, Markdown link raw-delimiter floor, borrowed paragraph runs, ordinary-paragraph dispatch guard, sparse source-event indexing, bounded source hiccup delimiter scan, cached line prefixes, and allocation pre-sizing
   block-only `parse` moved the representative md/org numbers from 25.1/48.1 MB/s to
-  67.1/114.1 MB/s, clearing the 50% target in the representative per-file regime. The private brain graph improved
-  to 129.9 MB/s vs comrak's 188.5 MB/s after Markdown `_`/`^` delimiter fallback,
-  bracket fallback, and conservative backslash escape/entity handling joined the shared fast path,
-  confirming that prose-heavy mixed inline buffers are
-  still the dominant gap even after generated identifiers like `FLUSH_ERROR` and ordinary
-  underscore prose stay on the fast path. The remaining lever is deeper
+  69.0/113.2 MB/s, clearing the 50% target in the representative per-file regime. The private brain graph is
+  126.0 MB/s vs comrak's 185.4 MB/s after Markdown `_`/`^` delimiter fallback,
+  bracket fallback, conservative backslash escape/entity handling, and the 2026-07-09
+  mldoc-safe simple-bold subset joined the shared fast path, confirming that prose-heavy mixed inline buffers are
+  still the dominant gap even after generated identifiers like `FLUSH_ERROR`, ordinary
+  underscore prose, and common bold page-ref/code/title bodies stay on the fast path. The remaining lever is deeper
   copy/scanner elimination in mixed-markup inline resolution, with arena ownership still
   secondary unless a new profile says otherwise.
 - Small-file corpora fold per-file fixed costs into MB/s (why absolute numbers look low);
