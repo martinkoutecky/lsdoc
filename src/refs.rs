@@ -14,122 +14,157 @@ use std::borrow::Cow;
 use crate::projection::{Block, Inline, ListItem, Property, Refs, Url};
 
 pub fn extract_refs(blocks: &[Block], format: &str) -> Refs {
-    let org = format == "org";
-    let mut page = Vec::new();
-    let mut block = Vec::new();
-    let mut stack = Vec::new();
-    // scan-owner: (a2) refs block traversal — explicit stack, each block pushed once.
-    for b in blocks.iter().rev() {
-        stack.push(RefFrame::Block(b));
+    let mut builder = RefsBuilder::new(format);
+    builder.blocks(blocks);
+    builder.finish()
+}
+
+pub(crate) struct RefsBuilder {
+    page: Vec<String>,
+    block: Vec<String>,
+    org: bool,
+}
+
+impl RefsBuilder {
+    pub(crate) fn new(format: &str) -> Self {
+        Self::with_org(format == "org")
     }
-    // scan-owner: (a2) refs block traversal — stack pop owns recursive block/list walk.
-    while let Some(frame) = stack.pop() {
-        match frame {
-            RefFrame::Block(b) => walk_block_iter(b, &mut stack, &mut page, &mut block, org),
-            RefFrame::ListItem(it) => {
-                walk_inlines(&it.name, &mut page, &mut block, org);
-                // scan-owner: (a2) refs list traversal — child items are pushed once.
-                for sub in it.items.iter().rev() {
-                    stack.push(RefFrame::ListItem(sub));
-                }
-                // scan-owner: (a2) refs list traversal — item content blocks are pushed once.
-                for c in it.content.iter().rev() {
-                    stack.push(RefFrame::Block(c));
+
+    pub(crate) fn with_org(org: bool) -> Self {
+        Self {
+            page: Vec::new(),
+            block: Vec::new(),
+            org,
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> Refs {
+        self.page.sort_unstable();
+        self.page.dedup();
+        self.block.sort_unstable();
+        self.block.dedup();
+        Refs {
+            page: self.page,
+            block: self.block,
+        }
+    }
+
+    pub(crate) fn blocks(&mut self, blocks: &[Block]) {
+        let mut stack = Vec::new();
+        // scan-owner: (a2) refs block traversal — explicit stack, each block pushed once.
+        for b in blocks.iter().rev() {
+            stack.push(RefFrame::Block(b));
+        }
+        // scan-owner: (a2) refs block traversal — stack pop owns recursive block/list walk.
+        while let Some(frame) = stack.pop() {
+            match frame {
+                RefFrame::Block(b) => self.walk_block_iter(b, &mut stack),
+                RefFrame::ListItem(it) => {
+                    self.inlines(&it.name);
+                    // scan-owner: (a2) refs list traversal — child items are pushed once.
+                    for sub in it.items.iter().rev() {
+                        stack.push(RefFrame::ListItem(sub));
+                    }
+                    // scan-owner: (a2) refs list traversal — item content blocks are pushed once.
+                    for c in it.content.iter().rev() {
+                        stack.push(RefFrame::Block(c));
+                    }
                 }
             }
         }
     }
-    page.sort_unstable();
-    page.dedup();
-    block.sort_unstable();
-    block.dedup();
-    Refs { page, block }
+
+    pub(crate) fn inlines(&mut self, inlines: &[Inline]) {
+        walk_inlines(inlines, &mut self.page, &mut self.block, self.org);
+    }
+
+    pub(crate) fn property_reference_inlines(&mut self, inlines: &[Inline]) {
+        walk_property_reference_inlines(inlines, &mut self.page, &mut self.block);
+    }
+
+    fn property(&mut self, prop: &Property) {
+        if !property_value_refs_enabled(prop) {
+            return;
+        }
+        let value = prop.value();
+        if property_value_is_unparsed(value) || !property_value_may_have_refs(value) {
+            return;
+        }
+        let inl = if self.org {
+            crate::org_resolver::parse_property_reference_inlines_org(value, 0)
+        } else {
+            crate::resolver::parse_property_reference_inlines(value, 0)
+        };
+        self.property_reference_inlines(&inl);
+    }
+
+    fn walk_block_iter<'a>(&mut self, b: &'a Block, stack: &mut Vec<RefFrame<'a>>) {
+        match b {
+            Block::Paragraph { inline, .. }
+            | Block::Heading { inline, .. }
+            | Block::Bullet { inline, .. }
+            | Block::FootnoteDef { inline, .. } => self.inlines(inline),
+            Block::Export { .. } | Block::CommentBlock { .. } => {}
+            Block::Quote { children, .. } | Block::Custom { children, .. } => {
+                // scan-owner: (a2) refs container traversal — children are pushed once.
+                for c in children.iter().rev() {
+                    stack.push(RefFrame::Block(c));
+                }
+            }
+            Block::List { items, .. } => {
+                // scan-owner: (a2) refs list traversal — top-level items are pushed once.
+                for it in items.iter().rev() {
+                    stack.push(RefFrame::ListItem(it));
+                }
+            }
+            Block::Table { header, rows, .. } => {
+                if let Some(h) = header {
+                    // scan-owner: (a2) refs table traversal — header cells are visited once.
+                    for cell in h {
+                        self.inlines(cell);
+                    }
+                }
+                // scan-owner: (a2) refs table traversal — rows are visited once.
+                for row in rows {
+                    // scan-owner: (a2) refs table traversal — row cells are visited once.
+                    for cell in row {
+                        self.inlines(cell);
+                    }
+                }
+            }
+            Block::Properties { props, .. } => {
+                // mldoc stores each parse1 property's value with a third tuple field built by
+                // `Property.property_references`: parse with `inline_skip_macro = true`, then
+                // keep only top-level Tag/Link/Nested_link nodes for property page refs and
+                // postwalk those precomputed nodes for property block refs. Do not use normal inline
+                // parsing here: `{{query [[Page]]}}` is macro-opaque in ordinary inlines, but
+                // property refs deliberately see the inner page link because macro parsing is
+                // disabled.
+                // scan-owner: (a2) refs property traversal — each property value is checked once.
+                for prop in props {
+                    self.property(prop);
+                }
+            }
+            Block::Src { .. }
+            | Block::Hr { .. }
+            | Block::RawHtml { .. }
+            | Block::DisplayedMath { .. }
+            | Block::LatexEnv { .. }
+            | Block::Drawer { .. }
+            | Block::Directive { .. }
+            | Block::Comment { .. }
+            | Block::Example { .. }
+            // Hiccup payload is the raw unparsed bracket text — mldoc extracts no refs from
+            // it (the `[[…]]` inside `[:div [[Foo]]]` is not a ref).
+            | Block::Hiccup { .. }
+            | Block::Results { .. } => {}
+        }
+    }
 }
 
 enum RefFrame<'a> {
     Block(&'a Block),
     ListItem(&'a ListItem),
-}
-
-fn walk_block_iter<'a>(
-    b: &'a Block,
-    stack: &mut Vec<RefFrame<'a>>,
-    page: &mut Vec<String>,
-    block: &mut Vec<String>,
-    org: bool,
-) {
-    match b {
-        Block::Paragraph { inline, .. }
-        | Block::Heading { inline, .. }
-        | Block::Bullet { inline, .. }
-        | Block::FootnoteDef { inline, .. } => walk_inlines(inline, page, block, org),
-        Block::Export { .. } | Block::CommentBlock { .. } => {}
-        Block::Quote { children, .. } | Block::Custom { children, .. } => {
-            // scan-owner: (a2) refs container traversal — children are pushed once.
-            for c in children.iter().rev() {
-                stack.push(RefFrame::Block(c));
-            }
-        }
-        Block::List { items, .. } => {
-            // scan-owner: (a2) refs list traversal — top-level items are pushed once.
-            for it in items.iter().rev() {
-                stack.push(RefFrame::ListItem(it));
-            }
-        }
-        Block::Table { header, rows, .. } => {
-            if let Some(h) = header {
-                // scan-owner: (a2) refs table traversal — header cells are visited once.
-                for cell in h {
-                    walk_inlines(cell, page, block, org);
-                }
-            }
-            // scan-owner: (a2) refs table traversal — rows are visited once.
-            for row in rows {
-                // scan-owner: (a2) refs table traversal — row cells are visited once.
-                for cell in row {
-                    walk_inlines(cell, page, block, org);
-                }
-            }
-        }
-        Block::Properties { props, .. } => {
-            // mldoc stores each parse1 property's value with a third tuple field built by
-            // `Property.property_references`: parse with `inline_skip_macro = true`, then
-            // keep only top-level Tag/Link/Nested_link nodes for property page refs and
-            // postwalk those precomputed nodes for property block refs. Do not use normal inline
-            // parsing here: `{{query [[Page]]}}` is macro-opaque in ordinary inlines, but
-            // property refs deliberately see the inner page link because macro parsing is
-            // disabled.
-            // scan-owner: (a2) refs property traversal — each property value is checked once.
-            for prop in props {
-                if !property_value_refs_enabled(prop) {
-                    continue;
-                }
-                let value = prop.value();
-                if property_value_is_unparsed(value) || !property_value_may_have_refs(value) {
-                    continue;
-                }
-                let inl = if org {
-                    crate::org_resolver::parse_property_reference_inlines_org(value, 0)
-                } else {
-                    crate::resolver::parse_property_reference_inlines(value, 0)
-                };
-                walk_property_reference_inlines(&inl, page, block);
-            }
-        }
-        Block::Src { .. }
-        | Block::Hr { .. }
-        | Block::RawHtml { .. }
-        | Block::DisplayedMath { .. }
-        | Block::LatexEnv { .. }
-        | Block::Drawer { .. }
-        | Block::Directive { .. }
-        | Block::Comment { .. }
-        | Block::Example { .. }
-        // Hiccup payload is the raw unparsed bracket text — mldoc extracts no refs from
-        // it (the `[[…]]` inside `[:div [[Foo]]]` is not a ref).
-        | Block::Hiccup { .. }
-        | Block::Results { .. } => {}
-    }
 }
 
 /// Drawer.parse2 (`#+NAME: value`) hardcodes the property's refs list to `[]`
