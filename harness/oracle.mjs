@@ -28,7 +28,7 @@ export const MLDOC_CFG = cfg("md");
 
 export function parseToProjection(input, format = "md") {
   const ast = JSON.parse(Mldoc.parseJson(input, cfg(format)));
-  return { blocks: normalizeAst(ast), refs: extractRefs(ast) };
+  return { blocks: normalizeAst(ast), refs: extractRefs(ast, format) };
 }
 
 function main() {

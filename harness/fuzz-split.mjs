@@ -11,7 +11,7 @@ import { canonJSON } from "./lib/compare.mjs";
 const require = createRequire(import.meta.url);
 const { Mldoc } = require("mldoc");
 const CFG = JSON.stringify({ toc:false, parse_outline_only:false, heading_number:false, keep_line_break:true, format:"Org", heading_to_list:false, export_md_remove_options:[] });
-const proj = (s) => { const a = JSON.parse(Mldoc.parseJson(s, CFG)); return { blocks: normalizeAst(a), refs: extractRefs(a) }; };
+const proj = (s) => { const a = JSON.parse(Mldoc.parseJson(s, CFG)); return { blocks: normalizeAst(a), refs: extractRefs(a, "org") }; };
 const __dir = dirname(fileURLToPath(import.meta.url));
 const N = parseInt(process.argv[2] || "20000", 10);
 let seed = parseInt(process.argv[3] || "7", 10);

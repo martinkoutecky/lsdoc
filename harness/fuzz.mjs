@@ -21,7 +21,7 @@ const MLDOC_CFG = JSON.stringify({
 });
 const parseToProjection = (input) => {
   const ast = JSON.parse(Mldoc.parseJson(input, MLDOC_CFG));
-  return { blocks: normalizeAst(ast), refs: extractRefs(ast) };
+  return { blocks: normalizeAst(ast), refs: extractRefs(ast, FORMAT) };
 };
 
 const __dir = dirname(fileURLToPath(import.meta.url));

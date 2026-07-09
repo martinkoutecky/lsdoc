@@ -34,7 +34,7 @@ const cfg = (fmt) => JSON.stringify({
 });
 const oracle = (input, fmt) => {
   const ast = JSON.parse(Mldoc.parseJson(input, cfg(fmt)));
-  return { blocks: normalizeAst(ast), refs: extractRefs(ast) };
+  return { blocks: normalizeAst(ast), refs: extractRefs(ast, fmt) };
 };
 // Canonical stringify (key-sorted, drops span/aligns) — shared in lib/compare.mjs.
 const S = canonJSON;

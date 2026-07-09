@@ -4215,9 +4215,9 @@ mod tests {
 
     #[test]
     fn links() {
-        // page ref produces a ref; labelled link does not over-extract
+        // Page refs and ordinary Org Search links both produce OG page refs.
         let r = crate::refs::extract_refs(&parse("[[target]] and [[b][c]]"), "org");
-        assert_eq!(r.page, vec!["target".to_string()]);
+        assert_eq!(r.page, vec!["b".to_string(), "target".to_string()]);
     }
 
     // ---- timestamps -------------------------------------------------------

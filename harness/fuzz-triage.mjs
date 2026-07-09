@@ -13,7 +13,7 @@ const require = createRequire(import.meta.url);
 const { Mldoc } = require("mldoc");
 const FORMAT = process.argv[4] === "org" ? "org" : "md";
 const CFG = JSON.stringify({ toc:false, parse_outline_only:false, heading_number:false, keep_line_break:true, format: FORMAT==="org"?"Org":"Markdown", heading_to_list:false, export_md_remove_options:[] });
-const proj = (s) => { const a = JSON.parse(Mldoc.parseJson(s, CFG)); return { blocks: normalizeAst(a), refs: extractRefs(a) }; };
+const proj = (s) => { const a = JSON.parse(Mldoc.parseJson(s, CFG)); return { blocks: normalizeAst(a), refs: extractRefs(a, FORMAT) }; };
 const __dir = dirname(fileURLToPath(import.meta.url));
 
 const N = parseInt(process.argv[2] || "30000", 10);
