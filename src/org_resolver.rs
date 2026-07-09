@@ -210,25 +210,30 @@ pub(crate) fn org_lex(s: &str) -> Vec<Token> {
     let n = b.len();
     let mut toks: Vec<Token> = Vec::new();
     let mut i = 0usize;
-    let mut pending = String::new();
-    let mut pending_off = 0usize;
+    let mut pending_start: Option<usize> = None;
+    let mut pending_end = 0usize;
     macro_rules! flush {
         () => {
-            if !pending.is_empty() {
+            if let Some(start) = pending_start.take() {
+                debug_assert!(pending_end > start);
                 toks.push(Token {
-                    off: pending_off,
-                    kind: Kind::Text(std::mem::take(&mut pending)),
+                    off: start,
+                    kind: Kind::Text { end: pending_end },
                 });
             }
         };
     }
     macro_rules! push_pending {
-        ($off:expr, $seg:expr) => {{
-            if pending.is_empty() {
-                pending_off = $off;
+        ($off:expr, $end:expr) => {{
+            let off = $off;
+            let end = $end;
+            if pending_start.is_none() {
+                pending_start = Some(off);
+            } else {
+                debug_assert_eq!(pending_end, off);
             }
-            crate::metrics::scan_work($seg.len()); // A1: charge copied plain bytes (O(n))
-            pending.push_str($seg);
+            crate::metrics::scan_work(end - off); // A1: charge scanned plain bytes (O(n))
+            pending_end = end;
         }};
     }
 
@@ -252,7 +257,7 @@ pub(crate) fn org_lex(s: &str) -> Vec<Token> {
                 crate::metrics::scan_work(i - start); // A1: charge copied ws bytes
                 toks.push(Token {
                     off: start,
-                    kind: Kind::Text(s[start..i].to_string()),
+                    kind: Kind::Text { end: i },
                 });
             }
             b'\\' => {
@@ -297,7 +302,7 @@ pub(crate) fn org_lex(s: &str) -> Vec<Token> {
                     }
                     i += char_len(d);
                 }
-                push_pending!(start, &s[start..i]);
+                push_pending!(start, i);
             }
         }
     }
@@ -1265,10 +1270,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     }
     macro_rules! dispatch_org_text {
         ($t:ident, $off:expr, $keyword_ts:expr) => {{
-            let txt = match &toks[$t].kind {
-                Kind::Text(txt) => txt.as_str(),
-                _ => unreachable!(),
-            };
+            let txt = toks[$t].text(s).expect("Text token must slice source");
             let is_ws = txt.bytes().all(crate::inline::is_ws);
             if fresh && !is_ws {
                 let leaf = (if $keyword_ts && ctx.timestamps {
@@ -1356,7 +1358,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     while t < toks.len() {
         crate::metrics::scan_work(1);
         let off = toks[t].off;
-        match org_dispatch_byte(&toks[t].kind) {
+        match org_dispatch_byte(s, &toks[t]) {
             // inline.ml:1376 — `| '\n' -> breakline`
             b'\n' | b'\r' => {
                 let c = match &toks[t].kind {
@@ -1688,7 +1690,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             // inline.ml:1410 — `| _ -> link_inline`, then `p <|> plain` at line 1412.
             _ => {
                 let c = match &toks[t].kind {
-                    Kind::Text(_) => {
+                    Kind::Text { .. } => {
                         dispatch_org_text!(t, off, false);
                         t += 1;
                         continue;
@@ -1710,9 +1712,9 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     out
 }
 
-fn org_dispatch_byte(kind: &Kind) -> u8 {
-    match kind {
-        Kind::Text(s) => s.as_bytes().first().copied().unwrap_or(0),
+fn org_dispatch_byte(s: &str, tok: &Token) -> u8 {
+    match &tok.kind {
+        Kind::Text { .. } => s.as_bytes().get(tok.off).copied().unwrap_or(0),
         Kind::Newline(c) => *c,
         Kind::Leaf(_) | Kind::Escape(_) | Kind::LatexBs(_) => b'\\',
         Kind::Delim { ch, .. } | Kind::Punct(ch) => *ch,
@@ -2045,10 +2047,10 @@ fn resync_straddle(
             // unreachable after C1-C7 moved entities/code to resolver-local dispatch.
             let mut retok = org_lex(&s[end..te]);
             debug_assert!(
-                retok.len() == 1 && matches!(retok[0].kind, Kind::Text(_) | Kind::Punct(_))
+                retok.len() == 1 && matches!(retok[0].kind, Kind::Text { .. } | Kind::Punct(_))
             );
             crate::metrics::scan_work(te - end); // O(1): ONLY the split token re-lexed
-            retok[0].off += end; // local → absolute
+            retok[0].rebase(end); // local → absolute
             toks[t] = retok
                 .pop()
                 .expect("org split text tail must re-lex to one token");

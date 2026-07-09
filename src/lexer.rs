@@ -26,9 +26,27 @@ pub(crate) struct Token {
     pub kind: Kind,
 }
 
+impl Token {
+    #[inline]
+    pub(crate) fn rebase(&mut self, delta: usize) {
+        self.off += delta;
+        if let Kind::Text { end } = &mut self.kind {
+            *end += delta;
+        }
+    }
+
+    #[inline]
+    pub(crate) fn text<'a>(&self, source: &'a str) -> Option<&'a str> {
+        match self.kind {
+            Kind::Text { end } => Some(&source[self.off..end]),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) enum Kind {
-    /// Literal text run; escapes already resolved into it (top-level md-escape semantics).
-    Text(String),
+    /// Literal source-identical text run; `Token::off..end` slices the original input.
+    Text { end: usize },
     /// A bare `\n` or `\r`. The resolver decides `Break` / `HardBreak` / literal — hard-break
     /// detection (`>=2` trailing spaces before a `\n`) is CTX-DEPENDENT (off in emphasis
     /// content), so it lives in the resolver, not here.
@@ -83,28 +101,32 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
     let n = b.len();
     let mut toks: Vec<Token> = Vec::new();
     let mut i = 0usize;
-    // pending plain text, flushed lazily into one Text token (mldoc concat_plains).
-    let mut pending = String::new();
-    let mut pending_off = 0usize;
+    // pending source-identical plain text, flushed lazily into one Text token.
+    let mut pending_start: Option<usize> = None;
+    let mut pending_end = 0usize;
     macro_rules! flush {
         () => {
-            if !pending.is_empty() {
+            if let Some(start) = pending_start.take() {
+                debug_assert!(pending_end > start);
                 toks.push(Token {
-                    off: pending_off,
-                    kind: Kind::Text(std::mem::take(&mut pending)),
+                    off: start,
+                    kind: Kind::Text { end: pending_end },
                 });
             }
         };
     }
     macro_rules! push_pending {
-        ($off:expr, $seg:expr) => {{
-            if pending.is_empty() {
-                pending_off = $off;
+        ($off:expr, $end:expr) => {{
+            let off = $off;
+            let end = $end;
+            if pending_start.is_none() {
+                pending_start = Some(off);
+            } else {
+                debug_assert_eq!(pending_end, off);
             }
-            // A1: charge the copied plain bytes (metric-contract completeness — each input
-            // byte is copied into `pending` at most once, so this stays O(n)).
-            crate::metrics::scan_work($seg.len());
-            pending.push_str($seg);
+            // A1: charge the scanned plain bytes (each input byte enters a Text span at most once).
+            crate::metrics::scan_work(end - off);
+            pending_end = end;
         }};
     }
 
@@ -132,10 +154,10 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
                 crate::metrics::scan_work(i - start); // A1: charge the copied ws bytes
                 toks.push(Token {
                     off: start,
-                    kind: Kind::Text(s[start..i].to_string()),
+                    kind: Kind::Text { end: i },
                 });
             }
-            b'\\' => lex_backslash(s, &mut i, &mut pending, &mut pending_off, &mut toks),
+            b'\\' => lex_backslash(s, &mut i, &mut pending_start, &mut pending_end, &mut toks),
             b'`' => {
                 // Phase D: emit a backtick as a ONE-BYTE `Punct`; the resolver recognizes code
                 // spans LAZILY at dispatch (like tags/links), reusing `code_span`. Pre-building a
@@ -183,7 +205,7 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
                     }
                     i += char_len(d);
                 }
-                push_pending!(start, &s[start..i]);
+                push_pending!(start, i);
             }
         }
     }
@@ -198,8 +220,8 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
 fn lex_backslash(
     s: &str,
     i: &mut usize,
-    pending: &mut String,
-    pending_off: &mut usize,
+    pending_start: &mut Option<usize>,
+    pending_end: &mut usize,
     toks: &mut Vec<Token>,
 ) {
     let b = s.as_bytes();
@@ -208,10 +230,10 @@ fn lex_backslash(
     match b.get(at + 1).copied() {
         Some(ch @ (b'(' | b'[')) => {
             // `\(` / `\[` — defer to the resolver (latex vs escape is ctx-dependent).
-            if !pending.is_empty() {
+            if let Some(start) = pending_start.take() {
                 toks.push(Token {
-                    off: *pending_off,
-                    kind: Kind::Text(std::mem::take(pending)),
+                    off: start,
+                    kind: Kind::Text { end: *pending_end },
                 });
             }
             toks.push(Token {
@@ -235,10 +257,10 @@ fn lex_backslash(
             }
             match crate::entities::find(name) {
                 Some(e) => {
-                    if !pending.is_empty() {
+                    if let Some(start) = pending_start.take() {
                         toks.push(Token {
-                            off: *pending_off,
-                            kind: Kind::Text(std::mem::take(pending)),
+                            off: start,
+                            kind: Kind::Text { end: *pending_end },
                         });
                     }
                     toks.push(Token {
@@ -257,7 +279,7 @@ fn lex_backslash(
                 }
                 None => {
                     // unknown entity → the bare letters, as a fresh-making Escape token.
-                    flush_into(pending, pending_off, toks);
+                    flush_into(pending_start, pending_end, toks);
                     crate::metrics::scan_work(name.len());
                     toks.push(Token {
                         off: at,
@@ -270,7 +292,7 @@ fn lex_backslash(
         Some(ch) if is_escape_char(ch) => {
             // escape: drop the backslash, keep the punctuation literally (Escape token).
             let w = char_len(ch);
-            flush_into(pending, pending_off, toks);
+            flush_into(pending_start, pending_end, toks);
             crate::metrics::scan_work(w);
             toks.push(Token {
                 off: at,
@@ -280,7 +302,7 @@ fn lex_backslash(
         }
         _ => {
             // lone backslash (before digit / space / eol / EOF): kept (Escape token).
-            flush_into(pending, pending_off, toks);
+            flush_into(pending_start, pending_end, toks);
             toks.push(Token {
                 off: at,
                 kind: Kind::Escape("\\".to_string()),
@@ -291,14 +313,13 @@ fn lex_backslash(
 }
 
 /// Flush the lexer's pending text run into a `Text` token (if non-empty).
-fn flush_into(pending: &mut String, pending_off: &mut usize, toks: &mut Vec<Token>) {
-    if !pending.is_empty() {
+fn flush_into(pending_start: &mut Option<usize>, pending_end: &mut usize, toks: &mut Vec<Token>) {
+    if let Some(start) = pending_start.take() {
         toks.push(Token {
-            off: *pending_off,
-            kind: Kind::Text(std::mem::take(pending)),
+            off: start,
+            kind: Kind::Text { end: *pending_end },
         });
     }
-    let _ = pending_off;
 }
 
 /// `` `…` `` (single) / ``` ``…`` ``` (double-backtick) code span → (Code node, end). The

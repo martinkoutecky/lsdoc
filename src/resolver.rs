@@ -1684,10 +1684,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     }
     macro_rules! dispatch_text {
         ($t:ident, $off:expr, $keyword_ts:expr) => {{
-            let txt = match &toks[$t].kind {
-                Kind::Text(x) => x.as_str(),
-                _ => unreachable!(),
-            };
+            let txt = toks[$t].text(s).expect("Text token must slice source");
             if fresh {
                 let leaf = (if $keyword_ts && ctx.timestamps {
                     crate::inline::parse_keyword_timestamp_with_scan(s, $off, &mut timestamp_scan)
@@ -1833,7 +1830,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     while t < toks.len() {
         crate::metrics::scan_work(1);
         let off = toks[t].off;
-        match md_dispatch_byte(&toks[t].kind) {
+        match md_dispatch_byte(s, &toks[t]) {
             // inline.ml:1344 — `| '\n' -> breakline`
             b'\n' | b'\r' => {
                 let c = match &toks[t].kind {
@@ -2439,7 +2436,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             b' ' | b'\t' | 0x0c => dispatch_text!(t, off, false),
             // inline.ml:1373 — `| _ -> link_inline`, then `p <|> plain` at line 1412.
             _ => {
-                if let Kind::Text(_) = &toks[t].kind {
+                if let Kind::Text { .. } = &toks[t].kind {
                     dispatch_text!(t, off, false);
                 }
                 let c = match &toks[t].kind {
@@ -2589,9 +2586,9 @@ fn trailing_dispatch_ws(s: &str) -> usize {
     n
 }
 
-fn md_dispatch_byte(kind: &Kind) -> u8 {
-    match kind {
-        Kind::Text(s) => s.as_bytes().first().copied().unwrap_or(0),
+fn md_dispatch_byte(s: &str, tok: &Token) -> u8 {
+    match &tok.kind {
+        Kind::Text { .. } => s.as_bytes().get(tok.off).copied().unwrap_or(0),
         Kind::Newline(c) => *c,
         Kind::Leaf(_) | Kind::Escape(_) | Kind::LatexBs(_) => b'\\',
         Kind::Delim { ch, .. } | Kind::Punct(ch) => *ch,
@@ -2676,9 +2673,9 @@ fn resync(
         // lazily, no longer a non-local hazard).
         if !matches!(toks[t].kind, Kind::Leaf(_)) {
             let mut retok = lex(&s[end..te]);
-            if retok.len() == 1 && matches!(retok[0].kind, Kind::Text(_) | Kind::Punct(_)) {
+            if retok.len() == 1 && matches!(retok[0].kind, Kind::Text { .. } | Kind::Punct(_)) {
                 crate::metrics::scan_work(te - end); // O(1): ONLY the split token re-lexed
-                retok[0].off += end; // local → absolute
+                retok[0].rebase(end); // local → absolute
                 toks[t] = retok.pop().unwrap();
                 *fresh = true; // `end` is a fresh dispatch point (mldoc post-construct)
                 return t; // re-dispatch the corrected token in the same loop
