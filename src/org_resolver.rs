@@ -204,6 +204,11 @@ fn is_special(c: u8) -> bool {
         )
 }
 
+#[inline]
+fn is_plain_stop(c: u8) -> bool {
+    is_ws_or_nl(c) || is_special(c)
+}
+
 /// Lex `s` as Org inline. Ctx-free; the resolver applies context.
 pub(crate) fn org_lex(s: &str) -> Vec<Token> {
     let b = s.as_bytes();
@@ -293,14 +298,15 @@ pub(crate) fn org_lex(s: &str) -> Vec<Token> {
                 i += 1;
             }
             _ => {
+                // All stop bytes are ASCII, so byte-wise scanning stays on UTF-8 boundaries:
+                // continuation bytes cannot be mistaken for whitespace or a construct opener.
                 let start = i;
-                i += char_len(c);
+                i += 1;
                 while i < n {
-                    let d = b[i];
-                    if is_ws_or_nl(d) || is_special(d) {
+                    if is_plain_stop(b[i]) {
                         break;
                     }
-                    i += char_len(d);
+                    i += 1;
                 }
                 push_pending!(start, i);
             }

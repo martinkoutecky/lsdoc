@@ -88,6 +88,11 @@ fn is_special(c: u8) -> bool {
         )
 }
 
+#[inline]
+fn is_plain_stop(c: u8) -> bool {
+    is_ws_or_nl(c) || is_special(c)
+}
+
 /// mldoc `md_escape_chars`: every ASCII punctuation char.
 #[inline]
 fn is_escape_char(c: u8) -> bool {
@@ -196,14 +201,15 @@ pub(crate) fn lex(s: &str) -> Vec<Token> {
             }
             _ => {
                 // ordinary plain run: until a special / ws / nl byte.
+                // All stop bytes are ASCII, so walking UTF-8 bytes one at a time cannot
+                // stop inside a multibyte scalar; continuation bytes never match.
                 let start = i;
-                i += char_len(c);
+                i += 1;
                 while i < n {
-                    let d = b[i];
-                    if is_ws_or_nl(d) || is_special(d) {
+                    if is_plain_stop(b[i]) {
                         break;
                     }
-                    i += char_len(d);
+                    i += 1;
                 }
                 push_pending!(start, i);
             }
