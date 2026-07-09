@@ -319,6 +319,21 @@ fn properties_render_all_pairs_value_as_inline() {
 }
 
 #[test]
+fn duplicate_property_values_render_the_same_cached_fragment() {
+    assert_eq!(
+        md("one:: [[ref]] and **bold**\ntwo:: [[ref]] and **bold**"),
+        concat!(
+            r#"<span class="block-properties">"#,
+            r#"<span class="block-property"><span class="block-property-key">one</span> "#,
+            r#"<span class="block-property-val"><a class="page-ref" data-page="ref">[[ref]]</a> and <strong>bold</strong></span></span>"#,
+            r#"<span class="block-property"><span class="block-property-key">two</span> "#,
+            r#"<span class="block-property-val"><a class="page-ref" data-page="ref">[[ref]]</a> and <strong>bold</strong></span></span>"#,
+            r#"</span>"#
+        )
+    );
+}
+
+#[test]
 fn quote_plain_blockquote() {
     assert_eq!(
         md("> just a quote\n> more"),

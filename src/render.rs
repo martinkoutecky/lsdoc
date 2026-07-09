@@ -19,6 +19,7 @@
 
 use crate::projection::{Align, Block, Inline, ListItem, Property, Url};
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// Source format of the block tree being rendered. Drives only inline re-parsing of
 /// property values (markdown vs org); the skeleton is otherwise format-agnostic.
@@ -48,6 +49,7 @@ pub fn render_html(blocks: &[Block], opts: &RenderOpts) -> String {
     let mut r = Renderer {
         out: String::new(),
         opts: *opts,
+        property_value_html: HashMap::new(),
     };
     r.blocks(blocks);
     r.out
@@ -102,6 +104,7 @@ const CALLOUT_TYPES: &[&str] = &["note", "tip", "important", "caution", "warning
 struct Renderer {
     out: String,
     opts: RenderOpts,
+    property_value_html: HashMap<String, String>,
 }
 
 /// A `paragraph`/`bullet`/`heading` — an inline-flow block. Consecutive inline-flow
@@ -244,13 +247,34 @@ impl Renderer {
             esc_text(k, &mut self.out);
             self.out
                 .push_str("</span> <span class=\"block-property-val\">");
-            // Property values are inline markup — render via lsdoc's own (format-aware)
-            // inline parser. (One parser: this is `lsdoc::inline`, not a second scanner.)
-            let inlines = crate::inline(v, self.opts.fmt_str());
-            self.inlines(&inlines);
+            self.property_value(v);
             self.out.push_str("</span></span>");
         }
         self.out.push_str("</span>");
+    }
+
+    fn property_value(&mut self, value: &str) {
+        if let Some(html) = self.property_value_html.get(value) {
+            // scan-owner: (o) render-local property cache replay — append one cached
+            // fragment for one emitted property value.
+            self.out.push_str(html);
+            return;
+        }
+        // Property values are inline markup — render via lsdoc's own (format-aware)
+        // inline parser. The rendered fragment is cached for this render pass only; the
+        // serialized AST stays the mldoc-compatible `[key, value]` pair.
+        let inlines = crate::inline(value, self.opts.fmt_str());
+        let mut nested = Renderer {
+            out: String::new(),
+            opts: self.opts,
+            property_value_html: HashMap::new(),
+        };
+        nested.inlines(&inlines);
+        // scan-owner: (o) render-local property cache miss — materialize one rendered
+        // fragment and one cache key per distinct property value in this render pass.
+        self.out.push_str(&nested.out);
+        self.property_value_html
+            .insert(value.to_string(), nested.out);
     }
 
     fn table(
