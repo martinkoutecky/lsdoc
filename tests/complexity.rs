@@ -945,6 +945,20 @@ fn v2_markdown_blockquote_lines(n: usize) -> String {
     }
     s
 }
+fn v2_markdown_empty_quote_blank_continuations(n: usize) -> String {
+    let mut s = String::new();
+    for i in 0..n {
+        writeln!(&mut s, "> quote {i}\n>\n\nlazy {i}\n- stop {i}").unwrap();
+    }
+    s
+}
+fn markdown_balanced_label_after_eol(n: usize) -> String {
+    let mut s = String::from("://");
+    for _ in 0..n {
+        s.push_str("[[]\n]() ");
+    }
+    s
+}
 fn v2_md_hiccup_lines(n: usize) -> String {
     let mut s = String::new();
     for i in 0..n {
@@ -2131,6 +2145,24 @@ fn v2_leaf_complexity_gate() {
         v2_markdown_blockquote_lines,
         1000,
         "org",
+    );
+    assert_linear_v2(
+        "v2_markdown_empty_quote_blank_continuations",
+        v2_markdown_empty_quote_blank_continuations,
+        1000,
+        "md",
+    );
+    assert_linear_v2(
+        "v2_org_empty_quote_blank_continuations",
+        v2_markdown_empty_quote_blank_continuations,
+        1000,
+        "org",
+    );
+    assert_linear_v2(
+        "markdown_balanced_label_after_eol",
+        markdown_balanced_label_after_eol,
+        1000,
+        "md",
     );
     assert_linear_v2("v2_md_hiccup_lines", v2_md_hiccup_lines, 1000, "md");
     assert_linear_v2("v2_org_hiccup_lines", v2_org_hiccup_lines, 1000, "org");

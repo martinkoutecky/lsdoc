@@ -2605,12 +2605,23 @@ fn markdown_blockquote_sequence_at(
     append_blockquote_line(source, i, first, &mut body, &mut map);
 
     let mut next = i + 1;
+    let mut absorb_blank_after_empty_quote_line = first.len == 0;
     if source.lines[i].eol != Eol::Cr {
         while next < source.lines.len() {
+            if absorb_blank_after_empty_quote_line && source.lines[next].text.is_empty() {
+                // mldoc `lines_while`: an explicit empty `>` item consumes its eol and
+                // its trailing optional eol. The latter is control input, not body text;
+                // lazy quote continuation resumes on the following non-blank line.
+                crate::metrics::scan_work(1);
+                absorb_blank_after_empty_quote_line = false;
+                next += 1;
+                continue;
+            }
             let Some(content) = blockquote_line_content(&source.lines[next], false) else {
                 break;
             };
             append_blockquote_line(source, next, content, &mut body, &mut map);
+            absorb_blank_after_empty_quote_line = content.len == 0;
             if source.lines[next].eol == Eol::Cr {
                 next += 1;
                 break;
@@ -9517,6 +9528,14 @@ mod tests {
                 Block::Comment { text, .. },
                 Block::Paragraph { .. },
             ] if matches!(inline.last(), Some(Inline::Break { .. })) && text == "c"
+        ));
+
+        let blocks = try_parse("> a\n>\n\nx", "md").unwrap();
+        assert!(matches!(
+            blocks.as_slice(),
+            [Block::Quote { children, .. }]
+                if matches!(children.as_slice(), [Block::Paragraph { inline, .. }]
+                    if inline.iter().any(|node| matches!(node, Inline::Plain { text, .. } if text == "x")))
         ));
 
         let blocks = try_parse("> a\n>\n> ---", "md").unwrap();

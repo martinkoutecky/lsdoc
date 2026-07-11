@@ -2647,6 +2647,11 @@ impl MdLinkScan {
             .end(at)
     }
 
+    pub(crate) fn label_balanced_delim_after_eol(&mut self, s: &str, at: usize) -> bool {
+        let end = self.label_bracket_end(s, at.saturating_add(1));
+        s.as_bytes().get(end) == Some(&b']') && s.as_bytes().get(end + 1) == Some(&b'(')
+    }
+
     fn has_label_url_delim(&mut self, s: &str, from: usize) -> bool {
         self.check_source(s);
         self.label_url_delim.has_at_or_after(s.as_bytes(), from)

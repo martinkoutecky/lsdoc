@@ -2884,9 +2884,11 @@ fn seq_positions(bb: &[u8], a: u8, b: u8) -> Vec<usize> {
     v
 }
 
-/// Markdown link / image at `at`: needs a `](` before the next eol (the label can't cross a
-/// newline) and a closing `)` ahead — the monotone floors that make a `[`×n run linear — then
-/// the v1 parser validates fully. `lbp`/`crlf`/`rparen` are monotone cursors (kept state).
+/// Markdown link / image at `at`: normally needs a `](` before the next eol. The source
+/// balanced-label helper can also carry an embedded `[...]` across an eol, so that exact
+/// O(1) table query is the exception to the current-line floor. A closing `)` must still
+/// exist ahead; then the shared source-transcribed parser validates fully.
+/// `lbp`/`crlf`/`rparen` are monotone cursors (kept state).
 #[allow(clippy::too_many_arguments)]
 fn try_md_link(
     s: &str,
@@ -2909,8 +2911,8 @@ fn try_md_link(
     if at > *crlf {
         *crlf = first_crlf(bb, at);
     }
-    if rb >= *crlf {
-        return None; // the `](` is not before the next eol
+    if rb >= *crlf && !md_link_scan.label_balanced_delim_after_eol(s, at) {
+        return None; // no balanced-label path reaches a `](` beyond this eol
     }
     if at > *rparen {
         *rparen = first_byte(bb, at, b')');
@@ -2923,7 +2925,18 @@ fn try_md_link(
 
 #[cfg(test)]
 mod tests {
-    use super::markdown_hardbreak_start;
+    use super::{markdown_hardbreak_start, parse_inline};
+    use crate::projection::Inline;
+
+    #[test]
+    fn balanced_markdown_link_label_can_cross_eol_after_url_text() {
+        let nodes = parse_inline("://[[]\n]()", 0);
+        assert!(matches!(
+            nodes.as_slice(),
+            [Inline::Plain { text, .. }, Inline::Link { full, .. }]
+                if text == "://" && full == "[[]\n]()"
+        ));
+    }
 
     #[test]
     fn markdown_hardbreak_dispatch_truth_table() {
