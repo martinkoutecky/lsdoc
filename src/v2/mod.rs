@@ -32,9 +32,6 @@ pub(crate) fn parse_blocks(input: &str, format: &str) -> Vec<ast::Block> {
 }
 
 pub(crate) fn inline(input: &str, format: &str) -> Vec<ast::Inline> {
-    if format != "org" {
-        crate::lexer::reset_markdown_code_span_state();
-    }
     inline_at(input, format, 0)
 }
 

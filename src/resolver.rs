@@ -60,11 +60,9 @@ impl Ctx {
 /// Parse a run of inline markup (top-level Markdown context). `base` is the absolute byte
 /// offset of `text[0]` in the block body — every emitted node's `span` is absolute (S2).
 pub(crate) fn parse_inline(text: &str, base: usize) -> Vec<Inline> {
-    let code_state = crate::lexer::markdown_code_span_state();
     if let Some(nodes) = crate::inline::plain_fast_path_markdown(text, base) {
         return nodes;
     }
-    crate::lexer::restore_markdown_code_span_state(code_state);
     parse_ctx(text, Ctx::top(), base)
 }
 

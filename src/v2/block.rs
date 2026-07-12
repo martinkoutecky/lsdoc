@@ -17,9 +17,6 @@ use crate::source_map::{OriginCursor, OriginMap};
 use super::source::{Eol, Line, Source};
 
 pub(crate) fn try_parse(input: &str, format: &str) -> Option<Vec<Block>> {
-    if format != "org" {
-        crate::lexer::reset_markdown_code_span_state();
-    }
     if let Some((mut blocks, rest_start)) = markdown_front_matter_sequence(input) {
         let mut tail = try_parse_leaf_blocks(&input[rest_start..], format)?;
         offset_blocks(&mut tail, rest_start);
