@@ -15,6 +15,27 @@
 use crate::inline::{char_len, is_ws, is_ws_or_nl};
 use crate::projection::Inline;
 
+std::thread_local! {
+    // `Parsers.end_string "``"` closes over a mutable two-byte rolling window.
+    // mldoc resets it on success but not when `take_while1` fails, so a failed
+    // double-backtick parse can affect later blocks in the same document.
+    static MD_DOUBLE_BACKTICK_PREV: std::cell::RefCell<Vec<u8>> = const {
+        std::cell::RefCell::new(Vec::new())
+    };
+}
+
+pub(crate) fn reset_markdown_code_span_state() {
+    MD_DOUBLE_BACKTICK_PREV.with(|prev| prev.borrow_mut().clear());
+}
+
+pub(crate) fn markdown_code_span_state() -> Vec<u8> {
+    MD_DOUBLE_BACKTICK_PREV.with(|prev| prev.borrow().clone())
+}
+
+pub(crate) fn restore_markdown_code_span_state(state: Vec<u8>) {
+    MD_DOUBLE_BACKTICK_PREV.with(|prev| *prev.borrow_mut() = state);
+}
+
 /// A classified unit of the inline stream, tagged with its start byte offset (the resolver
 /// is byte-offset-driven: leaf predicates return a byte extent and it resyncs by offset).
 pub(crate) struct Token {
@@ -355,13 +376,34 @@ pub(crate) fn code_span(s: &str, at: usize) -> Option<(Inline, usize)> {
         return None;
     }
     let start = at + 2;
-    let end = crate::inline::find_sub(b, start, b"``")?;
-    crate::metrics::scan_work(end - start);
-    Some((
-        Inline::Code {
-            text: s[start..end].to_string(),
-            span: None,
-        },
-        end + 2,
-    ))
+    MD_DOUBLE_BACKTICK_PREV.with(|shared| {
+        let mut prev = shared.borrow_mut();
+        let mut consumed = 0usize;
+        for (rel, byte) in b[start..].iter().copied().enumerate() {
+            crate::metrics::scan_work(1);
+            prev.push(byte);
+            if prev.len() > 2 {
+                prev.remove(0);
+            }
+            if prev.as_slice() == b"``" {
+                // Angstrom's `take_while1` rejects a delimiter seen on its very
+                // first predicate call. The closed-over window stays dirty.
+                if consumed == 0 {
+                    return None;
+                }
+                prev.clear();
+                let delimiter_second = start + rel;
+                let content_end = delimiter_second - 1;
+                return Some((
+                    Inline::Code {
+                        text: s[start..content_end].to_string(),
+                        span: None,
+                    },
+                    delimiter_second + 1,
+                ));
+            }
+            consumed += 1;
+        }
+        None
+    })
 }

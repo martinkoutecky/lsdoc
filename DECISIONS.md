@@ -241,6 +241,15 @@ Quirks worth knowing (all matched):
   (`` `` ``). `` ```[[Foo]]``` `` → `Code "`[[Foo]]"` + `` ` `` (double consumes 2,
   the 3rd is content). Refs never leak out of code; the emphasis closer-search skips
   code spans.
+- **Failed double-backtick state crosses Markdown blocks:** mldoc constructs
+  `end_string "``"` once, and its closed-over rolling window is cleared on a
+  successful close but not every failure. A later triple-backtick inline run can
+  therefore choose its second and third backticks as the opener. lsdoc preserves
+  that state across inline buffers within one document and resets it at the public
+  document/inline entry boundary. On very large mixed-container pages, mldoc's
+  state follows speculative combinator evaluation order rather than final AST
+  source order; exact emulation of those backtracked paths remains an architectural
+  parity obligation rather than a local Markdown rule.
 - **Backslash escapes** drop the backslash and make the char literal: `\[[a]]` →
   `[[a]]` (no ref), `\#tag`, `\((u))`, `` \` `` are plain; `\\` → one `\`;
   `\<letter>+` (+ optional `{}`) → an `Entity` if the name is in the LaTeX table, else
@@ -447,6 +456,9 @@ nests only as a column-0 sibling/parent (an indented `  - x` is not a list line)
     re-parse mldoc calls `emphasis` without state, so only the forward gate applies.
     `last_plain_char` is tracked precisely (updated only on plain emission), so
     `word[[x]]_y_` → Subscript (the `d` before `_` kills Underline), not Underline.
+    Markdown hard breaks consume their trailing spaces before mldoc's plain parser
+    sees them, so those spaces do not replace this predecessor state for `_` on the
+    following line.
   - Emphasis content is re-parsed with **emphasis/sub-superscript/links/plain**
     (`nested_emphasis`); `*a/b/c*`→Bold[`a/b/c`] (the `/` italic fails its forward gate).
 - **Subscript/Superscript**: `_x`/`^x` (a `non_space` run) or `_{x}`/`^{x}`. Content is

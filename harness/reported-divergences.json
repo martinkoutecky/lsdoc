@@ -3564,5 +3564,37 @@
  "source": "tine82-family-audit",
  "issue": 82,
  "title": "Issue 82 same-root-cause family audit"
+},
+{
+ "id": "tine82_hardbreak_underscore",
+ "format": "md",
+ "input": "a  \n_b_  \n",
+ "source": "tine-0.5.6-follow-up",
+ "issue": 82,
+ "title": "Hard break preserves mldoc emphasis predecessor state"
+},
+{
+ "id": "tine82_hardbreak_underscore_quote",
+ "format": "md",
+ "input": "> a  \n>  \n>  _b_  \n",
+ "source": "tine-0.5.6-follow-up",
+ "issue": 82,
+ "title": "Hard-break state through transformed quote body"
+},
+{
+ "id": "tine82_hardbreak_underscore_fallback",
+ "format": "md",
+ "input": "[[p]] a  \n_b_  \n",
+ "source": "tine-0.5.6-follow-up",
+ "issue": 82,
+ "title": "Hard-break state in resolver fallback"
+},
+{
+ "id": "tine82_leaked_double_backtick_state",
+ "format": "md",
+ "input": "- ``x`\n\nä ```aaaa\nä {\nä ä \"x\": 9\nä }\nä ```\n",
+ "source": "tine-0.5.6-follow-up",
+ "issue": 82,
+ "title": "Failed double-backtick parser state crosses blocks"
 }
 ]

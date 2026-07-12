@@ -96,6 +96,10 @@ fn plain_fast_path(
     let org_terminal_odd_backslash = matches!(format, PlainFastFormat::Org)
         && crate::org_resolver::org_terminal_odd_backslash(s);
     let mut last_plain_char: Option<u8> = None;
+    // mldoc's hard-break parser consumes the two trailing spaces before its
+    // plain parser sees them, so they must not become delimiter predecessor
+    // state for the following line.
+    let mut last_plain_char_before_hardbreak_spaces: Option<Option<u8>> = None;
     let mut fresh = true;
     let mut needs_concat_plains = false;
 
@@ -134,12 +138,14 @@ fn plain_fast_path(
         if plain_run_end > i {
             crate::metrics::scan_work(plain_run_end - i);
             last_plain_char = Some(bb[plain_run_end - 1]);
+            last_plain_char_before_hardbreak_spaces = None;
             i = plain_run_end;
             fresh = false;
             continue;
         }
         if is_ws(c) {
             let start = i;
+            let state_before_ws = last_plain_char;
             i += 1;
             // scan-owner: (a2) inline whitespace run — this run is part of the current
             // plain buffer and is consumed once while preserving freshness for the next byte.
@@ -148,6 +154,15 @@ fn plain_fast_path(
             }
             crate::metrics::scan_work(i - start);
             last_plain_char = Some(bb[i - 1]);
+            // scan-owner: (a2) already-charged inline whitespace run — classify
+            // the consumed run for mldoc hard-break predecessor state.
+            last_plain_char_before_hardbreak_spaces = if matches!(format, PlainFastFormat::Markdown)
+                && bb[start..i].iter().all(|b| *b == b' ')
+            {
+                Some(state_before_ws)
+            } else {
+                None
+            };
             fresh = true;
             continue;
         }
@@ -685,6 +700,9 @@ fn plain_fast_path(
                 PlainFastFormat::Markdown => {
                     if let Some(hardbreak_start) = markdown_fast_hardbreak_start(&s[plain_start..i])
                     {
+                        if let Some(state) = last_plain_char_before_hardbreak_spaces {
+                            last_plain_char = state;
+                        }
                         push_plain(
                             &mut out,
                             s,
@@ -712,6 +730,7 @@ fn plain_fast_path(
             i += 1;
             plain_start = i;
             fresh = true;
+            last_plain_char_before_hardbreak_spaces = None;
             continue;
         }
         fresh = plain_fast_plain_byte_leaves_fresh(bb, i, c, format);

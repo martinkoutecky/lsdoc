@@ -60,9 +60,11 @@ impl Ctx {
 /// Parse a run of inline markup (top-level Markdown context). `base` is the absolute byte
 /// offset of `text[0]` in the block body — every emitted node's `span` is absolute (S2).
 pub(crate) fn parse_inline(text: &str, base: usize) -> Vec<Inline> {
+    let code_state = crate::lexer::markdown_code_span_state();
     if let Some(nodes) = crate::inline::plain_fast_path_markdown(text, base) {
         return nodes;
     }
+    crate::lexer::restore_markdown_code_span_state(code_state);
     parse_ctx(text, Ctx::top(), base)
 }
 
@@ -1487,10 +1489,24 @@ fn concat_plains_without_pos(nodes: Vec<Inline>) -> Vec<Inline> {
     out
 }
 
-fn last_plain_char_after_append(s: &str, last_plain_char: &mut Option<u8>) {
-    if let Some(b) = s.as_bytes().last().copied() {
-        *last_plain_char = Some(b);
+fn update_markdown_plain_state(
+    s: &str,
+    last_plain_char: &mut Option<u8>,
+    before_hardbreak_spaces: &mut Option<Option<u8>>,
+) {
+    if s.is_empty() {
+        return;
     }
+    let bytes = s.as_bytes();
+    let prefix_end = bytes.iter().rposition(|b| *b != b' ').map_or(0, |i| i + 1);
+    if prefix_end == bytes.len() {
+        *before_hardbreak_spaces = None;
+    } else if prefix_end > 0 {
+        *before_hardbreak_spaces = Some(Some(bytes[prefix_end - 1]));
+    } else if before_hardbreak_spaces.is_none() {
+        *before_hardbreak_spaces = Some(*last_plain_char);
+    }
+    *last_plain_char = bytes.last().copied();
 }
 
 fn find_delim_token_containing(
@@ -1540,6 +1556,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
     let mut out: Vec<Inline> = Vec::new();
     let mut pending = String::new();
     let mut last_plain_char: Option<u8> = None;
+    let mut last_plain_char_before_hardbreak_spaces: Option<Option<u8>> = None;
     // Span tracking for the pending plain run. `plain_start/plain_end` remain the S5 fast path.
     // `plain_extent_*` covers transformed source bytes too, and `plain_origins` records the
     // copied bytes that can become `span_map` if S5 fails.
@@ -1639,7 +1656,11 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             ));
             crate::metrics::scan_work(txt.len()); // A1: charge copied pending bytes (O(n))
             pending.push_str(txt);
-            last_plain_char_after_append(txt, &mut last_plain_char);
+            update_markdown_plain_state(
+                txt,
+                &mut last_plain_char,
+                &mut last_plain_char_before_hardbreak_spaces,
+            );
         }};
     }
     macro_rules! push_byte {
@@ -1648,6 +1669,13 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             track!($off, 1usize);
             crate::metrics::scan_work(1); // A1: charge copied pending byte
             pending.push(c as char);
+            if c == b' ' {
+                if last_plain_char_before_hardbreak_spaces.is_none() {
+                    last_plain_char_before_hardbreak_spaces = Some(last_plain_char);
+                }
+            } else if !matches!(c, b'\n' | b'\r') {
+                last_plain_char_before_hardbreak_spaces = None;
+            }
             last_plain_char = Some(c);
         }};
     }
@@ -1657,7 +1685,11 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
             track!($off, txt.len());
             crate::metrics::scan_work(txt.len()); // A1: charge copied pending bytes (O(n))
             pending.push_str(txt);
-            last_plain_char_after_append(txt, &mut last_plain_char);
+            update_markdown_plain_state(
+                txt,
+                &mut last_plain_char,
+                &mut last_plain_char_before_hardbreak_spaces,
+            );
         }};
     }
     macro_rules! resync_here {
@@ -1839,6 +1871,9 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 };
                 if ctx.breaks {
                     if let Some(hardbreak_start) = markdown_hardbreak_start(&pending) {
+                        if let Some(state) = last_plain_char_before_hardbreak_spaces {
+                            last_plain_char = state;
+                        }
                         let kept_source_end = plain_origin_boundary(
                             &plain_origins,
                             hardbreak_start,
@@ -1883,9 +1918,13 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 } else if c == b'\r' {
                     append_transformed!(off, 1usize, off, "\n");
                 } else {
-                    push_byte!(off, b'\n');
+                    track!(off, 1usize);
+                    crate::metrics::scan_work(1);
+                    pending.push('\n');
+                    last_plain_char = Some(b'\n');
                 }
                 fresh = true;
+                last_plain_char_before_hardbreak_spaces = None;
                 t += 1;
             }
             // inline.ml:1345 — `| '#' -> hash_tag config`
