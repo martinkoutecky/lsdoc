@@ -20,6 +20,10 @@ jobs:
   build:
     name: ${{ matrix.asset }}
     runs-on: ${{ matrix.os }}
+    # Fail a leg fast if a hosted runner never gets assigned, rather than letting it
+    # sit queued until the 24h workflow limit cancels the whole run (which is what
+    # the retired macos-13 Intel runner did to v0.5.2/v0.5.3/v0.5.4).
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -30,9 +34,13 @@ jobs:
           - os: ubuntu-24.04-arm
             asset: lsdoc-parse-linux-arm64
             bin: lsdoc-parse
-          - os: macos-13
+          # Intel macOS: cross-compiled on the Apple-Silicon runner because GitHub
+          # retired the macos-13 (x64) hosted runner — jobs targeting it queue
+          # forever. lsdoc is pure Rust (no C deps), so this cross build is clean.
+          - os: macos-14
             asset: lsdoc-parse-macos-x64
             bin: lsdoc-parse
+            target: x86_64-apple-darwin
           - os: macos-14
             asset: lsdoc-parse-macos-arm64
             bin: lsdoc-parse
@@ -53,13 +61,22 @@ jobs:
       # NOTE: CI uses the standard rustup toolchain — do NOT source scripts/env.sh
       # here; that file targets the /aux dev box only.
       - name: Build lsdoc-parse
-        run: cargo build --release --bin lsdoc-parse
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.target }}" ]; then
+            rustup target add "${{ matrix.target }}"
+            cargo build --release --target "${{ matrix.target }}" --bin lsdoc-parse
+            echo "BIN_DIR=target/${{ matrix.target }}/release" >> "$GITHUB_ENV"
+          else
+            cargo build --release --bin lsdoc-parse
+            echo "BIN_DIR=target/release" >> "$GITHUB_ENV"
+          fi
 
       - name: Stage asset
         shell: bash
         run: |
           mkdir -p dist
-          cp "target/release/${{ matrix.bin }}" "dist/${{ matrix.asset }}"
+          cp "$BIN_DIR/${{ matrix.bin }}" "dist/${{ matrix.asset }}"
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
