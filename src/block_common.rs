@@ -599,12 +599,26 @@ pub(crate) struct RawHtmlScan {
 impl RawHtmlScan {
     pub(crate) fn new() -> Self {
         Self {
-            no_tag_end_until: vec![0; crate::inline::HICCUP_TAGS.len()],
+            // Lazily sized: a block with no raw-HTML tag never touches this, so the
+            // per-block ~110-entry allocation is deferred to the first tag closer
+            // miss (audit4 F12 — Tine constructs one RawHtmlScan per projected block).
+            no_tag_end_until: Vec::new(),
             no_special_until: [0; 4],
             tag_indexes: Vec::new(),
             #[cfg(debug_assertions)]
             input_id: None,
         }
+    }
+
+    fn no_tag_end_until(&self, index: usize) -> usize {
+        self.no_tag_end_until.get(index).copied().unwrap_or(0)
+    }
+
+    fn set_no_tag_end_until(&mut self, index: usize, value: usize) {
+        if self.no_tag_end_until.is_empty() {
+            self.no_tag_end_until = vec![0; crate::inline::HICCUP_TAGS.len()];
+        }
+        self.no_tag_end_until[index] = value;
     }
 
     fn guard_input(&mut self, _input: &str) {
@@ -1378,7 +1392,7 @@ fn parse_raw_html_at_cached_with_gate(
     let head = raw_html_head_at(input, opener, body_end, require_peek)?;
     if let Some(s) = state.as_deref() {
         match head {
-            RawHtmlHead::Tag { index, .. } if s.no_tag_end_until[index] >= body_end => return None,
+            RawHtmlHead::Tag { index, .. } if s.no_tag_end_until(index) >= body_end => return None,
             RawHtmlHead::Special { miss, .. } if s.no_special_until[miss] >= body_end => {
                 return None
             }
@@ -1389,7 +1403,7 @@ fn parse_raw_html_at_cached_with_gate(
         RawHtmlAttempt::Match(extent) => Some(extent),
         RawHtmlAttempt::Miss(RawHtmlMiss::MissingTagCloser { index }) => {
             if let Some(s) = state.as_deref_mut() {
-                s.no_tag_end_until[index] = body_end;
+                s.set_no_tag_end_until(index, body_end);
             }
             None
         }
