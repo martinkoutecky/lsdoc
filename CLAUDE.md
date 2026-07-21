@@ -88,3 +88,8 @@ Three deliberate exceptions, all documented and none a regression:
   mldoc semantics for nested positive `#+BEGIN_X` indent frames where all-whitespace `safe_sub`
   no-ops do not compose cumulatively. The min segment tree is Vec-backed, excludes zero increments,
   and charges push/pop/query descent nodes via `scan_work`.
+- **inline hiccup closer index** (`build_hiccup_close_sparse`) — the sparse `[:`→`]` pairs are
+  filled at open time (opener-sorted by construction, no sort), but the inline-context lookup
+  (`hiccup_sparse_close_at`) is still a `binary_search`: O(H log H) over H = hiccup openers ≤ n, on
+  the inline-only path (property values / previews). The BLOCK path (`HiccupClosers`) is fully O(n) —
+  a monotone cursor, no sort, no binary search. Both had an O(H log H) `sort_unstable` until audit4 F9.

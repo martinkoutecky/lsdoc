@@ -4425,21 +4425,24 @@ pub(crate) fn build_hiccup_close(s: &str) -> Vec<usize> {
 fn build_hiccup_close_sparse(s: &str) -> Vec<(usize, usize)> {
     let b = s.as_bytes();
     let n = b.len();
-    let mut pairs = Vec::new();
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
     let mut in_string = false;
     let mut p = 0;
-    // scan-owner: (sort exception) sparse inline hiccup close index — one linear
-    // delimiter pass plus one sort over matched opener pairs, avoiding dense per-byte tables.
+    // scan-owner: sparse inline hiccup close index — one linear delimiter pass.
+    // Slots are reserved at OPEN (`[:`) and filled at the matching `]`, so `pairs`
+    // is opener-sorted BY CONSTRUCTION (openers are visited in increasing position)
+    // — no sort pass (audit4 F9). `usize::MAX` marks an unclosed opener.
     while p < n {
         match b[p] {
             b'[' if p + 1 < n && b[p + 1] == b':' => {
-                stack.push(p);
+                stack.push(pairs.len());
+                pairs.push((p, usize::MAX));
                 p += 2;
             }
             b']' if !in_string => {
-                if let Some(o) = stack.pop() {
-                    pairs.push((o, p + 1));
+                if let Some(idx) = stack.pop() {
+                    pairs[idx].1 = p + 1;
                 }
                 p += 1;
             }
@@ -4452,15 +4455,19 @@ fn build_hiccup_close_sparse(s: &str) -> Vec<(usize, usize)> {
             c => p += char_len(c),
         }
     }
-    pairs.sort_unstable_by_key(|&(opener, _)| opener);
     pairs
 }
 
 fn hiccup_sparse_close_at(pairs: &[(usize, usize)], opener: usize) -> Option<usize> {
-    pairs
+    // `pairs` is opener-sorted by construction (see build_hiccup_close_sparse).
+    match pairs
         .binary_search_by_key(&opener, |&(at, _)| at)
         .ok()
         .map(|idx| pairs[idx].1)
+    {
+        Some(usize::MAX) | None => None,
+        Some(close) => Some(close),
+    }
 }
 
 /// Pair `[[`…`]]` the way `match_brackets` (nested-link) balances them — a delimiter

@@ -158,7 +158,10 @@ impl<'a> SourceScanner<'a> {
                     if self.hiccup_stack.is_empty() {
                         self.hiccup_in_string = false;
                     }
-                    self.hiccup_stack.push(self.i);
+                    // Reserve the opener slot now (open order = increasing position,
+                    // so the index is opener-sorted); the stack holds its pair index.
+                    let idx = self.events.hiccup_close.open(self.i);
+                    self.hiccup_stack.push(idx);
                     self.i += 2;
                 }
                 b'[' => {
@@ -168,8 +171,8 @@ impl<'a> SourceScanner<'a> {
                 b']' => {
                     crate::metrics::scan_work(1);
                     if !self.hiccup_in_string {
-                        if let Some(opener) = self.hiccup_stack.pop() {
-                            self.events.hiccup_close.push(opener, self.i + 1);
+                        if let Some(idx) = self.hiccup_stack.pop() {
+                            self.events.hiccup_close.close(idx, self.i + 1);
                             if self.hiccup_stack.is_empty() {
                                 self.hiccup_in_string = false;
                             }
@@ -194,7 +197,6 @@ impl<'a> SourceScanner<'a> {
         if self.start < self.input.len() {
             self.push_line(self.input.len(), self.input.len(), Eol::Eof);
         }
-        self.events.hiccup_close.finish();
     }
 
     fn push_line(&mut self, end: usize, text_end: usize, eol: Eol) {
@@ -337,31 +339,63 @@ fn ci_strip_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     Some(&s[p.len()..])
 }
 
+/// Sparse `[:` opener → `]` close-end index. Records are appended at OPEN time
+/// (`open`) and their close filled on the matching `]` (`close`). Because the scanner
+/// visits openers in strictly increasing byte position, `pairs` is sorted by opener
+/// BY CONSTRUCTION — no sort pass (audit4 F9 removed an O(H log H) `sort_unstable`).
+/// Lookups use a monotone cursor: the sole parser caller queries openers
+/// outer-then-inner, i.e. in increasing position, so the cursor makes `at` amortized
+/// O(1); a rare out-of-order query falls back to a binary search over the sorted vec,
+/// so correctness never depends on the monotonicity assumption.
 pub(crate) struct HiccupClosers {
     pairs: Vec<(usize, usize)>,
+    cursor: Cell<usize>,
 }
+
+const HICCUP_UNCLOSED: usize = usize::MAX;
 
 impl HiccupClosers {
     fn new() -> HiccupClosers {
-        HiccupClosers { pairs: Vec::new() }
+        HiccupClosers {
+            pairs: Vec::new(),
+            cursor: Cell::new(0),
+        }
     }
 
-    fn push(&mut self, opener: usize, close_end: usize) {
-        self.pairs.push((opener, close_end));
+    /// Reserve a slot for an opener; returns its index for the matching `close`.
+    fn open(&mut self, opener: usize) -> usize {
+        let idx = self.pairs.len();
+        self.pairs.push((opener, HICCUP_UNCLOSED));
+        idx
     }
 
-    fn finish(&mut self) {
-        // scan-owner: (sort exception) sparse hiccup closer index — one record per
-        // matched `[:` opener, sorted once so parser lookups do not allocate a dense
-        // input-sized table.
-        self.pairs.sort_unstable_by_key(|&(opener, _)| opener);
+    fn close(&mut self, idx: usize, close_end: usize) {
+        self.pairs[idx].1 = close_end;
+    }
+
+    fn resolve(&self, idx: usize) -> Option<usize> {
+        match self.pairs.get(idx) {
+            Some(&(_, HICCUP_UNCLOSED)) | None => None,
+            Some(&(_, close)) => Some(close),
+        }
     }
 
     pub(crate) fn at(&self, opener: usize) -> Option<usize> {
-        self.pairs
+        let cur = self.cursor.get();
+        if let Some(&(at, _)) = self.pairs.get(cur) {
+            if at == opener {
+                self.cursor.set(cur + 1);
+                return self.resolve(cur);
+            }
+        }
+        // Out-of-order (or first) query: binary search the opener-sorted vec, then
+        // re-seat the cursor just past it so a resumed monotone run stays O(1).
+        let idx = self
+            .pairs
             .binary_search_by_key(&opener, |&(at, _)| at)
-            .ok()
-            .map(|idx| self.pairs[idx].1)
+            .ok()?;
+        self.cursor.set(idx + 1);
+        self.resolve(idx)
     }
 }
 
