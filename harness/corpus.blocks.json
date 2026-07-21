@@ -2362,15 +2362,30 @@
  {
   "id": "b472",
   "cat": "splitsuffix",
-  "input": "- $$x$$\n#+BEGIN_NOTE\nx\n#+END_NOTE"
+  "input": "- $$a$$ $$b$$ $$c$$ tail"
  },
  {
   "id": "b473",
   "cat": "splitsuffix",
-  "input": "- $$x$$ #+BEGIN_SRC c\nx\n#+END_SRC"
+  "input": "- $$a$$ $$b$$ #+BEGIN_NOTE\nx\n#+END_NOTE"
  },
  {
   "id": "b474",
+  "cat": "splitsuffix",
+  "input": "- $$a$$ <div>x</div> $$b$$"
+ },
+ {
+  "id": "b475",
+  "cat": "splitsuffix",
+  "input": "- $$x$$\n#+BEGIN_NOTE\nx\n#+END_NOTE"
+ },
+ {
+  "id": "b476",
+  "cat": "splitsuffix",
+  "input": "- $$x$$ #+BEGIN_SRC c\nx\n#+END_SRC"
+ },
+ {
+  "id": "b477",
   "cat": "splitsuffix",
   "input": "- $$x$$ #+BEGIN_NOTE\nx"
  }

@@ -634,6 +634,9 @@ add("splitsuffix", "- $$x$$ # #+BEGIN_NOTE\nx\n#+END_NOTE");          // math �
 add("splitsuffix", "- <div>x</div> # #+BEGIN_NOTE\nx\n#+END_NOTE");   // raw HTML → nested heading → container
 add("splitsuffix", "- :PROPERTIES:\n:k: v\n:END: # #+BEGIN_NOTE\nx\n#+END_NOTE");   // drawer close → heading → container
 add("splitsuffix", "- :PROPERTIES:\n:k: v\n:END: $$y$$ #+BEGIN_NOTE\nx\n#+END_NOTE"); // drawer close → math → container
+add("splitsuffix", "- $$a$$ $$b$$ $$c$$ tail");                      // F1: adjacent math chain (was O(n^2))
+add("splitsuffix", "- $$a$$ $$b$$ #+BEGIN_NOTE\nx\n#+END_NOTE");      // F1: math chain → container
+add("splitsuffix", "- $$a$$ <div>x</div> $$b$$");                    // F1: math / raw-html / math interleave
 add("splitsuffix", "- $$x$$\n#+BEGIN_NOTE\nx\n#+END_NOTE");           // control: container on next line
 add("splitsuffix", "- $$x$$ #+BEGIN_SRC c\nx\n#+END_SRC");            // control: special body block same line
 add("splitsuffix", "- $$x$$ #+BEGIN_NOTE\nx");                        // control: unclosed container

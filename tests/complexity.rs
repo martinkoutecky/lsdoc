@@ -243,6 +243,14 @@ fn emph_alt(n: usize) -> String {
 fn display_math_adjacent(n: usize) -> String {
     "$$x$$".repeat(n)
 }
+/// GH #209 audit4 F1: adjacent block-level `$$` under a bullet/heading SPLIT title.
+/// The top-level `display_math_adjacent` was single-pass, but the split-title path
+/// recursed one frame per segment and re-ran the pre-check ladder (O(remaining)
+/// each) → O(n²) time + O(n) stack. The `- ` prefix is the whole point; without it
+/// the input never enters `split_suffix_blocks`.
+fn display_math_split_title(n: usize) -> String {
+    format!("- {}tail", "$$x$$ ".repeat(n))
+}
 /// One block-level `$$` opener with no close. O(n²) if failed openers rescan EOF per line.
 fn display_math_unclosed_tail(n: usize) -> String {
     format!("$$x\n{}", "tail\n".repeat(n))
@@ -1478,6 +1486,8 @@ fn complexity_gate() {
         assert_linear("emph_alt", emph_alt, 3000, "org");
         assert_linear("display_math_adjacent", display_math_adjacent, 3000, "md");
         assert_linear("display_math_adjacent", display_math_adjacent, 3000, "org");
+        assert_linear("display_math_split_title", display_math_split_title, 3000, "md");
+        assert_linear("display_math_split_title", display_math_split_title, 3000, "org");
         assert_linear(
             "display_math_unclosed_tail",
             display_math_unclosed_tail,

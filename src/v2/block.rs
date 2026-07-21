@@ -6472,92 +6472,119 @@ fn bounded_split_suffix_blocks(
         };
     }
 
-    if let Some(opener_off) = displayed_math_opener(title) {
-        let opener = title_start + opener_off;
-        let Some(close) = find_displayed_math_close(source.input, opener, source.input.len())
-        else {
-            return None;
-        };
-        let close_end = close + 2;
-        let Some(close_line) = line_containing_text_pos(&source.lines, line_idx, close_end) else {
-            return None;
-        };
-        let content_end = line_text_end(&source.lines[close_line]);
-        let math_text = &source.input[opener + 2..close];
-        crate::metrics::scan_work(math_text.len());
-        if close_end < content_end {
-            let math = Block::DisplayedMath {
-                text: math_text.to_string(),
-                span: Some(Span(title_start, close_end)),
+    if displayed_math_opener(title).is_some() {
+        // Adjacent block-level `$$…$$` segments are peeled ITERATIVELY here, not by
+        // re-entering `split_suffix_blocks` per segment (GH #209 audit4 F1: a bullet/
+        // heading split title like `- $$a$$ $$b$$ …` recursed one native frame per
+        // segment AND re-ran the whole pre-check ladder — `is_hr_line` etc. charge
+        // O(remaining suffix) each — giving O(n²) time plus O(n) stack that a stack
+        // overflow (SIGABRT, uncatchable by Tine's per-page catch_unwind) rides on.
+        // A `$$`-leading suffix matches no earlier ladder branch, so peeling straight
+        // to the math computation is exact; only the first NON-math tail is handed to
+        // the ladder, once. This mirrors the linear top-level `displayed_math_sequence`.
+        let mut math_blocks: Vec<Block> = Vec::new();
+        let mut cur_line = line_idx;
+        let mut cur_start = title_start;
+        loop {
+            let line = &source.lines[cur_line];
+            let rel = cur_start - line.start;
+            let cur_text = &line.text[rel..];
+            let Some(opener_off) = displayed_math_opener(cur_text) else {
+                // First non-math same-line tail: hand off to the combinator ONCE,
+                // then to the rejection/delegation ladder — with all accumulated math
+                // prepended. Reached only with math_blocks non-empty (title was math).
+                let tail = &source.input[cur_start..line_text_end(&source.lines[cur_line])];
+                if let Some(split) = split_suffix_blocks(
+                    source,
+                    cur_line,
+                    cur_start,
+                    format,
+                    drawer_end_cursor,
+                    property_end_cursor,
+                    fence_cursor,
+                    raw_html_scan,
+                ) {
+                    math_blocks.extend(split.blocks);
+                    return Some(BoundedSplit {
+                        blocks: math_blocks,
+                        next: split.next,
+                        tail_start: split.tail_start,
+                    });
+                }
+                if invalid_raw_html_tail_at(source, cur_line, cur_start, raw_html_scan)
+                    || rejected_fence_tail_at(source, cur_line, cur_start, fence_cursor)
+                    || rejected_table_tail_at(source, cur_line, cur_start, format)
+                    || rejected_regular_list_tail_at(source, cur_line, cur_start, format)
+                    || rejected_footnote_tail_at(source, cur_line, cur_start, format)
+                    || unclosed_markdown_drawer_tail_at(source, cur_line, cur_start, format)
+                    || rejected_markdown_property_tail_at(source, cur_line, cur_start, format)
+                    || rejected_directive_property_tail_at(source, cur_line, cur_start)
+                    || rejected_blockquote_tail_at(source, cur_line, cur_start, format)
+                    || malformed_latex_tail_at(source, cur_line, cur_start)
+                    || rejected_begin_tail_at(source, cur_line, cur_start)
+                {
+                    return Some(BoundedSplit {
+                        blocks: math_blocks,
+                        next: cur_line + 1,
+                        tail_start: Some((cur_line, cur_start)),
+                    });
+                }
+                if directive_line(tail).is_some()
+                    || comment_line(tail, format).is_some()
+                    || heading_start(tail, format)
+                    || property_or_drawer_start(tail, format)
+                    || footnote_definition_start(tail, source.lines[cur_line].eol, format)
+                    || raw_html_tail_start(tail)
+                    || could_start_non_paragraph(tail, format)
+                {
+                    return None;
+                }
+                return Some(BoundedSplit {
+                    blocks: math_blocks,
+                    next: cur_line + 1,
+                    tail_start: Some((cur_line, cur_start)),
+                });
             };
-            let tail = &source.input[close_end..content_end];
-            if let Some(split) = split_suffix_blocks(
-                source,
-                close_line,
-                close_end,
-                format,
-                drawer_end_cursor,
-                property_end_cursor,
-                fence_cursor,
-                raw_html_scan,
-            ) {
-                let mut blocks = vec![math];
-                blocks.extend(split.blocks);
-                return Some(BoundedSplit {
-                    blocks,
-                    next: split.next,
-                    tail_start: split.tail_start,
-                });
-            }
-            if invalid_raw_html_tail_at(source, close_line, close_end, raw_html_scan)
-                || rejected_fence_tail_at(source, close_line, close_end, fence_cursor)
-                || rejected_table_tail_at(source, close_line, close_end, format)
-                || rejected_regular_list_tail_at(source, close_line, close_end, format)
-                || rejected_footnote_tail_at(source, close_line, close_end, format)
-                || unclosed_markdown_drawer_tail_at(source, close_line, close_end, format)
-                || rejected_markdown_property_tail_at(source, close_line, close_end, format)
-                || rejected_directive_property_tail_at(source, close_line, close_end)
-                || rejected_blockquote_tail_at(source, close_line, close_end, format)
-                || malformed_latex_tail_at(source, close_line, close_end)
-                || rejected_begin_tail_at(source, close_line, close_end)
-            {
-                return Some(BoundedSplit {
-                    blocks: vec![math],
-                    next: close_line + 1,
-                    tail_start: Some((close_line, close_end)),
-                });
-            }
-            if directive_line(tail).is_some()
-                || comment_line(tail, format).is_some()
-                || heading_start(tail, format)
-                || property_or_drawer_start(tail, format)
-                || footnote_definition_start(tail, source.lines[close_line].eol, format)
-                || raw_html_tail_start(tail)
-                || could_start_non_paragraph(tail, format)
-            {
+            let opener = cur_start + opener_off;
+            let Some(close) = find_displayed_math_close(source.input, opener, source.input.len())
+            else {
                 return None;
+            };
+            let close_end = close + 2;
+            let Some(close_line) = line_containing_text_pos(&source.lines, cur_line, close_end)
+            else {
+                return None;
+            };
+            let content_end = line_text_end(&source.lines[close_line]);
+            let math_text = &source.input[opener + 2..close];
+            crate::metrics::scan_work(math_text.len());
+            if close_end < content_end {
+                math_blocks.push(Block::DisplayedMath {
+                    text: math_text.to_string(),
+                    span: Some(Span(cur_start, close_end)),
+                });
+                cur_line = close_line;
+                cur_start = close_end;
+                continue;
             }
+            // Math is the rest of the line (plus any trailing blank lines): terminal.
+            let mut next = close_line + 1;
+            let mut span_end = source.lines[close_line].end;
+            while next < source.lines.len() && source.lines[next].text.is_empty() {
+                crate::metrics::scan_work(1);
+                span_end = source.lines[next].end;
+                next += 1;
+            }
+            math_blocks.push(Block::DisplayedMath {
+                text: math_text.to_string(),
+                span: Some(Span(cur_start, span_end)),
+            });
             return Some(BoundedSplit {
-                blocks: vec![math],
-                next: close_line + 1,
-                tail_start: Some((close_line, close_end)),
+                blocks: math_blocks,
+                next,
+                tail_start: None,
             });
         }
-        let mut next = close_line + 1;
-        let mut span_end = source.lines[close_line].end;
-        while next < source.lines.len() && source.lines[next].text.is_empty() {
-            crate::metrics::scan_work(1);
-            span_end = source.lines[next].end;
-            next += 1;
-        }
-        return Some(BoundedSplit {
-            blocks: vec![Block::DisplayedMath {
-                text: math_text.to_string(),
-                span: Some(Span(title_start, span_end)),
-            }],
-            next,
-            tail_start: None,
-        });
     }
 
     if latex_env_opener_at(source, line_idx, title_start) {
@@ -8276,6 +8303,8 @@ mod tests {
             "- :PROPERTIES:\n:k: v\n:END: $$y$$ #+BEGIN_NOTE\nx\n#+END_NOTE", // drawer close → math → container
             "- <i>h</i> <b>t</b>",                                    // raw HTML → failed short candidate tail
             "- <i>h</i><b>t</b>",
+            "- $$a$$ $$b$$ $$c$$ tail",                               // F1: adjacent math chain (iterative peel)
+            "- $$a$$ $$b$$ #+BEGIN_NOTE\nx\n#+END_NOTE",              // F1: math chain → container
         ] {
             assert!(try_parse(input, "md").is_some(), "unowned: {input:?}");
         }
