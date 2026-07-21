@@ -3839,6 +3839,8 @@ fn scan_cookie_int(body: &str, mut i: usize) -> Option<(i64, usize)> {
 /// Accept only values inside OCaml-jsoo's 32-bit `int` domain; `None` outside it,
 /// so every emulated `%d` conversion rejects the same overflows mldoc does.
 fn ocaml_int32(n: i64) -> Option<i64> {
+    // scan-owner: (n/a) O(1) numeric range test, not an input scan — a single
+    // RangeInclusive::contains bounds check on an already-parsed integer.
     (i64::from(i32::MIN)..=i64::from(i32::MAX))
         .contains(&n)
         .then_some(n)

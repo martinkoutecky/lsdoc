@@ -616,6 +616,8 @@ impl RawHtmlScan {
 
     fn set_no_tag_end_until(&mut self, index: usize, value: usize) {
         if self.no_tag_end_until.is_empty() {
+            // scan-owner: (b) fixed-size closer-miss memo, bounded tag universe —
+            // one-time lazy allocation of the |HICCUP_TAGS| direct-index table.
             self.no_tag_end_until = vec![0; crate::inline::HICCUP_TAGS.len()];
         }
         self.no_tag_end_until[index] = value;
