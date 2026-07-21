@@ -312,6 +312,10 @@ fn walk_inlines(inlines: &[Inline], page: &mut Vec<String>, block: &mut Vec<Stri
                         stack.push(children);
                     }
                 }
+                // Org inline-footnote definition subtree carries refs (audit4 F5).
+                Inline::Fnref { definition, .. } if !definition.is_empty() => {
+                    stack.push(definition);
+                }
                 Inline::ExportSnippet { .. } => {}
                 _ => {}
             }
@@ -365,13 +369,18 @@ fn block_ref_from_link(url: &Url) -> Option<String> {
 }
 
 fn first_label_value(label: &[Inline]) -> Option<Cow<'_, str>> {
+    // OG `get-page-reference` File branch is `(second (first label))`: the raw second
+    // field of the first label inline. That is a page ref only when it is a STRING
+    // (Plain/Code/Verbatim), plus the two explicit OG-mirrored object cases
+    // (Nested_link content, Tag). An Entity's second field is a map, not a string, so
+    // OG yields a non-string the projection drops — NOT its Unicode rendering.
+    // Promoting Entity to `unicode` here indexed a phantom page (audit4 F4).
     match label.first()? {
         Inline::Plain { text, .. } | Inline::Code { text, .. } | Inline::Verbatim { text, .. } => {
             Some(Cow::Borrowed(text))
         }
         Inline::NestedLink { content, .. } => Some(Cow::Borrowed(content)),
         Inline::Tag { children, .. } => Some(tag_text(children)),
-        Inline::Entity { unicode, .. } => Some(Cow::Borrowed(unicode)),
         _ => None,
     }
 }

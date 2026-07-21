@@ -2109,6 +2109,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         out.push(Inline::Fnref {
                             name,
                             span: Some(Span(base + off, base + e)),
+                            definition: Vec::new(),
                         });
                         end = Some(e);
                     }

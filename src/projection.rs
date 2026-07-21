@@ -626,6 +626,12 @@ pub enum Inline {
         name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         span: Option<Span>,
+        // Org inline-footnote definition (`[fn::…]` / `[fn:name:…]`) parsed inlines.
+        // NOT serialized — mldoc projects Footnote_Reference down to its name, so this
+        // must not affect block parity — but the definition subtree carries refs
+        // (e.g. `[fn::id://uuid]`) that the ref walker must still see (audit4 F5).
+        #[serde(skip)]
+        definition: Vec<Inline>,
     },
     /// Inline raw HTML, e.g. `<span class="x">…</span>` (mldoc `Inline_Html`).
     #[serde(rename = "inline_html")]

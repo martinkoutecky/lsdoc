@@ -173,6 +173,7 @@ fn plain_fast_path(
                     out.push(Inline::Fnref {
                         name,
                         span: Some(Span(base + i, base + end)),
+                        definition: Vec::new(),
                     });
                     i = end;
                     plain_start = i;
@@ -290,13 +291,17 @@ fn plain_fast_path(
                 fresh = true;
                 continue;
             }
-            if let Some((end, name)) =
+            if let Some((end, name, def_range)) =
                 crate::org_resolver::org_footnote_at(s, i, &mut org_inline_scan)
             {
                 push_plain(&mut out, s, base, plain_start, i);
+                let definition = def_range.map_or_else(Vec::new, |(ds, de)| {
+                    crate::org_resolver::parse_footnote_definition_inlines_org(&s[ds..de], base + ds)
+                });
                 out.push(Inline::Fnref {
                     name,
                     span: Some(Span(base + i, base + end)),
+                    definition,
                 });
                 i = end;
                 plain_start = i;
@@ -5333,6 +5338,7 @@ mod plain_fast_path_tests {
         Inline::Fnref {
             name: name.to_string(),
             span: Some(Span(start, end)),
+            definition: Vec::new(),
         }
     }
 

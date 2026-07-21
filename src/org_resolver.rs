@@ -325,6 +325,25 @@ pub(crate) fn parse_inline_org(text: &str, base: usize) -> Vec<Inline> {
     parse_ctx(text, Ctx::top(), base)
 }
 
+/// mldoc `footnote_inline_definition` parser subset (lib/syntax/inline.ml): image,
+/// nested-link-or-link, email, link_inline, radio/target, latex fragment, nested
+/// emphasis, entity, code, sub/superscript, plain. Notably NO tags, macros, block
+/// refs, timestamps, hiccup, verbatim, or nested footnotes — so `#tag`/`{{…}}`/
+/// `((uuid))` inside a definition are plain text and yield no refs (audit4 F5).
+pub(crate) fn parse_footnote_definition_inlines_org(text: &str, base: usize) -> Vec<Inline> {
+    let mut ctx = Ctx::top();
+    ctx.use_state = false;
+    ctx.tags = false;
+    ctx.block_refs = false;
+    ctx.macros = false;
+    ctx.export_snippets = false;
+    ctx.timestamps = false;
+    ctx.verbatim = false;
+    ctx.footnotes = false;
+    ctx.hiccup = false;
+    parse_ctx(text, ctx, base)
+}
+
 /// mldoc `Property.property_references`: parse property values with
 /// `inline_skip_macro = true`, then keep only top-level reference-shaped inlines.
 pub(crate) fn parse_property_reference_inlines_org(text: &str, base: usize) -> Vec<Inline> {
@@ -2335,8 +2354,18 @@ fn try_bracket_at(
         }
     }
     if ctx.footnotes {
-        if let Some((end, name)) = org_footnote_at(s, off, org_inline_scan) {
-            return Some((Inline::Fnref { name, span: None }, end));
+        if let Some((end, name, def_range)) = org_footnote_at(s, off, org_inline_scan) {
+            let definition = def_range.map_or_else(Vec::new, |(ds, de)| {
+                parse_footnote_definition_inlines_org(&s[ds..de], base + ds)
+            });
+            return Some((
+                Inline::Fnref {
+                    name,
+                    span: None,
+                    definition,
+                },
+                end,
+            ));
         }
     }
     if let Some((end, node)) = crate::inline::parse_statistics_cookie(s, off) {
@@ -2660,11 +2689,15 @@ fn read_metadata(s: &str, bb: &[u8], end: &mut usize, scan: &mut OrgInlineScan) 
 }
 
 /// `[fn:name]` / `[fn:name:def]` / `[fn::def]` → name — v1 org_footnote_ref.
+// Returns (end, name, definition byte-range within `s`). The definition range is the
+// inline content between the last `:` and the closing `]`; None when there is no
+// definition part (a bare `[fn:name]` reference). Callers parse that range with
+// `parse_footnote_definition_inlines_org` for the ref subtree (audit4 F5).
 pub(crate) fn org_footnote_at(
     s: &str,
     i: usize,
     scan: &mut OrgInlineScan,
-) -> Option<(usize, String)> {
+) -> Option<(usize, String, Option<(usize, usize)>)> {
     let rest = s[i..].strip_prefix("[fn:")?;
     if rest.strip_prefix(':').is_some() {
         let def_start = i + 5;
@@ -2672,7 +2705,7 @@ pub(crate) fn org_footnote_at(
         if close == def_start {
             return None;
         }
-        return Some((close + 1, String::new()));
+        return Some((close + 1, String::new(), Some((def_start, close))));
     }
     let rb = rest.as_bytes();
     let mut j = 0;
@@ -2689,10 +2722,10 @@ pub(crate) fn org_footnote_at(
     if after.starts_with(':') {
         let def_start = i + 4 + j + 1;
         let close = scan.footnote_close(s.as_bytes(), def_start)?;
-        Some((close + 1, name))
+        Some((close + 1, name, Some((def_start, close))))
     } else {
         after.strip_prefix(']')?;
-        Some((i + 4 + j + 1, name))
+        Some((i + 4 + j + 1, name, None))
     }
 }
 

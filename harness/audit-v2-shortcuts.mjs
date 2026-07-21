@@ -588,6 +588,33 @@ function addRefExtractionCases() {
   for (const value of values) add("md-ref-property-parse1", `key:: ${value}`);
   for (const value of values) add("md-ref-property-parse2", `#+KEY: ${value}`);
   for (const value of values) add("md-ref-list-property", `- item\n  key:: ${value}`);
+
+  // audit4 F4: File-link first-label ref extraction — an Entity label must NOT index
+  // a phantom page (it is a non-string OG drops); Plain/Code/Nested/Tag do index.
+  const fileLabels = [
+    "[\\alpha](file:../pages/x.md)",
+    "[hello](file:../pages/x.md)",
+    "[`c`](file:../pages/x.md)",
+    "[[[P]]](file:../pages/x.md)",
+    "[#t](file:../pages/x.md)",
+    "[\\alpha beta](file:../pages/x.md)",
+  ];
+  for (const v of fileLabels) add("md-file-label-ref", v);
+  add("org-file-label-ref", "[[file:../pages/x.org][\\alpha]]", "org");
+
+  // audit4 F5: org inline-footnote DEFINITION carries refs, and only the mldoc subset
+  // (links/nested-links) — a `#tag`/`((uuid))`/`{{embed}}` in a definition is plain.
+  const fnDefs = [
+    "x [fn::id://11111111-1111-1111-1111-111111111111]",
+    "x [fn::[[Target Page]]]",
+    "x [fn:note:id://11111111-1111-1111-1111-111111111111]",
+    "x [fn::#sometag]",
+    "x [fn::((11111111-1111-1111-1111-111111111111))]",
+    "x [fn::{{embed [[P]]}}]",
+    "x [fn::[[P]] and id://11111111-1111-1111-1111-111111111111]",
+    "x [fn:note]",
+  ];
+  for (const v of fnDefs) add("org-fn-def-ref", v, "org");
 }
 
 function addSuppressedRewriteCases() {
