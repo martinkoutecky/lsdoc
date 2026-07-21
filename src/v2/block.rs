@@ -5326,10 +5326,13 @@ fn displayed_math_sequence(
             if blocks.is_empty() {
                 return DisplayedMathDecision::Paragraph;
             }
+            // The unclosed `$$…` run is a paragraph tail; it starts at `start_abs`
+            // (INCLUDING any whitespace between the previous math and this run), not
+            // at `opener` — mldoc keeps that space in the paragraph (audit4 F15).
             return DisplayedMathDecision::Emit {
                 blocks,
                 next: line_idx + 1,
-                tail_start: Some((line_idx, opener)),
+                tail_start: Some((line_idx, start_abs)),
             };
         };
         let close_end = close + 2;
@@ -6701,7 +6704,20 @@ fn bounded_split_suffix_blocks(
             let opener = cur_start + opener_off;
             let Some(close) = find_displayed_math_close(source.input, opener, source.input.len())
             else {
-                return None;
+                // Unclosed `$$` after ≥1 peeled math: the top-level
+                // `displayed_math_sequence` emits the accumulated math and leaves the
+                // unclosed run as a paragraph tail; mirror that so a split title like
+                // `- $$x$$ $$unclosed` is OWNED, not a production panic (audit4 F14).
+                // A first-segment unclosed opener still declines here, so the heading
+                // split falls back to an inline title (mldoc parity for `- $$unclosed`).
+                if math_blocks.is_empty() {
+                    return None;
+                }
+                return Some(BoundedSplit {
+                    blocks: math_blocks,
+                    next: cur_line + 1,
+                    tail_start: Some((cur_line, cur_start)),
+                });
             };
             let close_end = close + 2;
             let Some(close_line) = line_containing_text_pos(&source.lines, cur_line, close_end)
@@ -8493,6 +8509,8 @@ mod tests {
             "- <i>h</i><b>t</b>",
             "- $$a$$ $$b$$ $$c$$ tail",                               // F1: adjacent math chain (iterative peel)
             "- $$a$$ $$b$$ #+BEGIN_NOTE\nx\n#+END_NOTE",              // F1: math chain → container
+            "- $$x$$ $$unclosed",                                     // F14: unclosed math tail → paragraph
+            "- $$a$$ $$b$$ $$un",                                     // F14: unclosed after a chain
         ] {
             assert!(try_parse(input, "md").is_some(), "unowned: {input:?}");
         }

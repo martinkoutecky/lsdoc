@@ -560,6 +560,11 @@ function addSplitSuffixCompositionCases() {
   for (const head of heads)
     for (const mid of mids)
       for (const tail of tails) add("md-split-suffix-chain", `${head}${mid} ${tail}`);
+  // audit4 F14/F15: an unclosed `$$…` after ≥1 closed math is a paragraph tail (with
+  // its leading space), OWNED in both the split-title and top-level paths.
+  for (const head of ["- ", "# ", "- TODO ", ""])
+    for (const chain of ["$$a$$ $$un", "$$a$$ $$b$$ $$un", "$$a$$$$un", "$$a$$   $$un"])
+      add("md-unclosed-math-tail", head + chain);
   // two same-line block prefixes before the tail
   const mids2 = ["$$m$$", "<i>h</i>", "[:div]", "#"];
   const tails2 = ["#+BEGIN_NOTE\nn\n#+END_NOTE", "$$y$$", "<b>t</b>", "plain"];
