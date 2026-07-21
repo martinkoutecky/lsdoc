@@ -80,7 +80,15 @@ fn try_parse_leaf_blocks_in(
     format: &str,
     context: BlockParseContext,
 ) -> Option<Vec<Block>> {
-    let source = Source::scan(input);
+    try_parse_leaf_blocks_in_source(&Source::scan(input), format, context)
+}
+
+fn try_parse_leaf_blocks_in_source(
+    source: &Source<'_>,
+    format: &str,
+    context: BlockParseContext,
+) -> Option<Vec<Block>> {
+    let source = source;
     let mut blocks = Vec::with_capacity(source.lines.len());
     let mut para = ParagraphRun::new(source.input);
     let mut i = 0usize;
@@ -2626,8 +2634,14 @@ fn markdown_blockquote_sequence_at(
         }
     }
 
-    let Some(mut children) = try_parse_quote_only_body(&body, format)
-        .or_else(|| try_parse_leaf_blocks_in(&body, format, BlockParseContext::BlockContent))
+    // Scan the materialized body ONCE and share it between the speculative
+    // quote-only fast path and the generic fallback (audit4 F13: the fast path
+    // used to `Source::scan` the body, decline, then the fallback scanned it again).
+    let body_source = Source::scan(&body);
+    let Some(mut children) = try_parse_quote_only_body_source(&body_source, format)
+        .or_else(|| {
+            try_parse_leaf_blocks_in_source(&body_source, format, BlockParseContext::BlockContent)
+        })
     else {
         return BlockquoteDecision::Delegate;
     };
@@ -2987,16 +3001,19 @@ fn close_quote_fast_frame(stack: &mut Vec<QuoteFastFrame>, body: &str, format: &
 // on that line; accepted paragraph bytes are copied once into paragraph buffers
 // and origin-mapped back to the body. Mixed construct bodies return `None` and
 // use the general v2 block-content parser.
-fn try_parse_quote_only_body(body: &str, format: &str) -> Option<Vec<Block>> {
-    let source = Source::scan(body);
+fn try_parse_quote_only_body_source(source: &Source<'_>, format: &str) -> Option<Vec<Block>> {
+    let body = source.input;
     if source.lines.is_empty() {
         return Some(Vec::new());
     }
 
     let mut stack = vec![QuoteFastFrame::root()];
+    // Reused across lines: the old per-line `Vec::with_capacity(stack.len())` heap-
+    // allocated once per body line even for a flat quote (audit4 F11).
+    let mut views: Vec<QuoteFastLine> = Vec::new();
     for line in &source.lines {
         let full = QuoteFastLine::from_line(line);
-        let mut views = Vec::with_capacity(stack.len());
+        views.clear();
         views.push(full);
         let mut failed_at = None;
         for depth in 1..stack.len() {
