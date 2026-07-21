@@ -3829,7 +3829,19 @@ fn scan_cookie_int(body: &str, mut i: usize) -> Option<(i64, usize)> {
     if i == start {
         return None;
     }
-    body[start..i].parse::<i64>().ok().map(|n| (n, i))
+    // mldoc runs as a jsoo bundle where OCaml `int` is 32-bit, so `Scanf`'s `%d`
+    // (statistics_cookie, inline.ml) FAILS on values outside the 32-bit range and
+    // the cookie falls back to plain text (audit4 F8). Mirror that rejection.
+    let n = body[start..i].parse::<i64>().ok()?;
+    ocaml_int32(n).map(|n| (n, i))
+}
+
+/// Accept only values inside OCaml-jsoo's 32-bit `int` domain; `None` outside it,
+/// so every emulated `%d` conversion rejects the same overflows mldoc does.
+fn ocaml_int32(n: i64) -> Option<i64> {
+    (i64::from(i32::MIN)..=i64::from(i32::MAX))
+        .contains(&n)
+        .then_some(n)
 }
 
 fn scan_absolute_cookie(body: &str) -> Option<(i64, i64)> {
@@ -5116,7 +5128,10 @@ fn scan_i64_prefix(b: &[u8], mut i: usize) -> Option<(i64, usize)> {
         .ok()?
         .parse::<i64>()
         .ok()?;
-    Some((n, i))
+    // mldoc's timestamp `%d` conversions are 32-bit under jsoo (audit4 F8): an
+    // out-of-range year/component/repetition fails the conversion — the date parse
+    // rejects, or the repetition is dropped while the date stands.
+    Some((ocaml_int32(n)?, i))
 }
 
 /// Port of `Timestamp.parse_date`: `Scanf.sscanf s "%d-%d-%d"` with prefix
