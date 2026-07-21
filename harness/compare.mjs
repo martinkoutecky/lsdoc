@@ -63,10 +63,13 @@ const allowedHit = []; // allowlisted ids that did diverge (expected)
 // so we filter on a substring of the input instead via --grep).
 const grep = (process.argv.find((a) => a.startsWith("--grep=")) || "").slice(7);
 
+const oracleErrs = [];
 for (const o of oracle) {
   const l = byId[o.id];
   if (!l) { missing++; continue; }
-  if (o.err || !o.projection) continue; // oracle parse error — skip
+  // Oracle parse error — FAIL CLOSED (audit4 C4: skipping shrank the denominator
+  // and the run exited green while lsdoc owned the input with an unchecked result).
+  if (o.err || !o.projection) { oracleErrs.push({ id: o.id, input: o.input, err: o.err }); continue; }
   const op = o.projection, lp = l.projection;
 
   const allowed = o.id in allow;
@@ -95,6 +98,10 @@ console.log(`  refs       match: ${refsOk}/${total}   (${refDiffs.length} diffs)
 console.log(`  block-struct match: ${structOk}/${total}   (${structDiffs.length} diffs)   [M2 gate]`);
 console.log(`  blocks-full  match: ${blocksOk}/${total}   (${blockDiffs.length} diffs)   [M3/M4 gate]`);
 if (missing) console.log(`  MISSING from lsdoc output: ${missing}`);
+if (oracleErrs.length) {
+  console.log(`  ORACLE ERRORS (fail-closed): ${oracleErrs.length}`);
+  for (const e of oracleErrs.slice(0, 12)) console.log(`    ${e.id}  ${JSON.stringify(e.input).slice(0, 160)}  — ${e.err}`);
+}
 if (allowedHit.length) {
   console.log(`  allowlisted deviations (excluded): ${allowedHit.length}`);
   for (const a of allowedHit) console.log(`    ${a.id} — ${a.reason}`);
@@ -114,5 +121,6 @@ const show = (label, arr, fmt) => {
 show("block-struct", structDiffs, (b) => JSON.stringify(b).slice(0, 240));
 show("ref", refDiffs, (r) => JSON.stringify(r));
 
-// Exit non-zero if anything diverges, so the runner can gate on it.
-process.exit(refDiffs.length + blockDiffs.length + missing === 0 ? 0 : 1);
+// Exit non-zero if anything diverges — including oracle errors, which are a
+// gate defect (unverifiable input), never a pass.
+process.exit(refDiffs.length + blockDiffs.length + missing + oracleErrs.length === 0 ? 0 : 1);

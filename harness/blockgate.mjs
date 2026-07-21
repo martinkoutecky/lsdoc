@@ -68,10 +68,13 @@ const r = spawnSync("cargo", ["run", "-q", "--bin", "lsdoc-parse", "--", corpusP
 if (r.status !== 0) { console.error("lsdoc-parse FAILED (possible panic):\n", r.stderr?.slice(-2000)); process.exit(1); }
 const byId = Object.fromEntries(JSON.parse(readFileSync(outPath, "utf8")).map(x => [x.id, x]));
 
-let refMis = 0, blkMis = 0, shown = 0;
+let refMis = 0, blkMis = 0, shown = 0, oracleErr = 0, lsdocMissing = 0;
 for (const inp of inputs) {
-  let op; try { op = oracle(inp.input, inp.format); } catch { continue; }
-  const lp = byId[inp.id]?.projection; if (!lp) continue;
+  // Fail closed on oracle errors / missing lsdoc output (audit4 C4).
+  let op; try { op = oracle(inp.input, inp.format); } catch (e) {
+    oracleErr++; console.log(`ORACLE ERROR ${inp.id} — ${e}`); continue;
+  }
+  const lp = byId[inp.id]?.projection; if (!lp) { lsdocMissing++; console.log(`LSDOC MISSING ${inp.id}`); continue; }
   const rb = S(op.refs) !== S(lp.refs), bb = S(op.blocks) !== S(lp.blocks);
   if (rb) refMis++; if (bb) blkMis++;
   if ((rb || bb) && shown < 25) {
@@ -82,6 +85,7 @@ for (const inp of inputs) {
     if (rb) { console.log(`  refs O: ${S(op.refs)}  L: ${S(lp.refs)}`); }
   }
 }
-console.log(`\nblockgate: ${inputs.length} real blocks — refMismatch=${refMis} blockMismatch=${blkMis}`);
-console.log(refMis + blkMis === 0 ? "✓ 0 diffs on real block bodies." : `✗ ${refMis + blkMis} diffs.`);
-process.exit(refMis + blkMis === 0 ? 0 : 2);
+console.log(`\nblockgate: ${inputs.length} real blocks — refMismatch=${refMis} blockMismatch=${blkMis}${oracleErr ? ` ORACLE-ERR=${oracleErr}` : ""}${lsdocMissing ? ` LSDOC-MISSING=${lsdocMissing}` : ""}`);
+const bad = refMis + blkMis + oracleErr + lsdocMissing;
+console.log(bad === 0 ? "✓ 0 diffs on real block bodies." : `✗ ${bad} diffs/errors.`);
+process.exit(bad === 0 ? 0 : 2);

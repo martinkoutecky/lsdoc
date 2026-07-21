@@ -94,12 +94,22 @@ if (r.status !== 0) {
 const lsdoc = JSON.parse(readFileSync(outPath, "utf8"));
 const byId = Object.fromEntries(lsdoc.map((x) => [x.id, x]));
 
-let refMismatch = 0, blockMismatch = 0, shown = 0;
+let refMismatch = 0, blockMismatch = 0, shown = 0, oracleErr = 0, lsdocMissing = 0;
 for (const c of inputs) {
   let op;
-  try { op = parseToProjection(c.input); } catch { continue; }
+  // Oracle error / missing lsdoc output — FAIL CLOSED (audit4 C4), don't shrink
+  // the denominator silently.
+  try { op = parseToProjection(c.input); } catch (e) {
+    oracleErr++;
+    if (shown < 25) { shown++; console.log(`ORACLE ERROR ${c.id} ${JSON.stringify(c.input).slice(0, 160)} — ${e}`); }
+    continue;
+  }
   const lp = byId[c.id]?.projection;
-  if (!lp) continue;
+  if (!lp) {
+    lsdocMissing++;
+    if (shown < 25) { shown++; console.log(`LSDOC MISSING ${c.id} ${JSON.stringify(c.input).slice(0, 160)}`); }
+    continue;
+  }
   const rb = S(op.refs) !== S(lp.refs);
   const bb = S(op.blocks) !== S(lp.blocks);
   if (rb) refMismatch++;
@@ -111,5 +121,5 @@ for (const c of inputs) {
     if (bb) console.log(`  blocks O:${S(op.blocks).slice(0, 400)}\n         L:${S(lp.blocks).slice(0, 400)}`);
   }
 }
-console.log(`\nfuzz ${N}: refMismatch=${refMismatch} blockMismatch=${blockMismatch}`);
-process.exit(refMismatch + blockMismatch === 0 ? 0 : 2);
+console.log(`\nfuzz ${N}: refMismatch=${refMismatch} blockMismatch=${blockMismatch}${oracleErr ? ` ORACLE-ERR=${oracleErr}` : ""}${lsdocMissing ? ` LSDOC-MISSING=${lsdocMissing}` : ""}`);
+process.exit(refMismatch + blockMismatch + oracleErr + lsdocMissing === 0 ? 0 : 2);

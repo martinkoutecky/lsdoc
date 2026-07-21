@@ -33,6 +33,7 @@ export function parseToProjection(input, format = "md") {
 
 function main() {
   const corpusPath = process.argv[2] || join(__dir, "corpus.json");
+  const outPath = process.argv[3] || join(__dir, "oracle-out.json"); // audit4 C5: callers may isolate
   const corpus = JSON.parse(readFileSync(corpusPath, "utf8"));
   const out = corpus.map((c) => {
     let projection, err = null;
@@ -40,7 +41,7 @@ function main() {
     catch (e) { err = String(e); projection = null; }
     return { id: c.id, input: c.input, format: c.format || "md", projection, err };
   });
-  writeFileSync(join(__dir, "oracle-out.json"), JSON.stringify(out, null, 1));
+  writeFileSync(outPath, JSON.stringify(out, null, 1));
   const errs = out.filter((o) => o.err).length;
   console.log(`oracle: wrote ${out.length} projections (${errs} errors)`);
 }
