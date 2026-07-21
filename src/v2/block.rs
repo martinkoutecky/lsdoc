@@ -276,20 +276,29 @@ fn try_parse_leaf_blocks_in(
             }
             TableDecision::No => {}
         }
-        match latex_env_sequence(&source, i) {
+        match latex_env_sequence(
+            &source,
+            i,
+            format,
+            &mut drawer_end_cursor,
+            &mut property_end_cursor,
+            &mut fence_cursor,
+            &mut raw_html_scan,
+        ) {
             LatexEnvDecision::Emit {
-                block,
+                blocks: env_blocks,
                 next,
                 tail_start,
             } => {
                 para.flush(&mut blocks, format);
-                blocks.push(block);
+                blocks.extend(env_blocks);
                 if let Some((tail_line, tail_start)) = tail_start {
                     para.push_tail(&source.lines[tail_line], tail_start);
                 }
                 i = next;
                 continue;
             }
+            LatexEnvDecision::Delegate => return None,
             LatexEnvDecision::Paragraph => {
                 para.push_line(line);
                 i += 1;
@@ -4986,10 +4995,11 @@ fn markdown_definition_paragraph(
 
 enum LatexEnvDecision {
     Emit {
-        block: Block,
+        blocks: Vec<Block>,
         next: usize,
         tail_start: Option<(usize, usize)>,
     },
+    Delegate,
     Paragraph,
     No,
 }
@@ -5008,7 +5018,15 @@ struct LatexEnvCapture {
 // scan-owner: (a) consumed-on-match accepted environment — opener/name scan,
 // KMP closer scan, line cursor advance, and content copy are each over disjoint
 // accepted spans; malformed openers decline after one bounded suffix scan.
-fn latex_env_sequence(source: &Source<'_>, i: usize) -> LatexEnvDecision {
+fn latex_env_sequence(
+    source: &Source<'_>,
+    i: usize,
+    format: &str,
+    drawer_end_cursor: &mut usize,
+    property_end_cursor: &mut usize,
+    fence_cursor: &mut usize,
+    raw_html_scan: &mut RawHtmlScan,
+) -> LatexEnvDecision {
     let line = &source.lines[i];
     if !latex_env_opener_at(source, i, line.start) {
         return LatexEnvDecision::No;
@@ -5016,10 +5034,44 @@ fn latex_env_sequence(source: &Source<'_>, i: usize) -> LatexEnvDecision {
     let Ok(capture) = latex_env_capture(source, i, line.start) else {
         return LatexEnvDecision::Paragraph;
     };
-    LatexEnvDecision::Emit {
-        block: capture.block,
-        next: capture.next,
-        tail_start: capture.tail_start,
+    // The same-line tail after `\end{name}` is following blocks in mldoc (top-level
+    // parser resumes its full alternation), not paragraph text (GH #209 audit4 F2).
+    // An EMPTY tail_start (a bare trailing newline) is kept verbatim — mldoc renders
+    // it as a keep_line_break paragraph, which is latex-specific (displayed math
+    // consumes its trailing newline instead).
+    let tail = capture
+        .tail_start
+        .map(|(tail_line, tail_abs)| &source.input[tail_abs..line_text_end(&source.lines[tail_line])]);
+    let Some((tail_line, tail_abs)) = capture.tail_start.filter(|_| !matches!(tail, Some(""))) else {
+        return LatexEnvDecision::Emit {
+            blocks: vec![capture.block],
+            next: capture.next,
+            tail_start: capture.tail_start,
+        };
+    };
+    let tail = &source.input[tail_abs..line_text_end(&source.lines[tail_line])];
+    match compose_same_line_block_tail(
+        source,
+        tail_line,
+        tail_abs,
+        tail,
+        vec![capture.block],
+        format,
+        drawer_end_cursor,
+        property_end_cursor,
+        fence_cursor,
+        raw_html_scan,
+    ) {
+        ComposedTail::Emit {
+            blocks,
+            next,
+            tail_start,
+        } => LatexEnvDecision::Emit {
+            blocks,
+            next,
+            tail_start,
+        },
+        ComposedTail::Delegate => LatexEnvDecision::Delegate,
     }
 }
 
@@ -5269,7 +5321,22 @@ fn displayed_math_sequence(
     }
 }
 
-fn displayed_math_tail(
+// Outcome of composing the same-line tail that follows a consumed leading block
+// (displayed math, latex env, …). `Emit` carries the leading block(s) plus any
+// tail blocks; `Delegate` means the tail looks like a block v2 does not own, so the
+// whole construct must decline. Shared so every "leading block + same-line tail"
+// site composes identically (GH #209 class: latex-env used to skip this and demote
+// its tail to paragraph text).
+enum ComposedTail {
+    Emit {
+        blocks: Vec<Block>,
+        next: usize,
+        tail_start: Option<(usize, usize)>,
+    },
+    Delegate,
+}
+
+fn compose_same_line_block_tail(
     source: &Source<'_>,
     line_idx: usize,
     start_abs: usize,
@@ -5280,9 +5347,9 @@ fn displayed_math_tail(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
-) -> DisplayedMathDecision {
+) -> ComposedTail {
     if text.is_empty() {
-        return DisplayedMathDecision::Emit {
+        return ComposedTail::Emit {
             blocks,
             next: line_idx + 1,
             tail_start: None,
@@ -5292,7 +5359,7 @@ fn displayed_math_tail(
         blocks.push(Block::Hr {
             span: Some(Span(start_abs, source.lines[line_idx].end)),
         });
-        return DisplayedMathDecision::Emit {
+        return ComposedTail::Emit {
             blocks,
             next: line_idx + 1,
             tail_start: None,
@@ -5309,7 +5376,7 @@ fn displayed_math_tail(
         raw_html_scan,
     ) {
         blocks.extend(split.blocks);
-        return DisplayedMathDecision::Emit {
+        return ComposedTail::Emit {
             blocks,
             next: split.next,
             tail_start: split.tail_start,
@@ -5327,7 +5394,7 @@ fn displayed_math_tail(
         || malformed_latex_tail_at(source, line_idx, start_abs)
         || rejected_begin_tail_at(source, line_idx, start_abs)
     {
-        return DisplayedMathDecision::Emit {
+        return ComposedTail::Emit {
             blocks,
             next: line_idx + 1,
             tail_start: Some((line_idx, start_abs)),
@@ -5341,12 +5408,49 @@ fn displayed_math_tail(
         || raw_html_tail_start(text)
         || could_start_non_paragraph(text, format)
     {
-        return DisplayedMathDecision::Delegate;
+        return ComposedTail::Delegate;
     }
-    DisplayedMathDecision::Emit {
+    ComposedTail::Emit {
         blocks,
         next: line_idx + 1,
         tail_start: Some((line_idx, start_abs)),
+    }
+}
+
+fn displayed_math_tail(
+    source: &Source<'_>,
+    line_idx: usize,
+    start_abs: usize,
+    text: &str,
+    blocks: Vec<Block>,
+    format: &str,
+    drawer_end_cursor: &mut usize,
+    property_end_cursor: &mut usize,
+    fence_cursor: &mut usize,
+    raw_html_scan: &mut RawHtmlScan,
+) -> DisplayedMathDecision {
+    match compose_same_line_block_tail(
+        source,
+        line_idx,
+        start_abs,
+        text,
+        blocks,
+        format,
+        drawer_end_cursor,
+        property_end_cursor,
+        fence_cursor,
+        raw_html_scan,
+    ) {
+        ComposedTail::Emit {
+            blocks,
+            next,
+            tail_start,
+        } => DisplayedMathDecision::Emit {
+            blocks,
+            next,
+            tail_start,
+        },
+        ComposedTail::Delegate => DisplayedMathDecision::Delegate,
     }
 }
 
@@ -6589,11 +6693,46 @@ fn bounded_split_suffix_blocks(
 
     if latex_env_opener_at(source, line_idx, title_start) {
         let capture = latex_env_capture(source, line_idx, title_start).ok()?;
-        return Some(BoundedSplit {
-            blocks: vec![capture.block],
-            next: capture.next,
-            tail_start: capture.tail_start,
-        });
+        // Compose the post-`\end{name}` same-line tail as following blocks, not
+        // paragraph text (GH #209 audit4 F2); a `Delegate` tail declines ownership
+        // here exactly as the displayed-math split branch does. An EMPTY tail_start
+        // (bare trailing newline) is kept verbatim (keep_line_break parity).
+        let tail_text = capture
+            .tail_start
+            .map(|(tl, ta)| &source.input[ta..line_text_end(&source.lines[tl])]);
+        let Some((tail_line, tail_abs)) =
+            capture.tail_start.filter(|_| !matches!(tail_text, Some("")))
+        else {
+            return Some(BoundedSplit {
+                blocks: vec![capture.block],
+                next: capture.next,
+                tail_start: capture.tail_start,
+            });
+        };
+        let tail = &source.input[tail_abs..line_text_end(&source.lines[tail_line])];
+        return match compose_same_line_block_tail(
+            source,
+            tail_line,
+            tail_abs,
+            tail,
+            vec![capture.block],
+            format,
+            drawer_end_cursor,
+            property_end_cursor,
+            fence_cursor,
+            raw_html_scan,
+        ) {
+            ComposedTail::Emit {
+                blocks,
+                next,
+                tail_start,
+            } => Some(BoundedSplit {
+                blocks,
+                next,
+                tail_start,
+            }),
+            ComposedTail::Delegate => None,
+        };
     }
 
     if let Some((_marker, info_start)) = fence_marker(title) {

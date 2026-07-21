@@ -310,6 +310,27 @@ function addLatexBoundaryCases() {
     ["#+BEGIN_QUOTE\n  \\begin{a}\n  x\n  \\end{a}\n  \\begin{b}\n  y\n  \\end{b}\n#+END_QUOTE\n", "org"],
   ];
   for (const [input, format] of cases) add("latex-boundary", input, format);
+
+  // GH #209 audit4 F2: a block-starter placed SAME-LINE after `\end{name}` is a
+  // following block in mldoc, not paragraph text. The cases above only cover
+  // next-line composition; enumerate the same-line-tail product here.
+  const heads = ["", "- "];
+  const tails = [
+    "$$y$$",
+    "# H",
+    "|a|b|\n|---|---|",
+    "#+BEGIN_NOTE\nx\n#+END_NOTE",
+    "---",
+    "<div>x</div>",
+    "\\begin{b}\nw\n\\end{b}",
+    "[:span]",
+    "plain",
+    "", // empty tail: keep_line_break parity
+  ];
+  for (const head of heads)
+    for (const tail of tails)
+      for (const fmt of ["md", "org"])
+        add("latex-same-line-tail", `${head}\\begin{a}\nz\n\\end{a} ${tail}`, fmt);
 }
 
 function addCalloutBoundaryCases() {
