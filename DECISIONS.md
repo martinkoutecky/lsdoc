@@ -921,3 +921,30 @@ phase exposed; the rebuilt inline phase reimplements `parse_inline` behind this 
 `inline() == parseInlineJson` becomes a permanent acceptance test for v2. wasm binding is Tine's
 side. Caveat: `inline()` shares the inline-scanner O(n²) classes (R2-P2/P3/P5) until the redesign
 lands — same surface as today's block-routed path, not worse.
+
+## GH #209 — total suffix combinator for split-title chains (v2)
+
+Tine #209's production panic (`lsdoc v2 parser does not yet own "md" input`) came from a
+composition hole, not a missing leaf parser: mldoc decides a split heading/bullet title by an
+`unsafe_lookahead` over its FULL block alternation (`heading0.ml title_aux_p` →
+`mldoc_parser.ml parsers`, which includes block0.ml's non-special `#+BEGIN_X` containers), so in
+mldoc every same-line suffix position owns every block family by construction. v2 transcribed
+that alternation as TWO helpers — `bounded_split_suffix_blocks` (extent known without arbitrary
+reparse) + `callout_container_split_at` (recursive container body) — and repeated the
+"try both" contract at each call site. Two recursive edges (heading-in-title, displayed-math
+tail) called only the bounded half, making e.g. `- $$x$$ #+BEGIN_NOTE…#+END_NOTE` unowned
+(the #209 panic) and two drawer-tail shapes silently CLAIMED as inline text (worse: fail-safe
+bypassed). A third edge of the same family: `bounded_raw_html_split` `?`-bailed on a failed `<`
+candidate (mldoc's `peek_string 10` refuses a tag within 10 bytes of EOF) instead of falling
+through to the tail logic like the top-level `raw_html_non_match`, so `- <i>h</i> <b>t</b>` was
+unowned.
+
+**Decision:** the two halves are only callable through the total combinator
+`split_suffix_blocks` (all 8 sites), and a failed raw-HTML candidate falls through to
+`bounded_raw_html_tail`. **Gates:** `splitsuffix` block-corpus family (11 fixtures incl. the
+oracle-verified drawer divergences), `md-split-suffix-chain(2)` Cartesian product in
+audit-v2-shortcuts.mjs (~800 cases; `--engine v2` panics on unowned, so it is an ownership gate
+too — the audit previously covered both halves separately and passed while the composition
+failed), and a cargo-local ownership unit test (`split_title_suffix_chains_are_owned_by_v2`).
+Lesson: a contract expressed as repeated caller code WILL eventually miss an edge; make the
+combinator total and unreachable in halves.

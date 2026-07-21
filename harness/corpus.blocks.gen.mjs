@@ -621,6 +621,23 @@ add("hiccupbalance", "[:a][:b][:c]\n");                            // consecutiv
 add("hiccupbalance", "> [:div [:x\n> ]\n");                        // hiccup inside a `>`-quote body
 add("hiccupbalance", "[:div café 中文 😀]\n");                      // multibyte inside a hiccup
 
+// splitsuffix (GH #209): same-line split-title suffix CHAINS. mldoc composes these
+// through one total block alternation (heading0.ml title_aux_p → mldoc_parser.ml);
+// v2's two-helper suffix combinator must stay total at every recursive edge or a
+// composed suffix becomes unowned (the Tine #209 production panic) — or worse,
+// silently claimed as inline text (the drawer cases below).
+add("splitsuffix", "- $$x$$ #+BEGIN_NOTE\nx\n#+END_NOTE");            // math → custom container (the #209 reproducer)
+add("splitsuffix", "- $$x$$ #+BEGIN_QUOTE\nx\n#+END_QUOTE");          // math → quote container
+add("splitsuffix", "- TODO [#A] $$x$$ #+BEGIN_NOTE\nx\n#+END_NOTE");  // marker/priority → math → container
+add("splitsuffix", "- <div>x</div> $$y$$ #+BEGIN_NOTE\nx\n#+END_NOTE"); // raw HTML → math → container
+add("splitsuffix", "- $$x$$ # #+BEGIN_NOTE\nx\n#+END_NOTE");          // math → nested heading → container
+add("splitsuffix", "- <div>x</div> # #+BEGIN_NOTE\nx\n#+END_NOTE");   // raw HTML → nested heading → container
+add("splitsuffix", "- :PROPERTIES:\n:k: v\n:END: # #+BEGIN_NOTE\nx\n#+END_NOTE");   // drawer close → heading → container
+add("splitsuffix", "- :PROPERTIES:\n:k: v\n:END: $$y$$ #+BEGIN_NOTE\nx\n#+END_NOTE"); // drawer close → math → container
+add("splitsuffix", "- $$x$$\n#+BEGIN_NOTE\nx\n#+END_NOTE");           // control: container on next line
+add("splitsuffix", "- $$x$$ #+BEGIN_SRC c\nx\n#+END_SRC");            // control: special body block same line
+add("splitsuffix", "- $$x$$ #+BEGIN_NOTE\nx");                        // control: unclosed container
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

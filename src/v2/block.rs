@@ -191,7 +191,7 @@ fn try_parse_leaf_blocks_in(
                     i += 1;
                     continue;
                 }
-                let split = bounded_split_suffix_blocks(
+                let split = split_suffix_blocks(
                     &source,
                     i,
                     title_start,
@@ -200,12 +200,7 @@ fn try_parse_leaf_blocks_in(
                     &mut property_end_cursor,
                     &mut fence_cursor,
                     &mut raw_html_scan,
-                )
-                .or_else(|| {
-                    (context == BlockParseContext::Document)
-                        .then(|| callout_container_split_at(&source, i, title_start, format))
-                        .flatten()
-                });
+                );
                 let Some(split) = split else {
                     if context == BlockParseContext::Document
                         && heading_split_title_falls_back_to_inline(
@@ -1530,7 +1525,7 @@ fn property_close_span_and_tail(
     let abs_end = line.start + rel_end;
     if rel_end < line.text.len() {
         let tail = &line.text[rel_end..];
-        if let Some(split) = bounded_split_suffix_blocks(
+        if let Some(split) = split_suffix_blocks(
             source,
             close,
             abs_end,
@@ -1540,14 +1535,6 @@ fn property_close_span_and_tail(
             fence_cursor,
             raw_html_scan,
         ) {
-            return Ok(PropertyCloseTail {
-                span_end: abs_end,
-                next: split.next,
-                tail_start: split.tail_start,
-                after_blocks: split.blocks,
-            });
-        }
-        if let Some(split) = callout_container_split_at(source, close, abs_end, format) {
             return Ok(PropertyCloseTail {
                 span_end: abs_end,
                 next: split.next,
@@ -5311,7 +5298,7 @@ fn displayed_math_tail(
             tail_start: None,
         };
     }
-    if let Some(split) = bounded_split_suffix_blocks(
+    if let Some(split) = split_suffix_blocks(
         source,
         line_idx,
         start_abs,
@@ -5321,14 +5308,6 @@ fn displayed_math_tail(
         fence_cursor,
         raw_html_scan,
     ) {
-        blocks.extend(split.blocks);
-        return DisplayedMathDecision::Emit {
-            blocks,
-            next: split.next,
-            tail_start: split.tail_start,
-        };
-    }
-    if let Some(split) = callout_container_split_at(source, line_idx, start_abs, format) {
         blocks.extend(split.blocks);
         return DisplayedMathDecision::Emit {
             blocks,
@@ -5556,7 +5535,7 @@ fn raw_html_tail(
             tail_start: None,
         };
     }
-    if let Some(split) = bounded_split_suffix_blocks(
+    if let Some(split) = split_suffix_blocks(
         source,
         line_idx,
         start_abs,
@@ -5566,14 +5545,6 @@ fn raw_html_tail(
         fence_cursor,
         raw_html_scan,
     ) {
-        blocks.extend(split.blocks);
-        return RawHtmlDecision::Emit {
-            blocks,
-            next: split.next,
-            tail_start: split.tail_start,
-        };
-    }
-    if let Some(split) = callout_container_split_at(source, line_idx, start_abs, format) {
         blocks.extend(split.blocks);
         return RawHtmlDecision::Emit {
             blocks,
@@ -5832,7 +5803,7 @@ fn hiccup_tail(
             tail_start: None,
         };
     }
-    if let Some(split) = bounded_split_suffix_blocks(
+    if let Some(split) = split_suffix_blocks(
         source,
         line_idx,
         start_abs,
@@ -5842,14 +5813,6 @@ fn hiccup_tail(
         fence_cursor,
         raw_html_scan,
     ) {
-        blocks.extend(split.blocks);
-        return HiccupDecision::Emit {
-            blocks,
-            next: split.next,
-            tail_start: split.tail_start,
-        };
-    }
-    if let Some(split) = callout_container_split_at(source, line_idx, start_abs, format) {
         blocks.extend(split.blocks);
         return HiccupDecision::Emit {
             blocks,
@@ -6227,6 +6190,39 @@ struct BoundedSplit {
     tail_start: Option<(usize, usize)>,
 }
 
+// mldoc source: lib/syntax/heading0.ml `title_aux_p` decides a split title by
+// looking ahead with the FULL block alternation of lib/mldoc_parser.ml, which
+// includes block0.ml's non-special `#+BEGIN_X` containers — so in mldoc every
+// suffix position owns every block family by construction. v2 splits that
+// alternation into `bounded_split_suffix_blocks` (extent known without an
+// arbitrary reparse) and `callout_container_split_at` (recursive container
+// body). Suffix positions must always try BOTH halves through this total
+// combinator; calling one half directly re-opens the GH #209 unowned gap.
+fn split_suffix_blocks(
+    source: &Source<'_>,
+    line_idx: usize,
+    title_start: usize,
+    format: &str,
+    drawer_end_cursor: &mut usize,
+    property_end_cursor: &mut usize,
+    fence_cursor: &mut usize,
+    raw_html_scan: &mut RawHtmlScan,
+) -> Option<BoundedSplit> {
+    if let Some(split) = bounded_split_suffix_blocks(
+        source,
+        line_idx,
+        title_start,
+        format,
+        drawer_end_cursor,
+        property_end_cursor,
+        fence_cursor,
+        raw_html_scan,
+    ) {
+        return Some(split);
+    }
+    callout_container_split_at(source, line_idx, title_start, format)
+}
+
 fn callout_container_split_at(
     source: &Source<'_>,
     line_idx: usize,
@@ -6360,7 +6356,7 @@ fn bounded_split_suffix_blocks(
                 mut heading,
                 title_start,
             } => {
-                if let Some(split) = bounded_split_suffix_blocks(
+                if let Some(split) = split_suffix_blocks(
                     source,
                     line_idx,
                     title_start,
@@ -6495,7 +6491,7 @@ fn bounded_split_suffix_blocks(
                 span: Some(Span(title_start, close_end)),
             };
             let tail = &source.input[close_end..content_end];
-            if let Some(split) = bounded_split_suffix_blocks(
+            if let Some(split) = split_suffix_blocks(
                 source,
                 close_line,
                 close_end,
@@ -6741,8 +6737,26 @@ fn bounded_raw_html_split(
             );
         }
 
-        let extent =
-            parse_raw_html_at_cached(source.input, opener, source.input.len(), Some(scan))?;
+        // A failed `<` candidate (e.g. mldoc's `peek_string 10` refusing a tag
+        // within 10 bytes of EOF) falls through to the same tail logic as a
+        // non-`<` tail — mirroring `raw_html_non_match` in the top-level owner.
+        // Bailing to None here made every collected prefix block unowned.
+        let Some(extent) =
+            parse_raw_html_at_cached(source.input, opener, source.input.len(), Some(scan))
+        else {
+            return bounded_raw_html_tail(
+                source,
+                line_idx,
+                start_abs,
+                same_line_tail,
+                blocks,
+                format,
+                drawer_end_cursor,
+                property_end_cursor,
+                fence_cursor,
+                scan,
+            );
+        };
         let close_end = extent.end;
         let close_line = line_containing_text_pos(&source.lines, line_idx, close_end)?;
         let close_content_end = line_text_end(&source.lines[close_line]);
@@ -6815,7 +6829,7 @@ fn bounded_raw_html_tail(
             tail_start: None,
         });
     }
-    if let Some(split) = bounded_split_suffix_blocks(
+    if let Some(split) = split_suffix_blocks(
         source,
         line_idx,
         start_abs,
@@ -6825,14 +6839,6 @@ fn bounded_raw_html_tail(
         fence_cursor,
         raw_html_scan,
     ) {
-        blocks.extend(split.blocks);
-        return Some(BoundedSplit {
-            blocks,
-            next: split.next,
-            tail_start: split.tail_start,
-        });
-    }
-    if let Some(split) = callout_container_split_at(source, line_idx, start_abs, format) {
         blocks.extend(split.blocks);
         return Some(BoundedSplit {
             blocks,
@@ -8251,6 +8257,28 @@ mod tests {
             try_parse("a\r\nb", "md"),
             Some(crate::parse("a\r\nb", "md"))
         );
+    }
+
+    #[test]
+    fn split_title_suffix_chains_are_owned_by_v2() {
+        // GH #209: composed same-line suffixes after a split bullet/heading title.
+        // Parity is the harness's job; this locks OWNERSHIP so a regression fails
+        // in `cargo test` without the oracle. Every recursive edge of
+        // `split_suffix_blocks` must stay total (bounded half + callout half),
+        // and a failed raw-HTML candidate must fall through to the tail logic.
+        for input in [
+            "- $$x$$ #+BEGIN_NOTE\nx\n#+END_NOTE",                    // math → custom container
+            "- $$x$$ #+BEGIN_QUOTE\nx\n#+END_QUOTE",                  // math → quote container
+            "- TODO [#A] $$x$$ #+BEGIN_NOTE\nx\n#+END_NOTE",          // marker → math → container
+            "- <div>x</div> $$y$$ #+BEGIN_NOTE\nx\n#+END_NOTE",       // raw HTML → math → container
+            "- $$x$$ # #+BEGIN_NOTE\nx\n#+END_NOTE",                  // math → nested heading → container
+            "- :PROPERTIES:\n:k: v\n:END: # #+BEGIN_NOTE\nx\n#+END_NOTE", // drawer close → heading → container
+            "- :PROPERTIES:\n:k: v\n:END: $$y$$ #+BEGIN_NOTE\nx\n#+END_NOTE", // drawer close → math → container
+            "- <i>h</i> <b>t</b>",                                    // raw HTML → failed short candidate tail
+            "- <i>h</i><b>t</b>",
+        ] {
+            assert!(try_parse(input, "md").is_some(), "unowned: {input:?}");
+        }
     }
 
     #[test]

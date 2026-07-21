@@ -501,6 +501,52 @@ function addBoundedSuffixCases() {
   }
 }
 
+// GH #209: split-title suffix CHAINS. mldoc's heading-title lookahead reuses the
+// FULL block alternation (heading0.ml title_aux_p → mldoc_parser.ml parsers), so
+// under a heading/bullet head every same-line block prefix composes with every
+// block suffix. v2 realizes that alternation as bounded_split_suffix_blocks +
+// callout_container_split_at behind the total split_suffix_blocks combinator;
+// this product locks the combinator's totality at every recursive edge. The
+// audit engine panics on any unowned case, so this matrix is also an
+// ownership gate, not only a parity gate.
+function addSplitSuffixCompositionCases() {
+  const heads = ["- ", "# ", "- TODO [#A] "];
+  const mids = [
+    "$$m$$",
+    "<i>h</i>",
+    "[:div]",
+    "#",
+    ":PROPERTIES:\n:k: v\n:END:",
+  ];
+  const tails = [
+    "#+BEGIN_NOTE\nn\n#+END_NOTE",
+    "#+BEGIN_QUOTE\nq\n#+END_QUOTE",
+    "#+BEGIN_NOTE\nunclosed",
+    "#+BEGIN_SRC c\ns\n#+END_SRC",
+    "```\nf\n```",
+    "$$y$$",
+    "<b>t</b>",
+    "[:span]",
+    "# h",
+    "- b",
+    "---",
+    "|a|b|\n|---|---|",
+    "[^1]: body",
+    "\\begin{eq}\nx\n\\end{eq}",
+    ":PROPERTIES:\n:p: q\n:END:",
+    "plain",
+  ];
+  for (const head of heads)
+    for (const mid of mids)
+      for (const tail of tails) add("md-split-suffix-chain", `${head}${mid} ${tail}`);
+  // two same-line block prefixes before the tail
+  const mids2 = ["$$m$$", "<i>h</i>", "[:div]", "#"];
+  const tails2 = ["#+BEGIN_NOTE\nn\n#+END_NOTE", "$$y$$", "<b>t</b>", "plain"];
+  for (const m1 of mids2)
+    for (const m2 of mids2)
+      for (const tail of tails2) add("md-split-suffix-chain2", `- ${m1} ${m2} ${tail}`);
+}
+
 function addRefExtractionCases() {
   const values = [
     "[[Page]]",
@@ -581,6 +627,7 @@ addTimestampBacktrackCases();
 addMarkdownLinkLabelBracketCases();
 addEmptyMarkerFenceCases();
 addBoundedSuffixCases();
+addSplitSuffixCompositionCases();
 addRefExtractionCases();
 addSuppressedRewriteCases();
 addOrgListContentCases();
