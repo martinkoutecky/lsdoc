@@ -3394,6 +3394,7 @@ fn merge_adjacent_paragraph_blocks(blocks: &mut Vec<Block>) {
                     span: prev_span,
                 }),
             ) if paragraph_spans_touch(*prev_span, *span) => {
+                coalesce_seam_plain(prev_inline, inline);
                 prev_inline.append(inline);
                 if let (Some(Span(_, prev_end)), Some(Span(_, end))) =
                     (prev_span.as_mut(), span.as_ref())
@@ -3405,6 +3406,37 @@ fn merge_adjacent_paragraph_blocks(blocks: &mut Vec<Block>) {
         }
     }
     *blocks = merged;
+}
+
+// mldoc parses a paragraph's concatenated line run in ONE inline pass, so `Plain`
+// runs are maximal — two source-contiguous `Plain`s are a single `Plain`. v2 builds
+// each source block's inline separately and appends the vectors when it merges
+// suppressed callout-body paragraphs, which can leave a split seam (org whitespace-
+// only headline `*  \t` suppressed in a callout body → `[Plain "*"][Plain "  \t"]`
+// vs mldoc's `[Plain "*  \t"]` — audit4 F3). Fuse a `Plain`/`Plain` seam whose spans
+// are byte-contiguous before appending.
+fn coalesce_seam_plain(prev_inline: &mut [Inline], next_inline: &mut Vec<Inline>) {
+    let (
+        Some(Inline::Plain {
+            text: prev_text,
+            span: Some(Span(_, prev_end)),
+            span_map: None,
+        }),
+        Some(Inline::Plain {
+            text: next_text,
+            span: Some(Span(next_start, next_end)),
+            span_map: None,
+        }),
+    ) = (prev_inline.last_mut(), next_inline.first())
+    else {
+        return;
+    };
+    if *prev_end != *next_start {
+        return;
+    }
+    prev_text.push_str(next_text);
+    *prev_end = *next_end;
+    next_inline.remove(0);
 }
 
 fn merge_adjacent_org_fixed_width_examples(blocks: &mut Vec<Block>, body: &str) {

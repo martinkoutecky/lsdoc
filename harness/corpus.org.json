@@ -2524,5 +2524,23 @@
   "cat": "hiccupbalance",
   "input": "#+BEGIN_QUOTE\n[:div [:x\n#+END_QUOTE\n]\n",
   "format": "org"
+ },
+ {
+  "id": "o421",
+  "cat": "emptyhl",
+  "input": "#+BEGIN_QUOTE\n*  \t\n#+END_QUOTE",
+  "format": "org"
+ },
+ {
+  "id": "o422",
+  "cat": "emptyhl",
+  "input": "#+BEGIN_QUOTE\n**  \n#+END_QUOTE",
+  "format": "org"
+ },
+ {
+  "id": "o423",
+  "cat": "emptyhl",
+  "input": "#+BEGIN_NOTE\n* \t\n#+END_NOTE",
+  "format": "org"
  }
 ]

@@ -571,6 +571,12 @@ add("hiccupbalance", "[:div [:\n[:div [:\n]\n");                   // unbalanced
 add("hiccupbalance", "[:a \"]\" x]\n");                            // string opaque for `]`
 add("hiccupbalance", "#+BEGIN_QUOTE\n[:div [:x\n#+END_QUOTE\n]\n"); // clamp: outside `]` NOT matched
 
+// audit4 F3: an org whitespace-only headline suppressed inside a callout body must
+// coalesce to ONE plain `*  \t` (not `[*][  \t]`). Was a fuzz-floor breach (seed 3).
+add("emptyhl", "#+BEGIN_QUOTE\n*  \t\n#+END_QUOTE");   // empty-title headline, ws tail
+add("emptyhl", "#+BEGIN_QUOTE\n**  \n#+END_QUOTE");    // level-2 empty title
+add("emptyhl", "#+BEGIN_NOTE\n* \t\n#+END_NOTE");      // custom container variant
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));
