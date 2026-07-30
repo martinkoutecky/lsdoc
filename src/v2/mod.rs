@@ -9,10 +9,10 @@ pub(crate) mod block;
 pub(crate) mod source;
 
 use crate::projection::Projection;
-use crate::{ast, org_resolver, refs, resolver};
+use crate::{ast, org_resolver, outline::OutlineHeader, refs, resolver};
 
 pub(crate) fn try_parse_format(input: &str, format: &str) -> Option<Projection> {
-    let blocks = block::try_parse(input, format)?;
+    let blocks = try_parse_blocks(input, format)?;
     let refs = if format == "org" {
         refs::extract_refs(&blocks, "org")
     } else {
@@ -27,8 +27,20 @@ pub(crate) fn parse_format(input: &str, format: &str) -> Projection {
 }
 
 pub(crate) fn parse_blocks(input: &str, format: &str) -> Vec<ast::Block> {
-    block::try_parse(input, format)
+    try_parse_blocks(input, format)
         .unwrap_or_else(|| panic!("lsdoc v2 parser does not yet own {format:?} input"))
+}
+
+// Keep every public AST path on the same code-generated entry. Without this
+// boundary, release LTO can place `parse` and `parse_format` on materially
+// different wrapper paths even though both invoke the same parser machine.
+#[inline(never)]
+fn try_parse_blocks(input: &str, format: &str) -> Option<Vec<ast::Block>> {
+    block::try_parse(input, format)
+}
+
+pub(crate) fn try_parse_outline(input: &str, format: &str) -> Option<Vec<OutlineHeader>> {
+    block::try_parse_outline(input, format)
 }
 
 pub(crate) fn inline(input: &str, format: &str) -> Vec<ast::Inline> {

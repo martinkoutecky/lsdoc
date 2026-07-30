@@ -6,7 +6,8 @@ to Logseq's [`mldoc`](https://github.com/logseq/mldoc) at the granularity that
 matters for indexing and rendering.
 
 It is the intended single source of truth for parsing in **Tine** (sibling
-outliner), replacing Tine's two divergent parsers (`refs.rs` + `parseInline.ts`).
+outliner), including document-root outline recognition through the stable
+source-oriented API in [`OUTLINE.md`](OUTLINE.md).
 See [`SPEC.md`](SPEC.md) for the full brief and [`DECISIONS.md`](DECISIONS.md) for
 the design log (mldoc quirks, intentional deviations, complexity decisions).
 
@@ -33,9 +34,16 @@ formats. Milestone order (each gated by "0 oracle diffs on its slice + perf budg
 ## Using lsdoc as a library
 
 The stable surface is **`lsdoc::ast`** (the `serde`-serializable AST — see
-[`AST.md`](AST.md) for the field-by-field render contract) plus the entry points
-`parse(input, format) -> Vec<ast::Block>` (render) and `refs(input, format) -> ast::Refs`
-(index). It depends only on `serde` + `serde_json` and is consumed as a Cargo git
+[`AST.md`](AST.md) for the field-by-field render contract), the source-oriented
+outline types documented in [`OUTLINE.md`](OUTLINE.md), and these entry points:
+
+- `parse(input, format) -> Vec<ast::Block>` — render AST
+- `refs(input, format) -> ast::Refs` — reference index
+- `parse_outline(input, format) -> Result<DocumentOutline, OutlineParseError>` —
+  parser-accepted document-root headers and exact source ranges, from one v2
+  block parse with no refs pass
+
+It depends only on `serde` + `serde_json` and is consumed as a Cargo git
 dependency (AGPL-3.0):
 
 ```toml

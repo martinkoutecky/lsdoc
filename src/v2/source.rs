@@ -19,6 +19,7 @@ pub(crate) enum Eol {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Line<'a> {
     pub(crate) start: usize,
+    pub(crate) physical_start: usize,
     pub(crate) end: usize,
     pub(crate) text: &'a str,
     pub(crate) eol: Eol,
@@ -207,6 +208,7 @@ impl<'a> SourceScanner<'a> {
             .observe_line(idx, text, ocaml_start, mldoc_spaces);
         self.lines.push(Line {
             start: self.start,
+            physical_start: self.start,
             end,
             text,
             eol,

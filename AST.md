@@ -11,6 +11,10 @@ The types live in [`src/projection.rs`](src/projection.rs) (`lsdoc::ast`); the J
 that proves parity is [`harness/lib/normalize.mjs`](harness/lib/normalize.mjs). Both
 Markdown and Org produce the **same** AST.
 
+The stable document-root source-outline projection is intentionally separate
+from this render AST and its incidental block spans. See [`OUTLINE.md`](OUTLINE.md)
+for its parser-owned header kinds and exact storage-oriented byte ranges.
+
 ## Serde encoding (the wire contract)
 
 - A parse is `Projection { blocks: Block[], refs: Refs }`. The render path wants `blocks`;

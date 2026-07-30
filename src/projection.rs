@@ -135,7 +135,7 @@ pub(crate) fn parse_separator_aligns(sep: &str) -> Vec<Option<Align>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_separator_aligns, Align};
+    use super::{drop_blocks_stack_safe, parse_separator_aligns, Align, Block};
 
     #[test]
     fn separator_aligns_require_hyphen_per_cell() {
@@ -149,6 +149,25 @@ mod tests {
             ]
         );
         assert_eq!(parse_separator_aligns("|:|::|"), vec![None, None]);
+    }
+
+    #[test]
+    fn stack_safe_block_disposal_is_iterative() {
+        std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                let mut blocks = Vec::new();
+                for _ in 0..20_000 {
+                    blocks = vec![Block::Quote {
+                        children: blocks,
+                        span: None,
+                    }];
+                }
+                drop_blocks_stack_safe(blocks);
+            })
+            .expect("spawn small-stack disposal thread")
+            .join()
+            .expect("block disposal recursed");
     }
 }
 
@@ -719,4 +738,80 @@ pub enum Url {
         protocol: Option<String>,
         link: Option<String>,
     },
+}
+
+/// Dispose of an internal block tree without recursing through its owned
+/// children. This is used when a parser sidecar needs the construction
+/// decisions but not the render AST itself.
+pub(crate) fn drop_blocks_stack_safe(blocks: Vec<Block>) {
+    enum Pending {
+        Block(Block),
+        ListItem(ListItem),
+        Inline(Inline),
+    }
+
+    let mut pending = blocks.into_iter().map(Pending::Block).collect::<Vec<_>>();
+    while let Some(mut node) = pending.pop() {
+        match &mut node {
+            Pending::Block(
+                Block::Paragraph { inline, .. }
+                | Block::Heading { inline, .. }
+                | Block::Bullet { inline, .. }
+                | Block::FootnoteDef { inline, .. },
+            ) => {
+                pending.extend(std::mem::take(inline).into_iter().map(Pending::Inline));
+            }
+            Pending::Block(Block::List { items, .. }) => {
+                pending.extend(std::mem::take(items).into_iter().map(Pending::ListItem));
+            }
+            Pending::Block(Block::Quote { children, .. } | Block::Custom { children, .. }) => {
+                pending.extend(std::mem::take(children).into_iter().map(Pending::Block));
+            }
+            Pending::Block(Block::Table { header, rows, .. }) => {
+                if let Some(header) = header.take() {
+                    for cell in header {
+                        pending.extend(cell.into_iter().map(Pending::Inline));
+                    }
+                }
+                for row in std::mem::take(rows) {
+                    for cell in row {
+                        pending.extend(cell.into_iter().map(Pending::Inline));
+                    }
+                }
+            }
+            Pending::Block(_) => {}
+            Pending::ListItem(item) => {
+                pending.extend(
+                    std::mem::take(&mut item.content)
+                        .into_iter()
+                        .map(Pending::Block),
+                );
+                pending.extend(
+                    std::mem::take(&mut item.items)
+                        .into_iter()
+                        .map(Pending::ListItem),
+                );
+                pending.extend(
+                    std::mem::take(&mut item.name)
+                        .into_iter()
+                        .map(Pending::Inline),
+                );
+            }
+            Pending::Inline(
+                Inline::Emphasis { children, .. }
+                | Inline::Subscript { children, .. }
+                | Inline::Superscript { children, .. }
+                | Inline::Tag { children, .. },
+            ) => {
+                pending.extend(std::mem::take(children).into_iter().map(Pending::Inline));
+            }
+            Pending::Inline(Inline::Link { label, .. }) => {
+                pending.extend(std::mem::take(label).into_iter().map(Pending::Inline));
+            }
+            Pending::Inline(Inline::Fnref { definition, .. }) => {
+                pending.extend(std::mem::take(definition).into_iter().map(Pending::Inline));
+            }
+            Pending::Inline(_) => {}
+        }
+    }
 }

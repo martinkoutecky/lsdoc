@@ -213,6 +213,16 @@ fn main() {
         let phase_rows = vec![
             parse,
             measure(
+                "lsdoc::parse_outline",
+                md_bytes,
+                iters,
+                "source-oriented outline sidecar",
+                &md,
+                |s| {
+                    let _ = black_box(lsdoc::parse_outline(s, "md"));
+                },
+            ),
+            measure(
                 "lsdoc::parse_format (+refs)",
                 md_bytes,
                 iters,
@@ -278,6 +288,16 @@ fn main() {
             org.iter().map(|s| lsdoc::parse(s, "org")).collect();
         let phase_rows = vec![
             parse,
+            measure(
+                "lsdoc::parse_outline",
+                org_bytes,
+                iters,
+                "source-oriented outline sidecar",
+                &org,
+                |s| {
+                    let _ = black_box(lsdoc::parse_outline(s, "org"));
+                },
+            ),
             measure(
                 "lsdoc::parse_format (+refs)",
                 org_bytes,

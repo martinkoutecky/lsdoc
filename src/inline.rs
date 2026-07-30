@@ -296,7 +296,10 @@ fn plain_fast_path(
             {
                 push_plain(&mut out, s, base, plain_start, i);
                 let definition = def_range.map_or_else(Vec::new, |(ds, de)| {
-                    crate::org_resolver::parse_footnote_definition_inlines_org(&s[ds..de], base + ds)
+                    crate::org_resolver::parse_footnote_definition_inlines_org(
+                        &s[ds..de],
+                        base + ds,
+                    )
                 });
                 out.push(Inline::Fnref {
                     name,

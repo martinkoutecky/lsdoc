@@ -4,6 +4,8 @@
 //! rules. A `None` return is an ownership failure for strict/report harnesses and a
 //! production panic through `v2::parse_format`, not a silent fallback to the legacy parser.
 
+use std::cell::RefCell;
+
 use crate::block_common::{
     begin_export_fields, displayed_math_opener, drawer_property, find_displayed_math_close,
     find_matching_fence, first_body_indent, leading_ws, mldoc_heading_boundary, mldoc_is_space,
@@ -11,19 +13,88 @@ use crate::block_common::{
     ocaml_trim, ocaml_trim_byte, parse_raw_html_at_cached, raw_html_capture_text, split_checkbox,
     RawHtmlScan, StripCtx, StripSeqTree, MARKERS,
 };
+use crate::outline::{OutlineHeader, OutlineHeaderKind, SourceRange};
 use crate::projection::{Align, Block, Inline, ListItem, Property, Span, SpanMapSegment};
 use crate::source_map::{OriginCursor, OriginMap};
 
 use super::source::{Eol, Line, Source};
 
+// Keep this optional collector concrete: the parser must have one machine-code body for
+// ordinary AST parsing and outline collection. Header construction and RefCell traffic
+// stay behind the `Some` branch at each accepted-heading site.
+struct OutlineCollector {
+    headers: RefCell<Vec<OutlineHeader>>,
+}
+
+struct OutlineTransaction<'collector> {
+    rollback: Option<(&'collector OutlineCollector, usize)>,
+}
+
+impl OutlineCollector {
+    fn new() -> Self {
+        Self {
+            headers: RefCell::new(Vec::new()),
+        }
+    }
+
+    #[inline(always)]
+    fn record(&self, header: OutlineHeader) {
+        self.headers.borrow_mut().push(header);
+    }
+
+    fn into_headers(self) -> Vec<OutlineHeader> {
+        self.headers.into_inner()
+    }
+}
+
+#[inline(always)]
+fn outline_transaction(outline: Option<&OutlineCollector>) -> OutlineTransaction<'_> {
+    OutlineTransaction {
+        rollback: outline.map(|collector| (collector, collector.headers.borrow().len())),
+    }
+}
+
+impl OutlineTransaction<'_> {
+    #[inline(always)]
+    fn commit(mut self) {
+        self.rollback = None;
+    }
+}
+
+impl Drop for OutlineTransaction<'_> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        if let Some((collector, checkpoint)) = self.rollback {
+            collector.headers.borrow_mut().truncate(checkpoint);
+        }
+    }
+}
+
 pub(crate) fn try_parse(input: &str, format: &str) -> Option<Vec<Block>> {
+    try_parse_impl(input, format, None).map(|(blocks, _)| blocks)
+}
+
+pub(crate) fn try_parse_outline(input: &str, format: &str) -> Option<Vec<OutlineHeader>> {
+    let outline = OutlineCollector::new();
+    let (blocks, offset) = try_parse_impl(input, format, Some(&outline))?;
+    crate::projection::drop_blocks_stack_safe(blocks);
+    let mut headers = outline.into_headers();
+    offset_outline_headers(&mut headers, offset);
+    Some(headers)
+}
+
+fn try_parse_impl(
+    input: &str,
+    format: &str,
+    outline: Option<&OutlineCollector>,
+) -> Option<(Vec<Block>, usize)> {
     if let Some((mut blocks, rest_start)) = markdown_front_matter_sequence(input) {
-        let mut tail = try_parse_leaf_blocks(&input[rest_start..], format)?;
+        let mut tail = try_parse_document(&input[rest_start..], format, outline)?;
         offset_blocks(&mut tail, rest_start);
         blocks.extend(tail);
-        return Some(blocks);
+        return Some((blocks, rest_start));
     }
-    try_parse_leaf_blocks(input, format)
+    try_parse_document(input, format, outline).map(|blocks| (blocks, 0))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -52,8 +123,13 @@ impl BlockParseContext {
     }
 }
 
-fn try_parse_leaf_blocks(input: &str, format: &str) -> Option<Vec<Block>> {
-    try_parse_leaf_blocks_in(input, format, BlockParseContext::Document)
+fn try_parse_document(
+    input: &str,
+    format: &str,
+    outline: Option<&OutlineCollector>,
+) -> Option<Vec<Block>> {
+    let source = Source::scan(input);
+    try_parse_leaf_blocks_in_source(&source, format, BlockParseContext::Document, outline)
 }
 
 // mldoc source distinction:
@@ -80,13 +156,18 @@ fn try_parse_leaf_blocks_in(
     format: &str,
     context: BlockParseContext,
 ) -> Option<Vec<Block>> {
-    try_parse_leaf_blocks_in_source(&Source::scan(input), format, context)
+    try_parse_leaf_blocks_in_source(&Source::scan(input), format, context, None)
 }
 
+// This is the parser machine. Do not inline it into the AST-only and outline callers:
+// doing so lets release LTO clone the full parser and makes throughput depend on code
+// placement/instruction-cache effects. The optional collector is the sole mode switch.
+#[inline(never)]
 fn try_parse_leaf_blocks_in_source(
     source: &Source<'_>,
     format: &str,
     context: BlockParseContext,
+    outline: Option<&OutlineCollector>,
 ) -> Option<Vec<Block>> {
     let source = source;
     let mut blocks = Vec::with_capacity(source.lines.len());
@@ -141,6 +222,7 @@ fn try_parse_leaf_blocks_in_source(
                 &mut property_end_cursor,
                 &mut fence_cursor,
                 &mut raw_html_scan,
+                outline,
             ) {
                 PropertyDrawerDecision::Emit {
                     block,
@@ -168,6 +250,9 @@ fn try_parse_leaf_blocks_in_source(
         match heading_line(line, format) {
             HeadingDecision::Emit(heading) => {
                 para.flush(&mut blocks, format);
+                if let Some(collector) = outline {
+                    collector.record(heading.outline(format));
+                }
                 let drop_tail = heading.tail_start.is_some()
                     && empty_marker_tail_drops(&source, i, format, &mut raw_html_scan);
                 let mut block = heading.block(format);
@@ -199,6 +284,10 @@ fn try_parse_leaf_blocks_in_source(
                     i += 1;
                     continue;
                 }
+                let outline_transaction = outline_transaction(outline);
+                if let Some(collector) = outline {
+                    collector.record(heading.outline(format));
+                }
                 let split = split_suffix_blocks(
                     &source,
                     i,
@@ -208,6 +297,7 @@ fn try_parse_leaf_blocks_in_source(
                     &mut property_end_cursor,
                     &mut fence_cursor,
                     &mut raw_html_scan,
+                    outline,
                 );
                 let Some(split) = split else {
                     if context == BlockParseContext::Document
@@ -230,6 +320,7 @@ fn try_parse_leaf_blocks_in_source(
                         };
                         para.flush(&mut blocks, format);
                         blocks.push(heading.block(format));
+                        outline_transaction.commit();
                         if line.eol == Eol::Cr {
                             para.push_eol(line);
                         }
@@ -249,6 +340,7 @@ fn try_parse_leaf_blocks_in_source(
                         };
                         para.flush(&mut blocks, format);
                         blocks.push(heading.block(format));
+                        outline_transaction.commit();
                         if line.eol == Eol::Cr {
                             para.push_eol(line);
                         }
@@ -260,6 +352,7 @@ fn try_parse_leaf_blocks_in_source(
                 para.flush(&mut blocks, format);
                 blocks.push(heading.block(format));
                 blocks.extend(split.blocks);
+                outline_transaction.commit();
                 if let Some((tail_line, tail_start)) = split.tail_start {
                     para.push_tail(&source.lines[tail_line], tail_start);
                 }
@@ -292,6 +385,7 @@ fn try_parse_leaf_blocks_in_source(
             &mut property_end_cursor,
             &mut fence_cursor,
             &mut raw_html_scan,
+            outline,
         ) {
             LatexEnvDecision::Emit {
                 blocks: env_blocks,
@@ -369,6 +463,7 @@ fn try_parse_leaf_blocks_in_source(
             &mut property_end_cursor,
             &mut fence_cursor,
             &mut raw_html_scan,
+            outline,
         ) {
             DisplayedMathDecision::Emit {
                 blocks: math_blocks,
@@ -399,6 +494,7 @@ fn try_parse_leaf_blocks_in_source(
             &mut property_end_cursor,
             &mut fence_cursor,
             &mut raw_html_scan,
+            outline,
         ) {
             RawHtmlDecision::Emit {
                 blocks: html_blocks,
@@ -424,6 +520,7 @@ fn try_parse_leaf_blocks_in_source(
             &mut property_end_cursor,
             &mut fence_cursor,
             &mut raw_html_scan,
+            outline,
         ) {
             HiccupDecision::Emit {
                 blocks: hiccup_blocks,
@@ -945,6 +1042,7 @@ fn property_or_drawer(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> PropertyDrawerDecision {
     property_or_drawer_at(
         source,
@@ -955,6 +1053,7 @@ fn property_or_drawer(
         property_end_cursor,
         fence_cursor,
         raw_html_scan,
+        outline,
     )
 }
 
@@ -967,6 +1066,7 @@ fn property_or_drawer_at(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> PropertyDrawerDecision {
     let line = &source.lines[i];
     let Some(rel) = start_abs.checked_sub(line.start) else {
@@ -989,6 +1089,7 @@ fn property_or_drawer_at(
                 property_end_cursor,
                 fence_cursor,
                 raw_html_scan,
+                outline,
             ) {
                 Ok(fold) => fold,
                 Err(decision) => return decision,
@@ -1017,6 +1118,7 @@ fn property_or_drawer_at(
                 property_end_cursor,
                 fence_cursor,
                 raw_html_scan,
+                outline,
             ) {
                 Ok(fold) => fold,
                 Err(decision) => return decision,
@@ -1031,6 +1133,7 @@ fn property_or_drawer_at(
                 property_end_cursor,
                 fence_cursor,
                 raw_html_scan,
+                outline,
             ) {
                 Ok(fold) => fold,
                 Err(decision) => return decision,
@@ -1074,6 +1177,7 @@ fn property_or_drawer_at(
             };
             props.push(Property::parse1(kv));
         }
+        let outline_transaction = outline_transaction(outline);
         let Ok(close_tail) = property_close_span_and_tail(
             source,
             close,
@@ -1082,6 +1186,7 @@ fn property_or_drawer_at(
             property_end_cursor,
             fence_cursor,
             raw_html_scan,
+            outline,
         ) else {
             return PropertyDrawerDecision::Delegate;
         };
@@ -1109,6 +1214,7 @@ fn property_or_drawer_at(
                 property_end_cursor,
                 fence_cursor,
                 raw_html_scan,
+                outline,
             ) {
                 Ok(fold) => fold,
                 Err(decision) => return decision,
@@ -1123,6 +1229,7 @@ fn property_or_drawer_at(
                 property_end_cursor,
                 fence_cursor,
                 raw_html_scan,
+                outline,
             ) {
                 Ok(fold) => fold,
                 Err(decision) => return decision,
@@ -1133,6 +1240,9 @@ fn property_or_drawer_at(
         } else {
             (Vec::new(), None)
         };
+        if !after_blocks.is_empty() {
+            outline_transaction.commit();
+        }
         return PropertyDrawerDecision::Emit {
             block: Block::Properties {
                 props: fold.props,
@@ -1226,6 +1336,7 @@ fn fold_markdown_property_group(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> Result<PropertyFold, PropertyDrawerDecision> {
     let mut has_parse2 = props.iter().any(Property::is_parse2);
     while cur < source.lines.len() {
@@ -1259,6 +1370,7 @@ fn fold_markdown_property_group(
             property_end_cursor,
             fence_cursor,
             raw_html_scan,
+            outline,
         ) {
             props.extend(drawer_props);
             span_end = end;
@@ -1312,6 +1424,7 @@ fn fold_org_property_tail(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> Result<PropertyFold, PropertyDrawerDecision> {
     let mut has_parse2 = props.iter().any(Property::is_parse2);
     loop {
@@ -1362,6 +1475,7 @@ fn fold_org_property_tail(
                 };
                 props.push(Property::parse1(kv));
             }
+            let outline_transaction = outline_transaction(outline);
             let Ok(close_tail) = property_close_span_and_tail(
                 source,
                 close,
@@ -1370,6 +1484,7 @@ fn fold_org_property_tail(
                 property_end_cursor,
                 fence_cursor,
                 raw_html_scan,
+                outline,
             ) else {
                 return Err(PropertyDrawerDecision::Delegate);
             };
@@ -1380,6 +1495,7 @@ fn fold_org_property_tail(
                     span_end,
                 });
             }
+            outline_transaction.commit();
             span_end = close_tail.span_end;
             cur = close_tail.next;
             continue;
@@ -1407,6 +1523,7 @@ fn fold_adjacent_properties_drawer(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> Option<(Vec<Property>, usize, usize)> {
     let line = source.lines.get(opener)?;
     if !org_properties_begin(line.text) || !drawer_opener_accepts_eol(line.eol) {
@@ -1421,6 +1538,7 @@ fn fold_adjacent_properties_drawer(
         crate::metrics::scan_work(1);
         props.push(Property::parse1(drawer_property(body.text)?));
     }
+    let outline_transaction = outline_transaction(outline);
     let close_tail = property_close_span_and_tail(
         source,
         close,
@@ -1429,11 +1547,13 @@ fn fold_adjacent_properties_drawer(
         property_end_cursor,
         fence_cursor,
         raw_html_scan,
+        outline,
     )
     .ok()?;
     if close_tail.tail_start.is_some() || !close_tail.after_blocks.is_empty() {
         return None;
     }
+    outline_transaction.commit();
     Some((props, close_tail.next, close_tail.span_end))
 }
 
@@ -1536,6 +1656,7 @@ fn property_close_span_and_tail(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> Result<PropertyCloseTail, ()> {
     let line = &source.lines[close];
     let rel_end = property_end_marker_len(line.text).ok_or(())?;
@@ -1551,6 +1672,7 @@ fn property_close_span_and_tail(
             property_end_cursor,
             fence_cursor,
             raw_html_scan,
+            outline,
         ) {
             return Ok(PropertyCloseTail {
                 span_end: abs_end,
@@ -2638,11 +2760,9 @@ fn markdown_blockquote_sequence_at(
     // quote-only fast path and the generic fallback (audit4 F13: the fast path
     // used to `Source::scan` the body, decline, then the fallback scanned it again).
     let body_source = Source::scan(&body);
-    let Some(mut children) = try_parse_quote_only_body_source(&body_source, format)
-        .or_else(|| {
-            try_parse_leaf_blocks_in_source(&body_source, format, BlockParseContext::BlockContent)
-        })
-    else {
+    let Some(mut children) = try_parse_quote_only_body_source(&body_source, format).or_else(|| {
+        try_parse_leaf_blocks_in_source(&body_source, format, BlockParseContext::BlockContent, None)
+    }) else {
         return BlockquoteDecision::Delegate;
     };
     let preserve_local_child_spans = format == "org" && blocks_contain_drawer(&children);
@@ -5075,6 +5195,7 @@ fn latex_env_sequence(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> LatexEnvDecision {
     let line = &source.lines[i];
     if !latex_env_opener_at(source, i, line.start) {
@@ -5088,10 +5209,11 @@ fn latex_env_sequence(
     // An EMPTY tail_start (a bare trailing newline) is kept verbatim — mldoc renders
     // it as a keep_line_break paragraph, which is latex-specific (displayed math
     // consumes its trailing newline instead).
-    let tail = capture
-        .tail_start
-        .map(|(tail_line, tail_abs)| &source.input[tail_abs..line_text_end(&source.lines[tail_line])]);
-    let Some((tail_line, tail_abs)) = capture.tail_start.filter(|_| !matches!(tail, Some(""))) else {
+    let tail = capture.tail_start.map(|(tail_line, tail_abs)| {
+        &source.input[tail_abs..line_text_end(&source.lines[tail_line])]
+    });
+    let Some((tail_line, tail_abs)) = capture.tail_start.filter(|_| !matches!(tail, Some("")))
+    else {
         return LatexEnvDecision::Emit {
             blocks: vec![capture.block],
             next: capture.next,
@@ -5110,6 +5232,7 @@ fn latex_env_sequence(
         property_end_cursor,
         fence_cursor,
         raw_html_scan,
+        outline,
     ) {
         ComposedTail::Emit {
             blocks,
@@ -5296,6 +5419,7 @@ fn displayed_math_sequence(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> DisplayedMathDecision {
     let mut line_idx = i;
     let mut start_abs = source.lines[i].start;
@@ -5318,6 +5442,7 @@ fn displayed_math_sequence(
                 property_end_cursor,
                 fence_cursor,
                 raw_html_scan,
+                outline,
             );
         };
         let opener = start_abs + opener_off;
@@ -5399,6 +5524,7 @@ fn compose_same_line_block_tail(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> ComposedTail {
     if text.is_empty() {
         return ComposedTail::Emit {
@@ -5426,6 +5552,7 @@ fn compose_same_line_block_tail(
         property_end_cursor,
         fence_cursor,
         raw_html_scan,
+        outline,
     ) {
         blocks.extend(split.blocks);
         return ComposedTail::Emit {
@@ -5480,6 +5607,7 @@ fn displayed_math_tail(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> DisplayedMathDecision {
     match compose_same_line_block_tail(
         source,
@@ -5492,6 +5620,7 @@ fn displayed_math_tail(
         property_end_cursor,
         fence_cursor,
         raw_html_scan,
+        outline,
     ) {
         ComposedTail::Emit {
             blocks,
@@ -5532,6 +5661,7 @@ fn raw_html_sequence(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> RawHtmlDecision {
     let mut blocks = Vec::new();
     let mut line_idx = i;
@@ -5573,6 +5703,7 @@ fn raw_html_sequence(
                 property_end_cursor,
                 fence_cursor,
                 scan,
+                outline,
             );
         }
 
@@ -5590,6 +5721,7 @@ fn raw_html_sequence(
                 property_end_cursor,
                 fence_cursor,
                 scan,
+                outline,
             );
         };
         let close_end = extent.end;
@@ -5646,6 +5778,7 @@ fn raw_html_non_match(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> RawHtmlDecision {
     if blocks.is_empty() {
         return RawHtmlDecision::No;
@@ -5661,6 +5794,7 @@ fn raw_html_non_match(
             property_end_cursor,
             fence_cursor,
             raw_html_scan,
+            outline,
         )
     } else {
         RawHtmlDecision::Emit {
@@ -5681,6 +5815,7 @@ fn raw_html_tail(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> RawHtmlDecision {
     let line = &source.lines[line_idx];
     let text = &source.input[start_abs..line_text_end(line)];
@@ -5700,6 +5835,7 @@ fn raw_html_tail(
         property_end_cursor,
         fence_cursor,
         raw_html_scan,
+        outline,
     ) {
         blocks.extend(split.blocks);
         return RawHtmlDecision::Emit {
@@ -5780,6 +5916,7 @@ fn hiccup_sequence(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> HiccupDecision {
     hiccup_sequence_from(
         source,
@@ -5790,6 +5927,7 @@ fn hiccup_sequence(
         property_end_cursor,
         fence_cursor,
         raw_html_scan,
+        outline,
     )
 }
 
@@ -5802,6 +5940,7 @@ fn hiccup_sequence_from(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> HiccupDecision {
     let mut blocks = Vec::new();
     let mut line_idx = i;
@@ -5844,6 +5983,7 @@ fn hiccup_sequence_from(
                 property_end_cursor,
                 fence_cursor,
                 raw_html_scan,
+                outline,
             );
         }
         let Some(close_end) = source.events.hiccup_close.at(opener) else {
@@ -5858,6 +5998,7 @@ fn hiccup_sequence_from(
                 property_end_cursor,
                 fence_cursor,
                 raw_html_scan,
+                outline,
             );
         };
 
@@ -5914,6 +6055,7 @@ fn hiccup_non_match(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> HiccupDecision {
     if blocks.is_empty() {
         return HiccupDecision::No;
@@ -5929,6 +6071,7 @@ fn hiccup_non_match(
             property_end_cursor,
             fence_cursor,
             raw_html_scan,
+            outline,
         )
     } else {
         HiccupDecision::Emit {
@@ -5949,6 +6092,7 @@ fn hiccup_tail(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> HiccupDecision {
     let line = &source.lines[line_idx];
     let text = &source.input[start_abs..line_text_end(line)];
@@ -5968,6 +6112,7 @@ fn hiccup_tail(
         property_end_cursor,
         fence_cursor,
         raw_html_scan,
+        outline,
     ) {
         blocks.extend(split.blocks);
         return HiccupDecision::Emit {
@@ -6040,6 +6185,7 @@ enum HeadingDecision<'a> {
     No,
 }
 
+#[derive(Clone, Copy)]
 enum HeadingKind {
     Heading,
     Bullet,
@@ -6056,9 +6202,35 @@ struct HeadingEmit<'a> {
     span_start: usize,
     span_end: usize,
     tail_start: Option<usize>,
+    outline_physical_start: usize,
+    outline_content_end: usize,
+    outline_line_end: usize,
+    outline_structural_prefix_end: usize,
 }
 
 impl HeadingEmit<'_> {
+    #[inline(always)]
+    fn outline(&self, format: &str) -> OutlineHeader {
+        let kind = match (format, self.kind) {
+            ("org", _) => OutlineHeaderKind::OrgHeadline,
+            (_, HeadingKind::Heading) => OutlineHeaderKind::MarkdownUnbulletedAtxHeading,
+            (_, HeadingKind::Bullet) => OutlineHeaderKind::MarkdownDashBullet,
+        };
+        let structural_prefix = if kind == OutlineHeaderKind::MarkdownUnbulletedAtxHeading {
+            SourceRange::new(self.outline_physical_start, self.outline_physical_start)
+        } else {
+            SourceRange::new(self.span_start, self.outline_structural_prefix_end)
+        };
+        OutlineHeader {
+            kind,
+            level: self.level,
+            header_start: self.span_start,
+            structural_prefix,
+            line_content: SourceRange::new(self.outline_physical_start, self.outline_content_end),
+            line: SourceRange::new(self.outline_physical_start, self.outline_line_end),
+        }
+    }
+
     fn block(&self, format: &str) -> Block {
         let mut inline = super::inline_at(self.title, format, self.title_start);
         let htags = if format == "org" {
@@ -6118,6 +6290,7 @@ fn markdown_heading_or_bullet<'a>(line: &Line<'a>) -> HeadingDecision<'a> {
             level,
             Some(size),
             marker_end,
+            0,
             "md",
         );
     }
@@ -6125,7 +6298,17 @@ fn markdown_heading_or_bullet<'a>(line: &Line<'a>) -> HeadingDecision<'a> {
         let ws = mldoc_spaces_len(line.text);
         let after_dash = ws + 1;
         let (size, content_start) = dash_bullet_size_start(line.text, after_dash);
-        return heading_emit(line, HeadingKind::Bullet, level, size, content_start, "md");
+        let structural_content_start =
+            after_dash + usize::from(line.text.as_bytes().get(after_dash) == Some(&b' '));
+        return heading_emit(
+            line,
+            HeadingKind::Bullet,
+            level,
+            size,
+            content_start,
+            structural_content_start,
+            "md",
+        );
     }
     HeadingDecision::No
 }
@@ -6140,6 +6323,7 @@ fn org_headline<'a>(line: &Line<'a>) -> HeadingDecision<'a> {
         level,
         None,
         level as usize,
+        level as usize + usize::from(line.text.as_bytes().get(level as usize) == Some(&b' ')),
         "org",
     )
 }
@@ -6150,11 +6334,14 @@ fn heading_emit<'a>(
     level: u32,
     size: Option<u32>,
     content_start: usize,
+    structural_content_start: usize,
     format: &str,
 ) -> HeadingDecision<'a> {
     let fields = split_heading_markers(line.text, content_start, line.eol == Eol::Eof);
     let title_start = line.start + fields.title_start;
     let title = fields.title;
+    let outline_content_end = line_text_end(line);
+    let outline_structural_prefix_end = line.start + structural_content_start;
     if !title.is_empty() && heading_title_needs_block_split(title, format) {
         return HeadingDecision::Split {
             heading: HeadingEmit {
@@ -6168,6 +6355,10 @@ fn heading_emit<'a>(
                 span_start: line.start,
                 span_end: title_start,
                 tail_start: None,
+                outline_physical_start: line.physical_start,
+                outline_content_end,
+                outline_line_end: line.end,
+                outline_structural_prefix_end,
             },
             title_start,
         };
@@ -6191,6 +6382,10 @@ fn heading_emit<'a>(
         span_start: line.start,
         span_end,
         tail_start,
+        outline_physical_start: line.physical_start,
+        outline_content_end,
+        outline_line_end: line.end,
+        outline_structural_prefix_end,
     })
 }
 
@@ -6363,18 +6558,24 @@ fn split_suffix_blocks(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> Option<BoundedSplit> {
-    if let Some(split) = bounded_split_suffix_blocks(
-        source,
-        line_idx,
-        title_start,
-        format,
-        drawer_end_cursor,
-        property_end_cursor,
-        fence_cursor,
-        raw_html_scan,
-    ) {
-        return Some(split);
+    {
+        let outline_transaction = outline_transaction(outline);
+        if let Some(split) = bounded_split_suffix_blocks(
+            source,
+            line_idx,
+            title_start,
+            format,
+            drawer_end_cursor,
+            property_end_cursor,
+            fence_cursor,
+            raw_html_scan,
+            outline,
+        ) {
+            outline_transaction.commit();
+            return Some(split);
+        }
     }
     callout_container_split_at(source, line_idx, title_start, format)
 }
@@ -6412,6 +6613,7 @@ fn bounded_split_suffix_blocks(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> Option<BoundedSplit> {
     let line = &source.lines[line_idx];
     let rel = title_start.checked_sub(line.start)?;
@@ -6463,6 +6665,7 @@ fn bounded_split_suffix_blocks(
             property_end_cursor,
             fence_cursor,
             raw_html_scan,
+            outline,
         ) {
             PropertyDrawerDecision::Emit {
                 block,
@@ -6486,6 +6689,7 @@ fn bounded_split_suffix_blocks(
     if heading_start(title, format) {
         let suffix_line = Line {
             start: title_start,
+            physical_start: line.physical_start,
             end: line.end,
             text: title,
             eol: line.eol,
@@ -6493,6 +6697,9 @@ fn bounded_split_suffix_blocks(
         };
         match heading_line(&suffix_line, format) {
             HeadingDecision::Emit(heading) => {
+                if let Some(collector) = outline {
+                    collector.record(heading.outline(format));
+                }
                 let drop_tail = heading.tail_start.is_some()
                     && empty_marker_tail_drops(source, line_idx, format, raw_html_scan);
                 let mut block = heading.block(format);
@@ -6512,6 +6719,10 @@ fn bounded_split_suffix_blocks(
                 mut heading,
                 title_start,
             } => {
+                let outline_transaction = outline_transaction(outline);
+                if let Some(collector) = outline {
+                    collector.record(heading.outline(format));
+                }
                 if let Some(split) = split_suffix_blocks(
                     source,
                     line_idx,
@@ -6521,9 +6732,11 @@ fn bounded_split_suffix_blocks(
                     property_end_cursor,
                     fence_cursor,
                     raw_html_scan,
+                    outline,
                 ) {
                     let mut blocks = vec![heading.block(format)];
                     blocks.extend(split.blocks);
+                    outline_transaction.commit();
                     return Some(BoundedSplit {
                         blocks,
                         next: split.next,
@@ -6545,6 +6758,7 @@ fn bounded_split_suffix_blocks(
                     } else {
                         line.end
                     };
+                    outline_transaction.commit();
                     return Some(BoundedSplit {
                         blocks: vec![heading.block(format)],
                         next: line_idx + 1,
@@ -6586,6 +6800,7 @@ fn bounded_split_suffix_blocks(
             property_end_cursor,
             fence_cursor,
             raw_html_scan,
+            outline,
         );
     }
 
@@ -6599,6 +6814,7 @@ fn bounded_split_suffix_blocks(
             property_end_cursor,
             fence_cursor,
             raw_html_scan,
+            outline,
         ) {
             HiccupDecision::Emit {
                 blocks,
@@ -6659,6 +6875,7 @@ fn bounded_split_suffix_blocks(
                     property_end_cursor,
                     fence_cursor,
                     raw_html_scan,
+                    outline,
                 ) {
                     math_blocks.extend(split.blocks);
                     return Some(BoundedSplit {
@@ -6765,8 +6982,9 @@ fn bounded_split_suffix_blocks(
         let tail_text = capture
             .tail_start
             .map(|(tl, ta)| &source.input[ta..line_text_end(&source.lines[tl])]);
-        let Some((tail_line, tail_abs)) =
-            capture.tail_start.filter(|_| !matches!(tail_text, Some("")))
+        let Some((tail_line, tail_abs)) = capture
+            .tail_start
+            .filter(|_| !matches!(tail_text, Some("")))
         else {
             return Some(BoundedSplit {
                 blocks: vec![capture.block],
@@ -6786,6 +7004,7 @@ fn bounded_split_suffix_blocks(
             property_end_cursor,
             fence_cursor,
             raw_html_scan,
+            outline,
         ) {
             ComposedTail::Emit {
                 blocks,
@@ -6924,6 +7143,7 @@ fn bounded_raw_html_split(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> Option<BoundedSplit> {
     let mut blocks = Vec::new();
     let mut line_idx = line_idx;
@@ -6965,6 +7185,7 @@ fn bounded_raw_html_split(
                 property_end_cursor,
                 fence_cursor,
                 scan,
+                outline,
             );
         }
 
@@ -6986,6 +7207,7 @@ fn bounded_raw_html_split(
                 property_end_cursor,
                 fence_cursor,
                 scan,
+                outline,
             );
         };
         let close_end = extent.end;
@@ -7040,6 +7262,7 @@ fn bounded_raw_html_tail(
     property_end_cursor: &mut usize,
     fence_cursor: &mut usize,
     raw_html_scan: &mut RawHtmlScan,
+    outline: Option<&OutlineCollector>,
 ) -> Option<BoundedSplit> {
     if blocks.is_empty() {
         return None;
@@ -7069,6 +7292,7 @@ fn bounded_raw_html_tail(
         property_end_cursor,
         fence_cursor,
         raw_html_scan,
+        outline,
     ) {
         blocks.extend(split.blocks);
         return Some(BoundedSplit {
@@ -7857,6 +8081,18 @@ fn offset_blocks(blocks: &mut [Block], delta: usize) {
     }
 }
 
+fn offset_outline_headers(headers: &mut [OutlineHeader], delta: usize) {
+    for header in headers {
+        header.header_start += delta;
+        header.structural_prefix.start += delta;
+        header.structural_prefix.end += delta;
+        header.line_content.start += delta;
+        header.line_content.end += delta;
+        header.line.start += delta;
+        header.line.end += delta;
+    }
+}
+
 fn offset_block(block: &mut Block, delta: usize) {
     match block {
         Block::Paragraph { inline, span } => {
@@ -8498,19 +8734,19 @@ mod tests {
         // `split_suffix_blocks` must stay total (bounded half + callout half),
         // and a failed raw-HTML candidate must fall through to the tail logic.
         for input in [
-            "- $$x$$ #+BEGIN_NOTE\nx\n#+END_NOTE",                    // math → custom container
-            "- $$x$$ #+BEGIN_QUOTE\nx\n#+END_QUOTE",                  // math → quote container
-            "- TODO [#A] $$x$$ #+BEGIN_NOTE\nx\n#+END_NOTE",          // marker → math → container
-            "- <div>x</div> $$y$$ #+BEGIN_NOTE\nx\n#+END_NOTE",       // raw HTML → math → container
-            "- $$x$$ # #+BEGIN_NOTE\nx\n#+END_NOTE",                  // math → nested heading → container
+            "- $$x$$ #+BEGIN_NOTE\nx\n#+END_NOTE", // math → custom container
+            "- $$x$$ #+BEGIN_QUOTE\nx\n#+END_QUOTE", // math → quote container
+            "- TODO [#A] $$x$$ #+BEGIN_NOTE\nx\n#+END_NOTE", // marker → math → container
+            "- <div>x</div> $$y$$ #+BEGIN_NOTE\nx\n#+END_NOTE", // raw HTML → math → container
+            "- $$x$$ # #+BEGIN_NOTE\nx\n#+END_NOTE", // math → nested heading → container
             "- :PROPERTIES:\n:k: v\n:END: # #+BEGIN_NOTE\nx\n#+END_NOTE", // drawer close → heading → container
             "- :PROPERTIES:\n:k: v\n:END: $$y$$ #+BEGIN_NOTE\nx\n#+END_NOTE", // drawer close → math → container
-            "- <i>h</i> <b>t</b>",                                    // raw HTML → failed short candidate tail
+            "- <i>h</i> <b>t</b>", // raw HTML → failed short candidate tail
             "- <i>h</i><b>t</b>",
-            "- $$a$$ $$b$$ $$c$$ tail",                               // F1: adjacent math chain (iterative peel)
-            "- $$a$$ $$b$$ #+BEGIN_NOTE\nx\n#+END_NOTE",              // F1: math chain → container
-            "- $$x$$ $$unclosed",                                     // F14: unclosed math tail → paragraph
-            "- $$a$$ $$b$$ $$un",                                     // F14: unclosed after a chain
+            "- $$a$$ $$b$$ $$c$$ tail", // F1: adjacent math chain (iterative peel)
+            "- $$a$$ $$b$$ #+BEGIN_NOTE\nx\n#+END_NOTE", // F1: math chain → container
+            "- $$x$$ $$unclosed",       // F14: unclosed math tail → paragraph
+            "- $$a$$ $$b$$ $$un",       // F14: unclosed after a chain
         ] {
             assert!(try_parse(input, "md").is_some(), "unowned: {input:?}");
         }

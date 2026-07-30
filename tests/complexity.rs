@@ -26,6 +26,12 @@ fn work_v2(input: &str, fmt: &str) -> u64 {
     lsdoc::__scan_work_take()
 }
 
+fn work_outline(input: &str, fmt: &str) -> u64 {
+    lsdoc::__scan_work_take(); // reset
+    std::mem::forget(lsdoc::parse_outline(input, fmt).expect("v2 owns complexity input"));
+    lsdoc::__scan_work_take()
+}
+
 fn assert_linear(label: &str, f: impl Fn(usize) -> String, base: usize, fmt: &str) {
     // Normalize by INPUT LENGTH — some families (e.g. the `>`-staircase) have O(depth²) bytes, so
     // scan-work must be judged PER BYTE, not per `base`. A single-pass parser examines each byte
@@ -57,6 +63,21 @@ fn assert_linear_v2(label: &str, f: impl Fn(usize) -> String, base: usize, fmt: 
         r1 < CAP && r2 < CAP,
         "{label} [{fmt} v2]: scan-work/byte {q1:.3} → {q2:.3} → {q4:.3} (base={base}), growth \
          {r1:.2}×/{r2:.2}× — >{CAP}× means a super-linear v2 scan"
+    );
+}
+
+fn assert_linear_outline(label: &str, f: impl Fn(usize) -> String, base: usize, fmt: &str) {
+    const CAP: f64 = 1.6;
+    let q = |n: usize| -> f64 {
+        let s = f(n);
+        work_outline(&s, fmt).max(1) as f64 / s.len().max(1) as f64
+    };
+    let (q1, q2, q4) = (q(base), q(2 * base), q(4 * base));
+    let (r1, r2) = (q2 / q1, q4 / q2);
+    assert!(
+        r1 < CAP && r2 < CAP,
+        "{label} [{fmt} outline]: scan-work/byte {q1:.3} → {q2:.3} → {q4:.3} \
+         (base={base}), growth {r1:.2}×/{r2:.2}× — >{CAP}× means a super-linear outline scan"
     );
 }
 
@@ -1486,8 +1507,18 @@ fn complexity_gate() {
         assert_linear("emph_alt", emph_alt, 3000, "org");
         assert_linear("display_math_adjacent", display_math_adjacent, 3000, "md");
         assert_linear("display_math_adjacent", display_math_adjacent, 3000, "org");
-        assert_linear("display_math_split_title", display_math_split_title, 3000, "md");
-        assert_linear("display_math_split_title", display_math_split_title, 3000, "org");
+        assert_linear(
+            "display_math_split_title",
+            display_math_split_title,
+            3000,
+            "md",
+        );
+        assert_linear(
+            "display_math_split_title",
+            display_math_split_title,
+            3000,
+            "org",
+        );
         assert_linear(
             "display_math_unclosed_tail",
             display_math_unclosed_tail,
@@ -2009,6 +2040,13 @@ fn complexity_gate() {
 
 #[test]
 fn v2_leaf_complexity_gate() {
+    assert_linear_outline("outline_md_heading_lines", v2_md_heading_lines, 1000, "md");
+    assert_linear_outline(
+        "outline_org_heading_lines",
+        v2_org_heading_lines,
+        1000,
+        "org",
+    );
     assert_linear_v2("v2_md_hr_lines", v2_md_hr_lines, 1000, "md");
     assert_linear_v2("v2_org_hr_lines", v2_org_hr_lines, 1000, "org");
     assert_linear_v2("v2_md_leaf_lines", v2_md_leaf_lines, 1000, "md");

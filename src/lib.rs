@@ -5,7 +5,8 @@
 //!
 //! # Public API
 //!
-//! The stable surface is [`mod@ast`] (the AST types) plus four entry points:
+//! The stable surface is [`mod@ast`] (the AST types), the source-oriented
+//! [`parse_outline`] projection, and the main parse entry points:
 //!
 //! - [`parse`]`(input, format) -> Vec<ast::Block>` — the **render** path: the block
 //!   tree a renderer consumes. `format` is `"org"` for Org, anything else Markdown.
@@ -13,6 +14,9 @@
 //!   inline ref set (`[[page]]`, `((block))`).
 //! - [`parse_format`]/[`parse_to_projection`]/[`parse_org_to_projection`] — both at
 //!   once, as an [`ast::Projection`] `{ blocks, refs }`.
+//! - [`parse_outline`]`(input, format) -> Result<DocumentOutline, OutlineParseError>` —
+//!   parser-accepted document-root Markdown/Org outline headers with exact source
+//!   offsets, produced during the same v2 block parse without computing refs.
 //!
 //! The AST is the **integration contract** for Tine, which mirrors its serde
 //! encoding 1:1 in TypeScript — see [`mod@ast`] and `AST.md` for the field-by-field
@@ -31,6 +35,7 @@ pub(crate) mod metrics;
 pub use metrics::__scan_work_take;
 pub(crate) mod org;
 pub(crate) mod org_resolver;
+pub mod outline;
 pub(crate) mod parse;
 pub(crate) mod projection;
 pub(crate) mod refs;
@@ -64,6 +69,9 @@ pub mod ast {
     pub use crate::projection::{Align, Block, Inline, ListItem, Projection, Refs, Span, Url};
 }
 
+pub use outline::{
+    DocumentOutline, OutlineHeader, OutlineHeaderKind, OutlineParseError, SourceRange,
+};
 pub use render::{render_html, Format, RenderOpts};
 
 use projection::Projection;
@@ -72,6 +80,24 @@ use projection::Projection;
 /// anything else is Markdown. Equivalent to [`parse_format`]`(…).blocks`.
 pub fn parse(input: &str, format: &str) -> Vec<ast::Block> {
     v2::parse_blocks(input, if format == "org" { "org" } else { "md" })
+}
+
+/// Parse the document once and return its parser-accepted document-root outline
+/// headers with exact source offsets.
+///
+/// `format == "org"` selects Org; anything else selects Markdown, matching
+/// [`parse`]. This builds the v2 block AST internally so outline events come
+/// from the same acceptance decisions as the public AST, but it does not
+/// compute refs and does not parse the input a second time. Headers inside
+/// fences, custom/src/quote bodies, and regular-list content are excluded
+/// unless the v2 parser accepts them as document-root outline events.
+///
+/// Unlike [`parse`], this storage-oriented API reports the otherwise-unexpected
+/// parser ownership gap as an error rather than panicking.
+pub fn parse_outline(input: &str, format: &str) -> Result<DocumentOutline, OutlineParseError> {
+    v2::try_parse_outline(input, if format == "org" { "org" } else { "md" })
+        .map(|headers| DocumentOutline { headers })
+        .ok_or(OutlineParseError::ParserOwnership)
 }
 
 /// Parse `input` into the OG-faithful inline ref set (the index path). Equivalent to
