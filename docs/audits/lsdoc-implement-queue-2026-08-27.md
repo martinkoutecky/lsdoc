@@ -57,3 +57,7 @@ behavior.
 - `cargo test --release --test perf -- --ignored`: 7 passed.
 - `node fuzz.mjs 40000 99` and its Org counterpart: 0 ref mismatches and 0 block
   mismatches across 40,000 cases in each format.
+- GitHub #295's immutable anonymized reporter graph: all 1,046 Markdown/Org
+  files parsed and passed through the iterative projection serializer (67,340
+  top-level projection blocks; 17,249,012-byte JSON result) without a panic or
+  serialization failure.
