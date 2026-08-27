@@ -10,7 +10,18 @@ Categories: **In flight** / **P1** / **P2** / **Deferred** (genuinely-later, not
 
 ## In flight
 
-None.
+None currently.
+
+## Recently completed
+
+| Item | Receipt |
+|---|---|
+| <a id="f10-raw-html-index"></a>**F10 — single-pass raw-HTML tag index** | One source pass now dispatches recognized opens/closes into direct-indexed tag families while retaining exact-case opener variants and monotone query cursors. The deterministic 20-distinct-tag family is below the fixed work/byte ceiling. |
+| <a id="hiccup-html"></a>**Hiccup `[:tag …]` → HTML render** | The bundled renderer now reads block and inline hiccup into allowlisted markup, retaining the parsed wire AST and rejecting unsafe tags, event attributes, and script URLs. |
+| <a id="iterative-consumers"></a>**Consumer recursion → iterative project/serialize** | `projection_to_json` / `blocks_to_json` use explicit work stacks; the differential CLI uses the projection path, and a 20,000-level small-stack regression passes. |
+| <a id="m7-lex-lines"></a>**M7 — explicit `lex_lines` line lexer** | The v2 source boundary is explicit without adding a second scan or changing line/event semantics. |
+
+Detailed implementation and gate evidence: `docs/audits/lsdoc-implement-queue-2026-08-27.md`.
 
 The 2026-08-24 current-state audit removed stale entries for the v2 single-pass
 rebuild, raw-HTML unification, D10-D15, the old inline scanner cleanup, Org
@@ -39,7 +50,4 @@ gate remain authoritative if a new mismatch is found.
 
 | Item | Notes |
 |---|---|
-| **M7 — explicit `lex_lines` line-lexer** | Would be dead code after the M8/M9 block rewrite already hit O(n); a large lateral rewire for stylistic uniformity, zero perf/correctness gain. Only if a focused clarity pass is wanted. |
-| **Consumer-recursion → iterative project/serialize** | The deep Block tree's recursive drop/project/serialize is bounded by ~6k stack frames (strictly better than mldoc's ~1000; adversarial-only input). Making it iterative removes the ceiling; explainer owed. |
-| **Hiccup `[:tag …]` → HTML render** | Clojure hiccup renders as literal text, not HTML. Low-priority parity gap. |
-| **audit4 F10 — raw-HTML per-distinct-tag full-input scan** | `RawHtmlScan::tag_index` builds one `RawHtmlTagIndex` per DISTINCT tag lazily, and each `RawHtmlTagIndex::build` (`block_common.rs`) walks the whole input once. A block with K distinct allowlisted tags therefore pays K full passes — **measured 25.6 work/byte at 20 distinct tags vs 6.2 for one repeated tag** (verified 2026-07-21). BOUNDED (≤110, the allowlist size) so it is not an asymptotic violation, but a real constant-factor cliff on paste/import blocks with varied HTML. **Fix direction:** build raw-HTML events in ONE source pass, dispatching each recognized `<tag>`/`</tag>`/`<tag/>` to a direct-indexed per-tag event vector, then keep the existing monotone-cursor query model — removes the `distinct_tags × input_len` multiplier. **Deferred, not WONTFIX:** the raw-HTML matcher is the parser's most intricate, regression-prone component (repo history has many raw-HTML O(n²)/parity fixes); a single-pass rewrite there is disproportionate risk for a bounded, rare constant-factor. Do it behind the full gate + a new 20-distinct-tag complexity family only when raw-HTML-heavy import is actually felt. |
+None currently.

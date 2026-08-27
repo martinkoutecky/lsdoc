@@ -184,9 +184,11 @@ impl Renderer {
                 self.out.push_str("</div>");
             }
             Block::Hiccup { v, .. } => {
-                self.out.push_str("<span class=\"ast-hiccup\">");
-                esc_text(v, &mut self.out);
-                self.out.push_str("</span>");
+                if !render_hiccup(v, &mut self.out) {
+                    self.out.push_str("<span class=\"ast-hiccup\">");
+                    esc_text(v, &mut self.out);
+                    self.out.push_str("</span>");
+                }
             }
             // Not rendered (match the frontend): org drawers / `#+KEY:` keywords /
             // `# comment` lines / export-comment blocks.
@@ -578,7 +580,11 @@ impl Renderer {
                 self.out.push_str("</a>");
             }
             Inline::Entity { unicode, .. } => esc_text(unicode, &mut self.out),
-            Inline::Hiccup { v, .. } => esc_text(v, &mut self.out),
+            Inline::Hiccup { v, .. } => {
+                if !render_hiccup(v, &mut self.out) {
+                    esc_text(v, &mut self.out);
+                }
+            }
         }
     }
 
@@ -707,6 +713,345 @@ impl Renderer {
         esc_text(&format!("{open}{text}{close}"), &mut self.out);
         self.out.push_str("</span>");
     }
+}
+
+#[derive(Debug)]
+enum HiccupValue {
+    Vector(Vec<HiccupValue>),
+    Map(Vec<(HiccupValue, HiccupValue)>),
+    String(String),
+    Atom(String),
+}
+
+struct HiccupReader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+    depth: usize,
+}
+
+impl<'a> HiccupReader<'a> {
+    fn new(input: &'a str) -> Self {
+        Self {
+            bytes: input.as_bytes(),
+            pos: 0,
+            depth: 0,
+        }
+    }
+
+    fn finish(mut self) -> Option<HiccupValue> {
+        let value = self.value()?;
+        self.space();
+        (self.pos == self.bytes.len()).then_some(value)
+    }
+
+    fn space(&mut self) {
+        while self
+            .bytes
+            .get(self.pos)
+            .is_some_and(|b| b.is_ascii_whitespace() || *b == b',')
+        {
+            self.pos += 1;
+        }
+    }
+
+    fn value(&mut self) -> Option<HiccupValue> {
+        self.space();
+        match self.bytes.get(self.pos).copied()? {
+            b'[' => self.collection(b']', HiccupValue::Vector),
+            b'{' => {
+                if self.depth >= 256 {
+                    return None;
+                }
+                self.depth += 1;
+                self.pos += 1;
+                let mut entries = Vec::new();
+                loop {
+                    self.space();
+                    if self.bytes.get(self.pos) == Some(&b'}') {
+                        self.pos += 1;
+                        self.depth -= 1;
+                        return Some(HiccupValue::Map(entries));
+                    }
+                    let key = self.value()?;
+                    let value = self.value()?;
+                    entries.push((key, value));
+                }
+            }
+            b'"' => self.string().map(HiccupValue::String),
+            b']' | b'}' => None,
+            _ => self.atom().map(HiccupValue::Atom),
+        }
+    }
+
+    fn collection(
+        &mut self,
+        close: u8,
+        wrap: fn(Vec<HiccupValue>) -> HiccupValue,
+    ) -> Option<HiccupValue> {
+        if self.depth >= 256 {
+            return None;
+        }
+        self.depth += 1;
+        self.pos += 1;
+        let mut values = Vec::new();
+        loop {
+            self.space();
+            if self.bytes.get(self.pos) == Some(&close) {
+                self.pos += 1;
+                self.depth -= 1;
+                return Some(wrap(values));
+            }
+            values.push(self.value()?);
+        }
+    }
+
+    fn string(&mut self) -> Option<String> {
+        self.pos += 1;
+        let mut out = String::new();
+        while let Some(&byte) = self.bytes.get(self.pos) {
+            self.pos += 1;
+            match byte {
+                b'"' => return Some(out),
+                b'\\' => {
+                    let escaped = *self.bytes.get(self.pos)?;
+                    self.pos += 1;
+                    out.push(match escaped {
+                        b'n' => '\n',
+                        b'r' => '\r',
+                        b't' => '\t',
+                        b'b' => '\u{0008}',
+                        b'f' => '\u{000c}',
+                        b'"' => '"',
+                        b'\\' => '\\',
+                        _ => return None,
+                    });
+                }
+                b if b.is_ascii() => out.push(b as char),
+                _ => {
+                    let start = self.pos - 1;
+                    let text = std::str::from_utf8(&self.bytes[start..]).ok()?;
+                    let ch = text.chars().next()?;
+                    out.push(ch);
+                    self.pos = start + ch.len_utf8();
+                }
+            }
+        }
+        None
+    }
+
+    fn atom(&mut self) -> Option<String> {
+        let start = self.pos;
+        while self.bytes.get(self.pos).is_some_and(|b| {
+            !b.is_ascii_whitespace() && !matches!(*b, b',' | b'[' | b']' | b'{' | b'}' | b'"')
+        }) {
+            self.pos += 1;
+        }
+        (self.pos > start).then(|| {
+            std::str::from_utf8(&self.bytes[start..self.pos])
+                .ok()
+                .map(str::to_owned)
+        })?
+    }
+}
+
+fn render_hiccup(input: &str, out: &mut String) -> bool {
+    let Some(value) = HiccupReader::new(input).finish() else {
+        return false;
+    };
+    let checkpoint = out.len();
+    if render_hiccup_value(&value, out) {
+        true
+    } else {
+        out.truncate(checkpoint);
+        false
+    }
+}
+
+fn render_hiccup_value(value: &HiccupValue, out: &mut String) -> bool {
+    let HiccupValue::Vector(items) = value else {
+        return false;
+    };
+    let Some(HiccupValue::Atom(selector)) = items.first() else {
+        return false;
+    };
+    let Some((tag, selector_id, selector_classes)) = hiccup_selector(selector) else {
+        return false;
+    };
+    if hiccup_unsafe_tag(tag) {
+        return false;
+    }
+
+    let mut child_start = 1usize;
+    let attrs = match items.get(1) {
+        Some(HiccupValue::Map(attrs)) => {
+            child_start = 2;
+            Some(attrs)
+        }
+        _ => None,
+    };
+    let map_id = attrs.and_then(|attrs| {
+        attrs.iter().find_map(|(key, value)| {
+            (hiccup_attr_name(key)? == "id")
+                .then(|| hiccup_scalar(value))
+                .flatten()
+        })
+    });
+
+    out.push('<');
+    out.push_str(tag);
+    if let Some(id) = map_id.or(selector_id) {
+        push_attr(out, "id", id);
+    }
+    let mut classes = selector_classes.join(" ");
+    if let Some(attrs) = attrs {
+        for (key, value) in attrs {
+            let Some(name) = hiccup_attr_name(key) else {
+                continue;
+            };
+            let Some(value) = hiccup_scalar(value) else {
+                continue;
+            };
+            if name == "class" {
+                if !classes.is_empty() && !value.is_empty() {
+                    classes.push(' ');
+                }
+                classes.push_str(value);
+                continue;
+            }
+            if name == "id" {
+                continue;
+            }
+            if !hiccup_safe_attr(name, value) {
+                continue;
+            }
+            push_attr(out, name, value);
+        }
+    }
+    if !classes.is_empty() {
+        push_attr(out, "class", &classes);
+    }
+    out.push('>');
+
+    if hiccup_void_tag(tag) {
+        return items.len() == child_start;
+    }
+    for child in &items[child_start..] {
+        match child {
+            HiccupValue::Vector(_) => {
+                if !render_hiccup_value(child, out) {
+                    return false;
+                }
+            }
+            HiccupValue::String(text) => esc_text(text, out),
+            HiccupValue::Atom(atom) if atom == "nil" => {}
+            HiccupValue::Atom(atom) => esc_text(atom, out),
+            HiccupValue::Map(_) => return false,
+        }
+    }
+    out.push_str("</");
+    out.push_str(tag);
+    out.push('>');
+    true
+}
+
+fn hiccup_selector(selector: &str) -> Option<(&str, Option<&str>, Vec<&str>)> {
+    let selector = selector.strip_prefix(':')?;
+    let tag_end = selector.find(['.', '#']).unwrap_or(selector.len());
+    let tag = &selector[..tag_end];
+    if !crate::inline::is_known_html_tag(tag) {
+        return None;
+    }
+    let mut id = None;
+    let mut classes = Vec::new();
+    let mut rest = &selector[tag_end..];
+    while !rest.is_empty() {
+        let marker = rest.as_bytes()[0];
+        rest = &rest[1..];
+        let end = rest.find(['.', '#']).unwrap_or(rest.len());
+        let value = &rest[..end];
+        if value.is_empty() {
+            return None;
+        }
+        if marker == b'#' {
+            id = Some(value);
+        } else {
+            classes.push(value);
+        }
+        rest = &rest[end..];
+    }
+    Some((tag, id, classes))
+}
+
+fn hiccup_attr_name(value: &HiccupValue) -> Option<&str> {
+    match value {
+        HiccupValue::Atom(name) => Some(name.strip_prefix(':').unwrap_or(name)),
+        HiccupValue::String(name) => Some(name),
+        _ => None,
+    }
+}
+
+fn hiccup_scalar(value: &HiccupValue) -> Option<&str> {
+    match value {
+        HiccupValue::Atom(value) | HiccupValue::String(value) => Some(value),
+        _ => None,
+    }
+}
+
+fn hiccup_safe_attr(name: &str, value: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':' | b'.'))
+        || lower.starts_with("on")
+        || matches!(
+            lower.as_str(),
+            "srcdoc" | "formaction" | "dangerouslysetinnerhtml"
+        )
+    {
+        return false;
+    }
+    if matches!(lower.as_str(), "href" | "src" | "action" | "xlink:href") {
+        let value = value.trim_start().to_ascii_lowercase();
+        if let Some(colon) = value.find(':') {
+            let first_path_delimiter = value.find(['/', '?', '#']).unwrap_or(value.len());
+            if colon < first_path_delimiter {
+                return matches!(
+                    &value[..colon],
+                    "http" | "https" | "mailto" | "tel" | "file"
+                );
+            }
+        }
+    }
+    true
+}
+
+fn hiccup_unsafe_tag(tag: &str) -> bool {
+    matches!(
+        tag.to_ascii_lowercase().as_str(),
+        "script" | "style" | "iframe" | "object" | "embed" | "template" | "base" | "link" | "meta"
+    )
+}
+
+fn hiccup_void_tag(tag: &str) -> bool {
+    matches!(
+        tag.to_ascii_lowercase().as_str(),
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "keygen"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
+    )
 }
 
 fn fmt_clock_timestamp(date: &Value) -> (bool, String) {

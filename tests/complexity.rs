@@ -1172,6 +1172,39 @@ fn raw_html_unclosed_tail(n: usize) -> String {
 fn raw_html_repeated_unclosed(n: usize) -> String {
     "<kbd>\n".repeat(n)
 }
+/// Twenty distinct recognized tags in one parse-local raw-HTML body. Each tag used to
+/// trigger another complete source scan; the shared index must keep this near the
+/// one-tag constant rather than multiplying work by the number of distinct tags.
+fn raw_html_twenty_distinct(n: usize) -> String {
+    const TAGS: [&str; 20] = [
+        "a",
+        "abbr",
+        "address",
+        "article",
+        "aside",
+        "b",
+        "bdi",
+        "bdo",
+        "big",
+        "blockquote",
+        "button",
+        "canvas",
+        "cite",
+        "code",
+        "data",
+        "datalist",
+        "del",
+        "details",
+        "dfn",
+        "div",
+    ];
+    let mut out = String::new();
+    for i in 0..n {
+        let tag = TAGS[i % TAGS.len()];
+        write!(&mut out, "<{tag}>x</{tag}>").unwrap();
+    }
+    out
+}
 /// Org `#+BEGIN_QUOTE` with indented adjacent raw-HTML siblings. This is the transformed-view
 /// twin of `raw_html_adjacent`: O(n²) if each sibling materializes the remaining strip-view suffix.
 fn org_indented_quote_raw_html_adjacent(n: usize) -> String {
@@ -1551,6 +1584,19 @@ fn complexity_gate() {
             raw_html_repeated_unclosed,
             3000,
             "org",
+        );
+        assert_linear(
+            "raw_html_twenty_distinct",
+            raw_html_twenty_distinct,
+            1000,
+            "md",
+        );
+        let varied = raw_html_twenty_distinct(2000);
+        let varied_work_per_byte = work(&varied, "md") as f64 / varied.len() as f64;
+        assert!(
+            varied_work_per_byte < 12.0,
+            "raw_html_twenty_distinct [md]: {varied_work_per_byte:.3} scan-work/byte; \
+             distinct tags appear to be rebuilding whole-input indexes"
         );
         assert_linear(
             "org_indented_quote_raw_html_adjacent",

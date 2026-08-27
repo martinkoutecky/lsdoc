@@ -43,15 +43,23 @@ pub(crate) struct Events {
 
 impl<'a> Source<'a> {
     pub(crate) fn scan(input: &'a str) -> Source<'a> {
-        let mut scanner = SourceScanner::new(input);
-        scanner.scan();
-        let SourceScanner { lines, events, .. } = scanner;
+        let (lines, events) = lex_lines(input);
         Source {
             input,
             lines,
             events,
         }
     }
+}
+
+/// Lex physical line windows and the source events whose recognition is owned by
+/// that same monotone byte walk. Keeping this boundary explicit prevents block
+/// parsing from quietly re-splitting or reclassifying lines while retaining v2's
+/// single-pass source/index construction.
+fn lex_lines(input: &str) -> (Vec<Line<'_>>, Events) {
+    let mut scanner = SourceScanner::new(input);
+    scanner.scan();
+    (scanner.lines, scanner.events)
 }
 
 impl Events {

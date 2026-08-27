@@ -235,9 +235,23 @@ fn inline_and_block_math_are_empty_with_tex_hook() {
 
 #[test]
 fn hiccup_block_and_inline() {
+    assert_eq!(md("[:b.foo hi]"), r#"<b class="foo">hi</b>"#);
     assert_eq!(
-        md("[:b.foo hi]"),
-        r#"<span class="ast-hiccup">[:b.foo hi]</span>"#
+        md("before [:span#x.note {\"title\" \"a&b\"} \"hello <world>\"] after"),
+        r#"before <span id="x" title="a&amp;b" class="note">hello &lt;world&gt;</span> after"#
+    );
+    assert_eq!(
+        md("[:div.card [:strong \"Bold\"] tail]"),
+        r#"<div class="card"><strong>Bold</strong>tail</div>"#
+    );
+    // Hiccup is reader data, not a bypass around the renderer's raw-HTML safety policy.
+    assert_eq!(
+        md("[:script \"alert(1)\"]"),
+        r#"<span class="ast-hiccup">[:script "alert(1)"]</span>"#
+    );
+    assert_eq!(
+        md("[:a {:href \"javascript:alert(1)\" :onclick \"go()\"} \"safe text\"]"),
+        r#"<a>safe text</a>"#
     );
 }
 

@@ -72,6 +72,7 @@ pub mod ast {
 pub use outline::{
     DocumentOutline, OutlineHeader, OutlineHeaderKind, OutlineParseError, SourceRange,
 };
+pub use projection::{blocks_to_json, projection_to_json};
 pub use render::{render_html, Format, RenderOpts};
 
 use projection::Projection;

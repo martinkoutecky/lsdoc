@@ -591,7 +591,7 @@ pub(crate) fn find_displayed_math_close(
 pub(crate) struct RawHtmlScan {
     no_tag_end_until: Vec<usize>,
     no_special_until: [usize; 4],
-    tag_indexes: Vec<RawHtmlTagCache>,
+    tag_indexes: Option<RawHtmlAllTagIndex>,
     #[cfg(debug_assertions)]
     input_id: Option<(usize, usize)>,
 }
@@ -604,7 +604,7 @@ impl RawHtmlScan {
             // miss (audit4 F12 — Tine constructs one RawHtmlScan per projected block).
             no_tag_end_until: Vec::new(),
             no_special_until: [0; 4],
-            tag_indexes: Vec::new(),
+            tag_indexes: None,
             #[cfg(debug_assertions)]
             input_id: None,
         }
@@ -636,27 +636,148 @@ impl RawHtmlScan {
         }
     }
 
-    fn tag_index<'a>(&'a mut self, input: &str, tag: &str) -> &'a mut RawHtmlTagIndex {
+    fn tag_index<'a>(
+        &'a mut self,
+        input: &str,
+        tag: &str,
+        known_index: usize,
+    ) -> &'a mut RawHtmlTagIndex {
         self.guard_input(input);
-        for pos in 0..self.tag_indexes.len() {
-            crate::metrics::scan_work(1);
-            if self.tag_indexes[pos].tag == tag {
-                return &mut self.tag_indexes[pos].index;
-            }
-        }
-        crate::metrics::scan_work(1);
-        self.tag_indexes.push(RawHtmlTagCache {
-            tag: tag.to_string(),
-            index: RawHtmlTagIndex::build(input.as_bytes(), tag),
-        });
-        let last = self.tag_indexes.len() - 1;
-        &mut self.tag_indexes[last].index
+        self.tag_indexes
+            .get_or_insert_with(|| RawHtmlAllTagIndex::build(input))
+            .tag_index(tag, known_index)
     }
 }
 
 struct RawHtmlTagCache {
     tag: String,
     index: RawHtmlTagIndex,
+}
+
+#[derive(Default)]
+struct RawHtmlTagFamilyBuild {
+    close_pos: Vec<usize>,
+    open_variants: Vec<(String, Vec<usize>)>,
+}
+
+struct RawHtmlTagFamilyIndex {
+    close_pos: Vec<usize>,
+    variants: Vec<RawHtmlTagCache>,
+}
+
+struct RawHtmlAllTagIndex {
+    input_len: usize,
+    self_close_pos: Vec<usize>,
+    families: Vec<RawHtmlTagFamilyIndex>,
+}
+
+impl RawHtmlAllTagIndex {
+    fn build(input: &str) -> Self {
+        // One source pass owns discovery for every recognized tag. The old
+        // lazy cache walked the complete input again for each distinct tag.
+        let bytes = input.as_bytes();
+        let mut families: Vec<RawHtmlTagFamilyBuild> = (0..crate::inline::HICCUP_TAGS.len())
+            .map(|_| RawHtmlTagFamilyBuild::default())
+            .collect();
+        let mut self_close_pos = Vec::new();
+
+        for pos in 0..bytes.len() {
+            if pos + 1 < bytes.len() && bytes[pos] == b'/' && bytes[pos + 1] == b'>' {
+                self_close_pos.push(pos);
+            }
+            if bytes[pos] != b'<' || pos + 1 >= bytes.len() {
+                continue;
+            }
+
+            let closing = bytes[pos + 1] == b'/';
+            let name_start = pos + if closing { 2 } else { 1 };
+            let mut name_end = name_start;
+            while name_end < bytes.len()
+                && name_end - name_start < 10
+                && bytes[name_end].is_ascii_alphanumeric()
+            {
+                name_end += 1;
+            }
+            if name_end == name_start {
+                continue;
+            }
+            let Some(name) = input.get(name_start..name_end) else {
+                continue;
+            };
+            let Some(known_index) = crate::inline::known_html_tag_index(name) else {
+                continue;
+            };
+
+            if closing {
+                if name_end < bytes.len() && bytes[name_end] == b'>' {
+                    families[known_index].close_pos.push(pos);
+                }
+                continue;
+            }
+            if name_end >= bytes.len() || !matches!(bytes[name_end], b'>' | b' ') {
+                continue;
+            }
+            let variants = &mut families[known_index].open_variants;
+            if let Some((_, positions)) = variants.iter_mut().find(|(variant, _)| variant == name) {
+                positions.push(pos);
+            } else {
+                variants.push((name.to_string(), vec![pos]));
+            }
+        }
+        crate::metrics::scan_work(bytes.len());
+
+        let families = families
+            .into_iter()
+            .map(|family| {
+                let variants = family
+                    .open_variants
+                    .into_iter()
+                    .map(|(tag, open_pos)| RawHtmlTagCache {
+                        index: RawHtmlTagIndex::from_events(
+                            bytes.len(),
+                            tag.len() + 3,
+                            &open_pos,
+                            &family.close_pos,
+                            &self_close_pos,
+                        ),
+                        tag,
+                    })
+                    .collect();
+                RawHtmlTagFamilyIndex {
+                    close_pos: family.close_pos,
+                    variants,
+                }
+            })
+            .collect();
+
+        Self {
+            input_len: bytes.len(),
+            self_close_pos,
+            families,
+        }
+    }
+
+    fn tag_index(&mut self, tag: &str, known_index: usize) -> &mut RawHtmlTagIndex {
+        let family = &mut self.families[known_index];
+        if let Some(pos) = family.variants.iter().position(|entry| entry.tag == tag) {
+            return &mut family.variants[pos].index;
+        }
+        // `<tag\t...` is a valid outer head in mldoc, but only `<tag>` and
+        // `<tag ...` count as nested opens. Such a queried spelling therefore
+        // legitimately has no opening-event vector.
+        family.variants.push(RawHtmlTagCache {
+            tag: tag.to_string(),
+            index: RawHtmlTagIndex::from_events(
+                self.input_len,
+                tag.len() + 3,
+                &[],
+                &family.close_pos,
+                &self.self_close_pos,
+            ),
+        });
+        let last = family.variants.len() - 1;
+        &mut family.variants[last].index
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -685,6 +806,57 @@ struct RawHtmlTagIndex {
 }
 
 impl RawHtmlTagIndex {
+    fn from_events(
+        input_len: usize,
+        close_len: usize,
+        open_pos: &[usize],
+        close_pos: &[usize],
+        self_close_pos: &[usize],
+    ) -> Self {
+        let mut event_pos = Vec::with_capacity(open_pos.len() + close_pos.len());
+        let mut event_delta = Vec::with_capacity(event_pos.capacity());
+        let mut oi = 0usize;
+        let mut ci = 0usize;
+        while oi < open_pos.len() || ci < close_pos.len() {
+            let take_open =
+                ci == close_pos.len() || (oi < open_pos.len() && open_pos[oi] < close_pos[ci]);
+            if take_open {
+                event_pos.push(open_pos[oi]);
+                event_delta.push(1);
+                oi += 1;
+            } else {
+                event_pos.push(close_pos[ci]);
+                event_delta.push(-1);
+                ci += 1;
+            }
+            crate::metrics::scan_work(1);
+        }
+        let mut event_prefix_after = Vec::with_capacity(event_delta.len());
+        let mut prefix = 0isize;
+        for &delta in &event_delta {
+            prefix += delta;
+            event_prefix_after.push(prefix);
+        }
+        let (next_strict_below_close, virtual_next_strict_below_close) =
+            Self::build_next_strict_below_close(&event_delta, &event_prefix_after);
+        Self {
+            input_len,
+            close_len,
+            event_pos,
+            #[cfg(test)]
+            event_prefix_after,
+            next_strict_below_close,
+            virtual_next_strict_below_close,
+            close_pos: close_pos.to_vec(),
+            self_close_pos: self_close_pos.to_vec(),
+            last_after_tag: 0,
+            event_cursor: 0,
+            close_cursor: 0,
+            self_close_cursor: 0,
+        }
+    }
+
+    #[cfg(test)]
     fn build(bytes: &[u8], tag: &str) -> Self {
         // scan-owner: (b) global precompute table + monotone cursors, bounded tag universe — raw-HTML per-tag index build
         let close_tag = format!("</{}>", tag);
@@ -1037,6 +1209,30 @@ mod raw_html_index_tests {
     }
 
     #[test]
+    fn raw_html_single_pass_index_matches_legacy_for_all_tags_and_case_variants() {
+        let input = "<div><span>x</SPAN></div><Div><div>y</DIV></div><kbd />";
+        let mut all = RawHtmlAllTagIndex::build(input);
+        for tag in ["div", "Div", "span", "kbd"] {
+            let known = crate::inline::known_html_tag_index(tag).unwrap();
+            let indexed = all.tag_index(tag, known);
+            let legacy = legacy_events(input.as_bytes(), tag, input.len());
+            assert_eq!(
+                indexed.event_pos, legacy.event_pos,
+                "event positions for {tag}"
+            );
+            assert_eq!(
+                indexed.event_prefix_after, legacy.event_prefix_after,
+                "prefix for {tag}"
+            );
+            assert_eq!(indexed.close_pos, legacy.close_pos, "closes for {tag}");
+            assert_eq!(
+                indexed.self_close_pos, legacy.self_close_pos,
+                "self closes for {tag}"
+            );
+        }
+    }
+
+    #[test]
     fn raw_html_nse_is_strict_below_and_includes_adjacent_close() {
         let equal_prefix = "<div><div></div><div></div>";
         let mut idx = RawHtmlTagIndex::build(equal_prefix.as_bytes(), "div");
@@ -1320,7 +1516,7 @@ fn parse_raw_html_impl(
             let after_tag = opener + 1 + tag.len();
             if let Some(state) = state {
                 return state
-                    .tag_index(input, tag)
+                    .tag_index(input, tag, index)
                     .match_from(opener, after_tag, body_end, index);
             }
             let bytes = input.as_bytes();

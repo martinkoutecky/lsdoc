@@ -37,6 +37,30 @@ struct InlineOutItem {
     parse_micros: Option<u128>,
 }
 
+fn projection_items_to_json(items: &[OutItem]) -> serde_json::Result<String> {
+    let mut json = String::from("[");
+    for (index, item) in items.iter().enumerate() {
+        if index != 0 {
+            json.push(',');
+        }
+        json.push_str("{\"id\":");
+        json.push_str(&serde_json::to_string(&item.id)?);
+        if let Some(input) = &item.input {
+            json.push_str(",\"input\":");
+            json.push_str(&serde_json::to_string(input)?);
+        }
+        json.push_str(",\"projection\":");
+        json.push_str(&lsdoc::projection_to_json(&item.projection)?);
+        if let Some(micros) = item.parse_micros {
+            json.push_str(",\"parse_micros\":");
+            json.push_str(&micros.to_string());
+        }
+        json.push('}');
+    }
+    json.push(']');
+    Ok(json)
+}
+
 fn main() {
     let mut positional = Vec::new();
     let mut timings_no_input = false;
@@ -154,7 +178,7 @@ fn main() {
     }
 
     // Compact for the same O(k²)-pretty-indentation reason as the inline path above.
-    let json = serde_json::to_string(&out).expect("serialize output");
+    let json = projection_items_to_json(&out).expect("serialize output");
     fs::write(&out_path, json).unwrap_or_else(|e| panic!("write {out_path}: {e}"));
     println!(
         "lsdoc[{engine}]: wrote {} projections to {out_path}",

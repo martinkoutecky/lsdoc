@@ -166,7 +166,9 @@ as opaque for display.
   oracle diff like `span`.
 - **Clojure-hiccup `[:tag …]`** (mldoc `Hiccup` / `Inline_Hiccup`) IS carried — as the
   `hiccup` block + inline variants above. `v` is the raw bracket text verbatim (mldoc does
-  NOT parse the children, so a renderer treats it opaquely; no refs are extracted from it).
+  NOT parse the children; no refs are extracted from it). The bundled HTML renderer applies
+  an OG-style safe reader at render time, emits allowlisted hiccup markup, and declines unsafe
+  tags, event attributes, and script URL attributes without changing this wire representation.
   Recognition matches mldoc exactly: `[:` + an HTML-element name from mldoc's 110-tag
   allowlist (case-insensitive) + a keyword boundary (`]`/space/tab/`.`/`#`) + a string-aware,
   `[:`-nested balanced `]`. A whole-line vector → a `hiccup` block (the remainder past the

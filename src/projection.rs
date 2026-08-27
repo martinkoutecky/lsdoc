@@ -25,6 +25,340 @@ pub struct Refs {
     pub block: Vec<String>,
 }
 
+/// Serialize a projection without following recursive block/list/inline children on
+/// the native call stack. This is the JSON wire equivalent of `Serialize`, intended
+/// for deep parser output and WASM/CLI boundaries.
+pub fn projection_to_json(projection: &Projection) -> serde_json::Result<String> {
+    let mut out = String::from("{\"blocks\":");
+    write_json_tasks(&mut out, vec![JsonTask::Blocks(&projection.blocks)])?;
+    out.push_str(",\"refs\":");
+    out.push_str(&serde_json::to_string(&projection.refs)?);
+    out.push('}');
+    Ok(out)
+}
+
+/// Stack-safe JSON serialization for the render-only block API.
+pub fn blocks_to_json(blocks: &[Block]) -> serde_json::Result<String> {
+    let mut out = String::new();
+    write_json_tasks(&mut out, vec![JsonTask::Blocks(blocks)])?;
+    Ok(out)
+}
+
+enum JsonTask<'a> {
+    Raw(&'static str),
+    Owned(String),
+    Blocks(&'a [Block]),
+    Block(&'a Block),
+    ListItems(&'a [ListItem]),
+    ListItem(&'a ListItem),
+    Inlines(&'a [Inline]),
+    Inline(&'a Inline),
+    Cells(&'a [Vec<Inline>]),
+    Rows(&'a [Vec<Vec<Inline>>]),
+}
+
+fn json<T: Serialize + ?Sized>(value: &T) -> serde_json::Result<String> {
+    serde_json::to_string(value)
+}
+
+fn push_span(out: &mut String, span: &Option<Span>) -> serde_json::Result<()> {
+    if let Some(span) = span {
+        out.push_str(",\"span\":");
+        out.push_str(&json(span)?);
+    }
+    Ok(())
+}
+
+fn push_array_tasks<'a, T>(
+    tasks: &mut Vec<JsonTask<'a>>,
+    slice: &'a [T],
+    wrap: fn(&'a T) -> JsonTask<'a>,
+) {
+    tasks.push(JsonTask::Raw("]"));
+    for (index, item) in slice.iter().enumerate().rev() {
+        tasks.push(wrap(item));
+        if index != 0 {
+            tasks.push(JsonTask::Raw(","));
+        }
+    }
+    tasks.push(JsonTask::Raw("["));
+}
+
+fn write_json_tasks<'a>(out: &mut String, mut tasks: Vec<JsonTask<'a>>) -> serde_json::Result<()> {
+    while let Some(task) = tasks.pop() {
+        match task {
+            JsonTask::Raw(raw) => out.push_str(raw),
+            JsonTask::Owned(raw) => out.push_str(&raw),
+            JsonTask::Blocks(blocks) => {
+                push_array_tasks(&mut tasks, blocks, |block| JsonTask::Block(block));
+            }
+            JsonTask::ListItems(items) => {
+                push_array_tasks(&mut tasks, items, |item| JsonTask::ListItem(item));
+            }
+            JsonTask::Inlines(inlines) => {
+                push_array_tasks(&mut tasks, inlines, |inline| JsonTask::Inline(inline));
+            }
+            JsonTask::Cells(cells) => {
+                push_array_tasks(&mut tasks, cells, |cell| JsonTask::Inlines(cell));
+            }
+            JsonTask::Rows(rows) => {
+                push_array_tasks(&mut tasks, rows, |row| JsonTask::Cells(row));
+            }
+            JsonTask::Block(block) => write_block_json(out, &mut tasks, block)?,
+            JsonTask::ListItem(item) => write_list_item_json(out, &mut tasks, item)?,
+            JsonTask::Inline(inline) => write_inline_json(out, &mut tasks, inline)?,
+        }
+    }
+    Ok(())
+}
+
+fn write_block_json<'a>(
+    out: &mut String,
+    tasks: &mut Vec<JsonTask<'a>>,
+    block: &'a Block,
+) -> serde_json::Result<()> {
+    match block {
+        Block::Paragraph { inline, span } => {
+            out.push_str("{\"kind\":\"paragraph\",\"inline\":");
+            let mut tail = String::new();
+            push_span(&mut tail, span)?;
+            tail.push('}');
+            tasks.push(JsonTask::Owned(tail));
+            tasks.push(JsonTask::Inlines(inline));
+        }
+        Block::Heading {
+            level,
+            size,
+            inline,
+            marker,
+            priority,
+            htags,
+            span,
+        }
+        | Block::Bullet {
+            level,
+            size,
+            inline,
+            marker,
+            priority,
+            htags,
+            span,
+        } => {
+            let kind = if matches!(block, Block::Heading { .. }) {
+                "heading"
+            } else {
+                "bullet"
+            };
+            out.push_str("{\"kind\":");
+            out.push_str(&json(kind)?);
+            out.push_str(",\"level\":");
+            out.push_str(&level.to_string());
+            if kind == "heading" || size.is_some() {
+                out.push_str(",\"size\":");
+                out.push_str(&json(size)?);
+            }
+            out.push_str(",\"inline\":");
+            let mut tail = String::new();
+            if let Some(marker) = marker {
+                tail.push_str(",\"marker\":");
+                tail.push_str(&json(marker)?);
+            }
+            if let Some(priority) = priority {
+                tail.push_str(",\"priority\":");
+                tail.push_str(&json(priority)?);
+            }
+            if !htags.is_empty() {
+                tail.push_str(",\"htags\":");
+                tail.push_str(&json(htags)?);
+            }
+            push_span(&mut tail, span)?;
+            tail.push('}');
+            tasks.push(JsonTask::Owned(tail));
+            tasks.push(JsonTask::Inlines(inline));
+        }
+        Block::List { items, span } => {
+            out.push_str("{\"kind\":\"list\",\"items\":");
+            let mut tail = String::new();
+            push_span(&mut tail, span)?;
+            tail.push('}');
+            tasks.push(JsonTask::Owned(tail));
+            tasks.push(JsonTask::ListItems(items));
+        }
+        Block::Quote { children, span } => {
+            out.push_str("{\"kind\":\"quote\",\"children\":");
+            let mut tail = String::new();
+            push_span(&mut tail, span)?;
+            tail.push('}');
+            tasks.push(JsonTask::Owned(tail));
+            tasks.push(JsonTask::Blocks(children));
+        }
+        Block::Custom {
+            name,
+            children,
+            span,
+        } => {
+            out.push_str("{\"kind\":\"custom\",\"name\":");
+            out.push_str(&json(name)?);
+            out.push_str(",\"children\":");
+            let mut tail = String::new();
+            push_span(&mut tail, span)?;
+            tail.push('}');
+            tasks.push(JsonTask::Owned(tail));
+            tasks.push(JsonTask::Blocks(children));
+        }
+        Block::Table {
+            header,
+            rows,
+            aligns,
+            span,
+        } => {
+            out.push_str("{\"kind\":\"table\",\"header\":");
+            let mut tail = String::from(",\"aligns\":");
+            tail.push_str(&json(aligns)?);
+            push_span(&mut tail, span)?;
+            tail.push('}');
+            tasks.push(JsonTask::Owned(tail));
+            tasks.push(JsonTask::Rows(rows));
+            tasks.push(JsonTask::Raw(",\"rows\":"));
+            match header {
+                Some(header) => tasks.push(JsonTask::Cells(header)),
+                None => tasks.push(JsonTask::Raw("null")),
+            }
+        }
+        Block::FootnoteDef { name, inline, span } => {
+            out.push_str("{\"kind\":\"footnote_def\",\"name\":");
+            out.push_str(&json(name)?);
+            out.push_str(",\"inline\":");
+            let mut tail = String::new();
+            push_span(&mut tail, span)?;
+            tail.push('}');
+            tasks.push(JsonTask::Owned(tail));
+            tasks.push(JsonTask::Inlines(inline));
+        }
+        other => out.push_str(&json(other)?),
+    }
+    Ok(())
+}
+
+fn write_list_item_json<'a>(
+    out: &mut String,
+    tasks: &mut Vec<JsonTask<'a>>,
+    item: &'a ListItem,
+) -> serde_json::Result<()> {
+    out.push_str("{\"ordered\":");
+    out.push_str(if item.ordered { "true" } else { "false" });
+    if let Some(number) = item.number {
+        out.push_str(",\"number\":");
+        out.push_str(&number.to_string());
+    }
+    out.push_str(",\"indent\":");
+    out.push_str(&item.indent.to_string());
+    out.push_str(",\"content\":");
+    let mut after_content = String::from(",\"items\":");
+    tasks.push(JsonTask::Raw("}"));
+    if let Some(checkbox) = item.checkbox {
+        tasks.push(JsonTask::Owned(format!(",\"checkbox\":{checkbox}")));
+    }
+    if !item.name.is_empty() {
+        tasks.push(JsonTask::Inlines(&item.name));
+        tasks.push(JsonTask::Raw(",\"name\":"));
+    }
+    tasks.push(JsonTask::ListItems(&item.items));
+    tasks.push(JsonTask::Owned(std::mem::take(&mut after_content)));
+    tasks.push(JsonTask::Blocks(&item.content));
+    Ok(())
+}
+
+fn write_inline_json<'a>(
+    out: &mut String,
+    tasks: &mut Vec<JsonTask<'a>>,
+    inline: &'a Inline,
+) -> serde_json::Result<()> {
+    match inline {
+        Inline::Emphasis {
+            emph,
+            children,
+            span,
+        } => {
+            out.push_str("{\"k\":\"emphasis\",\"emph\":");
+            out.push_str(&json(emph)?);
+            out.push_str(",\"children\":");
+            let mut tail = String::new();
+            push_span(&mut tail, span)?;
+            tail.push('}');
+            tasks.push(JsonTask::Owned(tail));
+            tasks.push(JsonTask::Inlines(children));
+        }
+        Inline::Subscript { children, span }
+        | Inline::Superscript { children, span }
+        | Inline::Tag { children, span } => {
+            let kind = match inline {
+                Inline::Subscript { .. } => "subscript",
+                Inline::Superscript { .. } => "superscript",
+                _ => "tag",
+            };
+            out.push_str("{\"k\":");
+            out.push_str(&json(kind)?);
+            out.push_str(",\"children\":");
+            let mut tail = String::new();
+            push_span(&mut tail, span)?;
+            tail.push('}');
+            tasks.push(JsonTask::Owned(tail));
+            tasks.push(JsonTask::Inlines(children));
+        }
+        Inline::Link {
+            url,
+            label,
+            full,
+            image,
+            metadata,
+            title,
+            span,
+        } => {
+            out.push_str("{\"k\":\"link\",\"url\":");
+            out.push_str(&json(url)?);
+            if !label.is_empty() {
+                out.push_str(",\"label\":");
+                let mut tail = String::from(",\"full\":");
+                tail.push_str(&json(full)?);
+                if *image {
+                    tail.push_str(",\"image\":true");
+                }
+                if !metadata.is_empty() {
+                    tail.push_str(",\"metadata\":");
+                    tail.push_str(&json(metadata)?);
+                }
+                if let Some(title) = title {
+                    tail.push_str(",\"title\":");
+                    tail.push_str(&json(title)?);
+                }
+                push_span(&mut tail, span)?;
+                tail.push('}');
+                tasks.push(JsonTask::Owned(tail));
+                tasks.push(JsonTask::Inlines(label));
+            } else {
+                out.push_str(",\"full\":");
+                out.push_str(&json(full)?);
+                if *image {
+                    out.push_str(",\"image\":true");
+                }
+                if !metadata.is_empty() {
+                    out.push_str(",\"metadata\":");
+                    out.push_str(&json(metadata)?);
+                }
+                if let Some(title) = title {
+                    out.push_str(",\"title\":");
+                    out.push_str(&json(title)?);
+                }
+                push_span(out, span)?;
+                out.push('}');
+            }
+        }
+        other => out.push_str(&json(other)?),
+    }
+    Ok(())
+}
+
 /// Property value provenance inside mldoc's `Property_Drawer` fold.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PropertyOrigin {
@@ -135,7 +469,10 @@ pub(crate) fn parse_separator_aligns(sep: &str) -> Vec<Option<Align>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{drop_blocks_stack_safe, parse_separator_aligns, Align, Block};
+    use super::{
+        drop_blocks_stack_safe, parse_separator_aligns, projection_to_json, Align, Block,
+        Projection, Refs,
+    };
 
     #[test]
     fn separator_aligns_require_hyphen_per_cell() {
@@ -168,6 +505,47 @@ mod tests {
             .expect("spawn small-stack disposal thread")
             .join()
             .expect("block disposal recursed");
+    }
+
+    #[test]
+    fn iterative_projection_json_matches_serde_contract() {
+        let projection = crate::parse_format(
+            "# H **bold [[Page]]**\n- item\n  * child\n| a | b |\n|---|---|\n| x | y |",
+            "md",
+        );
+        let expected = serde_json::to_value(&projection).unwrap();
+        let actual: serde_json::Value =
+            serde_json::from_str(&projection_to_json(&projection).unwrap()).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn iterative_projection_json_survives_adversarial_depth() {
+        std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                let mut blocks = Vec::new();
+                for _ in 0..20_000 {
+                    blocks = vec![Block::Quote {
+                        children: blocks,
+                        span: None,
+                    }];
+                }
+                let projection = Projection {
+                    blocks,
+                    refs: Refs {
+                        page: Vec::new(),
+                        block: Vec::new(),
+                    },
+                };
+                let json = projection_to_json(&projection).expect("serialize deep projection");
+                assert!(json.starts_with("{\"blocks\":[{\"kind\":\"quote\""));
+                assert!(json.ends_with("}],\"refs\":{\"page\":[],\"block\":[]}}"));
+                drop_blocks_stack_safe(projection.blocks);
+            })
+            .expect("spawn small-stack serializer")
+            .join()
+            .expect("iterative serialization overflowed");
     }
 }
 
@@ -350,7 +728,8 @@ pub enum Block {
     },
     /// Block-level Clojure-hiccup vector `[:tag …]` occupying a whole line (mldoc
     /// `Hiccup`). `v` is the RAW bracket text verbatim (mldoc does NOT parse the
-    /// children); a renderer treats it opaquely. See `AST.md`.
+    /// children); lsdoc's bundled renderer reads the vector into allowlisted,
+    /// sanitized HTML while the wire AST remains unchanged. See `AST.md`.
     #[serde(rename = "hiccup")]
     Hiccup {
         v: String,
@@ -681,7 +1060,9 @@ pub enum Inline {
         span: Option<Span>,
     },
     /// Inline Clojure-hiccup vector `[:tag …]` mixed with text (mldoc `Inline_Hiccup`).
-    /// `v` is the RAW bracket text verbatim (children unparsed). See `AST.md`.
+    /// `v` is the RAW bracket text verbatim (children unparsed in the wire AST);
+    /// the bundled renderer interprets it through the same safe hiccup subset as
+    /// block hiccup. See `AST.md`.
     #[serde(rename = "hiccup")]
     Hiccup {
         v: String,
