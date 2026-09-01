@@ -1,6 +1,7 @@
 # lsdoc: render-level parity + Tine integration
 
-> **Historical.** Render parity shipped (M7); superseded — see README.md and the lsdoc↔Tine integration memory.
+> **Historical.** Render parity shipped (M7); superseded — see README.md. The quoted
+> zero-allowlist claim below was true for this 2026-06-28 milestone; D48 was added later.
 
 **Audience:** the lsdoc session (this repo).
 **Bottom line:** lsdoc has **verified parity for *indexing*** (refs + block structure +
@@ -59,7 +60,7 @@ omits is **unverified**. So:
    renderer needs it (see Tine's render needs in the appendix). Record the call.
 3. **Carry + gate the render-relevant ones.** Add the field to lsdoc's AST type AND
    to `normalize.mjs` (so mldoc and lsdoc are compared on it), then re-run `node
-   run.mjs` until 0 diffs. A field rendering needs but you choose NOT to verify must
+   run.mjs` until 0 unclassified diffs. A field rendering needs but you choose NOT to verify must
    be written down as an explicit, justified allowlist entry — not left silent.
 4. **Re-run the full gate** (corpus + real graphs + fuzz + perf). Parity now includes
    the render fields.

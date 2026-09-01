@@ -13,14 +13,15 @@ the design log (mldoc quirks, intentional deviations, complexity decisions).
 
 ## Status
 
-**Markdown AND Org complete — exact, render-level mldoc parity, zero allowlist
-deviations.** One differential gate over **1188 inputs** (adversarial + mined mldoc/OG
-test suites + real Markdown graph + real Org graph), both formats: **refs, block-struct,
-AND blocks-full all 1188/1188 (0 diffs, allowlist empty)** — plus the `blockgate` (99
-real block bodies) and `inlinegate` (37 inline) gates; real content —
-`~/research/tine-test` (md) AND `~/research/org-graph` (org) — is 0-diff; fuzzing is
-panic-free over 160k+ inputs; the perf suite is linear and stack-bounded for both
-formats. Milestone order (each gated by "0 oracle diffs on its slice + perf budgets hold"):
+**Markdown AND Org complete — render-level mldoc parity except for one intentional,
+semantically classified Markdown family (D48).** D48 preserves valid dollar-delimited
+LaTeX directly inside ordinary Markdown emphasis. The differential gates report exact
+matches, classified intentional hits, and unclassified mismatches separately; a
+registry entry alone cannot suppress a mismatch. Org remains exact, and every format
+retains a zero-unclassified-diff invariant. Real graph/block gates, differential fuzz,
+deterministic complexity tests, and the perf suite cover correctness, linearity, and
+stack bounds. Milestone order (each gated by "zero unclassified oracle diffs on its
+slice + perf budgets hold"):
 
 1. ✅ Harness / oracle / corpus / normalization + regression loop
 2. ✅ Block structure (paragraphs, headings, lists, code fences, properties, quotes, hr, tables)
@@ -73,7 +74,8 @@ properties, the ordered inline tree (kind + payload), and the OG-faithful ref se
 (page/block/tag/embed, UUID-gated as `block.cljs` does it). **Spans are excluded**
 from the comparison (mldoc emits no inline spans and its block spans are quirky);
 lsdoc tracks spans internally and verifies them with its own unit tests. Intentional
-deviations live on a small, documented allowlist in `DECISIONS.md`.
+intentional deviations live in `DECISIONS.md` and require both an exact registry entry
+(for deterministic corpus IDs) and a fail-closed semantic proof.
 
 Correctness is necessary but **not sufficient**: a separate adversarial **perf**
 suite and a **fuzz** loop guard against `O(n²)`/`O(2^n)`/stack-overflow behavior

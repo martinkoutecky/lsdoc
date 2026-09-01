@@ -9,9 +9,10 @@ oracle harness. Consumed by Tine as a public AGPL git-dependency.
 ```sh
 source scripts/env.sh                 # shared /aux toolchain — REQUIRED before cargo
 cd harness && node run.mjs            # corpus + blockgate + inlinegate, exits non-zero on any diff
-node fuzz.mjs 40000 99                # append `org` for org. FLOOR IS ZERO (both formats, blocks+refs,
-                                      # any seed) — ANY mismatch = regression or new divergence (file a
-                                      # D-entry in DIVERGENCES.md); adjudicate with vdiff_iso (isolated)
+node fuzz.mjs 40000 99                # append `org` for org. UNCLASSIFIED FLOOR IS ZERO (both formats,
+                                      # blocks+refs, any seed); D48 intentional hits are proved and reported
+                                      # separately. Any unclassified mismatch = regression/new D-entry;
+                                      # adjudicate with vdiff_iso (isolated)
 cargo test --lib                      # unit tests
 cargo test --test render              # render_html tests
 cargo test --release --test perf -- --ignored   # perf ratio + linearity + stack gates
@@ -32,7 +33,9 @@ The `--ignored` perf tests also pass (`quote_staircase_uncapped_heavy` locks the
 uncapped after the container-frame rewrite).
 
 The gate compares a **normalized projection** (`harness/lib/normalize.mjs` ↔ `src/projection.rs`);
-the two emitters MUST stay in sync. Any divergence = a real behavior bug, never "rounding".
+the two emitters MUST stay in sync. Any unclassified divergence = a real behavior bug, never
+"rounding". D48 is the sole intentional family and passes only through its fail-closed
+mask-and-reparse proof, with exact registry membership for deterministic corpus IDs.
 
 **⚠ The oracle leaks global state across parses in ONE process.** `oracle.mjs` loads `mldoc` once
 and calls `Mldoc.parseJson` per input, so a prior parse can contaminate a later one — e.g. `$$$`

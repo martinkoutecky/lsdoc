@@ -9,6 +9,10 @@ import { dirname, join } from "node:path";
 import { normalizeAst } from "./lib/normalize.mjs";
 import { extractRefs } from "./lib/refs.mjs";
 import { canonJSON } from "./lib/compare.mjs";
+import {
+  classifyNestedDollar,
+  createFreshParsers,
+} from "./lib/intentional-divergence.mjs";
 
 const require = createRequire(import.meta.url);
 const { Mldoc } = require("mldoc");
@@ -95,6 +99,8 @@ const lsdoc = JSON.parse(readFileSync(outPath, "utf8"));
 const byId = Object.fromEntries(lsdoc.map((x) => [x.id, x]));
 
 let refMismatch = 0, blockMismatch = 0, shown = 0, oracleErr = 0, lsdocMissing = 0;
+let intentional = 0, oracleLeak = 0;
+const parsers = createFreshParsers({ lsdocPath: join(repo, "target", "debug", "lsdoc-parse") });
 for (const c of inputs) {
   let op;
   // Oracle error / missing lsdoc output — FAIL CLOSED (audit4 C4), don't shrink
@@ -112,6 +118,20 @@ for (const c of inputs) {
   }
   const rb = S(op.refs) !== S(lp.refs);
   const bb = S(op.blocks) !== S(lp.blocks);
+  if (rb || bb) {
+    const result = classifyNestedDollar({
+      input: c.input,
+      format: c.format,
+      entrypoint: "block",
+      lsdocOriginal: lp,
+      parsers,
+    });
+    if (result.status === "intentional") {
+      intentional++;
+      continue;
+    }
+    if (result.status === "oracle_leak") oracleLeak++;
+  }
   if (rb) refMismatch++;
   if (bb) blockMismatch++;
   if ((rb || bb) && shown < 25) {
@@ -121,5 +141,6 @@ for (const c of inputs) {
     if (bb) console.log(`  blocks O:${S(op.blocks).slice(0, 400)}\n         L:${S(lp.blocks).slice(0, 400)}`);
   }
 }
-console.log(`\nfuzz ${N}: refMismatch=${refMismatch} blockMismatch=${blockMismatch}${oracleErr ? ` ORACLE-ERR=${oracleErr}` : ""}${lsdocMissing ? ` LSDOC-MISSING=${lsdocMissing}` : ""}`);
-process.exit(refMismatch + blockMismatch + oracleErr + lsdocMissing === 0 ? 0 : 2);
+parsers.close();
+console.log(`\nfuzz ${N}: intentional=${intentional} unclassifiedRefs=${refMismatch} unclassifiedBlocks=${blockMismatch} oracleLeak=${oracleLeak}${oracleErr ? ` ORACLE-ERR=${oracleErr}` : ""}${lsdocMissing ? ` LSDOC-MISSING=${lsdocMissing}` : ""}`);
+process.exit(refMismatch + blockMismatch + oracleLeak + oracleErr + lsdocMissing === 0 ? 0 : 2);

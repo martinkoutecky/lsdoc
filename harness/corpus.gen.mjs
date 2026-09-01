@@ -262,6 +262,41 @@ add("codespan", "#a`b`c");         // tag then code span
 add("codespan", "[`a`](x)");       // code span inside a link label
 add("codespan", "`[[a]]`");        // link syntax inside code stays literal
 
+// GH #460 / D48: dollar-delimited LaTeX remains semantic inside Markdown emphasis.
+// Append-only: stable ids above must not move.
+add("nested-dollar-latex", "*$x$*");
+add("nested-dollar-latex", "_$x$_");
+add("nested-dollar-latex", "*$$x$$*");
+add("nested-dollar-latex", "_$$x$$_");
+add("nested-dollar-latex", "**$x$**");
+add("nested-dollar-latex", "~~$x$~~");
+add("nested-dollar-latex", "==a $x$ b==");
+add("nested-dollar-latex", "*a $x$ b $y$ c*");
+add("nested-dollar-latex", "*~~$x$~~*");
+add("nested-dollar-latex", "[*$x$*](u)");
+add("nested-dollar-latex", "_[*$x$*](u)_");
+add("nested-dollar-latex", "_{*$x$*}");
+add("nested-dollar-latex", "*$x_{i}$*");
+add("nested-dollar-latex", "*$[a](b)$*");
+add("nested-dollar-latex", "*$\\{x\\}$*");
+add("nested-dollar-latex", "*$a[[Foo]]b$*");
+add("nested-dollar-latex", "*$a_$b_*");
+add("nested-dollar-latex", "*$a[[Foo$]]b*");
+add("nested-dollar-latex", "*$x\\$*");
+add("nested-dollar-latex", "*_a_$x$*");
+add("nested-dollar-latex", "*b_c_$x$*");
+add("nested-dollar-latex", "> *$x$*");
+// Zero-diff guards for containment, synthetic triples, code, invalid math, and escapes.
+add("nested-dollar-guard", "*$x*$");
+add("nested-dollar-guard", "*$$x*$$");
+add("nested-dollar-guard", "***$x$***");
+add("nested-dollar-guard", "___$x$___");
+add("nested-dollar-guard", "*`$x$`*");
+add("nested-dollar-guard", "*`$x$*");
+add("nested-dollar-guard", "* $x$*");
+add("nested-dollar-guard", "*$x *");
+add("nested-dollar-guard", "_{$x$}");
+
 // emit
 const out = cases.map((c, idx) => ({ id: `c${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));

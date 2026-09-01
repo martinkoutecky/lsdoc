@@ -4,6 +4,10 @@ import { tmpdir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { canon, canonJSON } from "./compare.mjs";
+import {
+  classifyNestedDollar,
+  createFreshParsers,
+} from "./intentional-divergence.mjs";
 
 export const HARNESS_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 export const REPO_DIR = dirname(HARNESS_DIR);
@@ -165,6 +169,8 @@ export function runEnumeration({ name, groups, findingsPath, options }) {
   let total = 0;
   let emitted = 0;
   let chunk = [];
+  let intentionalTotal = 0;
+  const parsers = createFreshParsers({ lsdocPath: options.lsdoc });
 
   const flush = () => {
     if (!chunk.length) return;
@@ -222,6 +228,7 @@ export function runEnumeration({ name, groups, findingsPath, options }) {
       const samples = [];
       let confirmed = 0;
       let leak = 0;
+      let intentional = 0;
       for (const r of representatives(members, options.reps)) {
         writeFileSync(inPath, JSON.stringify([caseForWire(r)]));
         const l = runLsdoc(options.lsdoc, inPath, lsPath)[0];
@@ -229,16 +236,31 @@ export function runEnumeration({ name, groups, findingsPath, options }) {
         const lm = projection(l.projection);
         const om = projection(o.projection);
         if (projectionKey(l.projection) !== projectionKey(o.projection)) {
-          confirmed++;
-          samples.push({
-            id: r.id,
-            format: r.format,
+          const classification = classifyNestedDollar({
             input: r.input,
-            meta: r.meta || {},
-            mldoc: om,
-            lsdoc: lm,
-            oracleError: o.err || null,
+            format: r.format === "org" ? "org" : "md",
+            entrypoint: "block",
+            lsdocOriginal: l.projection,
+            parsers,
           });
+          if (classification.status === "intentional") {
+            intentional++;
+            intentionalTotal++;
+          } else if (classification.status === "oracle_leak") {
+            leak++;
+          } else {
+            confirmed++;
+            samples.push({
+              id: r.id,
+              format: r.format,
+              input: r.input,
+              meta: r.meta || {},
+              mldoc: om,
+              lsdoc: lm,
+              oracleError: o.err || null,
+              classification,
+            });
+          }
         } else {
           leak++;
         }
@@ -249,9 +271,10 @@ export function runEnumeration({ name, groups, findingsPath, options }) {
         size: members.length,
         confirmed,
         leak,
+        intentional,
         representatives: samples.slice(0, options.reps),
       });
-      process.stderr.write(`class(${members.length}) confirmed=${confirmed} leak=${leak}: ${k.slice(0, 140)}\n`);
+      process.stderr.write(`class(${members.length}) confirmed=${confirmed} intentional=${intentional} leak=${leak}: ${k.slice(0, 140)}\n`);
     }
 
     const findings = report.filter((r) => r.confirmed > 0);
@@ -263,10 +286,11 @@ export function runEnumeration({ name, groups, findingsPath, options }) {
       );
     }
     console.log(
-      `${total} cases; ${rawDiffs.length} raw diffs in ${classes.size} classes; ${findings.length} isolated-CONFIRMED classes -> ${findingsPath} (${(elapsedMs / 1000).toFixed(1)}s)`
+      `${total} cases; ${rawDiffs.length} raw diffs in ${classes.size} classes; intentional=${intentionalTotal}; ${findings.length} isolated-CONFIRMED classes -> ${findingsPath} (${(elapsedMs / 1000).toFixed(1)}s)`
     );
     return { total, rawDiffs: rawDiffs.length, classes: classes.size, findings, stats, elapsedMs };
   } finally {
+    parsers.close();
     rmSync(temp, { recursive: true, force: true });
   }
 }

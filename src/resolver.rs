@@ -13,6 +13,113 @@ use crate::lexer::{lex, Kind, Token};
 use crate::projection::{Inline, Span};
 use crate::source_map::OriginSegment;
 
+/// Root-scoped recognizer answers for dollar-delimited Markdown LaTeX. Nested
+/// emphasis reparses address this table with absolute source offsets, avoiding a
+/// fresh closer scan at every recursive grammar level.
+pub(crate) struct NestedDollarIndex {
+    root_base: usize,
+    hits: Vec<usize>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct NestedDollarContext<'a> {
+    index: &'a NestedDollarIndex,
+    allow: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct NestedDollarHit {
+    pub(crate) end: usize,
+    pub(crate) displayed: bool,
+}
+
+static EMPTY_NESTED_DOLLAR_INDEX: NestedDollarIndex = NestedDollarIndex {
+    root_base: 0,
+    hits: Vec::new(),
+};
+
+impl NestedDollarIndex {
+    pub(crate) fn build(text: &str, root_base: usize) -> Self {
+        let bytes = text.as_bytes();
+        let mut dollar_positions = Vec::new();
+        let mut has_emphasis_marker = false;
+        // scan-owner: (a) one root construction gate — records dollar positions and
+        // proves whether nested Markdown emphasis can occur.
+        crate::metrics::scan_work(bytes.len());
+        for (i, &byte) in bytes.iter().enumerate() {
+            if byte == b'$' {
+                dollar_positions.push(i);
+            }
+            has_emphasis_marker |= matches!(byte, b'*' | b'_' | b'~' | b'^' | b'=');
+        }
+        if dollar_positions.is_empty() || !has_emphasis_marker {
+            return Self {
+                root_base,
+                hits: Vec::new(),
+            };
+        }
+
+        // scan-owner: (b) root-position direct table initialization — one slot per
+        // source byte, never rebuilt by a child/label/script reparse.
+        crate::metrics::scan_work(bytes.len());
+        let mut hits = vec![0usize; bytes.len()];
+        let mut dollar_scan = crate::inline::ByteBeforeEolScan::new(b'$');
+        for at in dollar_positions {
+            if !dollar_scan.has_before_eol(bytes, at.saturating_add(2)) {
+                continue;
+            }
+            let Some((node, end)) = crate::inline::parse_latex_dollar_at(text, at) else {
+                continue;
+            };
+            let displayed = matches!(node, Inline::Latex { ref mode, .. } if mode == "Displayed");
+            let Some(encoded_end) = end.checked_shl(1) else {
+                continue;
+            };
+            hits[at] = encoded_end | usize::from(displayed);
+        }
+        Self { root_base, hits }
+    }
+
+    pub(crate) fn context(&self) -> NestedDollarContext<'_> {
+        NestedDollarContext {
+            index: self,
+            allow: true,
+        }
+    }
+}
+
+impl<'a> NestedDollarContext<'a> {
+    pub(crate) fn disabled() -> Self {
+        Self {
+            index: &EMPTY_NESTED_DOLLAR_INDEX,
+            allow: false,
+        }
+    }
+
+    pub(crate) fn narrow(self, condition: bool) -> Self {
+        Self {
+            index: self.index,
+            allow: self.allow && condition,
+        }
+    }
+
+    fn lookup(self, absolute_at: usize) -> Option<NestedDollarHit> {
+        if !self.allow {
+            return None;
+        }
+        let relative_at = absolute_at.checked_sub(self.index.root_base)?;
+        let encoded = *self.index.hits.get(relative_at)?;
+        if encoded == 0 {
+            return None;
+        }
+        let relative_end = encoded >> 1;
+        Some(NestedDollarHit {
+            end: self.index.root_base.checked_add(relative_end)?,
+            displayed: encoded & 1 == 1,
+        })
+    }
+}
+
 /// Active constructs (mirrors v1's `Ctx`; grows as families migrate). Page-ref / nested-link
 /// / md-link / code / emphasis / escapes are ALWAYS on (no flag); these gate the constructs
 /// mldoc's `Ctx::emph` disables.
@@ -60,10 +167,14 @@ impl Ctx {
 /// Parse a run of inline markup (top-level Markdown context). `base` is the absolute byte
 /// offset of `text[0]` in the block body — every emitted node's `span` is absolute (S2).
 pub(crate) fn parse_inline(text: &str, base: usize) -> Vec<Inline> {
-    if let Some(nodes) = crate::inline::plain_fast_path_markdown(text, base) {
+    let dollar_index = NestedDollarIndex::build(text, base);
+    let nested_dollars = dollar_index.context();
+    if let Some(nodes) =
+        crate::inline::plain_fast_path_markdown_with_nested(text, base, nested_dollars)
+    {
         return nodes;
     }
-    parse_ctx(text, Ctx::top(), base)
+    parse_ctx_with_nested(text, Ctx::top(), base, nested_dollars)
 }
 
 /// mldoc `Property.property_references`: parse property values with
@@ -79,6 +190,7 @@ pub(crate) fn try_markdown_nested_emphasis_at(
     at: usize,
     base: usize,
     state_char: Option<u8>,
+    nested_dollars: NestedDollarContext<'_>,
 ) -> Option<(Inline, usize)> {
     let mut no_closer = [[false; 3]; 5];
     let terminal_odd_backslash = markdown_terminal_odd_backslash(text);
@@ -89,6 +201,7 @@ pub(crate) fn try_markdown_nested_emphasis_at(
         state_char,
         &mut no_closer,
         terminal_odd_backslash,
+        nested_dollars,
     )
 }
 
@@ -103,6 +216,7 @@ pub(crate) fn try_markdown_nested_emphasis_at_cached(
     state_char: Option<u8>,
     no_closer: &mut [[bool; 3]; 5],
     terminal_odd_backslash: bool,
+    nested_dollars: NestedDollarContext<'_>,
 ) -> Option<(Inline, usize)> {
     nested_emphasis_at_md(
         text,
@@ -111,6 +225,7 @@ pub(crate) fn try_markdown_nested_emphasis_at_cached(
         no_closer,
         base,
         terminal_odd_backslash,
+        nested_dollars,
     )
     .ok()
     .map(|hit| (hit.node, hit.end))
@@ -120,7 +235,11 @@ pub(crate) fn try_markdown_nested_emphasis_at_cached(
 /// `syntax/inline.ml:862-884`: `many1 (choice [emphasis; latex_fragment; entity;
 /// code; subscript; superscript])` with `consume:All`. This deliberately has no
 /// `plain` or whitespace fallback; callers keep the original Plain on `None`.
-pub(crate) fn parse_inline_ctx_md_label(text: &str, base: usize) -> Option<Vec<Inline>> {
+pub(crate) fn parse_inline_ctx_md_label(
+    text: &str,
+    base: usize,
+    nested_dollars: NestedDollarContext<'_>,
+) -> Option<Vec<Inline>> {
     let bb = text.as_bytes();
     if bb.is_empty() {
         return None;
@@ -134,9 +253,15 @@ pub(crate) fn parse_inline_ctx_md_label(text: &str, base: usize) -> Option<Vec<I
     while i < bb.len() {
         crate::metrics::scan_work(1);
         if matches!(bb[i], b'*' | b'_' | b'~' | b'^' | b'=') {
-            if let Ok(hit) =
-                nested_emphasis_at_md(text, i, None, &mut no_closer, base, terminal_odd_backslash)
-            {
+            if let Ok(hit) = nested_emphasis_at_md(
+                text,
+                i,
+                None,
+                &mut no_closer,
+                base,
+                terminal_odd_backslash,
+                nested_dollars,
+            ) {
                 out.push(hit.node);
                 i = hit.end;
                 continue;
@@ -159,7 +284,8 @@ pub(crate) fn parse_inline_ctx_md_label(text: &str, base: usize) -> Option<Vec<I
         }
         if matches!(bb[i], b'_' | b'^') {
             if bb.get(i + 1) == Some(&b'{') && script_rbrace_scan.has_before_eol(bb, i + 2) {
-                if let Some((node, end)) = try_markdown_script_at(text, bb, i, base) {
+                if let Some((node, end)) = try_markdown_script_at(text, bb, i, base, nested_dollars)
+                {
                     out.push(node);
                     i = end;
                     continue;
@@ -217,8 +343,18 @@ fn markdown_label_entity_at(s: &str, bb: &[u8], i: usize, base: usize) -> Option
 }
 
 fn parse_ctx(text: &str, ctx: Ctx, base: usize) -> Vec<Inline> {
+    let dollar_index = NestedDollarIndex::build(text, base);
+    parse_ctx_with_nested(text, ctx, base, dollar_index.context())
+}
+
+fn parse_ctx_with_nested(
+    text: &str,
+    ctx: Ctx,
+    base: usize,
+    nested_dollars: NestedDollarContext<'_>,
+) -> Vec<Inline> {
     let mut toks = lex(text);
-    resolve(text, &mut toks, ctx, base)
+    resolve(text, &mut toks, ctx, base, nested_dollars)
 }
 
 fn class_idx(ch: u8) -> usize {
@@ -887,15 +1023,21 @@ fn nested_emphasis_at_md(
     no_closer: &mut [[bool; 3]; 5],
     base: usize,
     terminal_odd_backslash: bool,
+    nested_dollars: NestedDollarContext<'_>,
 ) -> Result<EmParsed, EmFail> {
     let mut hit = markdown_emphasis_at(s, at, state_char, no_closer, base, terminal_odd_backslash)?;
-    hit.node = aux_nested_emphasis_md(hit.node, s, base);
+    hit.node = aux_nested_emphasis_md(hit.node, s, base, nested_dollars);
     Ok(hit)
 }
 
 /// Port of mldoc `nested_emphasis` / `aux_nested_emphasis`
 /// (`lib/syntax/inline.ml:922-947`).
-fn aux_nested_emphasis_md(node: Inline, source: &str, source_base: usize) -> Inline {
+fn aux_nested_emphasis_md(
+    node: Inline,
+    source: &str,
+    source_base: usize,
+    nested_dollars: NestedDollarContext<'_>,
+) -> Inline {
     if is_synthetic_nested_emphasis(&node) {
         return unescape_synthetic_nested_emphasis_md(node, source, source_base);
     }
@@ -914,63 +1056,77 @@ fn aux_nested_emphasis_md(node: Inline, source: &str, source_base: usize) -> Inl
                         text,
                         span: plain_span,
                         span_map: plain_map,
-                    } => match parse_nested_plain_md(&text, plain_span.map(|s| s.0).unwrap_or(0)) {
-                        Ok(result)
-                            if result.len() == 1 && matches!(result[0], Inline::Plain { .. }) =>
-                        {
-                            if plain_map.is_some() {
-                                reparsed.push(Inline::Plain {
-                                    text,
-                                    span: plain_span,
-                                    span_map: plain_map,
-                                });
-                            } else if let Some(span) = plain_span {
-                                let raw = text;
-                                let (text, clean) = markdown_plain_text(&raw);
-                                if clean {
+                    } => {
+                        let child_nested_dollars =
+                            nested_dollars.narrow(plain_span.is_some() && plain_map.is_none());
+                        let child_base = plain_span.map(|s| s.0).unwrap_or(0);
+                        let child_end = plain_span.map(|s| s.1);
+                        match parse_nested_plain_md(
+                            &text,
+                            child_base,
+                            child_end,
+                            child_nested_dollars,
+                        ) {
+                            Ok(result)
+                                if result.len() == 1
+                                    && matches!(result[0], Inline::Plain { .. }) =>
+                            {
+                                if plain_map.is_some() {
                                     reparsed.push(Inline::Plain {
                                         text,
-                                        span: Some(span),
-                                        span_map: None,
+                                        span: plain_span,
+                                        span_map: plain_map,
                                     });
+                                } else if let Some(span) = plain_span {
+                                    let raw = text;
+                                    let (text, clean) = markdown_plain_text(&raw);
+                                    if clean {
+                                        reparsed.push(Inline::Plain {
+                                            text,
+                                            span: Some(span),
+                                            span_map: None,
+                                        });
+                                    } else {
+                                        reparsed.push(crate::source_map::make_plain(
+                                            text,
+                                            span,
+                                            markdown_plain_origins(&raw, span.0),
+                                            &raw,
+                                            span.0,
+                                        ));
+                                    }
                                 } else {
                                     reparsed.push(crate::source_map::make_plain(
                                         text,
-                                        span,
-                                        markdown_plain_origins(&raw, span.0),
-                                        &raw,
-                                        span.0,
+                                        Span(0, 0),
+                                        Vec::new(),
+                                        "",
+                                        0,
                                     ));
                                 }
-                            } else {
-                                reparsed.push(crate::source_map::make_plain(
-                                    text,
-                                    Span(0, 0),
-                                    Vec::new(),
-                                    "",
-                                    0,
-                                ));
                             }
-                        }
-                        Ok(mut result) => {
-                            let child_base = plain_span.map(|s| s.0).unwrap_or(0);
-                            if plain_span.is_none() {
-                                for node in &mut result {
-                                    clear_inline_spans(node);
+                            Ok(mut result) => {
+                                if plain_span.is_none() {
+                                    for node in &mut result {
+                                        clear_inline_spans(node);
+                                    }
                                 }
+                                reparsed.extend(result.into_iter().map(|node| {
+                                    aux_nested_emphasis_md(
+                                        node,
+                                        &text,
+                                        child_base,
+                                        child_nested_dollars,
+                                    )
+                                }));
                             }
-                            reparsed.extend(
-                                result
-                                    .into_iter()
-                                    .map(|node| aux_nested_emphasis_md(node, &text, child_base)),
-                            );
+                            Err(()) => reparsed.push(Inline::Plain {
+                                text,
+                                span: plain_span,
+                                span_map: None,
+                            }),
                         }
-                        Err(()) => reparsed.push(Inline::Plain {
-                            text,
-                            span: plain_span,
-                            span_map: None,
-                        }),
-                    },
+                    }
                     other => reparsed.push(other),
                 }
             }
@@ -1126,7 +1282,12 @@ fn is_synthetic_nested_emphasis(node: &Inline) -> bool {
 
 /// Port of the phase-2 parser inside mldoc `nested_emphasis`
 /// (`lib/syntax/inline.ml:927-934`) for Markdown.
-fn parse_nested_plain_md(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
+fn parse_nested_plain_md(
+    text: &str,
+    base: usize,
+    child_end: Option<usize>,
+    nested_dollars: NestedDollarContext<'_>,
+) -> Result<Vec<Inline>, ()> {
     let bb = text.as_bytes();
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -1148,7 +1309,8 @@ fn parse_nested_plain_md(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
         }
         if matches!(bb[i], b'_' | b'^') {
             if bb.get(i + 1) == Some(&b'{') && script_rbrace_scan.has_before_eol(bb, i + 2) {
-                if let Some((node, end)) = try_markdown_script_at(text, bb, i, base) {
+                if let Some((node, end)) = try_markdown_script_at(text, bb, i, base, nested_dollars)
+                {
                     out.push(node);
                     i = end;
                     continue;
@@ -1156,11 +1318,40 @@ fn parse_nested_plain_md(text: &str, base: usize) -> Result<Vec<Inline>, ()> {
             }
         }
         if bb[i] == b'[' {
-            if let Some((node, end)) = try_nested_link_or_link_md(text, i, base, &mut md_link_scan)
+            if let Some((node, end)) =
+                try_nested_link_or_link_md(text, i, base, &mut md_link_scan, nested_dollars)
             {
                 out.push(node);
                 i = end;
                 continue;
+            }
+        }
+        if bb[i] == b'$' {
+            if let (Some(limit), Some(hit)) =
+                (child_end, nested_dollars.lookup(base.saturating_add(i)))
+            {
+                if hit.end <= limit {
+                    let relative_end = hit.end.checked_sub(base).ok_or(())?;
+                    if relative_end <= text.len() {
+                        let delimiter_len = if hit.displayed { 2 } else { 1 };
+                        let body_start = i.checked_add(delimiter_len).ok_or(())?;
+                        let body_end = relative_end.checked_sub(delimiter_len).ok_or(())?;
+                        if body_start <= body_end && body_end <= text.len() {
+                            let body = &text[body_start..body_end];
+                            let mode = if hit.displayed { "Displayed" } else { "Inline" };
+                            // scan-owner: (a) accepted nested-dollar output copy — one
+                            // emitted mode/body, with recognition owned by the root index.
+                            crate::metrics::scan_work(mode.len() + body.len());
+                            out.push(Inline::Latex {
+                                mode: mode.to_string(),
+                                body: body.to_string(),
+                                span: Some(Span(base + i, hit.end)),
+                            });
+                            i = relative_end;
+                            continue;
+                        }
+                    }
+                }
             }
         }
         let (node, end) = markdown_plain_at(text, i, base).ok_or(())?;
@@ -1257,6 +1448,7 @@ fn try_nested_link_or_link_md(
     at: usize,
     base: usize,
     scan: &mut crate::inline::MdLinkScan,
+    nested_dollars: NestedDollarContext<'_>,
 ) -> Option<(Inline, usize)> {
     crate::metrics::scan_work(2);
     if s[at..].starts_with("[[") {
@@ -1288,14 +1480,21 @@ fn try_nested_link_or_link_md(
             ));
         }
     }
-    let (mut node, end) = crate::inline::md_link_with_scan(s, at, false, base, scan)?;
+    let (mut node, end) =
+        crate::inline::md_link_with_scan_nested(s, at, false, base, scan, nested_dollars)?;
     crate::projection::set_inline_span(&mut node, Some(Span(base + at, base + end)));
     Some((node, end))
 }
 
 /// Port of mldoc `gen_script` for Markdown braced script bodies
 /// (`lib/syntax/inline.ml:492-514`).
-fn try_markdown_script_at(s: &str, bb: &[u8], i: usize, base: usize) -> Option<(Inline, usize)> {
+fn try_markdown_script_at(
+    s: &str,
+    bb: &[u8],
+    i: usize,
+    base: usize,
+    nested_dollars: NestedDollarContext<'_>,
+) -> Option<(Inline, usize)> {
     let marker = bb[i];
     if !matches!(marker, b'_' | b'^') || bb.get(i + 1) != Some(&b'{') {
         return None;
@@ -1309,7 +1508,7 @@ fn try_markdown_script_at(s: &str, bb: &[u8], i: usize, base: usize) -> Option<(
     if j == body_start || bb.get(j) != Some(&b'}') {
         return None;
     }
-    let children = parse_markdown_script_body(&s[body_start..j], base + body_start);
+    let children = parse_markdown_script_body(&s[body_start..j], base + body_start, nested_dollars);
     let span = Some(Span(base + i, base + j + 1));
     let node = if marker == b'_' {
         Inline::Subscript { children, span }
@@ -1326,20 +1525,25 @@ pub(crate) fn try_markdown_script_after_emphasis_declines(
     i: usize,
     base: usize,
     state_char: Option<u8>,
+    nested_dollars: NestedDollarContext<'_>,
 ) -> Option<(Inline, usize)> {
     let bb = s.as_bytes();
     if !matches!(bb.get(i), Some(b'_' | b'^')) || bb.get(i + 1) != Some(&b'{') {
         return None;
     }
-    if try_markdown_nested_emphasis_at(s, i, base, state_char).is_some() {
+    if try_markdown_nested_emphasis_at(s, i, base, state_char, nested_dollars).is_some() {
         return None;
     }
-    try_markdown_script_at(s, bb, i, base)
+    try_markdown_script_at(s, bb, i, base, nested_dollars)
 }
 
 /// Port of the inner parser in mldoc `gen_script`
 /// (`lib/syntax/inline.ml:503-510`) for Markdown braced script bodies.
-fn parse_markdown_script_body(text: &str, base: usize) -> Vec<Inline> {
+fn parse_markdown_script_body(
+    text: &str,
+    base: usize,
+    nested_dollars: NestedDollarContext<'_>,
+) -> Vec<Inline> {
     let bb = text.as_bytes();
     let mut out = Vec::new();
     let mut i = 0usize;
@@ -1352,7 +1556,7 @@ fn parse_markdown_script_body(text: &str, base: usize) -> Vec<Inline> {
             if let Ok(hit) =
                 markdown_emphasis_at(text, i, None, &mut no_closer, base, terminal_odd_backslash)
             {
-                out.push(aux_nested_emphasis_md(hit.node, text, base));
+                out.push(aux_nested_emphasis_md(hit.node, text, base, nested_dollars));
                 i = hit.end;
                 continue;
             }
@@ -1549,7 +1753,13 @@ fn try_code_span(s: &str, off: usize, base: usize) -> Option<(Inline, usize)> {
     Some((node, end))
 }
 
-fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
+fn resolve(
+    s: &str,
+    toks: &mut [Token],
+    ctx: Ctx,
+    base: usize,
+    nested_dollars: NestedDollarContext<'_>,
+) -> Vec<Inline> {
     let bb = s.as_bytes();
     let mut out: Vec<Inline> = Vec::new();
     let mut pending = String::new();
@@ -1709,6 +1919,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 base,
                 &mut bare_url_scan,
                 &mut timestamp_scan,
+                nested_dollars,
             );
         }};
     }
@@ -1781,6 +1992,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 &mut no_closer,
                 base,
                 terminal_odd_backslash,
+                nested_dollars,
             ) {
                 flush(
                     &mut out,
@@ -1823,7 +2035,8 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                 && bb.get($off + 1) == Some(&b'{')
                 && script_rbrace_scan.has_before_eol(bb, $off + 2)
             {
-                if let Some((node, end)) = try_markdown_script_at(s, bb, $off, base) {
+                if let Some((node, end)) = try_markdown_script_at(s, bb, $off, base, nested_dollars)
+                {
                     flush(
                         &mut out,
                         &mut pending,
@@ -2186,6 +2399,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         &mut rparen,
                         &mut md_link_scan,
                         base,
+                        nested_dollars,
                     ) {
                         flush(
                             &mut out,
@@ -2365,6 +2579,7 @@ fn resolve(s: &str, toks: &mut [Token], ctx: Ctx, base: usize) -> Vec<Inline> {
                         &mut rparen,
                         &mut md_link_scan,
                         base,
+                        nested_dollars,
                     ) {
                         flush(
                             &mut out,
@@ -2682,6 +2897,7 @@ fn resync(
     base: usize,
     bare_url_scan: &mut crate::inline::BareUrlScan,
     timestamp_scan: &mut crate::inline::TimestampCloseScan,
+    nested_dollars: NestedDollarContext<'_>,
 ) -> usize {
     let n = s.len();
     // scan-owner: (a2) caller-owned accepted range — Markdown token resync cursor
@@ -2743,7 +2959,12 @@ fn resync(
             );
             // the remainder is re-parsed with its own absolute base `base + end`.
             crate::metrics::scan_work(s.len() - end); // resync re-lexes the whole suffix
-            out.extend(parse_ctx(&s[end..], ctx, base + end));
+            out.extend(parse_ctx_with_nested(
+                &s[end..],
+                ctx,
+                base + end,
+                nested_dollars,
+            ));
             return toks.len(); // recursion handled the remainder — stop the outer walk
         }
         // the tail bytes are pushed RAW (no unescape) → they map 1:1 to source from `end`.
@@ -2939,6 +3160,7 @@ fn try_md_link(
     rparen: &mut usize,
     md_link_scan: &mut crate::inline::MdLinkScan,
     base: usize,
+    nested_dollars: NestedDollarContext<'_>,
 ) -> Option<(Inline, usize)> {
     // scan-owner: (a) consumed-on-match — Markdown link `](` cursor
     while lbp.get(*lbp_cur).is_some_and(|&p| p < at) {
@@ -2958,13 +3180,148 @@ fn try_md_link(
     if *rparen >= bb.len() {
         return None; // no closing `)` ahead
     }
-    crate::inline::md_link_with_scan(s, at, image, base, md_link_scan)
+    crate::inline::md_link_with_scan_nested(s, at, image, base, md_link_scan, nested_dollars)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{markdown_hardbreak_start, parse_inline};
-    use crate::projection::Inline;
+    use crate::projection::{Inline, Span};
+
+    fn contains_latex(nodes: &[Inline]) -> bool {
+        nodes.iter().any(|node| match node {
+            Inline::Latex { .. } => true,
+            Inline::Emphasis { children, .. }
+            | Inline::Subscript { children, .. }
+            | Inline::Superscript { children, .. }
+            | Inline::Tag { children, .. } => contains_latex(children),
+            Inline::Link { label, .. } => contains_latex(label),
+            _ => false,
+        })
+    }
+
+    fn inline_container_depth(nodes: &[Inline]) -> usize {
+        let mut stack: Vec<(&Inline, usize)> = nodes.iter().map(|node| (node, 1)).collect();
+        let mut max_depth = 0usize;
+        while let Some((node, depth)) = stack.pop() {
+            max_depth = max_depth.max(depth);
+            let children = match node {
+                Inline::Emphasis { children, .. }
+                | Inline::Subscript { children, .. }
+                | Inline::Superscript { children, .. }
+                | Inline::Tag { children, .. } => Some(children.as_slice()),
+                Inline::Link { label, .. } => Some(label.as_slice()),
+                _ => None,
+            };
+            if let Some(children) = children {
+                stack.extend(children.iter().map(|child| (child, depth + 1)));
+            }
+        }
+        max_depth
+    }
+
+    #[test]
+    fn markdown_emphasis_preserves_dollar_latex_semantics_and_spans() {
+        for source in ["*$x$*", "_$x$_"] {
+            let nodes = parse_inline(source, 10);
+            assert!(matches!(
+                nodes.as_slice(),
+                [Inline::Emphasis { emph, children, span: Some(Span(10, 15)) }]
+                    if emph == "Italic"
+                        && matches!(
+                            children.as_slice(),
+                            [Inline::Latex {
+                                mode,
+                                body,
+                                span: Some(Span(11, 14)),
+                            }] if mode == "Inline" && body == "x"
+                        )
+            ));
+        }
+
+        for source in ["*$$x$$*", "_$$x$$_"] {
+            let nodes = parse_inline(source, 0);
+            assert!(matches!(
+                nodes.as_slice(),
+                [Inline::Emphasis { children, .. }]
+                    if matches!(
+                        children.as_slice(),
+                        [Inline::Latex { mode, body, span: Some(Span(1, 6)) }]
+                            if mode == "Displayed" && body == "x"
+                    )
+            ));
+        }
+    }
+
+    #[test]
+    fn markdown_nested_dollar_index_respects_child_containment_and_legacy_paths() {
+        for source in [
+            "*$x*$",
+            "*$$x*$$",
+            "***$x$***",
+            "___$x$___",
+            "*\\$x\\$*",
+            "*a\r$x$*",
+            "*a\\\r_$x$_*",
+            "*a\r[_$x$_](u)*",
+            "*a\r_{~~$x$~~}*",
+        ] {
+            let nodes = parse_inline(source, 0);
+            assert!(
+                !contains_latex(&nodes),
+                "unexpected Latex for {source:?}: {nodes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_nested_dollar_index_crosses_intended_recursive_channels() {
+        for source in ["[*$x$*](u)", "_{*$x$*}", "*~~$x$~~*", "*$x$ and $y$*"] {
+            let nodes = parse_inline(source, 0);
+            assert!(
+                contains_latex(&nodes),
+                "missing Latex for {source:?}: {nodes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_nested_dollar_body_is_opaque_and_uses_shared_acceptance() {
+        let nodes = parse_inline("*$x_{i}$*", 0);
+        assert!(matches!(
+            nodes.as_slice(),
+            [Inline::Emphasis { children, .. }]
+                if matches!(
+                    children.as_slice(),
+                    [Inline::Latex { mode, body, span: Some(Span(1, 8)) }]
+                        if mode == "Inline" && body == "x_{i}"
+                )
+        ));
+
+        let nodes = parse_inline("*$x\\$*", 0);
+        assert!(matches!(
+            nodes.as_slice(),
+            [Inline::Emphasis { children, .. }]
+                if matches!(
+                    children.as_slice(),
+                    [Inline::Latex { mode, body, span: Some(Span(1, 5)) }]
+                        if mode == "Inline" && body == "x\\"
+                )
+        ));
+    }
+
+    #[test]
+    fn markdown_nested_dollar_maximal_recursive_ladder_is_real() {
+        const MARKERS: [&str; 7] = ["~~", "==", "^^", "**", "__", "*", "_"];
+        let mut source = format!("{}$x$ $z($ tail{}", MARKERS[6], MARKERS[6]);
+        for marker in MARKERS[..6].iter().rev() {
+            source = format!("{marker}$x$ $z($ [{source}](u){marker}");
+        }
+        let nodes = parse_inline(&source, 0);
+        let depth = inline_container_depth(&nodes);
+        assert_eq!(depth, 14, "fixture depth was wrong: {nodes:?}");
+        std::mem::forget(nodes);
+    }
 
     #[test]
     fn balanced_markdown_link_label_can_cross_eol_after_url_text() {

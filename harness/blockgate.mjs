@@ -17,6 +17,10 @@ import { spawnSync } from "node:child_process";
 import { normalizeAst } from "./lib/normalize.mjs";
 import { extractRefs } from "./lib/refs.mjs";
 import { canonJSON } from "./lib/compare.mjs";
+import {
+  classifyNestedDollar,
+  createFreshParsers,
+} from "./lib/intentional-divergence.mjs";
 
 const require = createRequire(import.meta.url);
 const { Mldoc } = require("mldoc");
@@ -69,6 +73,8 @@ if (r.status !== 0) { console.error("lsdoc-parse FAILED (possible panic):\n", r.
 const byId = Object.fromEntries(JSON.parse(readFileSync(outPath, "utf8")).map(x => [x.id, x]));
 
 let refMis = 0, blkMis = 0, shown = 0, oracleErr = 0, lsdocMissing = 0;
+let intentional = 0, oracleLeak = 0;
+const parsers = createFreshParsers({ lsdocPath: join(repo, "target", "debug", "lsdoc-parse") });
 for (const inp of inputs) {
   // Fail closed on oracle errors / missing lsdoc output (audit4 C4).
   let op; try { op = oracle(inp.input, inp.format); } catch (e) {
@@ -76,6 +82,17 @@ for (const inp of inputs) {
   }
   const lp = byId[inp.id]?.projection; if (!lp) { lsdocMissing++; console.log(`LSDOC MISSING ${inp.id}`); continue; }
   const rb = S(op.refs) !== S(lp.refs), bb = S(op.blocks) !== S(lp.blocks);
+  if (rb || bb) {
+    const result = classifyNestedDollar({
+      input: inp.input,
+      format: inp.format,
+      entrypoint: "block",
+      lsdocOriginal: lp,
+      parsers,
+    });
+    if (result.status === "intentional") { intentional++; continue; }
+    if (result.status === "oracle_leak") oracleLeak++;
+  }
   if (rb) refMis++; if (bb) blkMis++;
   if ((rb || bb) && shown < 25) {
     shown++;
@@ -85,7 +102,8 @@ for (const inp of inputs) {
     if (rb) { console.log(`  refs O: ${S(op.refs)}  L: ${S(lp.refs)}`); }
   }
 }
-console.log(`\nblockgate: ${inputs.length} real blocks — refMismatch=${refMis} blockMismatch=${blkMis}${oracleErr ? ` ORACLE-ERR=${oracleErr}` : ""}${lsdocMissing ? ` LSDOC-MISSING=${lsdocMissing}` : ""}`);
-const bad = refMis + blkMis + oracleErr + lsdocMissing;
+parsers.close();
+console.log(`\nblockgate: ${inputs.length} real blocks — intentional=${intentional} unclassifiedRefs=${refMis} unclassifiedBlocks=${blkMis} oracleLeak=${oracleLeak}${oracleErr ? ` ORACLE-ERR=${oracleErr}` : ""}${lsdocMissing ? ` LSDOC-MISSING=${lsdocMissing}` : ""}`);
+const bad = refMis + blkMis + oracleLeak + oracleErr + lsdocMissing;
 console.log(bad === 0 ? "✓ 0 diffs on real block bodies." : `✗ ${bad} diffs/errors.`);
 process.exit(bad === 0 ? 0 : 2);

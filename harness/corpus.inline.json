@@ -183,5 +183,155 @@
   "id": "il036",
   "format": "org",
   "input": "before [:span] after"
+ },
+ {
+  "id": "il037",
+  "format": "md",
+  "input": "*$x$*"
+ },
+ {
+  "id": "il038",
+  "format": "md",
+  "input": "_$x$_"
+ },
+ {
+  "id": "il039",
+  "format": "md",
+  "input": "*$$x$$*"
+ },
+ {
+  "id": "il040",
+  "format": "md",
+  "input": "_$$x$$_"
+ },
+ {
+  "id": "il041",
+  "format": "md",
+  "input": "**$x$**"
+ },
+ {
+  "id": "il042",
+  "format": "md",
+  "input": "~~$x$~~"
+ },
+ {
+  "id": "il043",
+  "format": "md",
+  "input": "==a $x$ b=="
+ },
+ {
+  "id": "il044",
+  "format": "md",
+  "input": "*a $x$ b $y$ c*"
+ },
+ {
+  "id": "il045",
+  "format": "md",
+  "input": "*~~$x$~~*"
+ },
+ {
+  "id": "il046",
+  "format": "md",
+  "input": "[*$x$*](u)"
+ },
+ {
+  "id": "il047",
+  "format": "md",
+  "input": "_[*$x$*](u)_"
+ },
+ {
+  "id": "il048",
+  "format": "md",
+  "input": "_{*$x$*}"
+ },
+ {
+  "id": "il049",
+  "format": "md",
+  "input": "*$x_{i}$*"
+ },
+ {
+  "id": "il050",
+  "format": "md",
+  "input": "*$[a](b)$*"
+ },
+ {
+  "id": "il051",
+  "format": "md",
+  "input": "*$\\{x\\}$*"
+ },
+ {
+  "id": "il052",
+  "format": "md",
+  "input": "*$a[[Foo]]b$*"
+ },
+ {
+  "id": "il053",
+  "format": "md",
+  "input": "*$a_$b_*"
+ },
+ {
+  "id": "il054",
+  "format": "md",
+  "input": "*$a[[Foo$]]b*"
+ },
+ {
+  "id": "il055",
+  "format": "md",
+  "input": "*$x\\$*"
+ },
+ {
+  "id": "il056",
+  "format": "md",
+  "input": "*_a_$x$*"
+ },
+ {
+  "id": "il057",
+  "format": "md",
+  "input": "*b_c_$x$*"
+ },
+ {
+  "id": "il058",
+  "format": "md",
+  "input": "*$x*$"
+ },
+ {
+  "id": "il059",
+  "format": "md",
+  "input": "*$$x*$$"
+ },
+ {
+  "id": "il060",
+  "format": "md",
+  "input": "***$x$***"
+ },
+ {
+  "id": "il061",
+  "format": "md",
+  "input": "___$x$___"
+ },
+ {
+  "id": "il062",
+  "format": "md",
+  "input": "*`$x$`*"
+ },
+ {
+  "id": "il063",
+  "format": "md",
+  "input": "*`$x$*"
+ },
+ {
+  "id": "il064",
+  "format": "md",
+  "input": "* $x$*"
+ },
+ {
+  "id": "il065",
+  "format": "md",
+  "input": "*$x *"
+ },
+ {
+  "id": "il066",
+  "format": "md",
+  "input": "_{$x$}"
  }
 ]

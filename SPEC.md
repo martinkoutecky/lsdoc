@@ -183,7 +183,8 @@ needs, and compare on *that*:
 - block structure: `kind, level, nesting, properties`;
 - the **ref set** (page / block / tag / embed) with spans.
 Where mldoc differs in ways that don't affect Tine's rendering or indexing, record an
-**intentional deviation** (documented, justified, *small* allowlist) — not a test failure.
+**intentional deviation** (documented, justified, and semantically classified; exact registry
+membership alone never suppresses a failure) — not a test failure.
 
 **SECONDARY ORACLES / corpora:**
 - mldoc's own OCaml tests (`test/test_markdown.ml` ~1063 LOC, `test_outline_markdown.ml`
@@ -212,7 +213,8 @@ divergences are concrete adversarial cases the new parser must get right.
 layer + corpus + a one-command regression run **first**, then implement against it
 continuously. Core loop: implement a construct → diff vs mldoc on the corpus → fix
 divergences → add adversarial + perf tests → fuzz → fix → expand corpus → repeat until
-**0 diffs (modulo the allowlist) + perf budgets hold**, then next construct.
+**0 unclassified diffs (classified intentional cases reported separately) + perf budgets hold**,
+then next construct.
 
 **Milestone order** (each gated by "0 oracle diffs on its slice + perf tests pass"):
 1. **Harness/oracle/corpus/normalization + CI loop.** (Infra.)
@@ -310,7 +312,8 @@ so mldoc + `block.cljs` can serve as ground truth and the loop runs autonomously
 ## 8. Definition of done (first cut, pre-Org)
 
 - Rust crate parses Logseq **Markdown** to a serde AST with spans.
-- Differential harness shows **0 diffs** (modulo a small, documented deviation allowlist)
+- Differential harness shows **0 unclassified diffs** (with each intentional deviation
+  documented and proved by a fail-closed semantic classifier)
   on: the adversarial corpus, mined mldoc/OG test inputs, kitchen-sink, and the real graph
   (`~/research/org-graph`).
 - Fuzzing runs **clean** (no panic/hang/oracle-mismatch) for a sustained budget.

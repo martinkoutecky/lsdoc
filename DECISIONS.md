@@ -98,14 +98,18 @@ targets) and verifies them with its own unit tests — just not against this ora
 
 ## Intentional deviations from mldoc (allowlist)
 
-Tracked in `harness/allowlist.json` (id + reason); `compare.mjs` excludes these
-from diff counts but still reports them. **The allowlist is now EMPTY** (`[]`):
-the original family was eliminated 2026-06-28 (Martin-approved) — LaTeX
+Tracked in `harness/allowlist.json` (`corpus` + `id` + classifier `kind` + reason).
+A registration never suppresses a mismatch by itself: the shared classifier must
+prove the complete isolated semantic delta. The sole current intentional family is
+**D48**, valid dollar-delimited LaTeX directly inside ordinary Markdown emphasis.
+
+The original allowlist was eliminated 2026-06-28 (Martin-approved) — LaTeX
 entities/environments (`m054`/`m056`/`m089`), markdown definition lists (`m135`),
 and the bullet-line / bullet-prefix block constructs
 (`c047`/`m096`/`m097`/`m114`/`m115`/`m116`) — and the last entry, `b021`
 (indented-numbered-list re-nesting), was resolved by implementing real list nesting
-(rule below). There are no remaining intentional deviations.
+(rule below). None of those historical entries remains; only the later D48 family is
+registered today.
 
 ## LaTeX entities + environments (Markdown AND Org; replicated from `entity.ml` / `latex_env.ml`)
 
@@ -371,8 +375,8 @@ dedup against `corpus.json`/`corpus.blocks.json`.
   The LaTeX entity/environment, markdown definition-list, bullet-line block
   constructs, and indented-numbered-list re-nesting (`b021`) that were once
   allowlisted here are now matched (see the dedicated rule sections above). The
-  **allowlist is empty** — no markdown deviations remain. No `refs` or `block-struct`
-  diffs remain.
+  historical entries are gone. D48 is the one later Markdown deviation; it is accepted
+  only after mask proof. No unclassified `refs` or `block-struct` diffs remain.
 
 ## M6 Org-mode (replicated from the oracle + mldoc 1.5.7 source)
 
@@ -388,7 +392,7 @@ untouched (md gate stays 0-diff). Two inline nodes were added in lockstep to
 drawer → headline → table → latex-env → fenced/`#+BEGIN`/verbatim/quote/`$$`/raw-html
 block → footnote → list → hr → paragraph. Org `~/research/org-graph` (16 real `.org`) +
 53 hand-written + 25 mined `test_org.ml` inputs all reach **0 diffs** (refs +
-block-struct + blocks-full); **the allowlist is empty** (`b021` was resolved by the
+block-struct + blocks-full); **the Org allowlist is empty** (`b021` was resolved by the
 nested-list rule). Org `+`/`N.` lists nest via indentation like Markdown; org `-`
 nests only as a column-0 sibling/parent (an indented `  - x` is not a list line).
 
@@ -555,7 +559,7 @@ per SPEC §5 — it is documented, not chased and not allowlisted:
   unlike a Paragraph). Matching that exact predicate is binding to mldoc internals; lsdoc
   keeps the single-line footnote def. (~15/20k.)
 
-No allowlist entries (the allowlist is empty); the real org graph + hand-written +
+No Org allowlist entries; the real org graph + hand-written +
 mined corpora stay at 0-diff with 49 new `o###` fuzz regressions added.
 `node fuzz-split.mjs N seed org` is the kept diagnostic (structural vs inline-soup).
 
@@ -592,14 +596,15 @@ gate is now **render-level**: 621 inputs, refs + block-struct + blocks-full all 
   raw; `<<>>` (empty) and unterminated `<<x` stay plain. (`normalize.mjs` already emitted
   `{k:"target"}`; lsdoc previously produced soup — fixed.)
 
-**Justified non-carries (render-relevant but deliberately NOT added):**
+**Justified non-carries (render-relevant but deliberately NOT added; historical M7 decision):**
 - **Table column alignment** — mldoc **1.5.7 discards it**: `col_groups` is just
   `[column_count]` (`[3]` for both `|:--|:-:|--:|` and `|---|---|`), there is no
   per-column align anywhere. Logseq (via mldoc) does not render aligned tables, so
   matching it means dropping alignment too. (The spec's audit assumed mldoc kept it in
   `col_groups`; it does not.) Nothing to gate against. **If Martin wants aligned tables as
   a beyond-OG feature, lsdoc would have to parse the separator row itself and carry an
-  un-gateable `align` field — flagged for his call; not done, to preserve zero-allowlist.**
+  un-gateable `align` field — flagged for his call; not done, to preserve the then-current
+  zero-allowlist state.**
 - **`Inline_Hiccup`** (`@@hiccup:…@@`) — a Logseq-internal HTML-export construct, never
   user-authored; absent from all real graphs (the gate would already fail if any gated
   input produced it). mldoc's own handling is a degenerate split (`@@hiccup:` + inner +

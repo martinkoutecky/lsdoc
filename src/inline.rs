@@ -51,12 +51,28 @@ pub(crate) fn is_ws_or_nl(c: u8) -> bool {
     is_ws(c) || c == b'\n' || c == b'\r'
 }
 
+#[cfg(test)]
 pub(crate) fn plain_fast_path_markdown(s: &str, base: usize) -> Option<Vec<Inline>> {
-    plain_fast_path(s, base, PlainFastFormat::Markdown, true)
+    let dollar_index = crate::resolver::NestedDollarIndex::build(s, base);
+    plain_fast_path_markdown_with_nested(s, base, dollar_index.context())
+}
+
+pub(crate) fn plain_fast_path_markdown_with_nested(
+    s: &str,
+    base: usize,
+    nested_dollars: crate::resolver::NestedDollarContext<'_>,
+) -> Option<Vec<Inline>> {
+    plain_fast_path(s, base, PlainFastFormat::Markdown, true, nested_dollars)
 }
 
 pub(crate) fn plain_fast_path_org(s: &str, base: usize) -> Option<Vec<Inline>> {
-    plain_fast_path(s, base, PlainFastFormat::Org, true)
+    plain_fast_path(
+        s,
+        base,
+        PlainFastFormat::Org,
+        true,
+        crate::resolver::NestedDollarContext::disabled(),
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -70,6 +86,7 @@ fn plain_fast_path(
     base: usize,
     format: PlainFastFormat,
     allow_tags: bool,
+    nested_dollars: crate::resolver::NestedDollarContext<'_>,
 ) -> Option<Vec<Inline>> {
     let bb = s.as_bytes();
     if let Some(out) = plain_break_only_fast_path(s, base, format) {
@@ -212,7 +229,9 @@ fn plain_fast_path(
                     continue;
                 }
             }
-            if let Some((mut node, end)) = md_link_with_scan(s, i, false, base, &mut md_link_scan) {
+            if let Some((mut node, end)) =
+                md_link_with_scan_nested(s, i, false, base, &mut md_link_scan, nested_dollars)
+            {
                 push_plain(&mut out, s, base, plain_start, i);
                 crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
                 out.push(node);
@@ -421,25 +440,27 @@ fn plain_fast_path(
         }
         if matches!(format, PlainFastFormat::Markdown) && c == b'*' && bb.get(i + 1) == Some(&b'*')
         {
-            let (node, end) = if let Some((node, end)) = markdown_fast_simple_bold(s, base, i) {
-                (node, end)
-            } else if let Some((node, end)) =
-                crate::resolver::try_markdown_nested_emphasis_at_cached(
-                    s,
-                    i,
-                    base,
-                    None,
-                    &mut md_no_closer,
-                    md_terminal_odd_backslash,
-                )
-            {
-                (node, end)
-            } else {
-                last_plain_char = Some(c);
-                i += 1;
-                fresh = true;
-                continue;
-            };
+            let (node, end) =
+                if let Some((node, end)) = markdown_fast_simple_bold(s, base, i, nested_dollars) {
+                    (node, end)
+                } else if let Some((node, end)) =
+                    crate::resolver::try_markdown_nested_emphasis_at_cached(
+                        s,
+                        i,
+                        base,
+                        None,
+                        &mut md_no_closer,
+                        md_terminal_odd_backslash,
+                        nested_dollars,
+                    )
+                {
+                    (node, end)
+                } else {
+                    last_plain_char = Some(c);
+                    i += 1;
+                    fresh = true;
+                    continue;
+                };
             push_plain(&mut out, s, base, plain_start, i);
             out.push(node);
             i = end;
@@ -457,6 +478,7 @@ fn plain_fast_path(
                 None,
                 &mut md_no_closer,
                 md_terminal_odd_backslash,
+                nested_dollars,
             ) else {
                 last_plain_char = Some(c);
                 i += 1;
@@ -480,7 +502,11 @@ fn plain_fast_path(
                 last_plain_char
             };
             let Some((node, end)) = crate::resolver::try_markdown_script_after_emphasis_declines(
-                s, i, base, state_char,
+                s,
+                i,
+                base,
+                state_char,
+                nested_dollars,
             ) else {
                 return None;
             };
@@ -504,6 +530,7 @@ fn plain_fast_path(
                 state_char,
                 &mut md_no_closer,
                 md_terminal_odd_backslash,
+                nested_dollars,
             ) {
                 push_plain(&mut out, s, base, plain_start, i);
                 out.push(node);
@@ -634,7 +661,8 @@ fn plain_fast_path(
                 fresh = false;
                 continue;
             }
-            let Some((mut node, end)) = md_link_with_scan(s, i + 1, true, base, &mut md_link_scan)
+            let Some((mut node, end)) =
+                md_link_with_scan_nested(s, i + 1, true, base, &mut md_link_scan, nested_dollars)
             else {
                 return None;
             };
@@ -973,7 +1001,12 @@ fn plain_fast_rejects(
     }
 }
 
-fn markdown_fast_simple_bold(s: &str, base: usize, at: usize) -> Option<(Inline, usize)> {
+fn markdown_fast_simple_bold(
+    s: &str,
+    base: usize,
+    at: usize,
+    nested_dollars: crate::resolver::NestedDollarContext<'_>,
+) -> Option<(Inline, usize)> {
     let bb = s.as_bytes();
     if bb.get(at) != Some(&b'*') || bb.get(at + 1) != Some(&b'*') || bb.get(at + 2) == Some(&b'*') {
         return None;
@@ -1012,8 +1045,13 @@ fn markdown_fast_simple_bold(s: &str, base: usize, at: usize) -> Option<(Inline,
                 if !markdown_simple_bold_inner_is_plain_safe(inner.as_bytes()) {
                     return None;
                 }
-                let children =
-                    plain_fast_path(inner, base + at + 2, PlainFastFormat::Markdown, false)?;
+                let children = plain_fast_path(
+                    inner,
+                    base + at + 2,
+                    PlainFastFormat::Markdown,
+                    false,
+                    nested_dollars,
+                )?;
                 return Some((
                     Inline::Emphasis {
                         // scan-owner: (c) constant output label copy — fixed literal.
@@ -2901,7 +2939,25 @@ pub(crate) fn md_link_with_scan(
     base: usize,
     scan: &mut MdLinkScan,
 ) -> Option<(Inline, usize)> {
-    parse_md_link(s, at, image, base, scan).map(|l| (l.node, l.end))
+    md_link_with_scan_nested(
+        s,
+        at,
+        image,
+        base,
+        scan,
+        crate::resolver::NestedDollarContext::disabled(),
+    )
+}
+
+pub(crate) fn md_link_with_scan_nested(
+    s: &str,
+    at: usize,
+    image: bool,
+    base: usize,
+    scan: &mut MdLinkScan,
+    nested_dollars: crate::resolver::NestedDollarContext<'_>,
+) -> Option<(Inline, usize)> {
+    parse_md_link(s, at, image, base, scan, nested_dollars).map(|l| (l.node, l.end))
 }
 
 fn parse_md_link(
@@ -2910,20 +2966,27 @@ fn parse_md_link(
     image: bool,
     base: usize,
     scan: &mut MdLinkScan,
+    nested_dollars: crate::resolver::NestedDollarContext<'_>,
 ) -> Option<MdLink> {
     if image {
-        if let Some(link) = markdown_embed_image(s, at, base, scan) {
+        if let Some(link) = markdown_embed_image(s, at, base, scan, nested_dollars) {
             return Some(link);
         }
     }
-    markdown_link(s, at, image, base, scan)
+    markdown_link(s, at, image, base, scan, nested_dollars)
 }
 
 /// mldoc `markdown_embed_image` (`syntax/inline.ml:1138-1152`): this branch is
 /// first and separate from `markdown_link`, so `data:` payloads do not go through
 /// URL-piece parsing or title parsing.
-fn markdown_embed_image(s: &str, at: usize, base: usize, scan: &mut MdLinkScan) -> Option<MdLink> {
-    let label = label_part(s, at, base, false, scan)?;
+fn markdown_embed_image(
+    s: &str,
+    at: usize,
+    base: usize,
+    scan: &mut MdLinkScan,
+    nested_dollars: crate::resolver::NestedDollarContext<'_>,
+) -> Option<MdLink> {
+    let label = label_part(s, at, base, false, scan, nested_dollars)?;
     let b = s.as_bytes();
     let data_start = label.url_start;
     if !s[data_start..].starts_with("data:") {
@@ -2965,8 +3028,9 @@ fn markdown_link(
     image: bool,
     base: usize,
     scan: &mut MdLinkScan,
+    nested_dollars: crate::resolver::NestedDollarContext<'_>,
 ) -> Option<MdLink> {
-    let label = label_part(s, at, base, true, scan)?;
+    let label = label_part(s, at, base, true, scan, nested_dollars)?;
     let (url_range, after_url) = link_url_part_range(s, label.url_start, scan)?;
     let parsed_url = link_url_part_inner(s, url_range.clone(), scan);
     let url_text = s[url_range.clone()].to_string();
@@ -3013,12 +3077,13 @@ fn label_part(
     base: usize,
     reparse_plain: bool,
     scan: &mut MdLinkScan,
+    nested_dollars: crate::resolver::NestedDollarContext<'_>,
 ) -> Option<MdLabelPart> {
     let url_start = label_part_url_start(s, at, scan)?;
     let delimiter = url_start.checked_sub(2)?;
     let raw_nodes = materialize_label_part(s, at, delimiter, base, scan)?;
     let label_text = label_text_for_full(&raw_nodes);
-    let label = finish_markdown_label(raw_nodes, reparse_plain);
+    let label = finish_markdown_label(raw_nodes, reparse_plain, nested_dollars);
     Some(MdLabelPart {
         label,
         label_text,
@@ -3156,9 +3221,13 @@ fn materialize_label_part(
     (j == delimiter).then_some(raw_nodes)
 }
 
-fn finish_markdown_label(nodes: Vec<Inline>, reparse_plain: bool) -> Vec<Inline> {
+fn finish_markdown_label(
+    nodes: Vec<Inline>,
+    reparse_plain: bool,
+    nested_dollars: crate::resolver::NestedDollarContext<'_>,
+) -> Vec<Inline> {
     if reparse_plain {
-        reparse_markdown_label(nodes)
+        reparse_markdown_label(nodes, nested_dollars)
     } else {
         unescape_markdown_label(nodes)
     }
@@ -3243,14 +3312,20 @@ fn label_text_for_full(nodes: &[Inline]) -> String {
     out
 }
 
-fn reparse_markdown_label(nodes: Vec<Inline>) -> Vec<Inline> {
+fn reparse_markdown_label(
+    nodes: Vec<Inline>,
+    nested_dollars: crate::resolver::NestedDollarContext<'_>,
+) -> Vec<Inline> {
     let mut out = Vec::new();
     for node in nodes {
         crate::metrics::scan_work(1);
         match node {
             Inline::Plain { text, span, .. } => {
                 let base = span.map(|Span(start, _)| start).unwrap_or(0);
-                if let Some(nodes) = crate::resolver::parse_inline_ctx_md_label(&text, base) {
+                let label_nested_dollars = nested_dollars.narrow(span.is_some());
+                if let Some(nodes) =
+                    crate::resolver::parse_inline_ctx_md_label(&text, base, label_nested_dollars)
+                {
                     out.extend(nodes);
                 } else {
                     let value = unescape(&text);
@@ -6021,7 +6096,11 @@ mod plain_fast_path_tests {
         );
         assert_eq!(
             plain_fast_path_markdown("**x $a$**", 0),
-            Some(vec![bold(vec![plain("x $a$", 2, 7)], 0, 9)])
+            Some(vec![bold(
+                vec![plain("x ", 2, 4), latex("Inline", "a", 4, 7)],
+                0,
+                9,
+            )])
         );
         assert_eq!(
             plain_fast_path_markdown("** x**", 0),

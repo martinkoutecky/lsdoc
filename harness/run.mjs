@@ -4,6 +4,7 @@
 //   2. run the mldoc oracle              -> oracle-out.json
 //   3. build+run lsdoc over the corpus   -> lsdoc-out.json
 //   4. compare projections, print report -> divergences.json
+//   5. prove the intentional-divergence classifier itself fails closed
 //
 // Exits non-zero if any divergence remains, so it gates CI / the dev loop.
 // Usage: node run.mjs            (full loop)
@@ -71,14 +72,18 @@ const bg = run("node", [join(__dir, "blockgate.mjs")], { allowFail: true });
 // 6. inline-entrypoint gate: lsdoc `inline()` vs mldoc `parseInlineJson` (the inline->edn /
 //    OG inline-text path Tine uses for property values, breadcrumbs, ref previews, cells).
 const ig = run("node", [join(__dir, "inlinegate.mjs")], { allowFail: true });
-// 7. inline source-span invariant gate (S1–S5) over lsdoc-out.json (the projection output
+// 7. intentional-divergence classifier mutation/contract tests.
+const dg = run("node", [join(__dir, "test-intentional-divergence.mjs")], { allowFail: true });
+console.log("intentional-divergence classifier:", dg.status === 0 ? "ok" : "FAIL");
+// 8. inline source-span invariant gate (S1–S6) over lsdoc-out.json (the projection output
 //    written in step 3; inlinegate/blockgate write their own files, so it's still intact).
 const sg = run("node", [join(__dir, "spans.mjs")], { allowFail: true });
 console.log("spans gate:", sg.status === 0 ? "ok" : "FAIL");
-// 8. v2 shortcut/post-processor audit: deterministic boundary alphabets for the
+// 9. v2 shortcut/post-processor audit: deterministic boundary alphabets for the
 //    optimized paths whose proof obligation is "strict subset or decline".
 const ag = run("node", [join(__dir, "audit-v2-shortcuts.mjs")], { allowFail: true });
 console.log("shortcut audit:", ag.status === 0 ? "ok" : "FAIL");
 process.exit(
-  (cmp.status ?? 0) || (bg.status ?? 0) || (ig.status ?? 0) || (sg.status ?? 0) || (ag.status ?? 0)
+  (cmp.status ?? 0) || (bg.status ?? 0) || (ig.status ?? 0) || (dg.status ?? 0)
+    || (sg.status ?? 0) || (ag.status ?? 0)
 );

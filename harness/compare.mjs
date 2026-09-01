@@ -8,14 +8,18 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { canonJSON } from "./lib/compare.mjs";
+import {
+  classifyNestedDollar,
+  createFreshParsers,
+} from "./lib/intentional-divergence.mjs";
 const __dir = dirname(fileURLToPath(import.meta.url));
 
-// Intentional-deviation allowlist: ids we knowingly don't match (documented in
-// DECISIONS.md). Excluded from diff counts but still reported. { id, reason }.
+// Deterministic intentional-deviation registry. Registration never suppresses a
+// mismatch by itself: the semantic classifier must prove the registered kind.
 const allowPath = join(__dir, "allowlist.json");
-const allow = existsSync(allowPath)
-  ? Object.fromEntries(JSON.parse(readFileSync(allowPath, "utf8")).map((a) => [a.id, a.reason]))
-  : {};
+const allowEntries = existsSync(allowPath) ? JSON.parse(readFileSync(allowPath, "utf8")) : [];
+const allow = new Map(allowEntries.map((a) => [`${a.corpus}:${a.id}`, a]));
+const requiresRegistry = (id) => /^(c|b|m)\d+$/.test(id);
 
 // Canonical stringify (key-sorted, drops span/aligns) — see lib/compare.mjs for
 // the shared definition and the rationale for the ignored keys.
@@ -56,7 +60,13 @@ const byId = Object.fromEntries(lsdoc.map((x) => [x.id, x]));
 
 let refsOk = 0, structOk = 0, blocksOk = 0, missing = 0;
 const refDiffs = [], structDiffs = [], blockDiffs = [];
-const allowedHit = []; // allowlisted ids that did diverge (expected)
+const intentional = [];
+const unclassified = [];
+const oracleLeaks = [];
+const seenAllow = new Set();
+const parsers = createFreshParsers({
+  lsdocPath: process.env.LSDOC_PARSE || join(__dir, "..", "target", "debug", "lsdoc-parse"),
+});
 
 // Optional filter: `node compare.mjs --cat=tag` limits the shown diffs to a corpus
 // category (ids are stable; category lookup via the corpus file would need a join,
@@ -72,22 +82,43 @@ for (const o of oracle) {
   if (o.err || !o.projection) { oracleErrs.push({ id: o.id, input: o.input, err: o.err }); continue; }
   const op = o.projection, lp = l.projection;
 
-  const allowed = o.id in allow;
-
-  if (s(op.refs) === s(lp.refs)) refsOk++;
-  else if (!allowed) refDiffs.push({ id: o.id, input: o.input, oracle: op.refs, lsdoc: lp.refs });
-
   const structDiff = s(skels(op.blocks)) !== s(skels(lp.blocks));
   const blockDiff = s(op.blocks) !== s(lp.blocks);
-  if (!structDiff) structOk++;
-  else if (!allowed) structDiffs.push({ id: o.id, input: o.input, oracle: skels(op.blocks), lsdoc: skels(lp.blocks) });
-  if (!blockDiff) blocksOk++;
-  else if (!allowed) blockDiffs.push({ id: o.id, input: o.input, oracle: op.blocks, lsdoc: lp.blocks });
-
-  if (allowed && (structDiff || blockDiff || s(op.refs) !== s(lp.refs))) {
-    allowedHit.push({ id: o.id, reason: allow[o.id] });
+  const refsDiff = s(op.refs) !== s(lp.refs);
+  let classified = false;
+  if (refsDiff || blockDiff) {
+    const result = classifyNestedDollar({
+      input: o.input,
+      format: o.format || "md",
+      entrypoint: "block",
+      lsdocOriginal: lp,
+      parsers,
+    });
+    if (result.status === "intentional") {
+      const key = `block:${o.id}`;
+      const registration = allow.get(key);
+      if (!requiresRegistry(o.id)
+          || (registration && registration.kind === result.kind)) {
+        classified = true;
+        intentional.push({ id: o.id, ...result, reason: registration?.reason });
+        if (registration) seenAllow.add(key);
+      }
+    } else if (result.status === "oracle_leak") {
+      oracleLeaks.push({ id: o.id, input: o.input, result });
+    }
+    if (!classified) unclassified.push({ id: o.id, input: o.input, result });
   }
+
+  if (!refsDiff || classified) refsOk++;
+  else refDiffs.push({ id: o.id, input: o.input, oracle: op.refs, lsdoc: lp.refs });
+  if (!structDiff) structOk++;
+  else structDiffs.push({ id: o.id, input: o.input, oracle: skels(op.blocks), lsdoc: skels(lp.blocks) });
+  if (!blockDiff || classified) blocksOk++;
+  else blockDiffs.push({ id: o.id, input: o.input, oracle: op.blocks, lsdoc: lp.blocks });
 }
+parsers.close();
+
+const staleAllow = [...allow.keys()].filter((key) => key.startsWith("block:") && !seenAllow.has(key));
 
 const total = oracle.filter((o) => !o.err && o.projection).length;
 writeFileSync(join(__dir, "divergences.json"),
@@ -102,9 +133,15 @@ if (oracleErrs.length) {
   console.log(`  ORACLE ERRORS (fail-closed): ${oracleErrs.length}`);
   for (const e of oracleErrs.slice(0, 12)) console.log(`    ${e.id}  ${JSON.stringify(e.input).slice(0, 160)}  — ${e.err}`);
 }
-if (allowedHit.length) {
-  console.log(`  allowlisted deviations (excluded): ${allowedHit.length}`);
-  for (const a of allowedHit) console.log(`    ${a.id} — ${a.reason}`);
+console.log(`  classified intentional: ${intentional.length}`);
+console.log(`  unclassified: ${unclassified.length}`);
+console.log(`  oracle leaks: ${oracleLeaks.length}`);
+if (intentional.length) {
+  for (const a of intentional.slice(0, 20)) console.log(`    ${a.id} — ${a.kind}${a.reason ? ` — ${a.reason}` : ""}`);
+}
+if (staleAllow.length) {
+  console.log(`  STALE REGISTRY ENTRIES: ${staleAllow.length}`);
+  for (const key of staleAllow) console.log(`    ${key}`);
 }
 
 const show = (label, arr, fmt) => {
@@ -123,4 +160,7 @@ show("ref", refDiffs, (r) => JSON.stringify(r));
 
 // Exit non-zero if anything diverges — including oracle errors, which are a
 // gate defect (unverifiable input), never a pass.
-process.exit(refDiffs.length + blockDiffs.length + missing + oracleErrs.length === 0 ? 0 : 1);
+process.exit(
+  refDiffs.length + blockDiffs.length + missing + oracleErrs.length
+    + unclassified.length + oracleLeaks.length + staleAllow.length === 0 ? 0 : 1
+);

@@ -58,6 +58,19 @@ add("org", "src_python{print(1)} inline");
 add("md", "before [:div.cls \"hi\"] after");
 add("org", "before [:span] after");
 
+// GH #460 / D48: append-only intentional Markdown divergence + provenance guards.
+for (const input of [
+  "*$x$*", "_$x$_", "*$$x$$*", "_$$x$$_", "**$x$**", "~~$x$~~",
+  "==a $x$ b==", "*a $x$ b $y$ c*", "*~~$x$~~*", "[*$x$*](u)",
+  "_[*$x$*](u)_", "_{*$x$*}", "*$x_{i}$*", "*$[a](b)$*", "*$\\{x\\}$*",
+  "*$a[[Foo]]b$*", "*$a_$b_*", "*$a[[Foo$]]b*", "*$x\\$*", "*_a_$x$*",
+  "*b_c_$x$*",
+]) add("md", input);
+for (const input of [
+  "*$x*$", "*$$x*$$", "***$x$***", "___$x$___", "*`$x$`*", "*`$x$*",
+  "* $x$*", "*$x *", "_{$x$}",
+]) add("md", input);
+
 // emit
 const out = cases.map((c, i) => ({ id: `il${String(i).padStart(3, "0")}`, ...c }));
 const __dir = dirname(fileURLToPath(import.meta.url));

@@ -10,6 +10,10 @@ import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { normInline, cleanInlines } from "./lib/normalize.mjs";
 import { canonJSON } from "./lib/compare.mjs";
+import {
+  classifyNestedDollar,
+  createFreshParsers,
+} from "./lib/intentional-divergence.mjs";
 
 const require = createRequire(import.meta.url);
 const { Mldoc } = require("mldoc");
@@ -42,20 +46,60 @@ const r = spawnSync("cargo", ["run", "-q", "--bin", "lsdoc-parse", "--", corpusP
 if (r.status !== 0) { console.error(`inlinegate: lsdoc run failed (exit ${r.status})`); process.exit(r.status ?? 1); }
 const lsd = Object.fromEntries(JSON.parse(readFileSync(outPath, "utf8")).map((x) => [x.id, x.inline]));
 
-// Canonical stringify (key-sorted, drops span/aligns) — shared in lib/compare.mjs.
-// Inline nodes carry no span/aligns, so the ignore filter is a harmless no-op here.
+// Canonical stringify drops lsdoc's inline spans only after the intentional
+// classifier has used them for exact source-range proof.
 const S = canonJSON;
+
+const allowPath = join(__dir, "allowlist.json");
+const allowEntries = existsSync(allowPath) ? JSON.parse(readFileSync(allowPath, "utf8")) : [];
+const allow = new Map(allowEntries.map((a) => [`${a.corpus}:${a.id}`, a]));
+const parsers = createFreshParsers({
+  lsdocPath: process.env.LSDOC_PARSE || join(repo, "target", "debug", "lsdoc-parse"),
+});
 
 let ok = 0;
 const diffs = [];
+const intentional = [];
+const oracleLeaks = [];
+const seenAllow = new Set();
 for (const it of corpus) {
   const mldoc = cleanInlines(JSON.parse(Mldoc.parseInlineJson(it.input, cfg(it.format))).map(normInline));
-  const ours = cleanInlines(lsd[it.id] ?? []);
+  const rawOurs = lsd[it.id] ?? [];
+  const ours = cleanInlines(structuredClone(rawOurs));
   if (S(mldoc) === S(ours)) ok++;
-  else diffs.push({ id: it.id, input: it.input, format: it.format, mldoc: S(mldoc), lsdoc: S(ours) });
+  else {
+    const result = classifyNestedDollar({
+      input: it.input,
+      format: it.format || "md",
+      entrypoint: "inline",
+      lsdocOriginal: rawOurs,
+      parsers,
+    });
+    const key = `inline:${it.id}`;
+    const registration = allow.get(key);
+    if (result.status === "intentional"
+        && registration?.kind === result.kind) {
+      intentional.push({ id: it.id, ...result, reason: registration.reason });
+      seenAllow.add(key);
+      ok++;
+    } else {
+      if (result.status === "oracle_leak") oracleLeaks.push({ id: it.id, result });
+      diffs.push({
+        id: it.id,
+        input: it.input,
+        format: it.format,
+        mldoc: S(mldoc),
+        lsdoc: S(ours),
+        classification: result,
+      });
+    }
+  }
 }
+parsers.close();
+const staleAllow = [...allow.keys()].filter((key) => key.startsWith("inline:") && !seenAllow.has(key));
 
-console.log(`inlinegate: ${ok}/${corpus.length} inline runs match mldoc parseInlineJson  (${diffs.length} diffs)`);
+console.log(`inlinegate: ${ok}/${corpus.length} accepted; match=${ok - intentional.length} intentional=${intentional.length} unclassified=${diffs.length} oracle_leak=${oracleLeaks.length}`);
+for (const hit of intentional) console.log(`  ${hit.id} — ${hit.kind} — ${hit.reason}`);
 if (diffs.length) {
   writeFileSync(join(__dir, "inline-divergences.json"), JSON.stringify(diffs, null, 1));
   for (const d of diffs.slice(0, 20)) {
@@ -65,4 +109,8 @@ if (diffs.length) {
   }
   process.exit(1);
 }
-console.log("✓ inline() == mldoc inline->edn on the inline corpus.");
+if (staleAllow.length) {
+  console.error(`inlinegate: stale registry entries: ${staleAllow.join(", ")}`);
+  process.exit(1);
+}
+console.log("✓ inline corpus has zero unclassified diffs (registered D48 cases proved separately).");

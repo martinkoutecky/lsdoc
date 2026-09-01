@@ -1,8 +1,9 @@
 # Known byte-exact divergences from mldoc@1.5.7 — status
 
-Cases where lsdoc's AST differs from mldoc's. All were pre-existing (verified — none introduced by
-the container-frame rewrite / O(n) audit; the audit merely *surfaced* them). **Fixing each LOWERS
-the fuzz floor** (more mldoc parity) — how each fix was verified.
+Cases where lsdoc's AST differs from mldoc's. D1–D47 were pre-existing parity findings
+(verified — none introduced by the container-frame rewrite / O(n) audit; the audit merely
+*surfaced* them). D48 is a later, explicitly intentional product divergence. Fixing an open
+parity finding lowers the unclassified fuzz floor; D48 is instead held behind semantic proof.
 
 ## Status (Jul 2 2026)
 | # | divergence | status | commit |
@@ -54,16 +55,19 @@ the fuzz floor** (more mldoc parity) — how each fix was verified.
 | D45 | ENUM RESIDUE (post-D44 re-run, Jul 3): **11 isolated-confirmed classes ≈ ~5 mechanisms**, all md; 17 pinned reps in `harness/d45-residual-probe.json` (ALL vdiff_iso-REAL), findings `harness/enum-{seams,small}-findings.json`. Mechanisms: (1) HR-as-def-list-term OUTSIDE plain top-level — inside `>`-quote reparse (`> q\n---\n: def x`, `***` twin) and after empty heading (`## \n---\n: def x`), + latex-env-vs-def-list in quote (`> q\n\begin{x}\n: def x`); (2) empty-heading + md-comment lookahead (`## \n<!--\n-->`: mldoc heading+para+comment, lsdoc heading+comment — heading title-lookahead eats a line); (3) md inline emphasis-with-backslash family (`*\*\`, `-*\*\`, `*\*#\`, leading-`\n` variants: mldoc Italic emphasis containing `\`, lsdoc plain — D43-adjacent, the try_code_span-era residue at the emphasis layer); (4) `>>` quote + blank + following construct (`>>\n\n*`: content grouping across the blank); (5) NESTED `>>`-quote recursion (`>>>>`, `>> >>`, `\n>>>>`: mldoc quote(quote(para(break))), lsdoc single quote w/ literal `>>` text — Round F fixed only the empty-first-line branch, not recursive quote nesting). FIXED in two rounds: **block `e86d9a1`** (mid-para HR interrupt-and-emit vs fresh-position def-list precedence in quote content; heading ws-para decided by the raw title lookahead, md comments excluded from the ws-drop; empty-`>`-line absorbs ONE following blank incl. CRLF; lines_while virtual trailing `\n` → `>>>>` EOF nests) + **inline `3078a93`** (the 1.5.7 emphasis-backslash early-close artifact: `\<pattern>` at a choice boundary + valid follower + input ending in a lone odd terminal backslash ⇒ early close, both md+org scanners; 1,432 oracle pins incl. a 1235-case enumeration `harness/d45-emph-enum.json`) | **FIXED** | `e86d9a1`+`3078a93` |
 | D46 | **REAL-GRAPH divergences (Martin's graph-check run on his actual Logseq graph, Jul 3)** — 4 findings → 3 mechanisms, all md, pins `harness/d46-realgraph-probe.json` (g1-g4) + `harness/d46-pins-probe.json` (40 probes: 20 real / 20 guards; full outputs `subagent-tasks/notes/d46-vdiff-full.txt`): (A) dash-bullet title lookahead is a PARTIAL replica of heading0.ml `title_aux_p` — Drawer/Hr-subset/Table/Latex_env/math/raw-html/Footnote missing on the `- ` path while the `#` path has the full `md_heading_split_opener` (the `- :LOGBOOK:\n  CLOCK:…\n  :END:` shape = bullet + drawer("logbook") in mldoc; also `- :PROPERTIES:` → properties; marker preserved on split, a14); (B) task-marker boundary = space OR END-OF-INPUT (heading0.ml peek_char None ⇒ marker): md `- DONE`⟨EOF⟩ must get marker (lsdoc requires trailing space), org has the OPPOSITE bug (`* DONE\n` gets a marker in lsdoc; mldoc rejects before eol); (C) md table `separated_line` (table.ml:30-36) = spaces `\|` take_while1{-,+,\|,sp,:} eol — NO closing-pipe requirement, all-space run qualifies (`\t  \| ` starts a header:null table; lsdoc demands ends-with-`\|`). Spec `subagent-tasks/d46-realgraph-spec.md` + REV 2 (spec-check FAILED usefully: additive-not-wholesale, split_markers-before-lookahead, ci/trim `:end:` incl. EOF, tab-not-first separator byte, md_table_line gate; 9 new predictions oracle-confirmed in `harness/d46-speccheck-extra.json`). Verification: pins 40/40 + g1-g4 + extra 12/12 + adversarial 12/12 + my fresh 18/18 (`harness/d46-verify-my.json`), full gate, fuzz 3 seeds × both formats 0/0, cargo green | **FIXED** | `272420e` |
 | D47 | **Link metadata `{…}` lone-`\r` bound (both formats)** — mldoc `metadata` (inline.ml:563-566 via `between` :154-167) stops content at `}`/`\r`/`\n`; lsdoc scanned LF-only (pre-existing `find_sub_line` bug, carried into the b6c9ad9 ByteBeforeLfScan owners), so a `}` past a lone `\r` was wrongly accepted (`[a](u){x\ry}`, `[[u][l]]{x\ry}`, `![i](data:png){x\ry}`). Found by coordinator fresh probes during the audit-2 F1-F4 verification. Fix: both `read_metadata` owners switched to `ByteBeforeEolScan` (CR/LF stop). Pins: `harness/d47-metadata-cr-probe.json` (2) + `harness/d47-pins-probe.json` (12, incl. `{}` empty + CRLF + tag/emphasis contexts); expected outputs `subagent-tasks/notes/d47-pins-vdiff.txt` | **FIXED** | audit2-r2 |
+| D48 | **Dollar-delimited LaTeX directly inside ordinary Markdown emphasis** — lsdoc intentionally preserves each valid `$...$` / `$$...$$` fragment as an opaque `Latex` child instead of applying mldoc 1.5.9's restricted nested grammar. Scope includes ordinary italic/bold/strike/highlight containers, their grammar-bounded recursive combinations, emphasis inside link labels, and emphasis inside script bodies. It excludes Org, synthetic `***...***` / `___...___`, mapped/spanless phase-1 children (including raw-CR bodies), backslash-delimited math, direct link-label math without an immediate emphasis parent, and every top-level-invalid dollar shape. Accepted math suppresses syntax and refs overlapped by its exact source span. A root-owned direct index computes top-level-equivalent dollar hits once in O(n); nested sites perform contained lookups without rescanning. Differential acceptance is not a blanket ID exemption: the `md-nested-dollar-latex` mask-and-reparse classifier proves the complete isolated delta, while deterministic cases also require an exact registry entry. Consumer request: [Tine #460](https://github.com/martinkoutecky/tine/issues/460). | **INTENTIONAL** | `fix/nested-emphasis-latex-460` |
 
-**FLOOR = 0 (Jul 2 2026):** after D19–D32, `node fuzz.mjs 40000 <seed>` (+` org`) is **0/0 (blocks AND
-refs) on every tested seed** (99, 7, 42, 12345, 31337, 271828, 2718, 555555 × both formats). The fuzz
-floor is now an INVARIANT: any nonzero fuzz result on any seed is either a REGRESSION or a NEW
-divergence — file a D-entry, never a ratchet.
+**UNCLASSIFIED FLOOR = 0 (original exact floor established Jul 2 2026):** after D19–D32,
+`node fuzz.mjs 40000 <seed>` (+` org`) was **0/0 (blocks AND refs)** on every tested seed
+(99, 7, 42, 12345, 31337, 271828, 2718, 555555 × both formats). D48 may now produce separately
+reported, semantically proved intentional hits in Markdown. Any unclassified mismatch on any seed is
+still a REGRESSION or a NEW divergence — file a D-entry, never ratchet the floor.
 
-**EXTENDED-VOCABULARY FLOOR = 0 (Jul 3 2026):** after D40–D43, the EXTENDED token vocabulary
-(frame/ws/`\f` tokens added in `1cd4927`) is ALSO 0/0 on both formats (seeds 99, 31337, 271828, 7).
-The floor-0 invariant now covers the extended vocabulary — same rule: nonzero = regression or new
-D-entry.
+**EXTENDED-VOCABULARY UNCLASSIFIED FLOOR = 0 (original exact floor established Jul 3 2026):**
+after D40–D43, the EXTENDED token vocabulary (frame/ws/`\f` tokens added in `1cd4927`) was also
+0/0 on both formats (seeds 99, 31337, 271828, 7). The zero-unclassified invariant still covers the
+extended vocabulary; classified D48 hits are reported separately and every other nonzero result is
+a regression or new D-entry.
 
 D16 surfaced during Phase B verification (pre-existing — fuzz floors held exactly across the perf-only
 change); fix belongs to the `<`-family construct port (inline-restructure-SPEC Phase C4).

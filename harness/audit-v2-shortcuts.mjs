@@ -12,6 +12,10 @@ import { fileURLToPath } from "node:url";
 import { normalizeAst } from "./lib/normalize.mjs";
 import { extractRefs } from "./lib/refs.mjs";
 import { canon, canonJSON } from "./lib/compare.mjs";
+import {
+  classifyNestedDollar,
+  createFreshParsers,
+} from "./lib/intentional-divergence.mjs";
 
 const require = createRequire(import.meta.url);
 const { Mldoc } = require("mldoc");
@@ -710,24 +714,53 @@ if (r.status !== 0) {
 
 const byId = Object.fromEntries(JSON.parse(readFileSync(outPath, "utf8")).map((x) => [x.id, x]));
 const diffs = [];
+const intentional = [];
+const oracleLeaks = [];
+const oracleErrors = [];
+const parsers = createFreshParsers({
+  lsdocPath: process.env.LSDOC_PARSE || join(repo, "target", "debug", "lsdoc-parse"),
+  lsdocArgs: ["--engine", "v2"],
+});
 for (const c of cases) {
   let expected;
   try {
     expected = canon(oracle(c.input, c.format));
-  } catch {
+  } catch (error) {
+    oracleErrors.push({ ...c, error: String(error) });
     continue;
   }
-  const actual = canon(byId[c.id]?.projection);
+  const rawActual = byId[c.id]?.projection;
+  const actual = canon(rawActual);
   if (canonJSON(expected) !== canonJSON(actual)) {
-    diffs.push({ ...c, expected, actual });
+    const classification = classifyNestedDollar({
+      input: c.input,
+      format: c.format,
+      entrypoint: "block",
+      lsdocOriginal: rawActual,
+      parsers,
+    });
+    if (classification.status === "intentional") {
+      intentional.push({ ...c, classification });
+    } else {
+      if (classification.status === "oracle_leak") {
+        oracleLeaks.push({ ...c, classification });
+      }
+      diffs.push({ ...c, expected, actual, classification });
+    }
   }
 }
+parsers.close();
 
-console.log(`audit-v2-shortcuts: ${cases.length} cases, ${diffs.length} diffs`);
+console.log(
+  `audit-v2-shortcuts: ${cases.length} cases, match=${cases.length - intentional.length - diffs.length - oracleErrors.length} intentional=${intentional.length} unclassified=${diffs.length} oracleLeak=${oracleLeaks.length} oracleErrors=${oracleErrors.length}`,
+);
 for (const d of diffs.slice(0, 25)) {
   console.log(`\nDIFF ${d.id} [${d.cat}] ${JSON.stringify(d.input)}`);
   console.log("  mldoc:", JSON.stringify(d.expected.blocks).slice(0, 900));
   console.log("  lsdoc:", JSON.stringify(d.actual.blocks).slice(0, 900));
 }
 if (diffs.length > 25) console.log(`\n... ${diffs.length - 25} more diff(s) hidden`);
-process.exit(diffs.length ? 2 : 0);
+for (const e of oracleErrors.slice(0, 10)) {
+  console.log(`\nORACLE ERROR ${e.id} [${e.cat}] ${e.error}`);
+}
+process.exit(diffs.length || oracleErrors.length ? 2 : 0);

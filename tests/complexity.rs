@@ -1371,6 +1371,61 @@ fn bare_url_interleave(n: usize) -> String {
 fn latex_dollar_failure_interleave(n: usize) -> String {
     "*a*$$x$z ".repeat(n / 9)
 }
+
+fn nested_dollar_valid_inline(n: usize) -> String {
+    format!("_{}x_", "$x$".repeat(n))
+}
+
+fn nested_dollar_valid_display(n: usize) -> String {
+    format!("~~{}~~", "$$x$$".repeat(n))
+}
+
+fn nested_dollar_empty_display(n: usize) -> String {
+    format!("*{}*", "$$$$".repeat(n))
+}
+
+fn nested_dollar_inline_rejects(n: usize) -> String {
+    format!("*{}*", "$x $q$x($q".repeat(n))
+}
+
+fn nested_dollar_display_rejects(n: usize) -> String {
+    format!("=={}==", "$$x$q".repeat(n))
+}
+
+fn nested_dollar_long_unclosed(n: usize) -> String {
+    format!("*${}*", "x".repeat(n))
+}
+
+fn nested_dollar_many_then_unclosed(n: usize) -> String {
+    format!("*{}$tail*", "$x$".repeat(n))
+}
+
+fn nested_dollar_eol_failures(n: usize) -> String {
+    format!("*{}*", "$x\r$x\n".repeat(n))
+}
+
+fn nested_dollar_script_calls(n: usize) -> String {
+    format!("{} *$tail", "_{x}^{y}".repeat(n))
+}
+
+fn nested_dollar_max_ladder() -> String {
+    const MARKERS: [&str; 7] = ["~~", "==", "^^", "**", "__", "*", "_"];
+    let mut source = format!("{}$x$ $z($ tail{}", MARKERS[6], MARKERS[6]);
+    for marker in MARKERS[..6].iter().rev() {
+        source = format!("{marker}$x$ $z($ [{source}](u){marker}");
+    }
+    source
+}
+
+fn nested_dollar_max_ladders(n: usize) -> String {
+    let ladder = nested_dollar_max_ladder();
+    let mut source = String::with_capacity((ladder.len() + 1) * n);
+    for _ in 0..n {
+        source.push_str(&ladder);
+        source.push(' ');
+    }
+    source
+}
 fn org_latex_dollar_failure_interleave(n: usize) -> String {
     "/a/$$x$z ".repeat(n / 9)
 }
@@ -1738,6 +1793,66 @@ fn complexity_gate() {
             "latex_dollar_failure_interleave",
             latex_dollar_failure_interleave,
             6000,
+            "md",
+        );
+        assert_linear(
+            "nested_dollar_valid_inline",
+            nested_dollar_valid_inline,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "nested_dollar_valid_display",
+            nested_dollar_valid_display,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "nested_dollar_empty_display",
+            nested_dollar_empty_display,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "nested_dollar_inline_rejects",
+            nested_dollar_inline_rejects,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "nested_dollar_display_rejects",
+            nested_dollar_display_rejects,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "nested_dollar_long_unclosed",
+            nested_dollar_long_unclosed,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "nested_dollar_many_then_unclosed",
+            nested_dollar_many_then_unclosed,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "nested_dollar_eol_failures",
+            nested_dollar_eol_failures,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "nested_dollar_script_calls",
+            nested_dollar_script_calls,
+            1000,
+            "md",
+        );
+        assert_linear(
+            "nested_dollar_max_ladders",
+            nested_dollar_max_ladders,
+            32,
             "md",
         );
         assert_linear(

@@ -1048,5 +1048,160 @@
   "id": "c209",
   "cat": "codespan",
   "input": "`[[a]]`"
+ },
+ {
+  "id": "c210",
+  "cat": "nested-dollar-latex",
+  "input": "*$x$*"
+ },
+ {
+  "id": "c211",
+  "cat": "nested-dollar-latex",
+  "input": "_$x$_"
+ },
+ {
+  "id": "c212",
+  "cat": "nested-dollar-latex",
+  "input": "*$$x$$*"
+ },
+ {
+  "id": "c213",
+  "cat": "nested-dollar-latex",
+  "input": "_$$x$$_"
+ },
+ {
+  "id": "c214",
+  "cat": "nested-dollar-latex",
+  "input": "**$x$**"
+ },
+ {
+  "id": "c215",
+  "cat": "nested-dollar-latex",
+  "input": "~~$x$~~"
+ },
+ {
+  "id": "c216",
+  "cat": "nested-dollar-latex",
+  "input": "==a $x$ b=="
+ },
+ {
+  "id": "c217",
+  "cat": "nested-dollar-latex",
+  "input": "*a $x$ b $y$ c*"
+ },
+ {
+  "id": "c218",
+  "cat": "nested-dollar-latex",
+  "input": "*~~$x$~~*"
+ },
+ {
+  "id": "c219",
+  "cat": "nested-dollar-latex",
+  "input": "[*$x$*](u)"
+ },
+ {
+  "id": "c220",
+  "cat": "nested-dollar-latex",
+  "input": "_[*$x$*](u)_"
+ },
+ {
+  "id": "c221",
+  "cat": "nested-dollar-latex",
+  "input": "_{*$x$*}"
+ },
+ {
+  "id": "c222",
+  "cat": "nested-dollar-latex",
+  "input": "*$x_{i}$*"
+ },
+ {
+  "id": "c223",
+  "cat": "nested-dollar-latex",
+  "input": "*$[a](b)$*"
+ },
+ {
+  "id": "c224",
+  "cat": "nested-dollar-latex",
+  "input": "*$\\{x\\}$*"
+ },
+ {
+  "id": "c225",
+  "cat": "nested-dollar-latex",
+  "input": "*$a[[Foo]]b$*"
+ },
+ {
+  "id": "c226",
+  "cat": "nested-dollar-latex",
+  "input": "*$a_$b_*"
+ },
+ {
+  "id": "c227",
+  "cat": "nested-dollar-latex",
+  "input": "*$a[[Foo$]]b*"
+ },
+ {
+  "id": "c228",
+  "cat": "nested-dollar-latex",
+  "input": "*$x\\$*"
+ },
+ {
+  "id": "c229",
+  "cat": "nested-dollar-latex",
+  "input": "*_a_$x$*"
+ },
+ {
+  "id": "c230",
+  "cat": "nested-dollar-latex",
+  "input": "*b_c_$x$*"
+ },
+ {
+  "id": "c231",
+  "cat": "nested-dollar-latex",
+  "input": "> *$x$*"
+ },
+ {
+  "id": "c232",
+  "cat": "nested-dollar-guard",
+  "input": "*$x*$"
+ },
+ {
+  "id": "c233",
+  "cat": "nested-dollar-guard",
+  "input": "*$$x*$$"
+ },
+ {
+  "id": "c234",
+  "cat": "nested-dollar-guard",
+  "input": "***$x$***"
+ },
+ {
+  "id": "c235",
+  "cat": "nested-dollar-guard",
+  "input": "___$x$___"
+ },
+ {
+  "id": "c236",
+  "cat": "nested-dollar-guard",
+  "input": "*`$x$`*"
+ },
+ {
+  "id": "c237",
+  "cat": "nested-dollar-guard",
+  "input": "*`$x$*"
+ },
+ {
+  "id": "c238",
+  "cat": "nested-dollar-guard",
+  "input": "* $x$*"
+ },
+ {
+  "id": "c239",
+  "cat": "nested-dollar-guard",
+  "input": "*$x *"
+ },
+ {
+  "id": "c240",
+  "cat": "nested-dollar-guard",
+  "input": "_{$x$}"
  }
 ]

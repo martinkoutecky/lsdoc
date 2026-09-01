@@ -234,6 +234,18 @@ fn inline_and_block_math_are_empty_with_tex_hook() {
 }
 
 #[test]
+fn dollar_math_inside_markdown_emphasis_renders_as_math() {
+    assert_eq!(
+        md("before *$x_{i}$* after"),
+        r#"before <em><span class="math" data-tex="x_{i}"></span></em> after"#
+    );
+    assert_eq!(
+        md("**$$x$$**"),
+        r#"<strong><span class="math math-display" data-tex="x"></span></strong>"#
+    );
+}
+
+#[test]
 fn hiccup_block_and_inline() {
     assert_eq!(md("[:b.foo hi]"), r#"<b class="foo">hi</b>"#);
     assert_eq!(
