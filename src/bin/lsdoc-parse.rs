@@ -82,8 +82,11 @@ fn main() {
         && engine != "v2"
         && engine != "v2-strict"
         && engine != "v2-report"
+        && engine != "v2-try"
     {
-        panic!("unknown lsdoc engine '{engine}' (expected current|legacy|v2|v2-strict|v2-report)");
+        panic!(
+            "unknown lsdoc engine '{engine}' (expected current|legacy|v2|v2-strict|v2-report|v2-try)"
+        );
     }
     let mut args = positional.into_iter();
     let corpus_path = args
@@ -137,6 +140,47 @@ fn main() {
         println!(
             "lsdoc[{engine}]: wrote {} inline runs to {out_path}",
             out.len()
+        );
+        return;
+    }
+
+    if engine == "v2-try" {
+        // Sweep mode: never aborts. Owned items are written as projections; items v2 does not
+        // own (`None`) or panics on are omitted and listed in `<out>.unowned.json` as
+        // `[{id, status: "none" | "panic"}]` so a generator can minimize and adjudicate them.
+        std::panic::set_hook(Box::new(|_| {}));
+        let mut unowned = Vec::new();
+        let mut out = Vec::with_capacity(corpus.len());
+        for c in corpus {
+            let format = c.format.as_deref().unwrap_or("md").to_string();
+            let input = c.input.clone();
+            let r = std::panic::catch_unwind(move || lsdoc::__try_parse_format_v2(&input, &format));
+            match r {
+                Ok(Some(projection)) => out.push(OutItem {
+                    projection,
+                    id: c.id,
+                    input: Some(c.input),
+                    parse_micros: None,
+                }),
+                Ok(None) => unowned.push((c.id, "none")),
+                Err(_) => unowned.push((c.id, "panic")),
+            }
+        }
+        let json = projection_items_to_json(&out).expect("serialize output");
+        fs::write(&out_path, json).unwrap_or_else(|e| panic!("write {out_path}: {e}"));
+        let list: Vec<serde_json::Value> = unowned
+            .iter()
+            .map(|(id, st)| serde_json::json!({"id": id, "status": st}))
+            .collect();
+        fs::write(
+            format!("{out_path}.unowned.json"),
+            serde_json::to_string(&list).unwrap(),
+        )
+        .unwrap_or_else(|e| panic!("write unowned: {e}"));
+        println!(
+            "lsdoc[v2-try]: owned {}, unowned {}",
+            out.len(),
+            unowned.len()
         );
         return;
     }

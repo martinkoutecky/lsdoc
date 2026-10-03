@@ -1076,10 +1076,16 @@ fn property_or_drawer_at(
         return PropertyDrawerDecision::No;
     };
     if format != "org" {
-        if line.eol == Eol::Cr && markdown_property_line(text).is_some() {
-            return PropertyDrawerDecision::No;
-        }
-        if let Some(kv) = markdown_property_line(text) {
+        // markdown_property.ml (`take_till is_eol <* (eol | end_of_input)`, `eol` = "\n" |
+        // "\r\n") rejects a property line ended by a bare CR. drawer.ml `parse` is
+        // `many1 (parse1 <|> parse2)`, so a `#+NAME: VALUE` line (`#+BEGIN_::`, which
+        // Directive.parse refuses) still parses as `parse2`: fall through to it.
+        let markdown_kv = if line.eol == Eol::Cr {
+            None
+        } else {
+            markdown_property_line(text)
+        };
+        if let Some(kv) = markdown_kv {
             let fold = match fold_markdown_property_group(
                 source,
                 i + 1,
@@ -1310,14 +1316,26 @@ fn generic_drawer_decision_at(
     if range_has_lone_cr_before(&source.lines, i, close) {
         return PropertyDrawerDecision::No;
     }
+    // mldoc `drawer_parse = p <* optional eol` with `eol = "\n" | "\r\n"`: a bare CR
+    // after the `:END:` line is NOT part of the drawer; it stays in the stream.
+    let close_line = &source.lines[close];
+    let text_end = close_line.start + close_line.text.len();
+    let bare_cr_close = close_line.eol == Eol::Cr;
     PropertyDrawerDecision::Emit {
         block: Block::Drawer {
             name,
-            span: Some(Span(start_abs, source.lines[close].end)),
+            span: Some(Span(
+                start_abs,
+                if bare_cr_close {
+                    text_end
+                } else {
+                    close_line.end
+                },
+            )),
         },
         after_blocks: Vec::new(),
         next: close + 1,
-        tail_start: None,
+        tail_start: bare_cr_close.then_some((close, text_end)),
     }
 }
 
@@ -1338,14 +1356,18 @@ fn fold_markdown_property_group(
     raw_html_scan: &mut RawHtmlScan,
     outline: Option<&OutlineCollector>,
 ) -> Result<PropertyFold, PropertyDrawerDecision> {
-    let mut has_parse2 = props.iter().any(Property::is_parse2);
     while cur < source.lines.len() {
         crate::metrics::scan_work(1);
         let line = &source.lines[cur];
-        if line.eol == Eol::Cr && markdown_property_line(line.text).is_some() {
-            break;
-        }
-        if let Some(kv) = markdown_property_line(line.text) {
+        // A bare-CR-terminated property line is not `parse1` (see `property_or_drawer_at`);
+        // it can still be a `#+NAME: VALUE` `parse2` line, so fall through instead of
+        // ending the group.
+        let markdown_kv = if line.eol == Eol::Cr {
+            None
+        } else {
+            markdown_property_line(line.text)
+        };
+        if let Some(kv) = markdown_kv {
             props.push(Property::parse1(kv));
             span_end = line.end;
             cur += 1;
@@ -1353,7 +1375,6 @@ fn fold_markdown_property_group(
         }
         if let Some(kv) = directive_property_line(line.text) {
             props.push(Property::parse2(kv));
-            has_parse2 = true;
             span_end = line.end;
             cur += 1;
             while cur < source.lines.len() && source.lines[cur].text.is_empty() {
@@ -1378,23 +1399,26 @@ fn fold_markdown_property_group(
             continue;
         }
         if line.text.is_empty() {
-            if has_parse2 {
-                while cur < source.lines.len() && source.lines[cur].text.is_empty() {
+            let mut k = cur + 1;
+            while k < source.lines.len() && source.lines[k].text.is_empty() {
+                crate::metrics::scan_work(1);
+                k += 1;
+            }
+            // After a parse1 item (the group's last item here; a parse2 absorbs its own
+            // trailing blank run above) the run keeps its bare CRs: `markdown_property`
+            // ends at one `eol` = "\n" | "\r\n". A parse2 NEXT still swallows the whole
+            // run as its leading `eols` (handled below).
+            if props.last().is_some_and(Property::is_parse2) {
+                while cur < k {
                     crate::metrics::scan_work(1);
                     span_end = source.lines[cur].end;
                     cur += 1;
                 }
                 continue;
             }
-            let mut k = cur + 1;
-            while k < source.lines.len() && source.lines[k].text.is_empty() {
-                crate::metrics::scan_work(1);
-                k += 1;
-            }
             if k < source.lines.len() {
                 if let Some(kv) = directive_property_line(source.lines[k].text) {
                     props.push(Property::parse2(kv));
-                    has_parse2 = true;
                     span_end = source.lines[k].end;
                     cur = k + 1;
                     while cur < source.lines.len() && source.lines[cur].text.is_empty() {
@@ -1426,7 +1450,6 @@ fn fold_org_property_tail(
     raw_html_scan: &mut RawHtmlScan,
     outline: Option<&OutlineCollector>,
 ) -> Result<PropertyFold, PropertyDrawerDecision> {
-    let mut has_parse2 = props.iter().any(Property::is_parse2);
     loop {
         if cur >= source.lines.len() {
             break;
@@ -1438,7 +1461,11 @@ fn fold_org_property_tail(
                 crate::metrics::scan_work(1);
                 k += 1;
             }
-            if has_parse2
+            // `parse2 = between_eols p` swallows the blank run (`eols = take_while1 is_eol`,
+            // bare CR included) only when parse2 is the LAST item or the NEXT one; after a
+            // parse1 item the run keeps its bare CRs (mldoc `markdown_property` ends at one
+            // `eol` = "\n" | "\r\n"), so they stay in the stream.
+            if props.last().is_some_and(Property::is_parse2)
                 || (k < source.lines.len()
                     && directive_property_line(source.lines[k].text).is_some())
             {
@@ -1502,7 +1529,6 @@ fn fold_org_property_tail(
         }
         if let Some(kv) = directive_property_line(source.lines[cur].text) {
             props.push(Property::parse2(kv));
-            has_parse2 = true;
             span_end = source.lines[cur].end;
             cur += 1;
             continue;
@@ -1724,6 +1750,14 @@ fn property_close_span_and_tail(
         {
             return Err(());
         }
+        Ok(PropertyCloseTail {
+            span_end: abs_end,
+            next: close + 1,
+            tail_start: Some((close, abs_end)),
+            after_blocks: Vec::new(),
+        })
+    } else if line.eol == Eol::Cr {
+        // `p' = p <* spaces <* string_ci end_mark <* optional eol`: a bare CR is not an eol.
         Ok(PropertyCloseTail {
             span_end: abs_end,
             next: close + 1,
@@ -2841,7 +2875,9 @@ fn blockquote_line_content_from(
     let after_outer = &line.text[rel..];
     let ws = mldoc_spaces_len(after_outer);
     let after_ws = &after_outer[ws..];
-    if line.eol != Eol::Eof {
+    // `spaces *> char '>' *> spaces *> eol`: `eol` is "\n" | "\r\n", so neither end of input
+    // nor a bare CR counts; those fall to the second alternative (whose `line` then fails).
+    if matches!(line.eol, Eol::Lf | Eol::CrLf) {
         if let Some(after_gt) = after_ws.strip_prefix('>') {
             let after_gt_ws = mldoc_spaces_len(after_gt);
             if after_gt_ws == after_gt.len() {
@@ -3046,7 +3082,9 @@ fn quote_fast_line_content(line: QuoteFastLine<'_>, first: bool) -> Option<Quote
     let after_outer = &line.text[rel..];
     let ws = mldoc_spaces_len(after_outer);
     let after_ws = &after_outer[ws..];
-    if line.eol != Eol::Eof {
+    // `spaces *> char '>' *> spaces *> eol`: `eol` is "\n" | "\r\n", so neither end of input
+    // nor a bare CR counts; those fall to the second alternative (whose `line` then fails).
+    if matches!(line.eol, Eol::Lf | Eol::CrLf) {
         if let Some(after_gt) = after_ws.strip_prefix('>') {
             let after_gt_ws = mldoc_spaces_len(after_gt);
             if after_gt_ws == after_gt.len() {
@@ -3366,6 +3404,22 @@ fn markdown_suppressed_property_span_blocks(
     while i < source.lines.len() {
         let line = &source.lines[i];
         if mldoc_trim_spaces_start(line.text).starts_with("#+") {
+            // A `#+` line that is NOT a directive (`directive_line` refuses every case
+            // variant of `BEGIN_`) but is a Markdown property line (`#+BEGIN_::`) was parsed
+            // as `Property::parse1` to begin this very span. Reparsing the suffix that starts
+            // at the span's first line would return the identical span and recurse until the
+            // stack overflows (an abort, not a panic: `> #+BEGIN_::` and `#+BEGIN_QUOTE\n
+            // #+BEGIN_::\n#+END_QUOTE`). In block content mldoc has no property parser, so
+            // the line is paragraph text (`> #+BEGIN_::` -> Quote[Paragraph[Tag, "::"]]).
+            if i == 0
+                && directive_line(line.text).is_none()
+                && markdown_property_line(line.text).is_some()
+            {
+                para_start.get_or_insert(start + line.start);
+                para_end = start + line.end;
+                i += 1;
+                continue;
+            }
             if let Some(paragraph_start) = para_start.take() {
                 blocks.push(paragraph_from_body_span(
                     body,
@@ -3871,20 +3925,19 @@ fn org_verbatim_sequence_at(
         code.push('\n');
         span_end = line.end;
         cur += 1;
-        if line.eol == Eol::Cr {
-            break;
-        }
+        // block0.ml `between_eols`: the block's trailing `optional eols` is
+        // `take_while1 is_eol`, which absorbs EVERY following eol-only line, bare CR
+        // included (`is_eol` has '\r'; only `lines_while`'s per-line `optional eol` is
+        // CRLF/LF-only). A bare-CR line end also stops `lines_while` itself, since the
+        // next iteration needs ':' at the very next byte.
         let mut consumed_blank_separator = false;
-        while cur < source.lines.len()
-            && source.lines[cur].text.is_empty()
-            && source.lines[cur].eol != Eol::Cr
-        {
+        while cur < source.lines.len() && source.lines[cur].text.is_empty() {
             span_end = source.lines[cur].end;
             cur += 1;
             consumed_blank_separator = true;
             crate::metrics::scan_work(1);
         }
-        if consumed_blank_separator {
+        if line.eol == Eol::Cr || consumed_blank_separator {
             break;
         }
     }
@@ -4352,6 +4405,14 @@ fn regular_list_sequence_at(
                 break;
             }
             let cont = &source.lines[next];
+            // lists0.ml `content_parser`: after a content line, `two_eols` (`eol *> eol`) or
+            // `optional eol *> peek_char` runs; a bare CR is `is_eol` but not `eol`
+            // ("\n" | "\r\n"), so `eol *> content_parser` fails and the whole item (and its
+            // list, via `terminator`) fails. This is the empty-line-ended-by-CR case; a content
+            // line ended by CR is the `Eol::Cr` check after `append_list_content` below.
+            if cont.text.is_empty() && cont.eol == Eol::Cr {
+                return regular_list_emit_floor(source, start_abs, flat, boundaries, fail_floor);
+            }
             if cont.text.is_empty() {
                 next += 1;
                 after_two_eols = true;
@@ -4385,6 +4446,9 @@ fn regular_list_sequence_at(
             append_list_content(source, next, 0, &mut item_text, &mut item_map);
             last_content_line = next;
             next += 1;
+            if cont.eol == Eol::Cr {
+                return regular_list_emit_floor(source, start_abs, flat, boundaries, fail_floor);
+            }
         }
 
         let (name, content_text, content_map) = if format != "org" && !marker.ordered {
@@ -7915,7 +7979,10 @@ fn rejected_markdown_property_tail_at(
         return false;
     };
     let t = mldoc_trim_spaces_start(text);
-    markdown_property_start(t) && markdown_property_line(text).is_none()
+    // markdown_property.ml: the value is `take_till is_eol <* (eol | end_of_input)` and
+    // `eol` is "\n" | "\r\n", so a property line ended by a bare CR is rejected even
+    // though its text alone parses (the mirror of `property_or_drawer_at`'s Cr rule).
+    markdown_property_start(t) && (markdown_property_line(text).is_none() || line.eol == Eol::Cr)
 }
 
 fn rejected_directive_property_tail_at(
@@ -11886,5 +11953,86 @@ y=2
             try_parse("------\n", "org"),
             Some(crate::parse("------\n", "org"))
         );
+    }
+
+    #[test]
+    fn bare_cr_inputs_are_owned_by_v2() {
+        // Bare-CR ownership family (DIVERGENCES.md D49). Parity with mldoc is the
+        // harness's job (`harness/bare-cr-probe.json`, corpus category "barecr");
+        // this locks OWNERSHIP so a regression fails in `cargo test` without the
+        // oracle. The first two are the Tine og wasm-trap reproducers
+        // (`parse_format` panicked: v2 "does not yet own" them).
+        for format in ["md", "org"] {
+            for input in [
+                "- s::\r",
+                "- tags:: x\rid:: ::}}",
+                "s::\r",
+                "- s::\r\n  id:: x\r",
+                "- a\n  s:: v\r  t:: w\n",
+                "- s::\r\r",
+                "- s::\r- t::\r",
+                "# s::\r",
+                ">>\r",
+                "* *\n\r",
+                ":\r\r",
+                ":\n\r",
+                "- -\n\r",
+                "- `\n\r",
+                "- a\r",
+                "- a\r\n- b\r",
+                "- a\r\r- b",
+                "1. a\rb\r2. c",
+                "#+BEGIN_::\r",
+                "#+BEGIN_::\r#+BEGIN_::\r",
+                "x\r#+BEGIN_::\r",
+                "a:: b\n#+BEGIN_::\r",
+                ":S:\n:END:\r",
+                ":S:\n:END:\rx",
+                ":PROPERTIES:\n:a: b\n:END:\r",
+                "* h\n:PROPERTIES:\n:a: b\n:END:\r",
+                "#+BEGIN_:\nc:: d\n\r",
+                "#+BEGIN_:\nc:: d\n\n",
+                // Pre-existing non-CR stack overflow (abort, not catchable): a
+                // `#+BEGIN_::` line in block-content context recursed forever.
+                "#+BEGIN_QUOTE\n#+BEGIN_::\n#+END_QUOTE",
+                "> #+BEGIN_::",
+                ">#+BEGIN_::\r",
+            ] {
+                assert!(
+                    crate::__try_parse_format_v2(input, format).is_some(),
+                    "unowned ({format}): {input:?}"
+                );
+                assert!(
+                    try_parse(input, format).is_some(),
+                    "unowned ({format}): {input:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bare_cr_after_drawer_end_is_not_part_of_the_drawer() {
+        // mldoc `drawer_parse = p <* optional eol` with `eol = "\n" | "\r\n"`: the bare
+        // CR stays in the stream and becomes its own paragraph break.
+        for format in ["md", "org"] {
+            let blocks = try_parse(":S:\n:END:\r", format).expect("owned");
+            assert_eq!(blocks.len(), 2, "{format}: {blocks:?}");
+            assert!(
+                matches!(
+                    &blocks[0],
+                    Block::Drawer {
+                        span: Some(Span(0, 9)),
+                        ..
+                    }
+                ),
+                "{format}: {:?}",
+                blocks[0]
+            );
+            assert!(
+                matches!(&blocks[1], Block::Paragraph { .. }),
+                "{format}: {:?}",
+                blocks[1]
+            );
+        }
     }
 }

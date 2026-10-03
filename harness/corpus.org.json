@@ -2542,5 +2542,479 @@
   "cat": "emptyhl",
   "input": "#+BEGIN_NOTE\n* \t\n#+END_NOTE",
   "format": "org"
+ },
+ {
+  "id": "o424",
+  "cat": "barecr",
+  "input": "- s::\r",
+  "format": "org"
+ },
+ {
+  "id": "o425",
+  "cat": "barecr",
+  "input": "- tags:: x\rid:: ::}}",
+  "format": "org"
+ },
+ {
+  "id": "o426",
+  "cat": "barecr",
+  "input": "s::\r",
+  "format": "org"
+ },
+ {
+  "id": "o427",
+  "cat": "barecr",
+  "input": "s:: a\r",
+  "format": "org"
+ },
+ {
+  "id": "o428",
+  "cat": "barecr",
+  "input": "a\rb",
+  "format": "org"
+ },
+ {
+  "id": "o429",
+  "cat": "barecr",
+  "input": "- a\rb",
+  "format": "org"
+ },
+ {
+  "id": "o430",
+  "cat": "barecr",
+  "input": "# h\rb",
+  "format": "org"
+ },
+ {
+  "id": "o431",
+  "cat": "barecr",
+  "input": "#h\r",
+  "format": "org"
+ },
+ {
+  "id": "o432",
+  "cat": "barecr",
+  "input": "* h\rb",
+  "format": "org"
+ },
+ {
+  "id": "o433",
+  "cat": "barecr",
+  "input": "```\rx\r```\r",
+  "format": "org"
+ },
+ {
+  "id": "o434",
+  "cat": "barecr",
+  "input": "- ```\rx\r```",
+  "format": "org"
+ },
+ {
+  "id": "o435",
+  "cat": "barecr",
+  "input": "a\r",
+  "format": "org"
+ },
+ {
+  "id": "o436",
+  "cat": "barecr",
+  "input": "\r",
+  "format": "org"
+ },
+ {
+  "id": "o437",
+  "cat": "barecr",
+  "input": "\r\r",
+  "format": "org"
+ },
+ {
+  "id": "o438",
+  "cat": "barecr",
+  "input": "a\r\nb\rc\nd",
+  "format": "org"
+ },
+ {
+  "id": "o439",
+  "cat": "barecr",
+  "input": "- a\r  b:: c\r  d",
+  "format": "org"
+ },
+ {
+  "id": "o440",
+  "cat": "barecr",
+  "input": "- a\r:PROPERTIES:\r:id: x\r:END:\r",
+  "format": "org"
+ },
+ {
+  "id": "o441",
+  "cat": "barecr",
+  "input": "- a\r  :LOGBOOK:\r  x\r  :END:\r",
+  "format": "org"
+ },
+ {
+  "id": "o442",
+  "cat": "barecr",
+  "input": "#+BEGIN_QUOTE\rx\r#+END_QUOTE\r",
+  "format": "org"
+ },
+ {
+  "id": "o443",
+  "cat": "barecr",
+  "input": "> a\r> b\r",
+  "format": "org"
+ },
+ {
+  "id": "o444",
+  "cat": "barecr",
+  "input": "|a|b|\r|-|-|\r",
+  "format": "org"
+ },
+ {
+  "id": "o445",
+  "cat": "barecr",
+  "input": "- a\r- b\r",
+  "format": "org"
+ },
+ {
+  "id": "o446",
+  "cat": "barecr",
+  "input": "a:: b\rc:: d",
+  "format": "org"
+ },
+ {
+  "id": "o447",
+  "cat": "barecr",
+  "input": "* h\r:PROPERTIES:\r:id: x\r:END:\r",
+  "format": "org"
+ },
+ {
+  "id": "o448",
+  "cat": "barecr",
+  "input": "* h\rSCHEDULED: <2024-01-01>\r",
+  "format": "org"
+ },
+ {
+  "id": "o449",
+  "cat": "barecr",
+  "input": "a\rb\r\nc\r",
+  "format": "org"
+ },
+ {
+  "id": "o450",
+  "cat": "barecr",
+  "input": "- [ ] a\r",
+  "format": "org"
+ },
+ {
+  "id": "o451",
+  "cat": "barecr",
+  "input": "$\rx\r$\r",
+  "format": "org"
+ },
+ {
+  "id": "o452",
+  "cat": "barecr",
+  "input": "[:div\ra]\r",
+  "format": "org"
+ },
+ {
+  "id": "o453",
+  "cat": "barecr",
+  "input": "<div>\rx\r</div>",
+  "format": "org"
+ },
+ {
+  "id": "o454",
+  "cat": "barecr",
+  "input": "- s::\ra",
+  "format": "org"
+ },
+ {
+  "id": "o455",
+  "cat": "barecr",
+  "input": "- s:: \r",
+  "format": "org"
+ },
+ {
+  "id": "o456",
+  "cat": "barecr",
+  "input": "- s::\r\n",
+  "format": "org"
+ },
+ {
+  "id": "o457",
+  "cat": "barecr",
+  "input": "- s::\r\r",
+  "format": "org"
+ },
+ {
+  "id": "o458",
+  "cat": "barecr",
+  "input": "- s::\r- t::\r",
+  "format": "org"
+ },
+ {
+  "id": "o459",
+  "cat": "barecr",
+  "input": "- a:: b\rc:: d\r",
+  "format": "org"
+ },
+ {
+  "id": "o460",
+  "cat": "barecr",
+  "input": "- s::\r  x:: y",
+  "format": "org"
+ },
+ {
+  "id": "o461",
+  "cat": "barecr",
+  "input": "- s::\r  x:: y\n",
+  "format": "org"
+ },
+ {
+  "id": "o462",
+  "cat": "barecr",
+  "input": "# s::\r",
+  "format": "org"
+ },
+ {
+  "id": "o463",
+  "cat": "barecr",
+  "input": "## s:: v\r",
+  "format": "org"
+ },
+ {
+  "id": "o464",
+  "cat": "barecr",
+  "input": "* s::\r",
+  "format": "org"
+ },
+ {
+  "id": "o465",
+  "cat": "barecr",
+  "input": "- TODO s::\r",
+  "format": "org"
+ },
+ {
+  "id": "o466",
+  "cat": "barecr",
+  "input": "- s::\r:PROPERTIES:\r:END:\r",
+  "format": "org"
+ },
+ {
+  "id": "o467",
+  "cat": "barecr",
+  "input": "- s::\r\n  id:: x\r",
+  "format": "org"
+ },
+ {
+  "id": "o468",
+  "cat": "barecr",
+  "input": "- a\r  s:: v\r",
+  "format": "org"
+ },
+ {
+  "id": "o469",
+  "cat": "barecr",
+  "input": "- a\n  s:: v\r  t:: w\n",
+  "format": "org"
+ },
+ {
+  "id": "o470",
+  "cat": "barecr",
+  "input": ":\r\r",
+  "format": "org"
+ },
+ {
+  "id": "o471",
+  "cat": "barecr",
+  "input": ":\n\r",
+  "format": "org"
+ },
+ {
+  "id": "o472",
+  "cat": "barecr",
+  "input": "- -\n\r",
+  "format": "org"
+ },
+ {
+  "id": "o473",
+  "cat": "barecr",
+  "input": "- `\n\r",
+  "format": "org"
+ },
+ {
+  "id": "o474",
+  "cat": "barecr",
+  "input": ">>\r",
+  "format": "org"
+ },
+ {
+  "id": "o475",
+  "cat": "barecr",
+  "input": "#+BEGIN_::\r",
+  "format": "org"
+ },
+ {
+  "id": "o476",
+  "cat": "barecr",
+  "input": "x\r#+BEGIN_::\r",
+  "format": "org"
+ },
+ {
+  "id": "o477",
+  "cat": "barecr",
+  "input": "#+BEGIN_::\r#+BEGIN_::\r",
+  "format": "org"
+ },
+ {
+  "id": "o478",
+  "cat": "barecr",
+  "input": "#+BEGIN_: b\r",
+  "format": "org"
+ },
+ {
+  "id": "o479",
+  "cat": "barecr",
+  "input": "#+BEGIN_::\r:PROPERTIES:\r",
+  "format": "org"
+ },
+ {
+  "id": "o480",
+  "cat": "barecr",
+  "input": "#+a: b\r",
+  "format": "org"
+ },
+ {
+  "id": "o481",
+  "cat": "barecr",
+  "input": "- -\n\n\r",
+  "format": "org"
+ },
+ {
+  "id": "o482",
+  "cat": "barecr",
+  "input": "- a\r",
+  "format": "org"
+ },
+ {
+  "id": "o483",
+  "cat": "barecr",
+  "input": "- a\r\n- b\r",
+  "format": "org"
+ },
+ {
+  "id": "o484",
+  "cat": "barecr",
+  "input": "- a\r  b\r",
+  "format": "org"
+ },
+ {
+  "id": "o485",
+  "cat": "barecr",
+  "input": "- a\r\r- b",
+  "format": "org"
+ },
+ {
+  "id": "o486",
+  "cat": "barecr",
+  "input": "- a\n\r- b",
+  "format": "org"
+ },
+ {
+  "id": "o487",
+  "cat": "barecr",
+  "input": "1. a\r",
+  "format": "org"
+ },
+ {
+  "id": "o488",
+  "cat": "barecr",
+  "input": "1. a\rb\r2. c",
+  "format": "org"
+ },
+ {
+  "id": "o489",
+  "cat": "barecr",
+  "input": "* h\r- a\r",
+  "format": "org"
+ },
+ {
+  "id": "o490",
+  "cat": "barecr",
+  "input": "- a\n  - b\r",
+  "format": "org"
+ },
+ {
+  "id": "o491",
+  "cat": "barecr",
+  "input": "+ a\r",
+  "format": "org"
+ },
+ {
+  "id": "o492",
+  "cat": "barecr",
+  "input": "> #+BEGIN_::",
+  "format": "org"
+ },
+ {
+  "id": "o493",
+  "cat": "barecr",
+  "input": "> #+begin_::\r",
+  "format": "org"
+ },
+ {
+  "id": "o494",
+  "cat": "barecr",
+  "input": "#+BEGIN_QUOTE\r#+BEGIN_::\r#+END_QUOTE\r",
+  "format": "org"
+ },
+ {
+  "id": "o495",
+  "cat": "barecr",
+  "input": ":S:\n:END:\r",
+  "format": "org"
+ },
+ {
+  "id": "o496",
+  "cat": "barecr",
+  "input": ":S:\n:END:\r\r",
+  "format": "org"
+ },
+ {
+  "id": "o497",
+  "cat": "barecr",
+  "input": ":PROPERTIES:\n:a: b\n:END:\r",
+  "format": "org"
+ },
+ {
+  "id": "o498",
+  "cat": "barecr",
+  "input": "* h\n:PROPERTIES:\n:a: b\n:END:\r",
+  "format": "org"
+ },
+ {
+  "id": "o499",
+  "cat": "barecr",
+  "input": "* h\n:PROPERTIES:\n:a: b\n:END:\rx",
+  "format": "org"
+ },
+ {
+  "id": "o500",
+  "cat": "barecr",
+  "input": "* h\n:PROPERTIES:\n:a: b\n:END: \r",
+  "format": "org"
+ },
+ {
+  "id": "o501",
+  "cat": "barecr",
+  "input": ":S:\n:END:\n\r",
+  "format": "org"
+ },
+ {
+  "id": "o502",
+  "cat": "barecr",
+  "input": ":S:\n:END:\rx",
+  "format": "org"
  }
 ]
