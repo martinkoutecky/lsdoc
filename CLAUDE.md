@@ -79,7 +79,7 @@ any realistic shape. Verify O(n) by a *structural* audit (no `.sort` / `partitio
 `binary_search` / `HashMap` left on the hot path, no per-level body copy, no unbounded native
 re-dispatch), not by a perf ratio — the gate's ~2×/doubling can't distinguish O(n) from O(n log n).
 
-Three deliberate exceptions, all documented and none a regression:
+Four deliberate exceptions, all documented and none a regression:
 - **`refs.rs` sort+dedup** — O(R log R), R = ref occurrences ≤ n; also the canonical output order the
   order-sensitive gate requires.
 - **`GT_FALLBACK_NEST_CAP` (= 64)** — an anti-SIGABRT recursion floor on the SOLE remaining native
