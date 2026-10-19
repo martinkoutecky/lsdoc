@@ -3624,7 +3624,7 @@ fn quote_para_trigger(core: &str) -> bool {
         || core.starts_with("# ")
         || core == "-"
         || core.starts_with("- ")
-        || core.starts_with("id:: ")
+        || crate::block_common::starts_with_id_prop(core)
 }
 
 /// First line of a markdown blockquote (mldoc `md_blockquote = char '>' *> lines_while …`):

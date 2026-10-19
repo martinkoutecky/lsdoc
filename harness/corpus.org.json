@@ -3016,5 +3016,35 @@
   "cat": "barecr",
   "input": ":S:\n:END:\rx",
   "format": "org"
+ },
+ {
+  "id": "o503",
+  "cat": "quote-idcase",
+  "input": "> a\nid:: x",
+  "format": "org"
+ },
+ {
+  "id": "o504",
+  "cat": "quote-idcase",
+  "input": "> a\nID:: x",
+  "format": "org"
+ },
+ {
+  "id": "o505",
+  "cat": "quote-idcase",
+  "input": "> a\nId:: x",
+  "format": "org"
+ },
+ {
+  "id": "o506",
+  "cat": "quote-idcase",
+  "input": "> ID:: x",
+  "format": "org"
+ },
+ {
+  "id": "o507",
+  "cat": "quote-idcase",
+  "input": "> a\n> ID:: x",
+  "format": "org"
  }
 ]

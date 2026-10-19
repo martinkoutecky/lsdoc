@@ -3013,5 +3013,55 @@
   "id": "b602",
   "cat": "barecr",
   "input": "#+a:\n\n\nc:: d\n\n\n#+b: x\n\n"
+ },
+ {
+  "id": "b603",
+  "cat": "c2-quote-idcase",
+  "input": "> a\nID:: b"
+ },
+ {
+  "id": "b604",
+  "cat": "c2-quote-idcase",
+  "input": "> a\nId:: b"
+ },
+ {
+  "id": "b605",
+  "cat": "c2-quote-idcase",
+  "input": "> a\n  iD:: b"
+ },
+ {
+  "id": "b606",
+  "cat": "c2-quote-idcase",
+  "input": "> a\ncollapsed:: true\nID:: b"
+ },
+ {
+  "id": "b607",
+  "cat": "c2-quote-idcase",
+  "input": "> ID:: b"
+ },
+ {
+  "id": "b608",
+  "cat": "c2-quote-idcase",
+  "input": "> a\n> ID:: b"
+ },
+ {
+  "id": "b609",
+  "cat": "c2-quote-idcase",
+  "input": "> > ID:: b"
+ },
+ {
+  "id": "b610",
+  "cat": "c2-quote-idcase",
+  "input": "> a\n> > ID:: b"
+ },
+ {
+  "id": "b611",
+  "cat": "c2-quote-idcase",
+  "input": "- x\n  > a\n  ID:: b"
+ },
+ {
+  "id": "b612",
+  "cat": "c2-quote-idcase",
+  "input": "> a\nID::b"
  }
 ]

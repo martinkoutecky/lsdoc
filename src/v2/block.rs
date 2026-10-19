@@ -2909,7 +2909,7 @@ fn quote_para_trigger(content: &str) -> bool {
         || content.starts_with("# ")
         || content == "-"
         || content.starts_with("- ")
-        || content.starts_with("id:: ")
+        || crate::block_common::starts_with_id_prop(content)
 }
 
 fn append_blockquote_line(

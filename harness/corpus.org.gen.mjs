@@ -660,6 +660,13 @@ add("barecr", "* h\n:PROPERTIES:\n:a: b\n:END: \r");
 add("barecr", ":S:\n:END:\n\r");
 add("barecr", ":S:\n:END:\rx");
 
+// markdown-style `>` quote in Org: the id:: breaker is ASCII case-insensitive (mldoc Prelude.starts_with)
+add("quote-idcase", "> a\nid:: x");
+add("quote-idcase", "> a\nID:: x");
+add("quote-idcase", "> a\nId:: x");
+add("quote-idcase", "> ID:: x");
+add("quote-idcase", "> a\n> ID:: x");
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

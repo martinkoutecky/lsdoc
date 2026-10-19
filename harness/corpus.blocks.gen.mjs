@@ -773,6 +773,19 @@ add("barecr", "#+BEGIN_:\n\n\r");
 add("barecr", "#+BEGIN_:\nc:: d\n\n#+BEGIN_:\n");
 add("barecr", "#+a:\n\n\nc:: d\n\n\n#+b: x\n\n");
 
+// mldoc md_blockquote tests `starts_with line "id:: "`, and Prelude.starts_with lowercases both
+// sides: the id:: trigger is ASCII case-insensitive (GH #721 follow-up F4).
+add("c2-quote-idcase", "> a\nID:: b");                // lazy ID:: ends the quote → property
+add("c2-quote-idcase", "> a\nId:: b");
+add("c2-quote-idcase", "> a\n  iD:: b");              // indented lazy row
+add("c2-quote-idcase", "> a\ncollapsed:: true\nID:: b");
+add("c2-quote-idcase", "> ID:: b");                    // first-line trigger → Paragraph
+add("c2-quote-idcase", "> a\n> ID:: b");              // marker-line trigger → Quote, Paragraph
+add("c2-quote-idcase", "> > ID:: b");
+add("c2-quote-idcase", "> a\n> > ID:: b");
+add("c2-quote-idcase", "- x\n  > a\n  ID:: b");      // in an outline bullet
+add("c2-quote-idcase", "> a\nID::b");                 // no space after :: → still lazy text
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

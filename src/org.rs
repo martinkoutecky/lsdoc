@@ -2992,7 +2992,11 @@ fn quote_opens(s: &str, has_eol: bool) -> bool {
 /// the quote outright (→ Paragraph), not just stop the run.
 fn quote_line_breaker(s: &str) -> bool {
     crate::metrics::scan_work(s.len().min(4));
-    s.starts_with("- ") || s.starts_with("# ") || s.starts_with("id:: ") || s == "-" || s == "#"
+    s.starts_with("- ")
+        || s.starts_with("# ")
+        || crate::block_common::starts_with_id_prop(s)
+        || s == "-"
+        || s == "#"
 }
 
 /// First line of an Org blockquote — the de-`>`'d opener content as a SUFFIX slice of `s` (no

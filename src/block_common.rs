@@ -14,6 +14,14 @@
 use crate::projection::{Block, Span};
 use std::cell::Cell;
 
+/// mldoc `Prelude.starts_with s "id:: "` as `md_blockquote` calls it: the prefix check LOWERCASES
+/// both sides (`String.lowercase_ascii`, bytewise), so `ID:: `/`Id:: ` end a quote like `id:: `.
+/// ASCII-only folding on the first 5 bytes; non-ASCII bytes never match.
+#[inline]
+pub(crate) fn starts_with_id_prop(s: &str) -> bool {
+    s.len() >= 5 && s.as_bytes()[..5].eq_ignore_ascii_case(b"id:: ")
+}
+
 /// Anti-SIGABRT recursion floor on the ONE remaining native re-dispatch: the de-`>`'d reparse
 /// FALLBACK for a `>`-quote body that contains a fenced-code / `#+BEGIN_X` callout / LaTeX env /
 /// block hiccup — the four constructs whose recognizers use raw-input global closer indexes or
