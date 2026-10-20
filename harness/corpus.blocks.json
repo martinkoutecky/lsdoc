@@ -3063,5 +3063,30 @@
   "id": "b612",
   "cat": "c2-quote-idcase",
   "input": "> a\nID::b"
+ },
+ {
+  "id": "b613",
+  "cat": "quote-parse2-group",
+  "input": ">#+BEGIN_:\no::"
+ },
+ {
+  "id": "b614",
+  "cat": "quote-parse2-group",
+  "input": "> #+BEGIN_:\n> o::"
+ },
+ {
+  "id": "b615",
+  "cat": "quote-parse2-group",
+  "input": "> #+BEGIN_: v\n> a:: b"
+ },
+ {
+  "id": "b616",
+  "cat": "quote-parse2-group",
+  "input": "#+BEGIN_QUOTE\n#+BEGIN_:\no::\n#+END_QUOTE"
+ },
+ {
+  "id": "b617",
+  "cat": "quote-parse2-group",
+  "input": "- > #+BEGIN_: x\n  > k:: v"
  }
 ]

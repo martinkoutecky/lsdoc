@@ -786,6 +786,14 @@ add("c2-quote-idcase", "> a\n> > ID:: b");
 add("c2-quote-idcase", "- x\n  > a\n  ID:: b");      // in an outline bullet
 add("c2-quote-idcase", "> a\nID::b");                 // no space after :: → still lazy text
 
+// A `#+NAME: VALUE` (parse2) line that starts a property group inside a quote reparsed its own
+// span forever (stack overflow, og-gh644 F2 fuzz); mldoc has no property parser in block content.
+add("quote-parse2-group", ">#+BEGIN_:\no::");
+add("quote-parse2-group", "> #+BEGIN_:\n> o::");
+add("quote-parse2-group", "> #+BEGIN_: v\n> a:: b");
+add("quote-parse2-group", "#+BEGIN_QUOTE\n#+BEGIN_:\no::\n#+END_QUOTE");
+add("quote-parse2-group", "- > #+BEGIN_: x\n  > k:: v");
+
 const out = cases.map((c, idx) => ({ id: `b${String(idx).padStart(3, "0")}`, cat: c.cat, input: c.input }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.blocks.json"), JSON.stringify(out, null, 1));

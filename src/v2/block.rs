@@ -3409,11 +3409,13 @@ fn markdown_suppressed_property_span_blocks(
             // as `Property::parse1` to begin this very span. Reparsing the suffix that starts
             // at the span's first line would return the identical span and recurse until the
             // stack overflows (an abort, not a panic: `> #+BEGIN_::` and `#+BEGIN_QUOTE\n
-            // #+BEGIN_::\n#+END_QUOTE`). In block content mldoc has no property parser, so
+            // #+BEGIN_::\n#+END_QUOTE`; likewise the `#+NAME: VALUE` form `> #+BEGIN_:\n> o::`, a
+            // `parse2` line that starts a property group). In block content mldoc has no property parser, so
             // the line is paragraph text (`> #+BEGIN_::` -> Quote[Paragraph[Tag, "::"]]).
             if i == 0
                 && directive_line(line.text).is_none()
-                && markdown_property_line(line.text).is_some()
+                && (markdown_property_line(line.text).is_some()
+                    || directive_property_line(line.text).is_some())
             {
                 para_start.get_or_insert(start + line.start);
                 para_end = start + line.end;
@@ -11997,6 +11999,13 @@ y=2
                 "#+BEGIN_QUOTE\n#+BEGIN_::\n#+END_QUOTE",
                 "> #+BEGIN_::",
                 ">#+BEGIN_::\r",
+                // Same recursion through the `#+NAME: VALUE` (`parse2`) form when a
+                // property line follows it (og-gh644 F2, fuzz).
+                ">#+BEGIN_:\no::",
+                "> #+BEGIN_:\n> o::",
+                "> #+BEGIN_: v\n> a:: b",
+                "#+BEGIN_QUOTE\n#+BEGIN_:\no::\n#+END_QUOTE",
+                "- > #+BEGIN_: x\n  > k:: v",
             ] {
                 assert!(
                     crate::__try_parse_format_v2(input, format).is_some(),
