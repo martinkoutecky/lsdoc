@@ -3,7 +3,7 @@ name = "lsdoc"
 version = "0.5.10"
 edition = "2021"
 license = "AGPL-3.0-only"
-description = "A from-scratch native-Rust parser for Logseq-flavored Markdown and Org, behavior-equivalent to Logseq's mldoc."
+description = "A native-Rust parser for Logseq-flavored Markdown and Org: a transcription of Logseq's mldoc (AGPL-3.0), behavior-equivalent to it."
 repository = "https://github.com/martinkoutecky/lsdoc"
 
 [dependencies]

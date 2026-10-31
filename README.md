@@ -1,6 +1,6 @@
 # lsdoc
 
-A from-scratch, native-Rust parser for **Logseq-flavored Markdown and Org** → a
+A native-Rust parser for **Logseq-flavored Markdown and Org** → a
 typed, `serde`-serializable **AST with source spans**, behavior-equivalent
 to Logseq's [`mldoc`](https://github.com/logseq/mldoc) at the granularity that
 matters for indexing and rendering.
@@ -141,3 +141,12 @@ node fuzz-triage.mjs [count] [seed]    # bucket fuzz mismatches by structure
   `block.cljs`-faithful mldoc oracle, and `FINDINGS.md` (read it). Treated as the
   seed for `harness/`, not rebuilt.
 - `scripts/env.sh` — sources the shared Rust toolchain.
+
+## License and credits
+
+lsdoc is licensed under the GNU AGPL-3.0 (`LICENSE`). Its parser (v2) is a
+Rust transcription of Logseq's [`mldoc`](https://github.com/logseq/mldoc)
+(by the Logseq team, AGPL-3.0): many functions follow mldoc's OCaml
+source function by function, and the code cites the mldoc file and lines it
+follows (ledger: `docs/V2-TRANSCRIPTION.md`). lsdoc is an independent project,
+not affiliated with or endorsed by Logseq.
