@@ -1,6 +1,6 @@
 [package]
 name = "lsdoc"
-version = "0.5.10"
+version = "0.5.11"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "A native-Rust parser for Logseq-flavored Markdown and Org: a transcription of Logseq's mldoc (AGPL-3.0), behavior-equivalent to it."
