@@ -3046,5 +3046,47 @@
   "cat": "quote-idcase",
   "input": "> a\n> ID:: x",
   "format": "org"
+ },
+ {
+  "id": "o508",
+  "cat": "tag-link-span",
+  "input": "*\n#+BEGIN_QUOTE\n#+alias: , [[c d]], \r\n,  ,  #+ALIAS: [[b]],  #[[c d]]\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o509",
+  "cat": "tag-link-span",
+  "input": "*\n#+BEGIN_QUOTE\n#+alias: , [[c d]], \n,  ,  #+ALIAS: [[b]],  #[[c d]]\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o510",
+  "cat": "tag-link-span",
+  "input": "#+BEGIN_QUOTE\na\r\n#[[c]]\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o511",
+  "cat": "tag-link-span",
+  "input": "#+BEGIN_QUOTE\na\n#[[c]]\n#+END_QUOTE\n",
+  "format": "org"
+ },
+ {
+  "id": "o512",
+  "cat": "tag-link-span",
+  "input": "x #[[c d]]\n",
+  "format": "org"
+ },
+ {
+  "id": "o513",
+  "cat": "tag-link-span",
+  "input": "x *[[c]]* /a [[d][e]]/\n",
+  "format": "org"
+ },
+ {
+  "id": "o514",
+  "cat": "tag-link-span",
+  "input": "#+BEGIN_QUOTE\na\r\nx *[[c]]* /a [[d][e]]/\n#+END_QUOTE\n",
+  "format": "org"
  }
 ]

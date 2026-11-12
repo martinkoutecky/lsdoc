@@ -1036,26 +1036,30 @@ pub(crate) fn try_nested_link_or_link_org(
     scan: &mut OrgInlineScan,
 ) -> Option<(Inline, usize)> {
     crate::metrics::scan_work(2);
-    if s[at..].starts_with("[[") {
-        if let Some((end, node)) = org_link_1_at(s, bb, at, base, scan) {
-            return Some((node, end));
-        }
-        if let Some((end, content)) =
-            crate::inline::parse_nested_link_with_scan(s, at, scan.page_ref_scan())
-        {
-            return Some((
-                Inline::NestedLink {
-                    content,
-                    span: Some(Span(base + at, base + end)),
-                },
-                end,
-            ));
-        }
-        if let Some((end, node)) = org_link_2_at(s, bb, at, base, scan) {
-            return Some((node, end));
-        }
+    if !s[at..].starts_with("[[") {
+        return None;
     }
-    None
+    // `org_link_1_at`/`org_link_2_at` leave the node span to their caller. This function is
+    // that caller for every user (tag-name reparse, nested-emphasis bodies, the plain fast
+    // path), so it owns the span: inline spans are total (AST.md "Inline spans").
+    let (mut node, end) = if let Some((end, node)) = org_link_1_at(s, bb, at, base, scan) {
+        (node, end)
+    } else if let Some((end, content)) =
+        crate::inline::parse_nested_link_with_scan(s, at, scan.page_ref_scan())
+    {
+        (
+            Inline::NestedLink {
+                content,
+                span: None,
+            },
+            end,
+        )
+    } else {
+        let (end, node) = org_link_2_at(s, bb, at, base, scan)?;
+        (node, end)
+    };
+    crate::projection::set_inline_span(&mut node, Some(Span(base + at, base + end)));
+    Some((node, end))
 }
 
 fn concat_plains_without_pos(nodes: Vec<Inline>) -> Vec<Inline> {

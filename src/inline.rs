@@ -283,7 +283,7 @@ fn plain_fast_path(
         }
         if matches!(format, PlainFastFormat::Org) && c == b'[' {
             if bb.get(i + 1) == Some(&b'[') {
-                if let Some((mut node, end)) = crate::org_resolver::try_nested_link_or_link_org(
+                if let Some((node, end)) = crate::org_resolver::try_nested_link_or_link_org(
                     s,
                     bb,
                     i,
@@ -291,7 +291,6 @@ fn plain_fast_path(
                     &mut org_inline_scan,
                 ) {
                     push_plain(&mut out, s, base, plain_start, i);
-                    crate::projection::set_inline_span(&mut node, Some(Span(base + i, base + end)));
                     out.push(node);
                     i = end;
                     plain_start = i;

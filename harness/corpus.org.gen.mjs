@@ -667,6 +667,17 @@ add("quote-idcase", "> a\nId:: x");
 add("quote-idcase", "> ID:: x");
 add("quote-idcase", "> a\n> ID:: x");
 
+// Org `[[…]]` links inside `#[[…]]` tags and emphasis bodies carry their own span, also inside a
+// quote whose CRLF makes the origin map multi-segment (the remap once queried its shared cursor
+// backwards: debug panic, release wrong span). The AST is oracle-checked; spans.mjs checks T1/S3.
+add("tag-link-span", "*\n#+BEGIN_QUOTE\n#+alias: , [[c d]], \r\n,  ,  #+ALIAS: [[b]],  #[[c d]]\n#+END_QUOTE\n");
+add("tag-link-span", "*\n#+BEGIN_QUOTE\n#+alias: , [[c d]], \n,  ,  #+ALIAS: [[b]],  #[[c d]]\n#+END_QUOTE\n");
+add("tag-link-span", "#+BEGIN_QUOTE\na\r\n#[[c]]\n#+END_QUOTE\n");
+add("tag-link-span", "#+BEGIN_QUOTE\na\n#[[c]]\n#+END_QUOTE\n");
+add("tag-link-span", "x #[[c d]]\n");
+add("tag-link-span", "x *[[c]]* /a [[d][e]]/\n");
+add("tag-link-span", "#+BEGIN_QUOTE\na\r\nx *[[c]]* /a [[d][e]]/\n#+END_QUOTE\n");
+
 const out = cases.map((c, i) => ({ id: `o${String(i).padStart(3, "0")}`, cat: c.cat, input: c.input, format: c.format }));
 const __dir = dirname(fileURLToPath(import.meta.url));
 writeFileSync(join(__dir, "corpus.org.json"), JSON.stringify(out, null, 1));

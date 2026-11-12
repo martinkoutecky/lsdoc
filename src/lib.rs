@@ -783,4 +783,90 @@ mod span_tests {
             Some(&[SpanMapSegment(0, 1, 12)]),
         );
     }
+
+    /// The `[[…]]` link inside an Org `#[[…]]` tag or an Org emphasis body, with the
+    /// paragraph's quote-relative inline list. Returns (tag/emphasis span, link span).
+    fn org_wrapped_link_spans(inline: &[Inline]) -> Vec<(Option<Span>, Option<Span>)> {
+        inline
+            .iter()
+            .filter_map(|n| match n {
+                Inline::Tag { children, span } | Inline::Emphasis { children, span, .. } => {
+                    children.iter().find_map(|c| match c {
+                        Inline::Link { span: ls, .. } => Some((*span, *ls)),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn quote_child_paragraph(input: &str, block: usize, child: usize) -> Vec<Inline> {
+        match &crate::parse(input, "org")[block] {
+            Block::Quote { children, .. } => match &children[child] {
+                Block::Paragraph { inline, .. } => inline.clone(),
+                b => panic!("expected quote paragraph, got {b:?}"),
+            },
+            b => panic!("expected quote, got {b:?}"),
+        }
+    }
+
+    // REG sourcemap-backwards (tine CM generator, 2026-11-11): the Org link inside `#[[c d]]`
+    // got no span from `try_nested_link_or_link_org`; the quote-body remap then queried the
+    // shared OriginCursor at offset 0 (debug: "OriginCursor queried backwards" panic when the
+    // CRLF made the origin map multi-segment; release: the silent wrong span [38,38]).
+    #[test]
+    fn org_tag_link_in_crlf_quote_gets_its_own_span() {
+        let crlf =
+            "*\n#+BEGIN_QUOTE\n#+alias: , [[c d]], \r\n,  ,  #+ALIAS: [[b]],  #[[c d]]\n#+END_QUOTE\n";
+        assert_eq!(
+            org_wrapped_link_spans(&quote_child_paragraph(crlf, 1, 1)),
+            vec![(Some(Span(61, 69)), Some(Span(62, 69)))]
+        );
+        assert_eq!(&crlf[62..69], "[[c d]]");
+
+        let lf =
+            "*\n#+BEGIN_QUOTE\n#+alias: , [[c d]], \n,  ,  #+ALIAS: [[b]],  #[[c d]]\n#+END_QUOTE\n";
+        assert_eq!(
+            org_wrapped_link_spans(&quote_child_paragraph(lf, 1, 1)),
+            vec![(Some(Span(60, 68)), Some(Span(61, 68)))]
+        );
+        assert_eq!(&lf[61..68], "[[c d]]");
+
+        let min = "#+BEGIN_QUOTE\na\r\n#[[c]]\n#+END_QUOTE\n";
+        assert_eq!(
+            org_wrapped_link_spans(&quote_child_paragraph(min, 0, 0)),
+            vec![(Some(Span(17, 23)), Some(Span(18, 23)))]
+        );
+        let min_lf = "#+BEGIN_QUOTE\na\n#[[c]]\n#+END_QUOTE\n";
+        assert_eq!(
+            org_wrapped_link_spans(&quote_child_paragraph(min_lf, 0, 0)),
+            vec![(Some(Span(16, 22)), Some(Span(17, 22)))]
+        );
+    }
+
+    // Same producer, other callers: the Org tag reparse and nested-emphasis bodies at top
+    // level (link span was None), and inside a CRLF quote.
+    #[test]
+    fn org_links_in_tags_and_emphasis_have_total_spans() {
+        assert_eq!(
+            org_wrapped_link_spans(&parse_org("x #[[c d]]")),
+            vec![(Some(Span(2, 10)), Some(Span(3, 10)))]
+        );
+        assert_eq!(
+            org_wrapped_link_spans(&parse_org("x *[[c]]* /a [[d][e]]/")),
+            vec![
+                (Some(Span(2, 9)), Some(Span(3, 8))),
+                (Some(Span(10, 22)), Some(Span(13, 21)))
+            ]
+        );
+        let q = "#+BEGIN_QUOTE\na\r\nx *[[c]]* /a [[d][e]]/\n#+END_QUOTE\n";
+        assert_eq!(
+            org_wrapped_link_spans(&quote_child_paragraph(q, 0, 0)),
+            vec![
+                (Some(Span(19, 26)), Some(Span(20, 25))),
+                (Some(Span(27, 39)), Some(Span(30, 38)))
+            ]
+        );
+    }
 }

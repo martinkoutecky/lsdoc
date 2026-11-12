@@ -454,11 +454,7 @@ fn remap_inline(
                     })
                 }
             });
-            *span = Some(absolute.unwrap_or_else(|| {
-                let mut fallback_cursor = OriginCursor::new();
-                let p = origin.boundary_at(0, &mut fallback_cursor);
-                Span(p, p)
-            }));
+            *span = absolute;
             *span_map = wire;
         }
         Inline::Emphasis { children, span, .. }
@@ -466,10 +462,7 @@ fn remap_inline(
         | Inline::Superscript { children, span }
         | Inline::Tag { children, span } => {
             let local = span.take();
-            *span = Some(remapped_span(local, origin, cursor).unwrap_or_else(|| {
-                let mut collapsed_cursor = node_cursor;
-                collapsed(local, origin, &mut collapsed_cursor)
-            }));
+            *span = remapped_span(local, origin, cursor);
             let mut child_cursor = node_cursor;
             remap_inlines(
                 children,
@@ -481,10 +474,7 @@ fn remap_inline(
         }
         Inline::Link { label, span, .. } => {
             let local = span.take();
-            *span = Some(remapped_span(local, origin, cursor).unwrap_or_else(|| {
-                let mut collapsed_cursor = node_cursor;
-                collapsed(local, origin, &mut collapsed_cursor)
-            }));
+            *span = remapped_span(local, origin, cursor);
             let mut child_cursor = node_cursor;
             remap_inlines(label, current_input, source_body, origin, &mut child_cursor);
         }
@@ -505,14 +495,15 @@ fn remap_inline(
         | Inline::Entity { span, .. }
         | Inline::Hiccup { span, .. } => {
             let local = span.take();
-            *span = Some(remapped_span(local, origin, cursor).unwrap_or_else(|| {
-                let mut collapsed_cursor = node_cursor;
-                collapsed(local, origin, &mut collapsed_cursor)
-            }));
+            *span = remapped_span(local, origin, cursor);
         }
     }
 }
 
+/// A node the inner parse left without a span stays without one: the only offset a fallback
+/// could query is the body start, which (a) is a wrong span Tine would place edits at and (b) is
+/// a backwards query on the shared monotone cursor (the `advance_to` tripwire). Inline spans are
+/// total (AST.md), so a `None` here is a producer bug the spans gate reports as T1.
 fn remapped_span(
     span: Option<Span>,
     origin: &OriginMap,
@@ -523,11 +514,6 @@ fn remapped_span(
         let p = origin.boundary_at(span.0, cursor);
         Some(Span(p, p))
     })
-}
-
-fn collapsed(span: Option<Span>, origin: &OriginMap, cursor: &mut OriginCursor) -> Span {
-    let p = origin.boundary_at(span.map(|s| s.0).unwrap_or(0), cursor);
-    Span(p, p)
 }
 
 fn remap_existing_plain_map(
