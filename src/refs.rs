@@ -14,7 +14,19 @@ use std::borrow::Cow;
 use crate::projection::{Block, Inline, ListItem, Property, Refs, Url};
 
 pub fn extract_refs(blocks: &[Block], format: &str) -> Refs {
-    let mut builder = RefsBuilder::new(format);
+    extract_refs_with(blocks, format, true)
+}
+
+/// [`extract_refs`]; `property_pages == false` leaves out the page refs of property
+/// values (their block refs stay), for a caller that reads property values through
+/// [`crate::property_references`] under its own key policy.
+pub(crate) fn extract_refs_with(blocks: &[Block], format: &str, property_pages: bool) -> Refs {
+    let mut builder = RefsBuilder {
+        page: Vec::new(),
+        block: Vec::new(),
+        org: format == "org",
+        property_pages,
+    };
     builder.blocks(blocks);
     builder.finish()
 }
@@ -23,21 +35,10 @@ pub(crate) struct RefsBuilder {
     page: Vec<String>,
     block: Vec<String>,
     org: bool,
+    property_pages: bool,
 }
 
 impl RefsBuilder {
-    pub(crate) fn new(format: &str) -> Self {
-        Self::with_org(format == "org")
-    }
-
-    pub(crate) fn with_org(org: bool) -> Self {
-        Self {
-            page: Vec::new(),
-            block: Vec::new(),
-            org,
-        }
-    }
-
     pub(crate) fn finish(mut self) -> Refs {
         self.page.sort_unstable();
         self.page.dedup();
@@ -78,10 +79,6 @@ impl RefsBuilder {
         walk_inlines(inlines, &mut self.page, &mut self.block, self.org);
     }
 
-    pub(crate) fn property_reference_inlines(&mut self, inlines: &[Inline]) {
-        walk_property_reference_inlines(inlines, &mut self.page, &mut self.block);
-    }
-
     fn property(&mut self, prop: &Property) {
         if !property_value_refs_enabled(prop) {
             return;
@@ -90,12 +87,12 @@ impl RefsBuilder {
         if property_value_is_unparsed(value) || !property_value_may_have_refs(value) {
             return;
         }
-        let inl = if self.org {
-            crate::org_resolver::parse_property_reference_inlines_org(value, 0)
+        let inl = property_reference_inlines(value, self.org);
+        if self.property_pages {
+            walk_property_reference_inlines(&inl, &mut self.page, &mut self.block);
         } else {
-            crate::resolver::parse_property_reference_inlines(value, 0)
-        };
-        self.property_reference_inlines(&inl);
+            walk_property_block_refs(&inl, &mut self.block);
+        }
     }
 
     fn walk_block_iter<'a>(&mut self, b: &'a Block, stack: &mut Vec<RefFrame<'a>>) {
@@ -172,6 +169,15 @@ enum RefFrame<'a> {
 /// value refs.
 fn property_value_refs_enabled(prop: &Property) -> bool {
     !prop.is_parse2()
+}
+
+/// mldoc `Property.property_references`' parse of one value: macros disabled.
+pub(crate) fn property_reference_inlines(value: &str, org: bool) -> Vec<Inline> {
+    if org {
+        crate::org_resolver::parse_property_reference_inlines_org(value, 0)
+    } else {
+        crate::resolver::parse_property_reference_inlines(value, 0)
+    }
 }
 
 fn property_value_is_unparsed(value: &str) -> bool {

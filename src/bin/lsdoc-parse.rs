@@ -109,7 +109,11 @@ fn main() {
             .map(|c| {
                 let start = Instant::now();
                 let format = c.format.as_deref().unwrap_or("md");
-                let inline = if engine == "v2" || engine == "v2-report" {
+                // LSDOC_INLINE=property → `lsdoc::property_references`, for the property
+                // reference gate against mldoc `getReferences` (propgate.mjs).
+                let inline = if std::env::var("LSDOC_INLINE").as_deref() == Ok("property") {
+                    lsdoc::property_references(&c.input, format)
+                } else if engine == "v2" || engine == "v2-report" {
                     lsdoc::__inline_v2(&c.input, format)
                 } else {
                     lsdoc::inline(&c.input, format)

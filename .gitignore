@@ -17,6 +17,7 @@ harness/corpus.all.json
 harness/corpus.real.json
 harness/corpus.org.real.json
 harness/divergences.json
+harness/property-divergences.json
 harness/report.json
 
 # Editor / OS

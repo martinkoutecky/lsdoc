@@ -83,7 +83,12 @@ console.log("spans gate:", sg.status === 0 ? "ok" : "FAIL");
 //    optimized paths whose proof obligation is "strict subset or decline".
 const ag = run("node", [join(__dir, "audit-v2-shortcuts.mjs")], { allowFail: true });
 console.log("shortcut audit:", ag.status === 0 ? "ok" : "FAIL");
+// 10. property-reference gate: lsdoc `property_references` vs mldoc `getReferences`
+//     (`Property.property_references`, the macro-disabled whole-value parse), per value
+//     in a fresh oracle process.
+const pg = run("node", [join(__dir, "propgate.mjs")], { allowFail: true });
+console.log("property-reference gate:", pg.status === 0 ? "ok" : "FAIL");
 process.exit(
   (cmp.status ?? 0) || (bg.status ?? 0) || (ig.status ?? 0) || (dg.status ?? 0)
-    || (sg.status ?? 0) || (ag.status ?? 0)
+    || (sg.status ?? 0) || (ag.status ?? 0) || (pg.status ?? 0)
 );

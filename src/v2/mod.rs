@@ -12,17 +12,22 @@ use crate::projection::Projection;
 use crate::{ast, org_resolver, outline::OutlineHeader, refs, resolver};
 
 pub(crate) fn try_parse_format(input: &str, format: &str) -> Option<Projection> {
+    try_parse_format_with(input, format, true)
+}
+
+fn try_parse_format_with(input: &str, format: &str, property_pages: bool) -> Option<Projection> {
     let blocks = try_parse_blocks(input, format)?;
-    let refs = if format == "org" {
-        refs::extract_refs(&blocks, "org")
-    } else {
-        refs::extract_refs(&blocks, "md")
-    };
+    let format = if format == "org" { "org" } else { "md" };
+    let refs = refs::extract_refs_with(&blocks, format, property_pages);
     Some(Projection { blocks, refs })
 }
 
 pub(crate) fn parse_format(input: &str, format: &str) -> Projection {
-    try_parse_format(input, format)
+    parse_format_with(input, format, true)
+}
+
+pub(crate) fn parse_format_with(input: &str, format: &str, property_pages: bool) -> Projection {
+    try_parse_format_with(input, format, property_pages)
         .unwrap_or_else(|| panic!("lsdoc v2 parser does not yet own {format:?} input"))
 }
 

@@ -121,6 +121,30 @@ pub fn inline(input: &str, format: &str) -> Vec<ast::Inline> {
     }
 }
 
+/// mldoc `Property.property_references` (`getReferences`): one property value parsed as
+/// inline markup with macros disabled (`inline_skip_macro`). `{{` is text here, so
+/// `{{query [[a]]}}` holds the page link `a`, a link that opens inside an ordinary parse's
+/// macro may close after it (`{{x [[a}} b]]` holds `a}} b`), and markup around a macro
+/// encloses what the macro would have held (`{{x **[[a]]}}**` holds no top-level link).
+/// mldoc's references of the value are this parse's top-level `Tag`, `Link` and
+/// `NestedLink` nodes; the whole parse is returned so a caller applies its own selection.
+/// Spans are byte offsets into `value`. `format == "org"` selects Org; anything else is
+/// Markdown.
+///
+/// The value is read as given: mldoc's property readers trim it, and a wholly quoted
+/// value has no references (the caller decides both). A value without `{{` reads exactly
+/// as [`inline`] reads it: only a macro opener parses differently.
+pub fn property_references(value: &str, format: &str) -> Vec<ast::Inline> {
+    refs::property_reference_inlines(value, format == "org")
+}
+
+/// [`parse_format`] for a caller that reads property values itself, through
+/// [`property_references`] under its own key policy: `refs.page` leaves out the page
+/// references of property values. Blocks and `refs.block` are [`parse_format`]'s.
+pub fn parse_format_without_property_page_refs(input: &str, format: &str) -> Projection {
+    v2::parse_format_with(input, if format == "org" { "org" } else { "md" }, false)
+}
+
 /// Test/perf hook (NOT stable API): the Org block parser returning the raw `Vec<Block>` (no
 /// projection). Used by `tests/perf.rs` to time the PARSER alone (typically `+ mem::forget`, so
 /// the recursive-AST consumer's drop doesn't pollute a deep-nesting / deep-`>` O(n) measure).
@@ -178,6 +202,76 @@ pub fn __try_parse_format_v2(input: &str, format: &str) -> Option<Projection> {
 #[doc(hidden)]
 pub fn __inline_v2(input: &str, format: &str) -> Vec<ast::Inline> {
     v2::inline(input, format)
+}
+
+#[cfg(test)]
+mod property_reference_tests {
+    use serde_json::{json, Value};
+
+    /// Each top-level reference node (what `getReferences` keeps) as
+    /// `[kind, full text, source slice]`; spans index the value.
+    fn refs(value: &str, format: &str) -> Vec<Value> {
+        crate::property_references(value, format)
+            .iter()
+            .map(|node| serde_json::to_value(node).unwrap())
+            .filter(|node| matches!(node["k"].as_str(), Some("tag" | "link" | "nested_link")))
+            .map(|node| {
+                let span = &node["span"];
+                let (a, b) = (span[0].as_u64().unwrap(), span[1].as_u64().unwrap());
+                let full = match node["k"].as_str() {
+                    Some("tag") => node["children"][0]["full"].clone(),
+                    _ => node["full"].clone(),
+                };
+                json!([node["k"], full, &value[a as usize..b as usize]])
+            })
+            .collect()
+    }
+
+    // Expected values are mldoc 1.5.7 `getReferences` (isolated process), both formats.
+    #[test]
+    fn macros_are_text_and_their_links_are_the_values() {
+        for format in ["md", "org"] {
+            assert_eq!(
+                refs("{{x [[a}} b]]", format),
+                [json!(["link", "[[a}} b]]", "[[a}} b]]"])],
+                "{format}"
+            );
+            assert_eq!(
+                refs("{{x #[[a}} b]]", format),
+                [json!(["tag", "[[a}} b]]", "#[[a}} b]]"])],
+                "{format}"
+            );
+            assert_eq!(
+                refs("{{embed [[a]]}}, b", format),
+                [json!(["link", "[[a]]", "[[a]]"])],
+                "{format}"
+            );
+            assert_eq!(
+                refs("x, {{renderer [[a]]}}, y", format),
+                [json!(["link", "[[a]]", "[[a]]"])],
+                "{format}"
+            );
+            // The bold run spans the macro's end, so no reference is top-level.
+            assert!(refs("{{x **[[a]]}} [[b]]**", format).is_empty(), "{format}");
+        }
+    }
+
+    #[test]
+    fn a_value_without_a_macro_reads_as_inline() {
+        for format in ["md", "org"] {
+            for value in [
+                "[[a]], #b, c",
+                "**[[a]]** [[b [[c]]]]",
+                "x [y](A.md) #[[a b]]",
+            ] {
+                assert_eq!(
+                    crate::property_references(value, format),
+                    crate::inline(value, format),
+                    "{format} {value:?}"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
